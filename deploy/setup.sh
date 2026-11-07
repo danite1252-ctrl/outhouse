@@ -91,8 +91,9 @@ if [ "$ASK_OFFSITE" = 1 ] || ! grep -q '^OFFSITE_DIR=' .env; then
   done
   OFFSITE_DIR=""
   if [ -n "$SMB_SHARE" ]; then
-    read -rp "Windows user name for the share: " SMB_USER
-    read -rsp "Password for $SMB_USER (not shown, kept in /etc/outhouse-backups.cred): " SMB_PASS; echo
+    read -rp "Windows user name for the share (Enter for an open/guest share): " SMB_USER
+    SMB_PASS=""
+    [ -n "$SMB_USER" ] && { read -rsp "Password for $SMB_USER (not shown, kept in /etc/outhouse-backups.cred): " SMB_PASS; echo; }
     MOUNT=/mnt/outhouse-backups
     command -v mount.cifs >/dev/null 2>&1 || sudo apt-get install -y cifs-utils >/dev/null
     sudo mkdir -p "$MOUNT"
@@ -102,12 +103,14 @@ if [ "$ASK_OFFSITE" = 1 ] || ! grep -q '^OFFSITE_DIR=' .env; then
       *\\*) SMB_DOMAIN=${SMB_USER%%\\*}; SMB_USER=${SMB_USER#*\\} ;;
       */*) SMB_DOMAIN=${SMB_USER%%/*}; SMB_USER=${SMB_USER#*/} ;;
     esac
+    SMB_AUTH=credentials=/etc/outhouse-backups.cred
+    [ -z "$SMB_USER" ] && SMB_AUTH=guest
     { printf 'username=%s\npassword=%s\n' "$SMB_USER" "$SMB_PASS"
-      [ -n "$SMB_DOMAIN" ] && printf 'domain=%s\n' "$SMB_DOMAIN"; } | sudo tee /etc/outhouse-backups.cred >/dev/null
+      if [ -n "$SMB_DOMAIN" ]; then printf 'domain=%s\n' "$SMB_DOMAIN"; fi; } | sudo tee /etc/outhouse-backups.cred >/dev/null
     sudo chmod 600 /etc/outhouse-backups.cred
     unset SMB_PASS
     sudo sed -i "\| $MOUNT cifs |d" /etc/fstab
-    echo "$SMB_SHARE $MOUNT cifs credentials=/etc/outhouse-backups.cred,uid=$(id -u),gid=$(id -g),file_mode=0600,dir_mode=0700,iocharset=utf8,nofail,_netdev,x-systemd.automount,x-systemd.mount-timeout=30 0 0" \
+    echo "$SMB_SHARE $MOUNT cifs $SMB_AUTH,uid=$(id -u),gid=$(id -g),file_mode=0600,dir_mode=0700,iocharset=utf8,nofail,_netdev,x-systemd.automount,x-systemd.mount-timeout=30 0 0" \
       | sudo tee -a /etc/fstab >/dev/null
     sudo systemctl daemon-reload || true
     if sudo mount "$MOUNT" 2>/dev/null || mountpoint -q "$MOUNT"; then
