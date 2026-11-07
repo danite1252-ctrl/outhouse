@@ -783,7 +783,7 @@ dialog.attendance-dialog[open] { display: flex; flex-direction: column; gap: 10p
 .att-head-tools { display: flex; gap: 6px; align-items: center; }
 .att-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .att-tools .ghost { height: 36px; }
-.att-list { display: grid; gap: 6px; overflow-y: auto; min-height: 0; flex: 1; }
+.att-list { display: grid; gap: 6px; overflow-y: auto; min-height: 0; flex: 1 1 auto; align-content: start; }
 .att-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--night); }
 .att-who { display: grid; min-width: 0; }
 .att-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -828,9 +828,11 @@ dialog.attendance-table-dialog[open] { display: flex; flex-direction: column; ga
   .cal-head { flex-wrap: nowrap; }
   .cal-nav { gap: 2px; min-width: 0; }
   .cal-nav h2 { font-size: 16px; min-width: 0; white-space: nowrap; }
-  .cal-actions .cal-today { display: none; }
-  .cal-nav .cal-today { padding: 0 8px; }
-  .cal-plan { padding: 0 10px; }
+  .cal-actions .cal-today, .cal-nav .cal-today, .cal-plan .plan-long { display: none; }
+  .cal-plan { padding: 0 12px; white-space: nowrap; }
+  .raid-dialog .raid-row:not(.three), .raid-dialog .raid-row.even { grid-template-columns: 1fr; }
+  .day-chips { flex-wrap: nowrap; gap: 3px; }
+  .day-chip { min-width: 0; flex: 1 1 0; padding: 0; font-size: 12px; }
   dialog.raid-card-dialog { padding: 10px; }
   dialog.attendance-dialog, dialog.attendance-table-dialog { width: 100vw; max-width: none; max-height: none; height: 100dvh; border-radius: 0; padding: calc(var(--safe-top) + 12px) 12px calc(var(--safe-bottom) + 12px); }
   dialog.attendance-dialog[open], dialog.attendance-table-dialog[open] { max-height: none; }

@@ -151,7 +151,7 @@ function drawCalendar() {
       el("button", { type: "button", class: "cal-today", onclick: () => { cal.month = new Date(new Date().getFullYear(), new Date().getMonth(), 1); cal.selected = todayKey; loadCalendar(); } }, "Today")),
     el("div", { class: "cal-actions" },
       el("button", { type: "button", class: "cal-today", onclick: () => openAttendanceTable() }, "📊 Attendance"),
-      canPlanHere() ? el("button", { type: "button", class: "primary cal-plan", onclick: () => planOn(cal.selected) }, "＋ Plan a raid") : null,
+      canPlanHere() ? el("button", { type: "button", class: "primary cal-plan", title: "Plan a raid", onclick: () => planOn(cal.selected) }, "＋ Plan", el("span", { class: "plan-long" }, " a raid")) : null,
       closeX(cal.dialog)));
   const tz = el("div", { class: "cal-tz muted small" }, `Times are in your time zone (${myTimeZone()}).`, cal.loading ? " Loading…" : "");
   const body = isPhoneWidth() ? drawAgenda(byDay, todayKey) : drawMonth(byDay, todayKey);

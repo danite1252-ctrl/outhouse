@@ -431,6 +431,7 @@ with sync_playwright() as p:
     page.click(".channel:has-text('raids')")
     bench_card = ".event-card:has-text('Bench raid')"
     page.wait_for_selector(f"{bench_card} .ev-bench li:has-text('Erin')", timeout=10000)
+    page.wait_for_timeout(800)  # let the channel finish settling at the bottom first
     assert "Dave" in page.inner_text(f"{bench_card} .ev-col.tank")
     scroll_to_card(page, "Bench raid")
     page.screenshot(path=f"{SHOTS}/40-bench-card.png")
