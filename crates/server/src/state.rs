@@ -76,6 +76,20 @@ pub struct AppState {
     pub voice: Arc<Mutex<HashMap<i64, VoiceState>>>,
     /// User ID → when they last played a soundboard clip.
     pub sound_cooldowns: Arc<Mutex<HashMap<i64, Instant>>>,
+    /// Slash commands waiting for their bot to reply (kept 15 minutes).
+    pub interactions: Arc<Mutex<HashMap<i64, PendingInteraction>>>,
+}
+
+/// Someone used a bot's slash command; the bot replies to this.
+#[derive(Debug, Clone)]
+pub struct PendingInteraction {
+    pub bot_id: i64,
+    pub guild_id: i64,
+    pub channel_id: i64,
+    pub user_id: i64,
+    pub display_name: String,
+    pub command: String,
+    pub created: Instant,
 }
 
 impl AppState {
@@ -95,6 +109,7 @@ impl AppState {
             presence: Arc::new(Mutex::new(HashMap::new())),
             voice: Arc::new(Mutex::new(HashMap::new())),
             sound_cooldowns: Arc::new(Mutex::new(HashMap::new())),
+            interactions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

@@ -72,8 +72,6 @@ pub async fn register(
 #[derive(sqlx::FromRow)]
 struct LoginRow {
     id: i64,
-    username: String,
-    display_name: String,
     password_hash: String,
 }
 
@@ -83,7 +81,7 @@ pub async fn login(
 ) -> AppResult<Json<AuthResponse>> {
     let username = req.username.trim().to_lowercase();
     let row = sqlx::query_as::<_, LoginRow>(
-        "SELECT id, username, display_name, password_hash FROM users WHERE username = $1",
+        "SELECT id, password_hash FROM users WHERE username = $1",
     )
     .bind(&username)
     .fetch_optional(&st.db)
@@ -93,11 +91,7 @@ pub async fn login(
     if !auth::verify_password(req.password, row.password_hash).await {
         return Err(AppError::InvalidCredentials);
     }
-    let user = User {
-        id: row.id,
-        username: row.username,
-        display_name: row.display_name,
-    };
+    let user = auth::fetch_user(&st.db, row.id).await?;
     let token = auth::create_session(&st.db, user.id).await?;
     Ok(Json(AuthResponse { token, user }))
 }
@@ -153,6 +147,32 @@ pub async fn update_me(
     }
 
     let mut user = user;
+    let mut changed = false;
+    if let Some(about) = req.about_me {
+        let about: String = about.trim().chars().take(190).collect();
+        sqlx::query("UPDATE users SET about_me = $2 WHERE id = $1")
+            .bind(user.id)
+            .bind(&about)
+            .execute(&st.db)
+            .await?;
+    }
+    if let Some(theme) = req.profile_theme {
+        if !theme.is_empty() && !PROFILE_THEMES.contains(&theme.as_str()) {
+            return Err(AppError::BadRequest("Unknown profile background.".into()));
+        }
+        sqlx::query("UPDATE users SET profile_theme = $2 WHERE id = $1")
+            .bind(user.id)
+            .bind(&theme)
+            .execute(&st.db)
+            .await?;
+    }
+    if let Some(color) = req.accent_color {
+        sqlx::query("UPDATE users SET accent_color = $2 WHERE id = $1")
+            .bind(user.id)
+            .bind(color.clamp(0, 0xFF_FFFF))
+            .execute(&st.db)
+            .await?;
+    }
     if let Some(name) = req.display_name {
         let name = clean_name(&name);
         if name.is_empty() {
@@ -164,17 +184,32 @@ pub async fn update_me(
             .execute(&st.db)
             .await?;
         user.display_name = name;
-        let guilds: Vec<i64> =
-            sqlx::query_scalar("SELECT guild_id FROM guild_members WHERE user_id = $1")
-                .bind(user.id)
-                .fetch_all(&st.db)
-                .await?;
-        for guild_id in guilds {
-            st.dispatch(
-                Audience::Guild(guild_id),
-                ServerEvent::GuildRefresh { guild_id },
-            );
-        }
+        changed = true;
+    }
+    if changed {
+        refresh_my_guilds(&st, user.id).await?;
     }
     Ok(Json(user))
+}
+
+/// The built-in profile backgrounds (the web client draws them).
+pub const PROFILE_THEMES: &[&str] = &[
+    "ember", "dusk", "moonwell", "felfire", "frostfall", "verdant", "stormwind", "abyss",
+    "goldleaf", "outhouse",
+];
+
+/// Tells every outhouse you're in to re-fetch members (name or picture changed).
+pub async fn refresh_my_guilds(st: &AppState, user_id: i64) -> AppResult<()> {
+    let guilds: Vec<i64> =
+        sqlx::query_scalar("SELECT guild_id FROM guild_members WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_all(&st.db)
+            .await?;
+    for guild_id in guilds {
+        st.dispatch(
+            Audience::Guild(guild_id),
+            ServerEvent::GuildRefresh { guild_id },
+        );
+    }
+    Ok(())
 }

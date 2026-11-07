@@ -84,6 +84,13 @@ $DOCKER compose up -d --build
 # LiveKit only reads its settings at start-up.
 $DOCKER compose restart livekit >/dev/null
 
+say "Scheduling a nightly backup (3:30 am, keeps 14)..."
+mkdir -p "$HOME/outhouse-backups"
+chmod +x backup.sh restore.sh 2>/dev/null || true
+sed -i 's/\r$//' backup.sh restore.sh 2>/dev/null || true
+( crontab -l 2>/dev/null | grep -v 'deploy/backup.sh' || true
+  echo "30 3 * * * cd $(pwd) && ./backup.sh >> $HOME/outhouse-backups/backup.log 2>&1" ) | crontab -
+
 PUBLIC_IP=$(curl -fsS https://api.ipify.org || echo "unknown")
 say "Done!"
 cat <<MSG
@@ -111,5 +118,6 @@ else cat <<MSG
 MSG
 fi
 cat <<MSG
-Logs:   cd $(pwd) && $DOCKER compose logs -f
+Logs:     cd $(pwd) && $DOCKER compose logs -f
+Backups:  nightly to ~/outhouse-backups (run ./backup.sh any time; ./restore.sh to restore)
 MSG

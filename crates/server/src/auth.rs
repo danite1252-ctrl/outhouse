@@ -17,6 +17,31 @@ use crate::state::AppState;
 
 const SESSION_DAYS: i32 = 30;
 
+/// Columns for a `User`, from `users u`.
+pub const USER_COLUMNS: &str = "u.id, u.username, u.display_name,
+    CASE WHEN u.avatar_key IS NULL THEN NULL ELSE '/files/' || u.avatar_key || '/avatar' END AS avatar_url,
+    u.is_bot AS bot";
+
+/// SQL for a user's avatar URL from `users u` (NULL if none).
+pub const AVATAR_URL_SQL: &str =
+    "CASE WHEN u.avatar_key IS NULL THEN NULL ELSE '/files/' || u.avatar_key || '/avatar' END";
+
+pub async fn fetch_user(db: &PgPool, user_id: i64) -> AppResult<User> {
+    let sql = format!("SELECT {USER_COLUMNS} FROM users u WHERE u.id = $1");
+    sqlx::query_as::<_, User>(&sql)
+        .bind(user_id)
+        .fetch_optional(db)
+        .await?
+        .ok_or(AppError::NotFound)
+}
+
+/// A new random token (64 hex characters).
+pub fn new_token() -> String {
+    let mut raw = [0u8; 32];
+    OsRng.fill_bytes(&mut raw);
+    hex(&raw)
+}
+
 /// Hashes a password with Argon2id. Runs off the async threads because
 /// hashing is deliberately slow.
 pub async fn hash_password(password: String) -> AppResult<String> {
@@ -59,7 +84,7 @@ pub fn random_code(len: usize, alphabet: &[u8]) -> String {
         .collect()
 }
 
-fn token_hash(token: &str) -> String {
+pub fn token_hash(token: &str) -> String {
     hex(&Sha256::digest(token.as_bytes()))
 }
 
@@ -98,24 +123,31 @@ pub async fn delete_other_sessions(db: &PgPool, user_id: i64, keep_token: &str) 
     Ok(())
 }
 
+/// The user for a login token or a bot token.
 pub async fn user_for_token(db: &PgPool, token: &str) -> AppResult<Option<User>> {
-    let user = sqlx::query_as::<_, User>(
-        "SELECT u.id, u.username, u.display_name
-         FROM sessions s JOIN users u ON u.id = s.user_id
-         WHERE s.token_hash = $1 AND s.expires_at > now()",
-    )
-    .bind(token_hash(token))
-    .fetch_optional(db)
-    .await?;
+    let token = token.strip_prefix("Bot ").unwrap_or(token).trim();
+    let sql = format!(
+        "SELECT {USER_COLUMNS} FROM users u
+         WHERE u.id = (
+             SELECT user_id FROM sessions WHERE token_hash = $1 AND expires_at > now()
+             UNION ALL
+             SELECT user_id FROM bots WHERE token_hash = $1
+             LIMIT 1)"
+    );
+    let user = sqlx::query_as::<_, User>(&sql)
+        .bind(token_hash(token))
+        .fetch_optional(db)
+        .await?;
     Ok(user)
 }
 
+/// The token from `Authorization: Bearer <token>` (people) or
+/// `Authorization: Bot <token>` (bots).
 pub fn bearer_token(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(AUTHORIZATION)?
-        .to_str()
-        .ok()?
+    let value = headers.get(AUTHORIZATION)?.to_str().ok()?;
+    value
         .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("Bot "))
         .map(str::trim)
 }
 

@@ -125,6 +125,24 @@ pub enum ServerEvent {
         #[serde(with = "as_string")]
         guild_id: i64,
     },
+    /// Slash commands in this outhouse changed: re-fetch them.
+    CommandsChanged {
+        #[serde(with = "as_string")]
+        guild_id: i64,
+    },
+    /// Sent to a bot when someone uses one of its slash commands. Reply with
+    /// `POST /api/interactions/{id}/reply` within 15 minutes.
+    InteractionCreate {
+        #[serde(with = "as_string")]
+        id: i64,
+        #[serde(with = "as_string")]
+        guild_id: i64,
+        #[serde(with = "as_string")]
+        channel_id: i64,
+        user: User,
+        command: String,
+        options: std::collections::HashMap<String, String>,
+    },
     /// Identify failed or the session expired; sign in again.
     InvalidSession {
         reason: String,

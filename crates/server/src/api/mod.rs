@@ -1,9 +1,12 @@
 //! REST API routes.
 
 mod account;
+mod bots;
 mod channels;
+pub mod events;
 mod feeds;
 mod gifs;
+mod profiles;
 pub mod guilds;
 pub mod members;
 pub mod messages;
@@ -13,7 +16,7 @@ pub mod voice;
 mod webhooks;
 
 use axum::extract::DefaultBodyLimit;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use outhouse_common::permissions::{all_permissions, PermissionInfo};
 
@@ -63,7 +66,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/guilds/{id}/roles/{role}",
-            axum::routing::patch(roles::update).delete(roles::delete),
+            patch(roles::update).delete(roles::delete),
         )
         // Members and moderation
         .route("/api/guilds/{id}/members", get(members::list))
@@ -93,7 +96,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/channels/{id}/messages/{message}",
-            axum::routing::patch(messages::edit).delete(messages::delete),
+            patch(messages::edit).delete(messages::delete),
         )
         .route(
             "/api/channels/{id}/messages/{message}/reactions/{emoji}",
@@ -120,6 +123,39 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/sounds/{id}", delete(sounds::delete))
         .route("/api/sounds/{id}/play", post(sounds::play))
+        // Profiles
+        .route("/api/profiles/{id}", get(profiles::get))
+        .route(
+            "/api/users/@me/avatar",
+            post(profiles::upload_avatar)
+                .delete(profiles::delete_avatar)
+                .layer(DefaultBodyLimit::max(profiles::MAX_AVATAR_BYTES + 64 * 1024)),
+        )
+        .route(
+            "/api/users/@me/banner",
+            post(profiles::upload_banner)
+                .delete(profiles::delete_banner)
+                .layer(DefaultBodyLimit::max(profiles::MAX_BANNER_BYTES + 64 * 1024)),
+        )
+        // Raid planner
+        .route("/api/channels/{id}/events", post(events::create))
+        .route("/api/guilds/{id}/events", get(events::list_upcoming))
+        .route(
+            "/api/events/{id}",
+            get(events::get).patch(events::update).delete(events::delete),
+        )
+        .route("/api/events/{id}/signup", put(events::signup))
+        .route("/api/events/{id}/signups/{user}", delete(events::withdraw))
+        // Bots and slash commands
+        .route("/api/guilds/{id}/bots", get(bots::list).post(bots::create))
+        .route("/api/bots/{id}", delete(bots::delete))
+        .route("/api/bots/{id}/token", post(bots::reset_token))
+        .route(
+            "/api/guilds/{id}/commands",
+            get(bots::list_commands).put(bots::set_commands),
+        )
+        .route("/api/channels/{id}/interactions", post(bots::interact))
+        .route("/api/interactions/{id}/reply", post(bots::reply))
         // GIFs, files, gateway
         .route("/api/gifs", get(gifs::search))
         .route("/files/{key}/{name}", get(files::serve))

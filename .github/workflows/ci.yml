@@ -32,6 +32,9 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Build
         run: cargo build --locked -p outhouse-server
       - name: Unit tests
@@ -39,8 +42,10 @@ jobs:
       - name: Clippy (advice only)
         run: cargo clippy --workspace --all-targets
         continue-on-error: true
-      - name: Website syntax check
-        run: node --check web/app.js
+      - name: Website and example bot syntax check
+        run: |
+          node --check web/app.js
+          node --check examples/bots/dice-bot.mjs
       - name: Smoke test (real server + Postgres)
         env:
           DATABASE_URL: postgres://outhouse:outhouse@localhost:5432/outhouse

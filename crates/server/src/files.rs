@@ -43,6 +43,8 @@ pub async fn serve(
         "SELECT filename, content_type FROM attachments WHERE storage_key = $1
          UNION ALL
          SELECT name AS filename, content_type FROM sounds WHERE storage_key = $1
+         UNION ALL
+         SELECT filename, content_type FROM profile_files WHERE storage_key = $1
          LIMIT 1",
     )
     .bind(&key)

@@ -13,6 +13,14 @@ pub struct User {
     pub id: i64,
     pub username: String,
     pub display_name: String,
+    /// Uploaded profile picture, if any.
+    #[serde(default)]
+    #[cfg_attr(feature = "sqlx", sqlx(default))]
+    pub avatar_url: Option<String>,
+    /// A bot account (webhook, feed or bot app).
+    #[serde(default)]
+    #[cfg_attr(feature = "sqlx", sqlx(default))]
+    pub bot: bool,
 }
 
 /// A server ("outhouse"). Called a guild in the code, like Discord's API.
@@ -43,6 +51,12 @@ pub struct Member {
     /// Connected right now.
     #[serde(default)]
     pub online: bool,
+    #[serde(default)]
+    #[cfg_attr(feature = "sqlx", sqlx(default))]
+    pub avatar_url: Option<String>,
+    #[serde(default)]
+    #[cfg_attr(feature = "sqlx", sqlx(default))]
+    pub bot: bool,
 }
 
 /// A role. The @everyone role has the same ID as its server.
@@ -128,6 +142,7 @@ pub struct Attachment {
 
 /// A link preview, an inline image/GIF, or a rich card from a webhook or feed.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct Embed {
     pub url: String,
     /// "link", "image" or "rich".
@@ -192,6 +207,113 @@ pub struct Message {
     pub attachments: Vec<Attachment>,
     pub embeds: Vec<Embed>,
     pub reactions: Vec<Reaction>,
+    /// For a bot's reply to a slash command: who used which command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interaction: Option<MessageInteraction>,
+    /// For a raid post: the event and its sign-ups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<RaidEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MessageInteraction {
+    #[serde(with = "as_string")]
+    pub user_id: i64,
+    pub display_name: String,
+    /// Command name without the slash.
+    pub command: String,
+}
+
+/// A raid (or any event) people sign up for, shown as a card in chat.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RaidEvent {
+    #[serde(with = "as_string")]
+    pub id: i64,
+    #[serde(with = "as_string")]
+    pub guild_id: i64,
+    #[serde(with = "as_string")]
+    pub channel_id: i64,
+    #[serde(with = "as_string")]
+    pub message_id: i64,
+    #[serde(with = "as_string")]
+    pub creator_id: i64,
+    pub title: String,
+    pub description: String,
+    pub starts_at: DateTime<Utc>,
+    pub duration_minutes: i32,
+    pub max_tanks: i32,
+    pub max_healers: i32,
+    pub max_dps: i32,
+    pub signups: Vec<EventSignup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EventSignup {
+    #[serde(with = "as_string")]
+    pub user_id: i64,
+    pub display_name: String,
+    /// "yes", "late", "tentative", "bench" or "no".
+    pub status: String,
+    /// "tank", "healer", "dps" or "".
+    pub role: String,
+    pub class: String,
+    pub spec: String,
+    pub note: String,
+    pub signed_at: DateTime<Utc>,
+}
+
+/// Everything shown on someone's profile card.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Profile {
+    #[serde(with = "as_string")]
+    pub id: i64,
+    pub username: String,
+    pub display_name: String,
+    pub avatar_url: Option<String>,
+    pub banner_url: Option<String>,
+    pub about_me: String,
+    pub profile_theme: String,
+    pub accent_color: i32,
+    pub bot: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+/// A bot made in an outhouse (shown to people who can manage it).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BotInfo {
+    pub user: User,
+    #[serde(with = "as_string")]
+    pub owner_id: i64,
+    pub created_at: DateTime<Utc>,
+    /// Connected to the gateway right now.
+    pub online: bool,
+    /// Its slash commands in this outhouse.
+    pub commands: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CommandOption {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub required: bool,
+}
+
+/// A slash command a bot offers in an outhouse.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SlashCommand {
+    #[serde(with = "as_string", default)]
+    pub id: i64,
+    #[serde(with = "as_string", default)]
+    pub bot_id: i64,
+    #[serde(default)]
+    pub bot_name: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub options: Vec<CommandOption>,
 }
 
 /// Your permissions in a server, for showing and hiding buttons.
@@ -291,6 +413,73 @@ pub struct Sound {
 // ---- Requests and responses -------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateEventRequest {
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    pub starts_at: DateTime<Utc>,
+    pub duration_minutes: Option<i32>,
+    pub max_tanks: Option<i32>,
+    pub max_healers: Option<i32>,
+    pub max_dps: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UpdateEventRequest {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub starts_at: Option<DateTime<Utc>>,
+    pub duration_minutes: Option<i32>,
+    pub max_tanks: Option<i32>,
+    pub max_healers: Option<i32>,
+    pub max_dps: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignupRequest {
+    pub status: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub class: String,
+    #[serde(default)]
+    pub spec: String,
+    #[serde(default)]
+    pub note: String,
+    /// Organisers can sign someone else up or move them (e.g. to the bench).
+    #[serde(with = "option_as_string", default)]
+    pub user_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateBotRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BotTokenResponse {
+    pub bot: User,
+    /// Shown once. Use it as `Authorization: Bot <token>`.
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InteractionRequest {
+    #[serde(with = "as_string")]
+    pub command_id: i64,
+    #[serde(default)]
+    pub options: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InteractionReply {
+    #[serde(default)]
+    pub content: String,
+    #[serde(default)]
+    pub embeds: Vec<Embed>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoiceStateRequest {
     pub muted: bool,
     pub deafened: bool,
@@ -321,6 +510,9 @@ pub struct RegisterRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UpdateMeRequest {
     pub display_name: Option<String>,
+    pub about_me: Option<String>,
+    pub profile_theme: Option<String>,
+    pub accent_color: Option<i32>,
     /// Needed (with `new_password`) to change your password.
     pub current_password: Option<String>,
     pub new_password: Option<String>,

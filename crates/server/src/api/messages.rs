@@ -8,8 +8,8 @@ use axum::Json;
 use chrono::{DateTime, Utc};
 use outhouse_common::gateway::ServerEvent;
 use outhouse_common::models::{
-    Attachment, CreateMessageRequest, EditMessageRequest, Embed, EmbedField, Message, MessageRef,
-    Reaction, User,
+    Attachment, CreateMessageRequest, EditMessageRequest, Embed, EmbedField, Message,
+    MessageInteraction, MessageRef, Reaction, User,
 };
 use outhouse_common::permissions as p;
 use serde::Deserialize;
@@ -42,15 +42,18 @@ struct MessageRow {
     created_at: DateTime<Utc>,
     edited_at: Option<DateTime<Utc>>,
     reply_to_id: Option<i64>,
+    interaction: Option<SqlJson<MessageInteraction>>,
 }
 
 const MESSAGE_SELECT: &str = "
     SELECT m.id, m.channel_id, m.author_id,
            u.username AS author_username,
            COALESCE(m.override_name, gm.nickname, u.display_name) AS author_display_name,
-           m.override_avatar AS author_avatar_url,
+           COALESCE(m.override_avatar,
+               CASE WHEN u.avatar_key IS NULL THEN NULL ELSE '/files/' || u.avatar_key || '/avatar' END)
+               AS author_avatar_url,
            u.is_bot AS author_bot,
-           m.content, m.created_at, m.edited_at, m.reply_to_id
+           m.content, m.created_at, m.edited_at, m.reply_to_id, m.interaction
     FROM messages m
     JOIN users u ON u.id = m.author_id
     JOIN channels ch ON ch.id = m.channel_id
@@ -197,6 +200,7 @@ async fn hydrate(db: &PgPool, rows: Vec<MessageRow>) -> AppResult<Vec<Message>> 
             fields: e.fields.map(|f| f.0).unwrap_or_default(),
         });
     }
+    let mut event_map = crate::api::events::events_for_messages(db, &ids).await?;
     let mut reaction_map: HashMap<i64, Vec<Reaction>> = HashMap::new();
     for r in reactions {
         reaction_map
@@ -239,6 +243,8 @@ async fn hydrate(db: &PgPool, rows: Vec<MessageRow>) -> AppResult<Vec<Message>> 
             content: r.content,
             created_at: r.created_at,
             edited_at: r.edited_at,
+            interaction: r.interaction.map(|i| i.0),
+            event: event_map.remove(&r.id),
         })
         .collect())
 }
@@ -320,10 +326,38 @@ pub async fn post_bot_message(
     content: String,
     embeds: Vec<Embed>,
 ) -> AppResult<Message> {
+    post_bot_message_full(
+        st,
+        guild_id,
+        channel_id,
+        author_id,
+        override_name,
+        override_avatar,
+        content,
+        embeds,
+        None,
+    )
+    .await
+}
+
+/// Like [`post_bot_message`], optionally marked as a reply to a slash command.
+#[allow(clippy::too_many_arguments)]
+pub async fn post_bot_message_full(
+    st: &AppState,
+    guild_id: i64,
+    channel_id: i64,
+    author_id: i64,
+    override_name: Option<String>,
+    override_avatar: Option<String>,
+    content: String,
+    embeds: Vec<Embed>,
+    interaction: Option<MessageInteraction>,
+) -> AppResult<Message> {
     let id = st.ids.next_id();
     sqlx::query(
-        "INSERT INTO messages (id, channel_id, author_id, content, override_name, override_avatar)
-         VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO messages
+             (id, channel_id, author_id, content, override_name, override_avatar, interaction)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(id)
     .bind(channel_id)
@@ -331,6 +365,7 @@ pub async fn post_bot_message(
     .bind(&content)
     .bind(&override_name)
     .bind(&override_avatar)
+    .bind(interaction.map(SqlJson))
     .execute(&st.db)
     .await?;
     insert_embeds(&st.db, id, &embeds).await?;
