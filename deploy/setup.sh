@@ -83,16 +83,27 @@ if [ "$ASK_OFFSITE" = 1 ] || ! grep -q '^OFFSITE_DIR=' .env; then
   echo "     (in Windows: right-click a folder > Properties > Sharing)."
   echo "  2. An rclone remote (Google Drive, OneDrive, Backblaze...) if you've set one"
   echo "     up with 'rclone config', e.g. gdrive:outhouse-backups"
-  read -rp "Windows share (//PC/share, Enter to skip): " SMB_SHARE
+  while :; do
+    read -rp "Windows share (//PC/share, Enter to skip): " SMB_SHARE
+    SMB_SHARE=${SMB_SHARE//\\//}
+    if [ -z "$SMB_SHARE" ] || [[ "$SMB_SHARE" =~ ^//[^/]+/[^/].* ]]; then break; fi
+    echo "That doesn't look like a share. Type it like //192.168.1.10/backups, or press Enter to skip."
+  done
   OFFSITE_DIR=""
   if [ -n "$SMB_SHARE" ]; then
-    SMB_SHARE=${SMB_SHARE//\\//}
     read -rp "Windows user name for the share: " SMB_USER
     read -rsp "Password for $SMB_USER (not shown, kept in /etc/outhouse-backups.cred): " SMB_PASS; echo
     MOUNT=/mnt/outhouse-backups
     command -v mount.cifs >/dev/null 2>&1 || sudo apt-get install -y cifs-utils >/dev/null
     sudo mkdir -p "$MOUNT"
-    printf 'username=%s\npassword=%s\n' "$SMB_USER" "$SMB_PASS" | sudo tee /etc/outhouse-backups.cred >/dev/null
+    # Accept PC\user or PC/user as well as a bare user name.
+    SMB_DOMAIN=""
+    case "$SMB_USER" in
+      *\\*) SMB_DOMAIN=${SMB_USER%%\\*}; SMB_USER=${SMB_USER#*\\} ;;
+      */*) SMB_DOMAIN=${SMB_USER%%/*}; SMB_USER=${SMB_USER#*/} ;;
+    esac
+    { printf 'username=%s\npassword=%s\n' "$SMB_USER" "$SMB_PASS"
+      [ -n "$SMB_DOMAIN" ] && printf 'domain=%s\n' "$SMB_DOMAIN"; } | sudo tee /etc/outhouse-backups.cred >/dev/null
     sudo chmod 600 /etc/outhouse-backups.cred
     unset SMB_PASS
     sudo sed -i "\| $MOUNT cifs |d" /etc/fstab
