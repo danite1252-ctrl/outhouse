@@ -84,8 +84,18 @@ pub struct Role {
 
 pub mod channel_kind {
     pub const TEXT: i16 = 0;
+    /// A one-to-one direct message.
+    pub const DM: i16 = 1;
     pub const VOICE: i16 = 2;
+    /// A group direct message (up to [`super::MAX_GROUP_DM`] people).
+    pub const GROUP_DM: i16 = 3;
 }
+
+/// The outhouse ID direct-message channels report (they don't belong to one).
+pub const DM_GUILD: i64 = 0;
+
+/// Most people in a group DM, including you.
+pub const MAX_GROUP_DM: usize = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
@@ -216,6 +226,101 @@ pub struct Message {
     /// When it was pinned to its channel (null = not pinned).
     #[serde(default)]
     pub pinned_at: Option<DateTime<Utc>>,
+    /// Set for messages posted inside a thread.
+    #[serde(
+        with = "option_as_string",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub thread_id: Option<i64>,
+    /// The thread started from this message, if any ("N replies").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<ThreadInfo>,
+    /// For a poll: the question, options and votes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll: Option<Poll>,
+}
+
+/// A thread: a side conversation off a channel (often off one message).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
+pub struct ThreadInfo {
+    #[serde(with = "as_string")]
+    pub id: i64,
+    #[serde(with = "as_string")]
+    pub channel_id: i64,
+    #[serde(with = "option_as_string", default)]
+    pub starter_message_id: Option<i64>,
+    pub name: String,
+    #[serde(with = "option_as_string", default)]
+    pub creator_id: Option<i64>,
+    pub message_count: i32,
+    #[serde(with = "option_as_string", default)]
+    pub last_message_id: Option<i64>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PollOption {
+    pub text: String,
+    /// Who picked this option.
+    #[serde(with = "vec_as_string")]
+    pub user_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Poll {
+    pub question: String,
+    pub options: Vec<PollOption>,
+    /// People can pick more than one option.
+    pub multi: bool,
+    pub ends_at: Option<DateTime<Utc>>,
+    /// No more votes (ended or closed early).
+    pub closed: bool,
+}
+
+/// Someone in a direct message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DmUser {
+    #[serde(with = "as_string")]
+    pub id: i64,
+    pub username: String,
+    pub display_name: String,
+    pub avatar_url: Option<String>,
+    pub bot: bool,
+    pub online: bool,
+}
+
+/// A direct-message conversation (one-to-one or group).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DmChannel {
+    #[serde(with = "as_string")]
+    pub id: i64,
+    /// 1 = one-to-one, 3 = group.
+    pub kind: i16,
+    /// Group name ("" = named after the people in it).
+    pub name: String,
+    #[serde(with = "option_as_string", default)]
+    pub owner_id: Option<i64>,
+    /// Everyone in it, including you.
+    pub recipients: Vec<DmUser>,
+    #[serde(with = "option_as_string", default)]
+    pub last_message_id: Option<i64>,
+    #[serde(with = "option_as_string", default)]
+    pub last_read_id: Option<i64>,
+}
+
+/// A custom emoji uploaded to an outhouse. In messages it's written
+/// `<:name:id>` (type `:name:` and the server swaps it in).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CustomEmoji {
+    #[serde(with = "as_string")]
+    pub id: i64,
+    #[serde(with = "as_string")]
+    pub guild_id: i64,
+    pub name: String,
+    pub url: String,
+    pub animated: bool,
 }
 
 /// Message search results (newest first).
@@ -598,6 +703,56 @@ pub struct CreateMessageRequest {
     pub content: String,
     #[serde(with = "option_as_string", default)]
     pub reply_to_id: Option<i64>,
+    /// Post inside this thread of the channel.
+    #[serde(with = "option_as_string", default)]
+    pub thread_id: Option<i64>,
+}
+
+/// Start a DM (one other person) or a group DM (2–9 others).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateDmRequest {
+    #[serde(with = "vec_as_string")]
+    pub user_ids: Vec<i64>,
+    /// Name for a group DM.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateDmRequest {
+    /// New group name ("" = back to the people's names).
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddDmRecipientRequest {
+    #[serde(with = "as_string")]
+    pub user_id: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateThreadRequest {
+    pub name: String,
+    /// Start it from this message (otherwise from the channel).
+    #[serde(with = "option_as_string", default)]
+    pub message_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatePollRequest {
+    pub question: String,
+    pub options: Vec<String>,
+    #[serde(default)]
+    pub multi: bool,
+    /// Close automatically after this many minutes (none = stays open).
+    #[serde(default)]
+    pub duration_minutes: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PollVoteRequest {
+    /// Option numbers (from 0). Empty takes your vote back.
+    pub options: Vec<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

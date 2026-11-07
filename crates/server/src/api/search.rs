@@ -251,6 +251,7 @@ const UNREAD_SQL: &str = r#"
            (SELECT count(*) FROM (
                 SELECT 1 FROM messages m
                 WHERE m.channel_id = c.id
+                  AND m.thread_id IS NULL
                   AND m.author_id <> $2
                   AND m.id > COALESCE(rs.last_read_id, 0)
                   AND (rs.last_read_id IS NOT NULL OR m.created_at > gm.joined_at)
@@ -266,6 +267,21 @@ const UNREAD_SQL: &str = r#"
     LEFT JOIN read_states rs ON rs.channel_id = c.id AND rs.user_id = $2
     WHERE c.id = ANY($1)
     ORDER BY c.position, c.id"#;
+
+const DM_UNREAD_SQL: &str = r#"
+    SELECT c.id AS channel_id, 0::BIGINT AS guild_id, c.last_message_id, rs.last_read_id,
+           (SELECT count(*) FROM (
+                SELECT 1 FROM messages m
+                WHERE m.channel_id = c.id
+                  AND m.thread_id IS NULL
+                  AND m.author_id <> $1
+                  AND m.id > COALESCE(rs.last_read_id, 0)
+                  AND m.created_at >= p.joined_at
+                LIMIT 100) unread) AS mention_count
+    FROM dm_participants p
+    JOIN channels c ON c.id = p.channel_id
+    LEFT JOIN read_states rs ON rs.channel_id = c.id AND rs.user_id = $1
+    WHERE p.user_id = $1"#;
 
 /// `GET /api/users/@me/unread`: unread state and mention counts for every
 /// text channel you can see, in all your outhouses.
@@ -304,6 +320,12 @@ pub async fn unread(
             role_ids: ctx.role_ids.clone(),
         });
     }
+    // Direct messages: every unread message from someone else counts.
+    let dms = sqlx::query_as::<_, ChannelUnread>(DM_UNREAD_SQL)
+        .bind(user.id)
+        .fetch_all(&st.db)
+        .await?;
+    channels.extend(dms);
     Ok(Json(UnreadState { channels, roles }))
 }
 

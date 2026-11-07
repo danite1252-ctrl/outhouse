@@ -3,16 +3,20 @@
 mod account;
 mod bots;
 mod channels;
+mod dms;
+pub mod emojis;
 pub mod events;
 mod feeds;
 mod gifs;
 pub mod guilds;
 pub mod members;
 pub mod messages;
+pub mod polls;
 mod profiles;
 mod roles;
 mod search;
 mod sounds;
+mod threads;
 pub mod voice;
 mod webhooks;
 
@@ -111,6 +115,42 @@ pub fn router(state: AppState) -> Router {
             put(messages::pin).delete(messages::unpin),
         )
         .route("/api/guilds/{id}/search", get(search::search))
+        // Threads and polls
+        .route(
+            "/api/channels/{id}/threads",
+            get(threads::list).post(threads::create),
+        )
+        .route(
+            "/api/threads/{id}",
+            get(threads::get)
+                .patch(threads::rename)
+                .delete(threads::delete),
+        )
+        .route("/api/channels/{id}/polls", post(polls::create))
+        .route("/api/channels/{id}/polls/{message}/votes", put(polls::vote))
+        .route(
+            "/api/channels/{id}/polls/{message}/close",
+            post(polls::close),
+        )
+        // Direct messages
+        .route("/api/dms", get(dms::list).post(dms::create))
+        .route("/api/dms/{id}", patch(dms::update))
+        .route("/api/dms/{id}/recipients", post(dms::add_recipient))
+        .route("/api/dms/{id}/recipients/@me", delete(dms::leave))
+        .route("/api/users/@me/contacts", get(dms::contacts))
+        // Custom emoji
+        .route(
+            "/api/guilds/{id}/emojis",
+            get(emojis::list)
+                .post(emojis::create)
+                .layer(DefaultBodyLimit::max(emojis::MAX_EMOJI_BYTES + 64 * 1024)),
+        )
+        .route(
+            "/api/emojis/{id}",
+            patch(emojis::rename).delete(emojis::delete),
+        )
+        .route("/api/users/@me/emojis", get(emojis::list_mine))
+        .route("/emojis/{id}", get(files::serve_emoji))
         // Webhooks and news feeds
         .route("/api/guilds/{id}/webhooks", get(webhooks::list))
         .route("/api/channels/{id}/webhooks", post(webhooks::create))

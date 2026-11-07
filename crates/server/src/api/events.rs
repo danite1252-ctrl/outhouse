@@ -206,6 +206,11 @@ pub async fn create(
 ) -> AppResult<Json<Message>> {
     let access = channel_access(&st.db, channel_id, user.id).await?;
     access.require(p::SEND_MESSAGES)?;
+    if access.channel.guild_id == outhouse_common::models::DM_GUILD {
+        return Err(AppError::BadRequest(
+            "Raids are planned in an outhouse, not in DMs.".into(),
+        ));
+    }
     let title = clean_title(&req.title)?;
     let description = clean_text(&req.description, 1000);
     let duration = check_duration(req.duration_minutes)?.unwrap_or(180);
@@ -221,12 +226,14 @@ pub async fn create(
     let message_id = st.ids.next_id();
     let event_id = st.ids.next_id();
     let mut tx = st.db.begin().await?;
-    sqlx::query("INSERT INTO messages (id, channel_id, author_id, content) VALUES ($1, $2, $3, '')")
-        .bind(message_id)
-        .bind(channel_id)
-        .bind(user.id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "INSERT INTO messages (id, channel_id, author_id, content) VALUES ($1, $2, $3, '')",
+    )
+    .bind(message_id)
+    .bind(channel_id)
+    .bind(user.id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query(
         "INSERT INTO events (id, guild_id, channel_id, message_id, creator_id, title, description,
                              starts_at, duration_minutes, max_tanks, max_healers, max_dps)
@@ -402,7 +409,9 @@ pub async fn signup(
         return Err(AppError::BadRequest("Unknown sign-up status.".into()));
     }
     if !ROLES.contains(&req.role.as_str()) {
-        return Err(AppError::BadRequest("Role must be tank, healer or dps.".into()));
+        return Err(AppError::BadRequest(
+            "Role must be tank, healer or dps.".into(),
+        ));
     }
     let needs_role = matches!(req.status.as_str(), "yes" | "late" | "tentative" | "bench");
     if needs_role && req.role.is_empty() {
@@ -525,8 +534,17 @@ async fn send_due_reminders(st: &AppState) -> AppResult<()> {
             format!("⏰ **{}** {when}! {}", row.title, mentions.join(" "))
         };
         let bot = helper_bot(st, row.guild_id).await?;
-        post_bot_message(st, row.guild_id, row.channel_id, bot, None, None, content, Vec::new())
-            .await?;
+        post_bot_message(
+            st,
+            row.guild_id,
+            row.channel_id,
+            bot,
+            None,
+            None,
+            content,
+            Vec::new(),
+        )
+        .await?;
     }
     Ok(())
 }

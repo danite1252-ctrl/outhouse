@@ -14,6 +14,7 @@ use axum::response::Response;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use outhouse_common::gateway::{ClientEvent, ServerEvent};
+use outhouse_common::models::DM_GUILD;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::api::guilds::guilds_for_user;
@@ -119,7 +120,7 @@ async fn run(socket: WebSocket, st: AppState) -> anyhow::Result<()> {
                             Audience::Guild(id) => guild_ids.contains(&id),
                             Audience::User(id) => id == user.id,
                             Audience::Channel { guild_id, channel_id } => {
-                                guild_ids.contains(&guild_id)
+                                (guild_id == DM_GUILD || guild_ids.contains(&guild_id))
                                     && perms::can_view(&st.db, guild_id, channel_id, user.id).await
                             }
                         };

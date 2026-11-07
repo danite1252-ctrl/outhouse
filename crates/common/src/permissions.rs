@@ -63,6 +63,11 @@ pub const DEFAULT_EVERYONE: u64 = VIEW_CHANNEL
     | SPEAK
     | USE_SOUNDBOARD;
 
+/// What everyone in a direct message can do (nobody moderates a DM: you
+/// can only edit and delete your own messages).
+pub const DM_PERMS: u64 =
+    VIEW_CHANNEL | SEND_MESSAGES | READ_HISTORY | EMBED_LINKS | ATTACH_FILES | ADD_REACTIONS;
+
 /// What a timed-out member keeps.
 pub const TIMED_OUT_ALLOWED: u64 = VIEW_CHANNEL | READ_HISTORY;
 

@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::id::{as_string, option_as_string};
-use crate::models::{Channel, Guild, Member, Message, User};
+use crate::models::{Channel, DmChannel, Guild, Member, Message, ThreadInfo, User};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", content = "d", rename_all = "SCREAMING_SNAKE_CASE")]
@@ -151,6 +151,26 @@ pub enum ServerEvent {
         user: User,
         command: String,
         options: std::collections::HashMap<String, String>,
+    },
+    /// A thread was started or changed (new reply, renamed).
+    ThreadUpdate(ThreadInfo),
+    ThreadDelete {
+        #[serde(with = "as_string")]
+        id: i64,
+        #[serde(with = "as_string")]
+        channel_id: i64,
+    },
+    /// A DM you're in was created or changed (renamed, people added or left).
+    DmUpdate(DmChannel),
+    /// You left a group DM.
+    DmDelete {
+        #[serde(with = "as_string")]
+        id: i64,
+    },
+    /// Custom emoji in this outhouse changed: re-fetch them.
+    EmojisChanged {
+        #[serde(with = "as_string")]
+        guild_id: i64,
     },
     /// Identify failed or the session expired; sign in again.
     InvalidSession {

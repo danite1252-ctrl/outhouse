@@ -217,11 +217,179 @@ call POST "/api/bots/$BOT_ID/token" >/dev/null
 call DELETE "/api/bots/$BOT_ID" >/dev/null
 call GET "/api/guilds/$GUILD/commands" | jq -e 'length == 0' >/dev/null
 
+step "scroll-back (before= cursor)"
+call GET "/api/channels/$PINS/messages?limit=10&before=$MID" | jq -e --arg m "$MID" 'length == 10 and all(.[]; .id < $m)' >/dev/null
+OLDEST=$(call GET "/api/channels/$PINS/messages?limit=10&before=$MID" | jq -r '.[0].id')
+call GET "/api/channels/$PINS/messages?limit=10&before=$OLDEST" | jq -e --arg m "$OLDEST" 'length == 10 and all(.[]; .id < $m)' >/dev/null
+fail_call GET "/api/channels/$PINS/messages?before=notanid"
+
+step "direct messages"
+TOKEN=$OUT; OUTSIDER=$(call GET /api/users/@me | jq -r .id); TOKEN=$TOKEN_A
+C3=$(call POST /api/auth/register '{"username":"carl","password":"password123","display_name":"Carl"}')
+TOKEN_C=$(jq -r .token <<<"$C3"); CARL=$(jq -r .user.id <<<"$C3")
+TOKEN=$TOKEN_C; call POST "/api/invites/$CODE" >/dev/null; TOKEN=$TOKEN_A
+call GET /api/users/@me/contacts | jq -e --arg b "$BOB" --arg o "$OUTSIDER" '([.[] | select(.id == $b)] | length == 1) and ([.[] | select(.id == $o)] | length == 0)' >/dev/null
+DM=$(call POST /api/dms '{"user_ids":["'"$BOB"'"]}'); DMID=$(jq -r .id <<<"$DM")
+jq -e '.kind == 1 and (.recipients | length == 2)' <<<"$DM" >/dev/null
+call POST /api/dms '{"user_ids":["'"$BOB"'"]}' | jq -e --arg id "$DMID" '.id == $id' >/dev/null # same DM again
+TOKEN=$TOKEN_B; call POST /api/dms '{"user_ids":["'"$ALICE"'"]}' | jq -e --arg id "$DMID" '.id == $id' >/dev/null; TOKEN=$TOKEN_A
+DM1=$(call POST "/api/channels/$DMID/messages" '{"content":"psst bob"}' | jq -r .id)
+TOKEN=$TOKEN_B
+call GET /api/dms | jq -e --arg id "$DMID" --arg m "$DM1" '.[] | select(.id == $id) | .last_message_id == $m' >/dev/null
+call GET /api/users/@me/unread | jq -e --arg id "$DMID" '.channels[] | select(.channel_id == $id) | .guild_id == "0" and .mention_count == 1' >/dev/null
+call GET "/api/channels/$DMID/messages" | jq -e 'length == 1 and .[0].content == "psst bob"' >/dev/null
+call PUT "/api/channels/$DMID/messages/$DM1/reactions/%F0%9F%91%8D" >/dev/null
+call POST "/api/channels/$DMID/typing" >/dev/null
+call POST "/api/channels/$DMID/ack" '{"message_id":"'"$DM1"'"}' >/dev/null
+call GET /api/users/@me/unread | jq -e --arg id "$DMID" '.channels[] | select(.channel_id == $id) | .mention_count == 0' >/dev/null
+fail_call DELETE "/api/channels/$DMID/messages/$DM1" # not Bob's message
+fail_call PATCH "/api/channels/$DMID/messages/$DM1" '{"content":"edited by bob"}'
+fail_call PUT "/api/channels/$DMID/pins/$DM1"
+fail_call DELETE "/api/channels/$DMID"
+TOKEN=$TOKEN_A
+call PATCH "/api/channels/$DMID/messages/$DM1" '{"content":"psst bob (edited)"}' >/dev/null
+code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $TOKEN_A" -F "content=a picture" -F "files=@/tmp/pixel.png;type=image/png" "$BASE/api/channels/$DMID/messages/upload")
+[[ "$code" == 2* ]] || { echo "DM upload -> $code"; cat /tmp/body; exit 1; }
+jq -e '.attachments | length == 1' /tmp/body >/dev/null
+START2=$(date -u -d '+2 days' +%Y-%m-%dT20:00:00Z)
+fail_call POST "/api/channels/$DMID/events" '{"title":"Nope","starts_at":"'"$START2"'"}'
+TOKEN=$OUT
+fail_call GET "/api/channels/$DMID/messages"
+fail_call POST "/api/channels/$DMID/messages" '{"content":"let me in"}'
+fail_call POST /api/dms '{"user_ids":["'"$ALICE"'"]}' # shares no outhouse
+TOKEN=$TOKEN_A
+fail_call POST /api/dms '{"user_ids":["'"$BOB"'","'"$OUTSIDER"'"]}'
+fail_call POST /api/dms '{"user_ids":[]}'
+GDM=$(call POST /api/dms '{"user_ids":["'"$BOB"'","'"$CARL"'"],"name":"Raid leads"}'); GDMID=$(jq -r .id <<<"$GDM")
+jq -e --arg a "$ALICE" '.kind == 3 and .name == "Raid leads" and (.recipients | length == 3) and .owner_id == $a' <<<"$GDM" >/dev/null
+TOKEN=$TOKEN_B; call PATCH "/api/dms/$GDMID" '{"name":"Loot council"}' | jq -e '.name == "Loot council"' >/dev/null; TOKEN=$TOKEN_A
+fail_call PATCH "/api/dms/$DMID" '{"name":"no names for one-to-one"}'
+call POST "/api/channels/$GDMID/messages" '{"content":"group hello"}' >/dev/null
+TOKEN=$TOKEN_C
+call GET "/api/channels/$GDMID/messages" | jq -e 'length == 1' >/dev/null
+call DELETE "/api/dms/$GDMID/recipients/@me" >/dev/null
+fail_call GET "/api/channels/$GDMID/messages"
+call GET /api/dms | jq -e --arg id "$GDMID" '[.[] | select(.id == $id)] | length == 0' >/dev/null
+TOKEN=$TOKEN_A
+call GET /api/dms | jq -e --arg id "$GDMID" '.[] | select(.id == $id) | .recipients | length == 2' >/dev/null
+call POST "/api/dms/$GDMID/recipients" '{"user_id":"'"$CARL"'"}' | jq -e '.recipients | length == 3' >/dev/null
+fail_call POST "/api/dms/$GDMID/recipients" '{"user_id":"'"$OUTSIDER"'"}'
+fail_call DELETE "/api/dms/$DMID/recipients/@me" # can't leave a one-to-one
+
+step "threads"
+TM=$(call POST "/api/channels/$CHAN/messages" '{"content":"Who is tanking Rag tonight?"}' | jq -r .id)
+T=$(call POST "/api/channels/$CHAN/threads" '{"name":"","message_id":"'"$TM"'"}'); THREAD=$(jq -r .id <<<"$T")
+jq -e --arg m "$TM" '.name == "Who is tanking Rag tonight?" and .message_count == 0 and .starter_message_id == $m' <<<"$T" >/dev/null
+call POST "/api/channels/$CHAN/threads" '{"name":"again","message_id":"'"$TM"'"}' | jq -e --arg id "$THREAD" '.id == $id' >/dev/null
+TOKEN=$TOKEN_B
+R1=$(call POST "/api/channels/$CHAN/messages" '{"content":"me! <@'"$ALICE"'>","thread_id":"'"$THREAD"'"}')
+jq -e --arg t "$THREAD" '.thread_id == $t' <<<"$R1" >/dev/null; R1=$(jq -r .id <<<"$R1")
+fail_call POST "/api/channels/$CHAN/threads" '{"name":"nested","message_id":"'"$R1"'"}'
+fail_call POST "/api/channels/$PINS/messages" '{"content":"wrong channel","thread_id":"'"$THREAD"'"}'
+TOKEN=$TOKEN_A
+R2=$(call POST "/api/channels/$CHAN/messages" '{"content":"thanks","thread_id":"'"$THREAD"'","reply_to_id":"'"$R1"'"}' | jq -r .id)
+call PUT "/api/channels/$CHAN/messages/$R1/reactions/%F0%9F%91%8D" >/dev/null
+call PATCH "/api/channels/$CHAN/messages/$R2" '{"content":"thanks mate"}' >/dev/null
+call GET "/api/channels/$CHAN/messages?thread=$THREAD" | jq -e --arg t "$THREAD" 'length == 2 and all(.[]; .thread_id == $t) and .[1].content == "thanks mate" and (.[0].reactions | length == 1)' >/dev/null
+call GET "/api/channels/$CHAN/messages?limit=100" | jq -e '[.[] | select(.thread_id != null)] | length == 0' >/dev/null
+call GET "/api/channels/$CHAN/messages?limit=100" | jq -e --arg id "$TM" '.[] | select(.id == $id) | .thread.message_count == 2' >/dev/null
+call GET "/api/channels/$CHAN/threads" | jq -e --arg id "$THREAD" '.[0].id == $id and .[0].message_count == 2' >/dev/null
+code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $TOKEN_A" -F "content=boss strat" -F "thread_id=$THREAD" -F "files=@/tmp/pixel.png;type=image/png" "$BASE/api/channels/$CHAN/messages/upload")
+[[ "$code" == 2* ]] || { echo "thread upload -> $code"; cat /tmp/body; exit 1; }
+jq -e --arg t "$THREAD" '.thread_id == $t and (.attachments | length == 1)' /tmp/body >/dev/null
+TOKEN=$TOKEN_B
+call DELETE "/api/channels/$CHAN/messages/$R1" >/dev/null
+fail_call PATCH "/api/threads/$THREAD" '{"name":"bob was here"}'
+fail_call DELETE "/api/threads/$THREAD"
+TOKEN=$TOKEN_A
+call GET "/api/threads/$THREAD" | jq -e '.message_count == 2' >/dev/null
+call PATCH "/api/threads/$THREAD" '{"name":"Rag tanks"}' | jq -e '.name == "Rag tanks"' >/dev/null
+CT=$(call POST "/api/channels/$CHAN/threads" '{"name":"Loot talk"}' | jq -r .id)
+call GET "/api/threads/$CT" | jq -e '.starter_message_id == null' >/dev/null
+fail_call POST "/api/channels/$CHAN/threads" '{"name":"   "}'
+DT=$(call POST "/api/channels/$DMID/threads" '{"name":"DM side chat"}' | jq -r .id)
+call POST "/api/channels/$DMID/messages" '{"content":"in a DM thread","thread_id":"'"$DT"'"}' >/dev/null
+TOKEN=$OUT
+fail_call GET "/api/channels/$CHAN/threads"
+fail_call GET "/api/threads/$THREAD"
+fail_call GET "/api/channels/$CHAN/messages?thread=$THREAD"
+TOKEN=$TOKEN_A
+call DELETE "/api/threads/$CT" >/dev/null
+fail_call GET "/api/threads/$CT"
+
+step "polls"
+PM=$(call POST "/api/channels/$CHAN/polls" '{"question":"Which raid this week?","options":["MC","BWL","AQ40"],"duration_minutes":60}')
+POLL=$(jq -r .id <<<"$PM")
+jq -e '.poll.question == "Which raid this week?" and (.poll.options | length == 3) and .poll.closed == false and .poll.ends_at != null and .poll.multi == false' <<<"$PM" >/dev/null
+call PUT "/api/channels/$CHAN/polls/$POLL/votes" '{"options":[1]}' | jq -e --arg a "$ALICE" '.poll.options[1].user_ids == [$a]' >/dev/null
+fail_call PUT "/api/channels/$CHAN/polls/$POLL/votes" '{"options":[0,1]}' # one choice only
+fail_call PUT "/api/channels/$CHAN/polls/$POLL/votes" '{"options":[7]}'
+fail_call PUT "/api/channels/$PINS/polls/$POLL/votes" '{"options":[0]}' # wrong channel
+TOKEN=$TOKEN_B
+call PUT "/api/channels/$CHAN/polls/$POLL/votes" '{"options":[1]}' | jq -e '.poll.options[1].user_ids | length == 2' >/dev/null
+call PUT "/api/channels/$CHAN/polls/$POLL/votes" '{"options":[2]}' | jq -e '(.poll.options[1].user_ids | length == 1) and (.poll.options[2].user_ids | length == 1)' >/dev/null
+fail_call POST "/api/channels/$CHAN/polls/$POLL/close"
+TOKEN=$TOKEN_A
+call PUT "/api/channels/$CHAN/polls/$POLL/votes" '{"options":[]}' | jq -e '.poll.options[1].user_ids | length == 0' >/dev/null
+call POST "/api/channels/$CHAN/polls/$POLL/close" | jq -e '.poll.closed == true' >/dev/null
+fail_call PUT "/api/channels/$CHAN/polls/$POLL/votes" '{"options":[0]}'
+fail_call POST "/api/channels/$CHAN/polls" '{"question":"Lonely?","options":["just one"]}'
+fail_call POST "/api/channels/$CHAN/polls" '{"question":"Too many?","options":["1","2","3","4","5","6","7","8","9","10","11"]}'
+fail_call POST "/api/channels/$CHAN/polls" '{"question":"Same?","options":["Yes","yes"]}'
+fail_call POST "/api/channels/$CHAN/polls" '{"question":"Forever?","options":["a","b"],"duration_minutes":20000}'
+fail_call POST "/api/channels/$CHAN/polls" '{"question":"  ","options":["a","b"]}'
+MP=$(call POST "/api/channels/$CHAN/polls" '{"question":"Snacks?","options":["Chips","Lollies","Fruit"],"multi":true,"duration_minutes":1}' | jq -r .id)
+call PUT "/api/channels/$CHAN/polls/$MP/votes" '{"options":[0,2,2]}' | jq -e '(.poll.options[0].user_ids | length == 1) and (.poll.options[2].user_ids | length == 1)' >/dev/null
+call POST "/api/channels/$DMID/polls" '{"question":"Pub or BBQ?","options":["Pub","BBQ"]}' | jq -e '.poll.ends_at == null' >/dev/null
+TOKEN=$OUT; fail_call PUT "/api/channels/$CHAN/polls/$MP/votes" '{"options":[0]}'; TOKEN=$TOKEN_A
+
+step "custom emoji"
+upload_emoji() { # TOKEN NAME FILE -> http code, body in /tmp/body
+  curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $1" -F "name=$2" -F "file=@$3" "$BASE/api/guilds/$GUILD/emojis"
+}
+code=$(upload_emoji "$TOKEN_A" pog /tmp/pixel.png); [[ "$code" == 2* ]] || { echo "emoji upload -> $code"; cat /tmp/body; exit 1; }
+EMOJI=$(jq -r .id /tmp/body)
+jq -e '.name == "pog" and .url != null and .animated == false' /tmp/body >/dev/null
+curl -fsS "$BASE/emojis/$EMOJI" -o /tmp/emoji.png && cmp -s /tmp/emoji.png /tmp/pixel.png
+call GET "/api/guilds/$GUILD/emojis" | jq -e 'length == 1 and .[0].name == "pog"' >/dev/null
+TOKEN=$TOKEN_B; call GET "/api/guilds/$GUILD/emojis" | jq -e 'length == 1' >/dev/null; TOKEN=$TOKEN_A
+code=$(upload_emoji "$TOKEN_B" bobs /tmp/pixel.png); [[ "$code" == 403 ]] || { echo "Bob uploaded an emoji -> $code"; exit 1; }
+printf 'definitely not a picture' > /tmp/fake.png
+code=$(upload_emoji "$TOKEN_A" fake /tmp/fake.png); [[ "$code" == 400 ]] || { echo "fake emoji -> $code"; exit 1; }
+{ head -c 8 /tmp/pixel.png; head -c 300000 /dev/zero; } > /tmp/big.png
+code=$(upload_emoji "$TOKEN_A" huge /tmp/big.png); [[ "$code" == 4* ]] || { echo "huge emoji -> $code"; exit 1; }
+code=$(upload_emoji "$TOKEN_A" "Bad-Name" /tmp/pixel.png); [[ "$code" == 400 ]] || { echo "bad emoji name -> $code"; exit 1; }
+code=$(upload_emoji "$TOKEN_A" pog /tmp/pixel.png); [[ "$code" == 409 ]] || { echo "duplicate emoji -> $code"; exit 1; }
+TOKEN=$OUT; fail_call GET "/api/guilds/$GUILD/emojis"; TOKEN=$TOKEN_A
+TOK="<:pog:$EMOJI>"
+call POST "/api/channels/$CHAN/messages" '{"content":"gg :pog: :nope: `:pog:`"}' | jq -e --arg e "$TOK" '.content == ("gg " + $e + " :nope: `:pog:`")' >/dev/null
+call POST "/api/channels/$DMID/messages" '{"content":":pog:"}' | jq -e --arg e "$TOK" '.content == $e' >/dev/null
+EM=$(call POST "/api/channels/$CHAN/messages" '{"content":"plain"}' | jq -r .id)
+call PATCH "/api/channels/$CHAN/messages/$EM" '{"content":"edited :pog:"}' | jq -e --arg e "$TOK" '.content == ("edited " + $e)' >/dev/null
+call PUT "/api/channels/$CHAN/messages/$EM/reactions/$(enc "$TOK")" >/dev/null
+call GET "/api/channels/$CHAN/messages?limit=5" | jq -e --arg id "$EM" --arg e "$TOK" '.[] | select(.id == $id) | .reactions[0].emoji == $e' >/dev/null
+fail_call PUT "/api/channels/$CHAN/messages/$EM/reactions/$(enc '<:pog:123>')"
+call GET /api/users/@me/emojis | jq -e --arg id "$EMOJI" '[.[] | select(.id == $id)] | length == 1' >/dev/null
+call PATCH "/api/emojis/$EMOJI" '{"name":"poggers"}' | jq -e '.name == "poggers"' >/dev/null
+TOKEN=$TOKEN_B; fail_call DELETE "/api/emojis/$EMOJI"; fail_call PATCH "/api/emojis/$EMOJI" '{"name":"bobmoji"}'; TOKEN=$TOKEN_A
+call DELETE "/api/emojis/$EMOJI" >/dev/null
+code=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE/emojis/$EMOJI"); [[ "$code" == 404 ]] || { echo "deleted emoji still served -> $code"; exit 1; }
+# Leave one behind for the UI test.
+code=$(upload_emoji "$TOKEN_A" partyparrot /tmp/pixel.png); [[ "$code" == 2* ]] || { echo "emoji upload -> $code"; cat /tmp/body; exit 1; }
+
 step "raid reminder"
 for i in $(seq 1 75); do
   call GET "/api/channels/$CHAN/messages" | jq -e '[.[] | select(.content | startswith("⏰"))] | length == 1' >/dev/null 2>&1 && break
   sleep 1
 done
 call GET "/api/channels/$CHAN/messages" | jq -e '[.[] | select(.content | startswith("⏰"))] | length == 1' >/dev/null || { echo "no raid reminder"; exit 1; }
+
+step "poll closes at its end time"
+for i in $(seq 1 90); do
+  call GET "/api/channels/$CHAN/messages?limit=100" | jq -e --arg id "$MP" '.[] | select(.id == $id) | .poll.closed' >/dev/null 2>&1 && break
+  sleep 1
+done
+call GET "/api/channels/$CHAN/messages?limit=100" | jq -e --arg id "$MP" '.[] | select(.id == $id) | .poll.closed' >/dev/null || { echo "poll never closed"; exit 1; }
+fail_call PUT "/api/channels/$CHAN/polls/$MP/votes" '{"options":[1]}'
 
 echo "Smoke test passed."

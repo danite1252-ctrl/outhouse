@@ -1,6 +1,6 @@
 //! Loading a member's roles and working out what they're allowed to do.
 
-use outhouse_common::models::Channel;
+use outhouse_common::models::{Channel, DM_GUILD};
 use outhouse_common::permissions::{self as p, Overwrite, RolePerms};
 use sqlx::PgPool;
 
@@ -173,7 +173,8 @@ pub async fn channel_perms(db: &PgPool, ctx: &MemberCtx, channel_id: i64) -> App
 
 pub async fn fetch_channel(db: &PgPool, channel_id: i64) -> AppResult<Channel> {
     sqlx::query_as::<_, Channel>(
-        "SELECT id, guild_id, name, kind, position, last_message_id, NULL::BIGINT AS last_read_id
+        "SELECT id, COALESCE(guild_id, 0) AS guild_id, name, kind, position, last_message_id,
+                NULL::BIGINT AS last_read_id
          FROM channels WHERE id = $1",
     )
     .bind(channel_id)
@@ -206,6 +207,24 @@ pub async fn channel_access(
     user_id: i64,
 ) -> AppResult<ChannelAccess> {
     let channel = fetch_channel(db, channel_id).await?;
+    if channel.guild_id == DM_GUILD {
+        if !is_dm_participant(db, channel_id, user_id).await? {
+            return Err(AppError::NotFound);
+        }
+        return Ok(ChannelAccess {
+            channel,
+            ctx: MemberCtx {
+                guild_id: DM_GUILD,
+                user_id,
+                owner_id: 0,
+                role_ids: Vec::new(),
+                base: p::DM_PERMS,
+                top_position: 0,
+                timed_out: false,
+            },
+            perms: p::DM_PERMS,
+        });
+    }
     let ctx = member_ctx(db, channel.guild_id, user_id).await?;
     let perms = channel_perms(db, &ctx, channel_id).await?;
     if perms & p::VIEW_CHANNEL == 0 {
@@ -218,8 +237,32 @@ pub async fn channel_access(
     })
 }
 
+/// Is this user in this direct message?
+pub async fn is_dm_participant(db: &PgPool, channel_id: i64, user_id: i64) -> AppResult<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM dm_participants WHERE channel_id = $1 AND user_id = $2)",
+    )
+    .bind(channel_id)
+    .bind(user_id)
+    .fetch_one(db)
+    .await?)
+}
+
+/// Who should get events about a channel (DMs: guild 0, checked per participant).
+pub fn channel_audience(channel: &Channel) -> crate::state::Audience {
+    crate::state::Audience::Channel {
+        guild_id: channel.guild_id,
+        channel_id: channel.id,
+    }
+}
+
 /// Used by the gateway to decide whether to forward a channel event.
 pub async fn can_view(db: &PgPool, guild_id: i64, channel_id: i64, user_id: i64) -> bool {
+    if guild_id == DM_GUILD {
+        return is_dm_participant(db, channel_id, user_id)
+            .await
+            .unwrap_or(false);
+    }
     match member_ctx(db, guild_id, user_id).await {
         Ok(ctx) => channel_perms(db, &ctx, channel_id)
             .await

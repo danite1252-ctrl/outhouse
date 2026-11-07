@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use outhouse_common::gateway::ServerEvent;
 use outhouse_common::models::{
     Attachment, CreateMessageRequest, EditMessageRequest, Embed, EmbedField, Message,
-    MessageInteraction, MessageRef, Reaction, User,
+    MessageInteraction, MessageRef, Poll, PollOption, Reaction, ThreadInfo, User,
 };
 use outhouse_common::permissions as p;
 use serde::Deserialize;
@@ -44,6 +44,7 @@ pub(crate) struct MessageRow {
     reply_to_id: Option<i64>,
     interaction: Option<SqlJson<MessageInteraction>>,
     pinned_at: Option<DateTime<Utc>>,
+    thread_id: Option<i64>,
 }
 
 pub(crate) const MESSAGE_SELECT: &str = "
@@ -54,7 +55,8 @@ pub(crate) const MESSAGE_SELECT: &str = "
                CASE WHEN u.avatar_key IS NULL THEN NULL ELSE '/files/' || u.avatar_key || '/avatar' END)
                AS author_avatar_url,
            u.is_bot AS author_bot,
-           m.content, m.created_at, m.edited_at, m.reply_to_id, m.interaction, m.pinned_at
+           m.content, m.created_at, m.edited_at, m.reply_to_id, m.interaction, m.pinned_at,
+           m.thread_id
     FROM messages m
     JOIN users u ON u.id = m.author_id
     JOIN channels ch ON ch.id = m.channel_id
@@ -95,6 +97,27 @@ struct ReactionRow {
     emoji: String,
     user_ids: Vec<i64>,
 }
+
+#[derive(sqlx::FromRow)]
+struct PollRow {
+    message_id: i64,
+    question: String,
+    options: Vec<String>,
+    multi: bool,
+    ends_at: Option<DateTime<Utc>>,
+    closed: bool,
+}
+
+#[derive(sqlx::FromRow)]
+struct VoteRow {
+    message_id: i64,
+    option_idx: i32,
+    user_ids: Vec<i64>,
+}
+
+pub(crate) const THREAD_SELECT: &str =
+    "SELECT id, channel_id, starter_message_id, name, creator_id,
+        message_count, last_message_id, created_at FROM threads";
 
 #[derive(sqlx::FromRow)]
 struct ReplyRow {
@@ -202,6 +225,58 @@ pub(crate) async fn hydrate(db: &PgPool, rows: Vec<MessageRow>) -> AppResult<Vec
         });
     }
     let mut event_map = crate::api::events::events_for_messages(db, &ids).await?;
+    let thread_sql = format!("{THREAD_SELECT} WHERE starter_message_id = ANY($1)");
+    let mut thread_map: HashMap<i64, ThreadInfo> = sqlx::query_as::<_, ThreadInfo>(&thread_sql)
+        .bind(&ids[..])
+        .fetch_all(db)
+        .await?
+        .into_iter()
+        .filter_map(|t| t.starter_message_id.map(|m| (m, t)))
+        .collect();
+    let polls = sqlx::query_as::<_, PollRow>(
+        "SELECT message_id, question, options, multi, ends_at, closed
+         FROM polls WHERE message_id = ANY($1)",
+    )
+    .bind(&ids[..])
+    .fetch_all(db)
+    .await?;
+    let mut poll_map: HashMap<i64, Poll> = HashMap::new();
+    if !polls.is_empty() {
+        let poll_ids: Vec<i64> = polls.iter().map(|p| p.message_id).collect();
+        let votes = sqlx::query_as::<_, VoteRow>(
+            "SELECT message_id, option_idx, array_agg(user_id ORDER BY voted_at, user_id) AS user_ids
+             FROM poll_votes WHERE message_id = ANY($1)
+             GROUP BY message_id, option_idx",
+        )
+        .bind(&poll_ids[..])
+        .fetch_all(db)
+        .await?;
+        for p in polls {
+            let options = p
+                .options
+                .into_iter()
+                .enumerate()
+                .map(|(i, text)| PollOption {
+                    text,
+                    user_ids: votes
+                        .iter()
+                        .find(|v| v.message_id == p.message_id && v.option_idx == i as i32)
+                        .map(|v| v.user_ids.clone())
+                        .unwrap_or_default(),
+                })
+                .collect();
+            poll_map.insert(
+                p.message_id,
+                Poll {
+                    question: p.question,
+                    options,
+                    multi: p.multi,
+                    ends_at: p.ends_at,
+                    closed: p.closed,
+                },
+            );
+        }
+    }
     let mut reaction_map: HashMap<i64, Vec<Reaction>> = HashMap::new();
     for r in reactions {
         reaction_map
@@ -247,6 +322,9 @@ pub(crate) async fn hydrate(db: &PgPool, rows: Vec<MessageRow>) -> AppResult<Vec
             interaction: r.interaction.map(|i| i.0),
             event: event_map.remove(&r.id),
             pinned_at: r.pinned_at,
+            thread_id: r.thread_id,
+            thread: thread_map.remove(&r.id),
+            poll: poll_map.remove(&r.id),
         })
         .collect())
 }
@@ -262,6 +340,24 @@ pub async fn fetch_message(db: &PgPool, message_id: i64) -> AppResult<Message> {
         .await?
         .pop()
         .ok_or(AppError::NotFound)
+}
+
+/// Loads a thread and checks it belongs to the channel.
+pub(crate) async fn thread_in_channel(
+    db: &PgPool,
+    channel_id: i64,
+    thread_id: i64,
+) -> AppResult<ThreadInfo> {
+    let sql = format!("{THREAD_SELECT} WHERE id = $1");
+    let thread = sqlx::query_as::<_, ThreadInfo>(&sql)
+        .bind(thread_id)
+        .fetch_optional(db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    if thread.channel_id != channel_id {
+        return Err(AppError::NotFound);
+    }
+    Ok(thread)
 }
 
 /// Loads a message and checks it belongs to the channel.
@@ -399,6 +495,8 @@ pub struct HistoryQuery {
     /// Messages around this ID (half older, half newer), for jumping to an
     /// old message from search or pins.
     around: Option<String>,
+    /// Messages in this thread of the channel (otherwise: the channel itself).
+    thread: Option<String>,
     limit: Option<i64>,
 }
 
@@ -421,17 +519,21 @@ pub async fn list(
     access.require(p::READ_HISTORY)?;
     let before = parse_id(q.before.as_deref(), "before")?;
     let around = parse_id(q.around.as_deref(), "around")?;
+    let thread = parse_id(q.thread.as_deref(), "thread")?;
+    if let Some(thread_id) = thread {
+        thread_in_channel(&st.db, channel_id, thread_id).await?;
+    }
     let limit = q.limit.unwrap_or(50).clamp(1, 100);
     if let Some(around) = around {
         // The message itself and older ones, then newer ones.
         let older_sql = format!(
             "{MESSAGE_SELECT}
-             WHERE m.channel_id = $1 AND m.id <= $2
+             WHERE m.channel_id = $1 AND m.id <= $2 AND m.thread_id IS NOT DISTINCT FROM $4::BIGINT
              ORDER BY m.id DESC LIMIT $3"
         );
         let newer_sql = format!(
             "{MESSAGE_SELECT}
-             WHERE m.channel_id = $1 AND m.id > $2
+             WHERE m.channel_id = $1 AND m.id > $2 AND m.thread_id IS NOT DISTINCT FROM $4::BIGINT
              ORDER BY m.id ASC LIMIT $3"
         );
         let newer_count = limit / 2;
@@ -439,6 +541,7 @@ pub async fn list(
             .bind(channel_id)
             .bind(around)
             .bind(limit - newer_count)
+            .bind(thread)
             .fetch_all(&st.db)
             .await?;
         rows.reverse();
@@ -446,6 +549,7 @@ pub async fn list(
             .bind(channel_id)
             .bind(around)
             .bind(newer_count.max(1))
+            .bind(thread)
             .fetch_all(&st.db)
             .await?;
         rows.extend(newer);
@@ -454,12 +558,14 @@ pub async fn list(
     let sql = format!(
         "{MESSAGE_SELECT}
          WHERE m.channel_id = $1 AND ($2::BIGINT IS NULL OR m.id < $2)
+           AND m.thread_id IS NOT DISTINCT FROM $4::BIGINT
          ORDER BY m.id DESC LIMIT $3"
     );
     let mut rows = sqlx::query_as::<_, MessageRow>(&sql)
         .bind(channel_id)
         .bind(before)
         .bind(limit)
+        .bind(thread)
         .fetch_all(&st.db)
         .await?;
     rows.reverse(); // oldest first, ready to display
@@ -493,12 +599,19 @@ async fn create_message(
     user: &User,
     content: String,
     reply_to_id: Option<i64>,
+    thread_id: Option<i64>,
     files: Vec<PendingFile>,
 ) -> AppResult<Message> {
     let channel_id = access.channel.id;
     let guild_id = access.channel.guild_id;
     let content = content.trim().to_string();
     check_content(&content, !files.is_empty())?;
+    let content = crate::api::emojis::expand(&st.db, guild_id, user.id, &content).await?;
+    if let Some(thread_id) = thread_id {
+        thread_in_channel(&st.db, channel_id, thread_id)
+            .await
+            .map_err(|_| AppError::BadRequest("That thread is gone.".into()))?;
+    }
 
     if let Some(reply_id) = reply_to_id {
         let reply_channel: Option<i64> =
@@ -528,14 +641,15 @@ async fn create_message(
     let id = st.ids.next_id();
     let mut tx = st.db.begin().await?;
     sqlx::query(
-        "INSERT INTO messages (id, channel_id, author_id, content, reply_to_id)
-         VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO messages (id, channel_id, author_id, content, reply_to_id, thread_id)
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(id)
     .bind(channel_id)
     .bind(user.id)
     .bind(&content)
     .bind(reply_to_id)
+    .bind(thread_id)
     .execute(&mut *tx)
     .await?;
     for f in &files {
@@ -552,21 +666,33 @@ async fn create_message(
         .execute(&mut *tx)
         .await?;
     }
-    sqlx::query("UPDATE channels SET last_message_id = $2 WHERE id = $1")
+    if let Some(thread_id) = thread_id {
+        // Thread replies don't make the channel itself unread.
+        sqlx::query(
+            "UPDATE threads SET message_count = message_count + 1, last_message_id = $2
+             WHERE id = $1",
+        )
+        .bind(thread_id)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    } else {
+        sqlx::query("UPDATE channels SET last_message_id = $2 WHERE id = $1")
+            .bind(channel_id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        // Your own messages count as read.
+        sqlx::query(
+            "INSERT INTO read_states (user_id, channel_id, last_read_id) VALUES ($1, $2, $3)
+             ON CONFLICT (user_id, channel_id) DO UPDATE SET last_read_id = EXCLUDED.last_read_id",
+        )
+        .bind(user.id)
         .bind(channel_id)
         .bind(id)
         .execute(&mut *tx)
         .await?;
-    // Your own messages count as read.
-    sqlx::query(
-        "INSERT INTO read_states (user_id, channel_id, last_read_id) VALUES ($1, $2, $3)
-         ON CONFLICT (user_id, channel_id) DO UPDATE SET last_read_id = EXCLUDED.last_read_id",
-    )
-    .bind(user.id)
-    .bind(channel_id)
-    .bind(id)
-    .execute(&mut *tx)
-    .await?;
+    }
     tx.commit().await?;
 
     let message = fetch_message(&st.db, id).await?;
@@ -577,6 +703,9 @@ async fn create_message(
         },
         ServerEvent::MessageCreate(message.clone()),
     );
+    if let Some(thread_id) = thread_id {
+        announce_thread(st, guild_id, channel_id, thread_id).await?;
+    }
     if access.perms & p::EMBED_LINKS != 0 {
         embeds::spawn_previews(st.clone(), guild_id, channel_id, id, content);
     }
@@ -597,6 +726,7 @@ pub async fn send(
         &user,
         req.content,
         req.reply_to_id,
+        req.thread_id,
         Vec::new(),
     )
     .await?;
@@ -664,6 +794,7 @@ pub async fn upload(
 
     let mut content = String::new();
     let mut reply_to_id = None;
+    let mut thread_id = None;
     let mut files = Vec::new();
     while let Some(field) = form.next_field().await.map_err(upload_error)? {
         let name = field.name().unwrap_or_default().to_string();
@@ -676,6 +807,16 @@ pub async fn upload(
                     reply_to_id = Some(
                         text.parse::<i64>()
                             .map_err(|_| AppError::BadRequest("Bad reply_to_id.".into()))?,
+                    );
+                }
+            }
+            "thread_id" => {
+                let text = field.text().await.map_err(upload_error)?;
+                let text = text.trim();
+                if !text.is_empty() {
+                    thread_id = Some(
+                        text.parse::<i64>()
+                            .map_err(|_| AppError::BadRequest("Bad thread_id.".into()))?,
                     );
                 }
             }
@@ -706,7 +847,7 @@ pub async fn upload(
     if files.is_empty() && content.trim().is_empty() {
         return Err(AppError::BadRequest("Nothing to send.".into()));
     }
-    let msg = create_message(&st, &access, &user, content, reply_to_id, files).await?;
+    let msg = create_message(&st, &access, &user, content, reply_to_id, thread_id, files).await?;
     Ok(Json(msg))
 }
 
@@ -725,6 +866,8 @@ pub async fn edit(
     }
     let content = req.content.trim().to_string();
     check_content(&content, !original.attachments.is_empty())?;
+    let content =
+        crate::api::emojis::expand(&st.db, access.channel.guild_id, user.id, &content).await?;
 
     sqlx::query("UPDATE messages SET content = $2, edited_at = now() WHERE id = $1")
         .bind(message_id)
@@ -773,6 +916,17 @@ pub async fn delete(
     for key in keys {
         let _ = tokio::fs::remove_file(st.config.upload_dir.join(key)).await;
     }
+    if let Some(thread_id) = msg.thread_id {
+        sqlx::query(
+            "UPDATE threads SET message_count = GREATEST(message_count - 1, 0),
+                    last_message_id = (SELECT max(id) FROM messages WHERE thread_id = $1)
+             WHERE id = $1",
+        )
+        .bind(thread_id)
+        .execute(&st.db)
+        .await?;
+        announce_thread(&st, access.channel.guild_id, channel_id, thread_id).await?;
+    }
     st.dispatch(
         Audience::Channel {
             guild_id: access.channel.guild_id,
@@ -789,8 +943,50 @@ pub async fn delete(
 // ---- Reactions and typing ----------------------------------------------
 
 fn check_emoji(emoji: &str) -> AppResult<()> {
-    if emoji.is_empty() || emoji.len() > 32 || emoji.chars().any(char::is_whitespace) {
+    if emoji.is_empty() || emoji.len() > 64 || emoji.chars().any(char::is_whitespace) {
         return Err(AppError::BadRequest("That's not an emoji.".into()));
+    }
+    Ok(())
+}
+
+/// Custom emoji reactions (`<:name:id>`) must be real ones.
+async fn check_custom_reaction(db: &PgPool, emoji: &str) -> AppResult<()> {
+    if !emoji.starts_with('<') {
+        if emoji.len() > 32 {
+            return Err(AppError::BadRequest("That's not an emoji.".into()));
+        }
+        return Ok(());
+    }
+    let (name, id) = crate::api::emojis::parse_token(emoji)
+        .ok_or_else(|| AppError::BadRequest("That's not an emoji.".into()))?;
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM emojis WHERE id = $1 AND name = $2)")
+            .bind(id)
+            .bind(name)
+            .fetch_one(db)
+            .await?;
+    if exists {
+        Ok(())
+    } else {
+        Err(AppError::BadRequest("That emoji has been deleted.".into()))
+    }
+}
+
+/// Tells everyone who can see the channel about a thread's new reply count.
+pub(crate) async fn announce_thread(
+    st: &AppState,
+    guild_id: i64,
+    channel_id: i64,
+    thread_id: i64,
+) -> AppResult<()> {
+    if let Ok(thread) = thread_in_channel(&st.db, channel_id, thread_id).await {
+        st.dispatch(
+            Audience::Channel {
+                guild_id,
+                channel_id,
+            },
+            ServerEvent::ThreadUpdate(thread),
+        );
     }
     Ok(())
 }
@@ -803,6 +999,7 @@ pub async fn add_reaction(
     check_emoji(&emoji)?;
     let access = channel_access(&st.db, channel_id, user.id).await?;
     access.require(p::ADD_REACTIONS)?;
+    check_custom_reaction(&st.db, &emoji).await?;
     message_in_channel(&st.db, channel_id, message_id).await?;
     let added = sqlx::query(
         "INSERT INTO reactions (message_id, user_id, emoji) VALUES ($1, $2, $3)

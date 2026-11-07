@@ -45,19 +45,56 @@ pub async fn serve(
          SELECT name AS filename, content_type FROM sounds WHERE storage_key = $1
          UNION ALL
          SELECT filename, content_type FROM profile_files WHERE storage_key = $1
+         UNION ALL
+         SELECT name AS filename, content_type FROM emojis WHERE storage_key = $1
          LIMIT 1",
     )
     .bind(&key)
     .fetch_optional(&st.db)
     .await?
     .ok_or(AppError::NotFound)?;
-    let data = tokio::fs::read(st.config.upload_dir.join(&key))
+    send_file(&st, &key, &row.filename, &row.content_type).await
+}
+
+/// A custom emoji's picture, by emoji ID (`/emojis/{id}`), so messages only
+/// need to store `<:name:id>`.
+pub async fn serve_emoji(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<Response> {
+    let id: i64 = id
+        .trim_end_matches(".png")
+        .parse()
+        .map_err(|_| AppError::NotFound)?;
+    let row = sqlx::query_as::<_, EmojiFileRow>(
+        "SELECT storage_key, name, content_type FROM emojis WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    send_file(&st, &row.storage_key, &row.name, &row.content_type).await
+}
+
+#[derive(sqlx::FromRow)]
+struct EmojiFileRow {
+    storage_key: String,
+    name: String,
+    content_type: String,
+}
+
+async fn send_file(
+    st: &AppState,
+    key: &str,
+    filename: &str,
+    content_type: &str,
+) -> AppResult<Response> {
+    let data = tokio::fs::read(st.config.upload_dir.join(key))
         .await
         .map_err(|_| AppError::NotFound)?;
 
-    let (content_type, inline) = safe_type(&row.content_type);
-    let ascii_name: String = row
-        .filename
+    let (content_type, inline) = safe_type(content_type);
+    let ascii_name: String = filename
         .chars()
         .map(|c| {
             if c.is_ascii_graphic() && c != '"' && c != '\\' || c == ' ' {
