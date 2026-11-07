@@ -336,11 +336,15 @@ function openSignup(ev, anchor, status) {
     await setSignup(ev, { status, role, class: cls, spec, note: note.value.trim() });
   });
   paint();
-  openPopover(anchor, el("div", { class: "signup-pop" },
+  const pop = openPopover(anchor, el("div", { class: "signup-pop" },
     el("h3", {}, ev.title),
     el("div", { class: "muted small" }, "Class"), classes,
     el("div", { class: "muted small" }, "Spec"), specs,
     note, go), "above");
+  // Line it up with the button rather than off to the side.
+  const r = anchor.getBoundingClientRect();
+  const above = r.top - pop.offsetHeight - 8;
+  placeFixed(pop, r.left, above >= 8 ? above : r.bottom + 8);
 }
 
 function localInputValue(date) {

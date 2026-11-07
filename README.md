@@ -4,7 +4,7 @@ A small, self-hosted Discord-style chat app for our WoW group and family, writte
 
 > Chat out the back.
 
-## What works right now (v0.4)
+## What works right now (v0.5)
 - **Accounts:** sign up, sign in, sign out (Argon2 password hashing, 30-day login tokens)
 - **Outhouses (servers):** create, invite with a 7-day code, join, leave, delete (owner)
 - **Channels:** text channels with unread markers; owner/managers can create and delete them
@@ -21,6 +21,12 @@ A small, self-hosted Discord-style chat app for our WoW group and family, writte
 - **Presence:** online / gone home in the member list, live
 - **Right-click menus** on messages, channels, outhouses and members, plus hover buttons on messages
 - Shortcuts: Enter sends, Shift+Enter new line, ↑ edits your last message, Esc cancels, Shift-click 🗑 deletes without asking
+- **Raid planner:** the 📅 button plans a raid (time, length, tank/healer/DPS slots); people sign up from the card with class and spec, as late, tentative or "can't make it"; organisers can bench or remove people and copy the roster; everyone signed up gets an @mention 15 minutes before
+- **Profiles:** profile picture, banner, "about me", accent colour and ten built-in backgrounds; click anyone's name or picture for their card
+- **Bots and slash commands:** Server settings → Bots makes a bot with a token; bots can use the API and offer commands like `/roll` (example in `web/bots/`)
+- **Desktop app (Windows):** push to talk that works in game, notifications, tray (`desktop/`)
+- **Phones:** the site works on phones (slide-out channel and member lists, hold-to-talk button) and installs as an app from Chrome; an experimental Android app builds in CI
+- **Backups:** nightly database + uploads backup on the server, with a one-command restore (`deploy/backup.sh`, `deploy/restore.sh`)
 
 ## Run it on Windows
 
@@ -139,7 +145,13 @@ Invoke-RestMethod -Method Post -ContentType "application/json" -Body $body -Uri 
 ```
 Add `?wait=true` to get the message back. Note: services on the internet can only reach your webhook once Outhouse is hosted somewhere public (see the infrastructure doc).
 
+## Checks
+Every push to GitHub runs `.github/workflows/ci.yml`: builds and tests the
+server, runs `ci/smoke.sh` (the whole API against a real Postgres, including a
+live bot and raid reminders) and `ci/ui_test.py` (clicks through the site in
+headless Chrome), and builds the Windows installer and Android APK.
+
 ## Next up (see the project docs for the full plan)
-1. Desktop app (Tauri): notifications, global push-to-talk, tray icon
-2. Bot platform, then the raid planner
-3. Hosting on a VPS with HTTPS
+1. Battle.net character linking (pick your character when signing up for raids)
+2. Raid attendance history and loot notes
+3. Mobile push notifications

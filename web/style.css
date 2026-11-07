@@ -96,6 +96,9 @@ dialog::backdrop { background: #0009; }
 dialog form { display: flex; flex-direction: column; gap: 12px; }
 dialog h2 { margin: 0; font-size: 18px; }
 dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
+.ghost { height: 36px; padding: 0 14px; border: 1px solid var(--line); border-radius: 10px; background: none; color: var(--text); font-weight: 600; }
+.ghost:hover { border-color: var(--muted); }
+.ghost.danger { color: var(--occupied); }
 dialog .ghost { height: 42px; padding: 0 16px; border: 1px solid var(--line); border-radius: 10px; background: none; }
 dialog .primary { padding: 0 16px; }
 
@@ -418,7 +421,7 @@ dialog .field { display: grid; gap: 6px; font-size: 13px; font-weight: 600; colo
 .su-specs { display: flex; flex-wrap: wrap; gap: 4px; min-height: 30px; }
 .su-spec { border: 1px solid var(--line); background: var(--night); border-radius: 6px; padding: 5px 8px; font-size: 12px; }
 .su-spec.on { border-color: var(--ember); background: #ff6b3522; }
-.raid-dialog form { width: min(520px, 92vw); }
+dialog.raid-dialog { width: min(560px, 94vw); }
 .raid-dialog .field input, .raid-dialog .field textarea, .raid-dialog .field select { width: 100%; }
 .raid-dialog textarea { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--night); color: var(--text); font: inherit; resize: vertical; }
 .raid-dialog input[type=number], .raid-dialog input[type=datetime-local] { height: 38px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--night); color: var(--text); color-scheme: dark; }
