@@ -234,12 +234,15 @@ pub fn pick_search_result(json: &Value, query: &str) -> Option<i32> {
         .iter()
         .filter(|r| r["type"].as_i64() == Some(3) || r["typeName"].as_str() == Some("Item"))
         .collect();
-    let exact = items.iter().find(|r| {
-        r["name"]
-            .as_str()
-            .is_some_and(|n| n.eq_ignore_ascii_case(query.trim()))
-    });
-    let best = exact.or(items.first())?;
+    let q = query.trim().to_lowercase();
+    let name = |r: &&&Value| r["name"].as_str().unwrap_or("").to_lowercase();
+    // Exact name, then names starting with it, then containing it, then the first.
+    let best = items
+        .iter()
+        .find(|r| name(r) == q)
+        .or_else(|| items.iter().find(|r| name(r).starts_with(&q)))
+        .or_else(|| items.iter().find(|r| name(r).contains(&q)))
+        .or(items.first())?;
     best["id"]
         .as_i64()
         .or_else(|| best["id"].as_str()?.parse().ok())
@@ -650,7 +653,8 @@ mod tests {
             r#"{"results":[{"type":1,"id":5,"name":"Thunderfury"},{"type":3,"id":"18564","name":"Bindings of the Windseeker"},{"type":3,"id":19019,"name":"Thunderfury, Blessed Blade of the Windseeker"}]}"#,
         )
         .unwrap();
-        assert_eq!(pick_search_result(&json, "thunderfury"), Some(18564));
+        assert_eq!(pick_search_result(&json, "thunderfury"), Some(19019));
+        assert_eq!(pick_search_result(&json, "windseeker"), Some(18564));
         assert_eq!(
             pick_search_result(&json, "Thunderfury, Blessed Blade of the Windseeker"),
             Some(19019)

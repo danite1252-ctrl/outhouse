@@ -906,7 +906,7 @@ function renderMessages() {
   const nodes = [];
   let prev = null;
   for (const m of state.messages) {
-    const grouped = prev && !m.reply_to && !m.interaction && !m.event && !prev.event && !m.poll && !prev.poll && !prev.thread && prev.author_id === m.author_id && prev.author_display_name === m.author_display_name &&
+    const grouped = prev && !m.reply_to && !m.interaction && !m.event && !prev.event && !m.poll && !prev.poll && !m.lfg && !prev.lfg && !prev.thread && prev.author_id === m.author_id && prev.author_display_name === m.author_display_name &&
       new Date(m.created_at) - new Date(prev.created_at) < 5 * 60 * 1000;
     const colour = memberColour(m.author_id);
     const imageOnly = m.embeds.length === 1 && m.embeds[0].kind === "image" && m.content.trim() === m.embeds[0].url;

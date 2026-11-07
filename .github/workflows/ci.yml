@@ -50,6 +50,7 @@ jobs:
           node --check web/dms.js
           node --check web/threads.js
           node --check web/raids.js
+          node --check web/wow.js
           node --check web/sw.js
           node --check web/bots/dice-bot.mjs
       - name: Smoke test (real server + Postgres)
@@ -70,9 +71,19 @@ jobs:
           UPLOAD_DIR: /tmp/outhouse-uploads
           LIVEKIT_API_KEY: devkey
           LIVEKIT_API_SECRET: secret-secret-secret-secret-secret
+          # Wowhead and Battle.net stand-ins (ci/wow_mock.py).
+          WOWHEAD_URL: http://127.0.0.1:8099
+          WOWHEAD_TOOLTIP_URL: http://127.0.0.1:8099
+          WOWHEAD_ICON_URL: http://127.0.0.1:8099/icons
+          LINK_PREVIEWS_OFFLINE: "1"
+          BNET_CLIENT_ID: mock-id
+          BNET_CLIENT_SECRET: mock-secret
+          BNET_OAUTH_URL: http://127.0.0.1:8099/oauth
+          BNET_API_URL: http://127.0.0.1:8099/api
         run: |
           pip install --quiet playwright
           python -m playwright install --with-deps chromium >/dev/null
+          python3 ci/wow_mock.py 8099 > /tmp/wow-mock-ui.log 2>&1 &
           ./target/debug/outhouse-server > /tmp/ui-server.log 2>&1 &
           python ci/ui_test.py
       - name: Screenshots (base64, for review)

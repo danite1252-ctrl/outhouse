@@ -7,9 +7,16 @@ trap 'echo "Smoke test failed at line $LINENO"' ERR
 
 BASE=http://127.0.0.1:8080
 LOG=/tmp/outhouse-server.log
+# Wowhead and Battle.net stand-ins (no internet needed).
+MOCK=http://127.0.0.1:8099
+python3 ci/wow_mock.py 8099 >/tmp/wow-mock.log 2>&1 &
+MOCK_PID=$!
+export WOWHEAD_URL=$MOCK WOWHEAD_TOOLTIP_URL=$MOCK WOWHEAD_ICON_URL=$MOCK/icons LINK_PREVIEWS_OFFLINE=1
+export BNET_CLIENT_ID=mock-id BNET_CLIENT_SECRET=mock-secret BNET_REGION=us
+export BNET_OAUTH_URL=$MOCK/oauth BNET_API_URL=$MOCK/api PUBLIC_URL=$BASE
 ./target/debug/outhouse-server >"$LOG" 2>&1 &
 SERVER=$!
-trap 'kill $SERVER 2>/dev/null || true' EXIT
+trap 'kill $SERVER $MOCK_PID 2>/dev/null || true' EXIT
 
 for i in $(seq 1 60); do
   curl -fsS "$BASE/api/health" >/dev/null 2>&1 && break
@@ -498,6 +505,112 @@ call PUT "/api/events/$AT2/attendance" '{"records":[{"user_id":"'"$BOB"'","statu
 call GET "/api/events/$AT2" | jq -e '.attendance_taken | not' >/dev/null
 call GET "/api/guilds/$GUILD/attendance/$BOB" | jq -e '.total == 1 and .percent == 100' >/dev/null
 
+step "wow: info and characters"
+call GET /api/wow/info | jq -e '(.classes | length == 9) and (.classes | index("Monk") | not) and (.activities | map(.name) | index("Molten Core")) and .bnet_enabled and (.wowhead_url | endswith("/classic"))' >/dev/null
+CH1=$(call POST /api/users/@me/characters '{"name":"tankadin","realm":"Forever","class":"paladin","level":60,"professions":["Mining","blacksmithing"],"armory_url":"https://example.com/armory/tankadin"}')
+CH1ID=$(jq -r .id <<<"$CH1")
+jq -e '.name == "Tankadin" and .class == "Paladin" and .is_main and .professions == ["Mining","Blacksmithing"] and .source == "manual"' <<<"$CH1" >/dev/null
+CH2ID=$(call POST /api/users/@me/characters '{"name":"Frostbolt","realm":"Forever","class":"Mage","level":42}' | jq -r 'select(.is_main | not) | .id')
+fail_call POST /api/users/@me/characters '{"name":"Arthas","class":"Death Knight"}'
+fail_call POST /api/users/@me/characters '{"name":"Chen","class":"Monk"}'
+fail_call POST /api/users/@me/characters '{"name":"Two Words","class":"Mage"}'
+fail_call POST /api/users/@me/characters '{"name":"Tankadin","realm":"forever","class":"Paladin"}'
+fail_call POST /api/users/@me/characters '{"name":"Linky","class":"Rogue","armory_url":"javascript:alert(1)"}'
+call PATCH "/api/characters/$CH2ID" '{"name":"Frostbolt","realm":"Forever","class":"Mage","level":43,"is_main":true}' | jq -e '.is_main and .level == 43' >/dev/null
+call GET /api/users/@me/characters | jq -e 'length == 2 and .[0].name == "Frostbolt" and ([.[] | select(.is_main)] | length == 1)' >/dev/null
+TOKEN=$TOKEN_B
+fail_call PATCH "/api/characters/$CH1ID" '{"name":"Stolen","class":"Mage"}'
+fail_call DELETE "/api/characters/$CH1ID"
+call GET "/api/profiles/$ALICE" | jq -e '.characters | length == 2 and .[0].is_main' >/dev/null
+call POST /api/users/@me/characters '{"name":"Holybob","realm":"Forever","class":"Priest","level":59,"professions":["Tailoring","Enchanting"]}' >/dev/null
+TOKEN=$OUT; fail_call GET "/api/profiles/$ALICE"; TOKEN=$TOKEN_A
+
+step "wow: /char"
+call POST "/api/channels/$CHAN/wow/char" '{"query":"tank"}' | jq -e '.interaction.command == "char" and (.embeds[0] | .kind == "wow-char" and .title == "Tankadin" and .color == 16026810 and .url == "https://example.com/armory/tankadin" and (.description | contains("Level 60 Paladin")) and (.fields | map(.name) | index("Also plays")))' >/dev/null
+call POST "/api/channels/$CHAN/wow/char" '{"query":"holybob-forever"}' | jq -e '.embeds[0].title == "Holybob" and .embeds[0].author_name == "Bob"' >/dev/null
+fail_call POST "/api/channels/$CHAN/wow/char" '{"query":"Nobodyhere"}'
+fail_call POST "/api/channels/$CHAN/wow/char" '{"query":""}'
+TOKEN=$OUT; fail_call POST "/api/channels/$CHAN/wow/char" '{"query":"tank"}'; TOKEN=$TOKEN_A
+
+step "wow: /item (mock Wowhead, cache, fallbacks)"
+call POST "/api/channels/$CHAN/wow/item" '{"query":"thunderfury"}' | jq -e '.interaction.command == "item" and (.embeds[0] | .kind == "wow-item" and .title == "Thunderfury, Blessed Blade of the Windseeker" and .color == 16744448 and (.description | contains("Item Level 80")) and (.url | endswith("/classic/item=19019")) and (.thumbnail_url | endswith("/inv_sword_39.jpg")) and (.fields[0].value == "Legendary"))' >/dev/null
+call POST "/api/channels/$CHAN/wow/item" '{"query":"19019"}' | jq -e '.embeds[0].title == "Thunderfury, Blessed Blade of the Windseeker"' >/dev/null
+call POST "/api/channels/$CHAN/wow/item" '{"query":"THUNDERFURY"}' >/dev/null
+curl -fsS "$MOCK/__hits" | jq -e '."/tooltip/item/19019" == 1 and ."/classic/search/suggestions-template" == 1' >/dev/null || { echo "item lookups weren't cached"; curl -sS "$MOCK/__hits"; exit 1; }
+call POST "/api/channels/$CHAN/wow/item" '{"query":"Leggings of Transcendence"}' | jq -e '.embeds[0].color == 10696174' >/dev/null
+call POST "/api/channels/$CHAN/wow/item" '{"query":"no such thing"}' | jq -e '.embeds[0] | .footer == "Lookup unavailable" and (.url | endswith("/classic/search?q=no%20such%20thing")) and (.description | contains("matched"))' >/dev/null
+call POST "/api/channels/$CHAN/wow/item" '{"query":"broken"}' | jq -e '.embeds[0] | .footer == "Lookup unavailable" and (.description | contains("reach"))' >/dev/null
+call POST "/api/channels/$CHAN/wow/item" '{"query":"777"}' | jq -e '.embeds[0] | .footer == "Lookup unavailable" and (.url | contains("search?q=777"))' >/dev/null
+fail_call POST "/api/channels/$CHAN/wow/item" '{"query":"   "}'
+TOKEN=$OUT; fail_call POST "/api/channels/$CHAN/wow/item" '{"query":"thunderfury"}'; TOKEN=$TOKEN_A
+
+step "wow: link cards"
+wait_embeds() { # MESSAGE_ID COUNT
+  for i in $(seq 1 20); do
+    call GET "/api/channels/$CHAN/messages?limit=20" | jq -e --arg id "$1" --argjson n "$2" '.[] | select(.id == $id) | .embeds | length == $n' >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  echo "no link cards on $1"; call GET "/api/channels/$CHAN/messages?limit=20" | jq --arg id "$1" '.[] | select(.id == $id)'; exit 1
+}
+LK1=$(call POST "/api/channels/$CHAN/messages" '{"content":"bis https://www.wowhead.com/classic/item=19019/thunderfury-blessed-blade-of-the-windseeker and logs https://classic.warcraftlogs.com/reports/aBcD1234#fight=3"}' | jq -r .id)
+wait_embeds "$LK1" 2
+call GET "/api/channels/$CHAN/messages?limit=20" | jq -e --arg id "$LK1" '.[] | select(.id == $id) | .embeds
+  | (.[0] | .kind == "wow-item" and .color == 16744448 and .site_name == "Wowhead Classic" and (.url | startswith("https://www.wowhead.com/classic/item=19019")))
+  and (.[1] | .kind == "wow-link" and .site_name == "Warcraft Logs Classic" and .title == "Combat log aBcD1234")' >/dev/null
+LK2=$(call POST "/api/channels/$CHAN/messages" '{"content":"https://www.wowhead.com/classic/item=999999/mystery-blade https://raider.io/characters/us/forever/Tankadin https://example.com/nothing-here"}' | jq -r .id)
+wait_embeds "$LK2" 2
+call GET "/api/channels/$CHAN/messages?limit=20" | jq -e --arg id "$LK2" '.[] | select(.id == $id) | .embeds
+  | (.[0] | .kind == "wow-link" and .title == "Mystery Blade" and .site_name == "Wowhead Classic" and (.description | contains("Preview not available")))
+  and (.[1] | .kind == "wow-link" and .site_name == "Raider.IO" and .title == "Tankadin – Forever (US)")' >/dev/null
+
+step "wow: Battle.net linking (mock)"
+call GET /api/bnet/status | jq -e '.enabled and (.linked | not)' >/dev/null
+AUTH_URL=$(call POST /api/bnet/authorize | jq -r .url)
+[[ "$AUTH_URL" == "$MOCK/oauth/authorize?client_id=mock-id&redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2Fapi%2Fbnet%2Fcallback"* ]] || { echo "odd authorize url: $AUTH_URL"; exit 1; }
+STATE=$(sed -E 's/.*[?&]state=([^&]+).*/\1/' <<<"$AUTH_URL")
+curl -fsS "$BASE/api/bnet/callback?code=bad-code&state=$STATE" | grep -q "Couldn't" || { echo "bad code should fail"; exit 1; }
+STATE=$(call POST /api/bnet/authorize | jq -r .url | sed -E 's/.*[?&]state=([^&]+).*/\1/')
+curl -fsS "$BASE/api/bnet/callback?code=good-code&state=$STATE" | grep -q "Imported 2 characters" || { echo "Battle.net import failed"; curl -sS "$BASE/api/bnet/callback?code=good-code&state=$STATE"; exit 1; }
+curl -fsS "$BASE/api/bnet/callback?code=good-code&state=$STATE" | grep -q "expired" || { echo "state reused"; exit 1; }
+call GET /api/bnet/status | jq -e '.linked and .battletag == "Mockadin#1234"' >/dev/null
+call GET /api/users/@me/characters | jq -e 'length == 4 and ([.[] | select(.source == "bnet") | .name] | sort == ["Mockadin","Twinky"]) and ([.[] | select(.name == "Deathy")] | length == 0)' >/dev/null
+call DELETE /api/bnet/link >/dev/null
+call GET /api/bnet/status | jq -e '.linked | not' >/dev/null
+call DELETE "/api/characters/$(call GET /api/users/@me/characters | jq -r '.[] | select(.name == "Twinky") | .id')" >/dev/null
+call GET /api/users/@me/characters | jq -e 'length == 3 and ([.[] | select(.is_main)] | length == 1)' >/dev/null
+TOKEN=""; fail_call POST /api/bnet/authorize; TOKEN=$TOKEN_A
+
+step "wow: group finder"
+LF=$(call POST "/api/channels/$CHAN/lfg" '{"activity":"scholomance","note":"Bring a key","leader":{"role":"tank","class":"Paladin","character":"Tankadin","level":60}}')
+LFID=$(jq -r .id <<<"$LF")
+jq -e --arg a "$ALICE" '.lfg | .activity == "Scholomance" and .activity_kind == "dungeon" and .min_level == 58 and .max_level == 60
+  and .max_tanks == 1 and .max_healers == 1 and .max_dps == 3 and (.full | not) and (.closed | not) and (.expired | not)
+  and .leader_id == $a and (.members | length == 1) and .members[0].character == "Tankadin"' <<<"$LF" >/dev/null
+TOKEN=$TOKEN_B
+fail_call PUT "/api/channels/$CHAN/lfg/$LFID/join" '{"role":"tank","class":"Warrior"}'
+fail_call PUT "/api/channels/$CHAN/lfg/$LFID/join" '{"role":"dps","class":"Monk"}'
+fail_call PUT "/api/channels/$CHAN/lfg/$LFID/join" '{"role":"wizard"}'
+call PUT "/api/channels/$CHAN/lfg/$LFID/join" '{"role":"healer","class":"Priest","character":"Holybob","level":59}' | jq -e '.lfg.members | length == 2' >/dev/null
+call PUT "/api/channels/$CHAN/lfg/$LFID/join" '{"role":"dps","class":"Priest","character":"Holybob","level":59}' | jq -e '.lfg.members | length == 2 and (map(select(.role == "dps")) | length == 1)' >/dev/null
+fail_call POST "/api/channels/$CHAN/lfg/$LFID/close"
+fail_call DELETE "/api/channels/$CHAN/lfg/$LFID/members/$ALICE"
+call DELETE "/api/channels/$CHAN/lfg/$LFID/members/$BOB" | jq -e '.lfg.members | length == 1' >/dev/null
+TOKEN=$OUT; fail_call PUT "/api/channels/$CHAN/lfg/$LFID/join" '{"role":"dps"}'; fail_call POST "/api/channels/$CHAN/lfg" '{"activity":"x"}'; TOKEN=$TOKEN_A
+fail_call POST "/api/channels/$CHAN/lfg" '{"activity":"  "}'
+fail_call POST "/api/channels/$CHAN/lfg" '{"activity":"Molten Core","max_dps":45}'
+fail_call POST "/api/channels/$CHAN/lfg" '{"activity":"Gold run","min_level":50,"max_level":40}'
+call POST "/api/channels/$CHAN/lfg" '{"activity":"molten core"}' | jq -e '.lfg | .activity_kind == "raid" and .max_tanks == 5 and .max_healers == 10 and .max_dps == 25' >/dev/null
+# Fills up, a kick opens a spot, then the leader closes it.
+SM=$(call POST "/api/channels/$CHAN/lfg" '{"activity":"Gold farming in Searing Gorge","max_tanks":0,"max_healers":1,"max_dps":1,"starts_at":"'"$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)"'"}' | jq -r .id)
+TOKEN=$TOKEN_B; call PUT "/api/channels/$CHAN/lfg/$SM/join" '{"role":"healer","class":"Priest"}' >/dev/null
+TOKEN=$TOKEN_C; call PUT "/api/channels/$CHAN/lfg/$SM/join" '{"role":"dps","class":"Rogue","character":"Stabby"}' | jq -e '.lfg | .full and .activity_kind == "other"' >/dev/null
+TOKEN=$TOKEN_A; fail_call PUT "/api/channels/$CHAN/lfg/$SM/join" '{"role":"dps","class":"Mage"}'
+call DELETE "/api/channels/$CHAN/lfg/$SM/members/$CARL" | jq -e '.lfg.full | not' >/dev/null
+call POST "/api/channels/$CHAN/lfg/$SM/close" | jq -e '.lfg.closed' >/dev/null
+TOKEN=$TOKEN_C; fail_call PUT "/api/channels/$CHAN/lfg/$SM/join" '{"role":"dps","class":"Rogue"}'; TOKEN=$TOKEN_A
+# Expires on its own (checked at the end).
+LX=$(call POST "/api/channels/$CHAN/lfg" '{"activity":"Quick Deadmines","expires_minutes":1}' | jq -r .id)
+
 step "raid reminder"
 for i in $(seq 1 75); do
   call GET "/api/channels/$CHAN/messages" | jq -e '[.[] | select(.content | startswith("⏰"))] | length == 1' >/dev/null 2>&1 && break
@@ -512,5 +625,13 @@ for i in $(seq 1 90); do
 done
 call GET "/api/channels/$CHAN/messages?limit=100" | jq -e --arg id "$MP" '.[] | select(.id == $id) | .poll.closed' >/dev/null || { echo "poll never closed"; exit 1; }
 fail_call PUT "/api/channels/$CHAN/polls/$MP/votes" '{"options":[1]}'
+
+step "group post expires"
+for i in $(seq 1 60); do
+  call GET "/api/channels/$CHAN/messages?limit=100" | jq -e --arg id "$LX" '.[] | select(.id == $id) | .lfg.expired' >/dev/null 2>&1 && break
+  sleep 1
+done
+call GET "/api/channels/$CHAN/messages?limit=100" | jq -e --arg id "$LX" '.[] | select(.id == $id) | .lfg.expired' >/dev/null || { echo "group post never expired"; exit 1; }
+fail_call PUT "/api/channels/$CHAN/lfg/$LX/join" '{"role":"dps"}'
 
 echo "Smoke test passed."
