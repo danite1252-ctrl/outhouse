@@ -123,6 +123,34 @@ upload(f"/api/guilds/{guild['id']}/emojis", {"name": "pog"}, {"file": ("pog.png"
 api("POST", f"/api/channels/{chan['id']}/messages", {"content": "Who's bringing fire resist gear?"}, dave["token"])
 api("POST", f"/api/channels/{chan['id']}/messages", {"content": ":pog: gg on the Rag kill"}, dave["token"])
 
+# ---- Batch 3: raid extras (repeating raids, deadlines, bench, attendance) ----
+DAVE = dave["user"]["id"]
+ERIN = erin["user"]["id"]
+iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+tomorrow = time.gmtime(time.time() + 86400)
+api("POST", f"/api/channels/{chan['id']}/events", {
+    "title": "BWL weekly", "description": "Blackwing Lair, full clear.", "starts_at": time.strftime("%Y-%m-%dT19:30:00Z", tomorrow),
+    "max_tanks": 2, "max_healers": 4, "max_dps": 14, "signup_deadline_minutes": 120,
+    "repeat": {"weekdays": [tomorrow.tm_wday, (tomorrow.tm_wday + 2) % 7], "every_weeks": 1, "count": 8, "time_zone": "UTC"},
+}, TOKEN)
+locked = api("POST", f"/api/channels/{chan['id']}/events", {
+    "title": "Onyxia (sign-ups closed)", "starts_at": iso(time.time() + 2 * 3600), "signup_deadline_minutes": 180,
+    "max_tanks": 1, "max_healers": 2, "max_dps": 7,
+}, TOKEN)
+api("PUT", f"/api/events/{locked['event']['id']}/signup",
+    {"status": "yes", "role": "tank", "class": "Warrior", "spec": "Protection", "user_id": DAVE}, TOKEN)
+bench = api("POST", f"/api/channels/{chan['id']}/events", {
+    "title": "Bench raid", "starts_at": iso(time.time() + 3 * 86400), "max_tanks": 1, "max_healers": 1, "max_dps": 3,
+}, TOKEN)
+api("PUT", f"/api/events/{bench['event']['id']}/signup", {"status": "yes", "role": "tank", "class": "Warrior", "spec": "Protection"}, dave["token"])
+api("PUT", f"/api/events/{bench['event']['id']}/signup", {"status": "yes", "role": "tank", "class": "Druid", "spec": "Feral (Bear)", "note": "can swap to cat"}, erin["token"])
+earlier = api("POST", f"/api/channels/{chan['id']}/events", {"title": "Zul'Gurub warm-up", "starts_at": iso(time.time() - 50 * 60)}, TOKEN)
+api("PUT", f"/api/events/{earlier['event']['id']}/attendance",
+    {"records": [{"user_id": DAVE, "status": "present"}, {"user_id": ERIN, "status": "absent"}]}, TOKEN)
+past = api("POST", f"/api/channels/{chan['id']}/events", {"title": "Molten Core run", "starts_at": iso(time.time() - 40 * 60), "duration_minutes": 180}, TOKEN)
+api("PUT", f"/api/events/{past['event']['id']}/signup", {"status": "yes", "role": "dps", "class": "Rogue", "spec": "Combat"}, dave["token"])
+api("PUT", f"/api/events/{past['event']['id']}/signup", {"status": "yes", "role": "healer", "class": "Priest", "spec": "Holy"}, erin["token"])
+
 errors = []
 
 
@@ -391,6 +419,96 @@ with sync_playwright() as p:
     page.wait_for_selector("#dm-list .dm-row:has-text('Officers')", state="detached", timeout=10000)
     page.wait_for_selector("#dm-list .dm-row.active:has-text('Dave')", timeout=10000)
 
+    # ---- Raid extras: repeating raids, deadlines, bench, calendar, attendance ----
+    page.click(".guild[title='UI Test Guild']")
+    page.wait_for_selector("#app:not(.home-mode)")
+    page.click(".channel:has-text('raids')")
+    bench_card = ".event-card:has-text('Bench raid')"
+    page.wait_for_selector(f"{bench_card} .ev-bench li:has-text('Erin')", timeout=10000)
+    assert "Dave" in page.inner_text(f"{bench_card} .ev-col.tank")
+    page.locator(bench_card).scroll_into_view_if_needed()
+    page.screenshot(path=f"{SHOTS}/40-bench-card.png")
+    locked_card = ".event-card:has-text('sign-ups closed')"
+    page.wait_for_selector(f"{locked_card} .ev-deadline.locked")
+    page.locator(locked_card).scroll_into_view_if_needed()
+    page.screenshot(path=f"{SHOTS}/41-locked-card.png")
+    series_card = ".event-card:has-text('BWL weekly')"
+    page.wait_for_selector(f"{series_card} .ev-repeat", timeout=10000)
+    page.wait_for_selector(f"{series_card} .ev-deadline")
+    # A repeating raid's menu offers "this one" and "this and future".
+    page.locator(series_card).first.scroll_into_view_if_needed()
+    page.click(f"{series_card} >> nth=0 >> button[title='Raid options']")
+    page.wait_for_selector(".menu button:has-text('Edit this and future raids')")
+    page.screenshot(path=f"{SHOTS}/42-series-menu.png")
+    page.click(".menu button:has-text('Edit this and future raids')")
+    page.wait_for_selector(".raid-dialog[open] h2:has-text('Edit this and future raids')")
+    page.fill(".raid-dialog input[maxlength='100']", "BWL weekly (Tuesday crew)")
+    page.click(".raid-dialog button[type=submit]")
+    page.wait_for_selector(".event-card:has-text('BWL weekly (Tuesday crew)')", timeout=10000)
+    # Plan a new repeating raid from the dialog.
+    page.click("#raid-btn")
+    page.wait_for_selector(".raid-list .rl-tool")
+    page.screenshot(path=f"{SHOTS}/43-raid-list.png")
+    page.click(".raid-list button.primary")
+    page.wait_for_selector(".raid-dialog[open]")
+    page.select_option(".raid-dialog select[aria-label='Repeat']", "1")
+    page.wait_for_selector(".raid-dialog .repeat-box:not([hidden])")
+    page.click(".raid-dialog .day-chip:not(.on) >> nth=0")
+    page.select_option(".raid-dialog select[aria-label='Sign-ups close']", "1440")
+    page.fill(".raid-dialog input[maxlength='100']", "Zul'Gurub weekly")
+    page.screenshot(path=f"{SHOTS}/44-plan-repeating.png")
+    page.click(".raid-dialog button[type=submit]")
+    page.wait_for_selector(".event-card:has-text(\"Zul'Gurub weekly\") .ev-repeat", timeout=10000)
+    # Calendar.
+    page.click("#raid-btn")
+    page.click(".raid-list .rl-tool:has-text('Calendar')")
+    page.wait_for_selector(".calendar-dialog .cal-chip", timeout=10000)
+    page.wait_for_function("!document.querySelector('.calendar-dialog .cal-tz').textContent.includes('Loading')")
+    page.screenshot(path=f"{SHOTS}/45-calendar.png")
+    tomorrow_key = page.evaluate("localDateValue(new Date(Date.now() + 86400000))")
+    page.click(f".calendar-dialog .cal-day[data-day='{tomorrow_key}']")
+    page.wait_for_selector(".calendar-dialog .cal-daypanel .event-card:has-text('BWL weekly')", timeout=10000)
+    page.screenshot(path=f"{SHOTS}/46-calendar-day.png")
+    # Sign up from the calendar (the card isn't in chat yet for later weeks: it still works).
+    page.click(".calendar-dialog .cal-daypanel .event-card >> nth=0 >> .ev-btn:has-text('Sign up')")
+    page.wait_for_selector(".calendar-dialog .signup-pop")
+    page.click(".calendar-dialog .su-class:has-text('Mage')")
+    page.click(".calendar-dialog .su-spec:has-text('Frost')")
+    page.click(".calendar-dialog .signup-pop button.primary")
+    page.wait_for_selector(".calendar-dialog .cal-daypanel .ev-col.dps .su-name.me", timeout=10000)
+    page.click(".calendar-dialog button[title='Next month']")
+    page.wait_for_function("!document.querySelector('.calendar-dialog .cal-tz').textContent.includes('Loading')")
+    page.click(".calendar-dialog button[title='Close']")
+    page.wait_for_selector(".calendar-dialog", state="detached")
+    # Take attendance after the raid starts.
+    past_card = ".event-card:has-text('Molten Core run')"
+    page.locator(past_card).scroll_into_view_if_needed()
+    page.click(f"{past_card} .ev-btn.attendance")
+    page.wait_for_selector(".attendance-dialog .att-row:has-text('Erin')")
+    page.click(".attendance-dialog .att-all")
+    page.click(".attendance-dialog .att-row:has-text('Erin') .att-choice.late")
+    page.wait_for_selector(".attendance-dialog .att-row:has-text('Dave') .att-choice.present.on")
+    page.screenshot(path=f"{SHOTS}/47-take-attendance.png")
+    page.click(".attendance-dialog button:has-text('Save attendance')")
+    page.wait_for_selector(".attendance-dialog", state="detached")
+    page.wait_for_selector(f"{past_card} .ev-btn.attendance.done", timeout=10000)
+    # The outhouse's attendance table.
+    page.click("#raid-btn")
+    page.click(".raid-list .rl-tool:has-text('Attendance')")
+    page.wait_for_selector(".attendance-table-dialog .att-table tbody tr", timeout=10000)
+    assert page.inner_text(".attendance-table-dialog .att-table tbody tr:has-text('Dave') td.pct") == "100%"
+    assert page.inner_text(".attendance-table-dialog .att-table tbody tr:has-text('Erin') td.pct") == "50%"
+    page.click(".attendance-table-dialog th:has-text('Member')")
+    page.wait_for_selector(".attendance-table-dialog th.sorted:has-text('Member')")
+    page.screenshot(path=f"{SHOTS}/48-attendance-table.png")
+    page.click(".attendance-table-dialog button[title='Close']")
+    page.wait_for_selector(".attendance-table-dialog", state="detached")
+    # Attendance on a profile card.
+    page.evaluate(f"openProfile({json.dumps(ERIN)}, document.querySelector('#messages .event-card'))")
+    page.wait_for_selector(".profile-card .pc-attendance:has-text('50%')", timeout=10000)
+    page.screenshot(path=f"{SHOTS}/49-profile-attendance.png")
+    page.keyboard.press("Escape")
+
     # ---- Phone ----
     phone = browser.new_page(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
     watch(phone, "phone")
@@ -438,6 +556,47 @@ with sync_playwright() as p:
     phone.wait_for_selector("#messages article.msg:has-text('Bring snacks')", timeout=10000)
     phone.wait_for_timeout(400)
     phone.screenshot(path=f"{SHOTS}/32-phone-dm-chat.png")
+    # Raid calendar (agenda list) and a bench card on a phone.
+    phone.click("#nav-toggle")
+    phone.wait_for_timeout(400)
+    phone.click(".guild[title='UI Test Guild']")
+    phone.wait_for_timeout(300)
+    if phone.evaluate("document.getElementById('app').classList.contains('show-nav')"):
+        phone.click(".channel:has-text('raids')")
+    phone.wait_for_selector(".event-card:has-text('Bench raid')", timeout=10000)
+    phone.wait_for_timeout(400)
+    phone.locator(".event-card:has-text('Bench raid')").scroll_into_view_if_needed()
+    phone.screenshot(path=f"{SHOTS}/50-phone-bench-card.png")
+    phone.click("#raid-btn")
+    phone.wait_for_selector(".raid-list .rl-tool")
+    phone.screenshot(path=f"{SHOTS}/51-phone-raid-list.png")
+    phone.click(".raid-list .rl-tool:has-text('Calendar')")
+    phone.wait_for_selector(".calendar-dialog .cal-agenda", timeout=10000)
+    phone.wait_for_function("!document.querySelector('.calendar-dialog .cal-tz').textContent.includes('Loading')")
+    if not phone.query_selector(".calendar-dialog .cal-agenda-row"):
+        phone.click(".calendar-dialog button[title='Next month']")
+    phone.wait_for_selector(".calendar-dialog .cal-agenda-row", timeout=10000)
+    phone.screenshot(path=f"{SHOTS}/52-phone-calendar.png")
+    phone.click(".calendar-dialog .cal-agenda-row >> nth=0")
+    phone.wait_for_selector(".calendar-dialog .cal-agenda-item.open .event-card")
+    phone.screenshot(path=f"{SHOTS}/53-phone-calendar-open.png")
+    phone.click(".calendar-dialog button[title='Close']")
+    phone.click("#raid-btn")
+    phone.click(".raid-list .rl-tool:has-text('Attendance')")
+    phone.wait_for_selector(".attendance-table-dialog .att-table tbody tr", timeout=10000)
+    phone.screenshot(path=f"{SHOTS}/54-phone-attendance-table.png")
+    phone.click(".attendance-table-dialog button[title='Close']")
+    phone.locator(".event-card:has-text('Molten Core run')").scroll_into_view_if_needed()
+    phone.click(".event-card:has-text('Molten Core run') .ev-btn.attendance")
+    phone.wait_for_selector(".attendance-dialog .att-row")
+    phone.screenshot(path=f"{SHOTS}/55-phone-take-attendance.png")
+    phone.click(".attendance-dialog button[title='Close']")
+    phone.click("#nav-toggle")
+    phone.wait_for_timeout(400)
+    phone.click("#home-btn")
+    phone.wait_for_selector("#dm-list .dm-row:has-text('Dave')", timeout=10000)
+    phone.click("#dm-list .dm-row:has-text('Dave')")
+    phone.wait_for_selector("#messages article.msg:has-text('Bring snacks')", timeout=10000)
     phone.click("#emoji-btn")
     phone.click(".emoji-tabs .custom-tab")
     phone.wait_for_selector(".custom-pane button[title=':pog:']")
@@ -461,6 +620,28 @@ with sync_playwright() as p:
     droid.wait_for_selector("#dm-list .dm-row", timeout=10000)
     droid.wait_for_timeout(300)
     droid.screenshot(path=f"{SHOTS}/34-android-dms.png")
+    if not droid.evaluate("document.getElementById('app').classList.contains('show-nav')"):
+        droid.click("#nav-toggle")
+        droid.wait_for_timeout(400)
+    droid.click(".guild[title='UI Test Guild']")
+    droid.wait_for_timeout(300)
+    if droid.evaluate("document.getElementById('app').classList.contains('show-nav')"):
+        droid.click(".channel:has-text('raids')")
+    droid.wait_for_selector(".event-card", timeout=10000)
+    droid.click("#raid-btn")
+    droid.click(".raid-list .rl-tool:has-text('Calendar')")
+    droid.wait_for_selector(".calendar-dialog .cal-agenda", timeout=10000)
+    droid.wait_for_function("!document.querySelector('.calendar-dialog .cal-tz').textContent.includes('Loading')")
+    droid.wait_for_timeout(300)
+    droid.screenshot(path=f"{SHOTS}/56-android-calendar.png")
+    droid.click(".calendar-dialog button[title='Close']")
+    droid.click("#raid-btn")
+    droid.click(".raid-list button.primary")
+    droid.wait_for_selector(".raid-dialog[open]")
+    droid.select_option(".raid-dialog select[aria-label='Repeat']", "2")
+    droid.wait_for_timeout(200)
+    droid.screenshot(path=f"{SHOTS}/57-android-plan-repeating.png")
+    droid.keyboard.press("Escape")
 
     browser.close()
 

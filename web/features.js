@@ -185,6 +185,20 @@ function canManageEvent(ev) {
   return ev.creator_id === state.me.id || can("manage_events", ev.channel_id);
 }
 
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+// 0 = Monday … 6 = Sunday, for a date in your time zone.
+const weekdayOf = (date) => (date.getDay() + 6) % 7;
+
+function repeatLabel(r) {
+  if (!r) return "";
+  const names = r.weekdays.map((d) => WEEKDAYS[d]);
+  const days = names.length > 1 ? `${names.slice(0, -1).join(", ")} & ${names[names.length - 1]}` : names[0];
+  return `${r.every_weeks === 1 ? "Weekly" : `Every ${r.every_weeks} weeks`} on ${days}`;
+}
+
+const signupsLocked = (ev) => !!ev.signups_close_at && Date.now() >= new Date(ev.signups_close_at).getTime();
+const benchOf = (ev) => ev.signups.filter((s) => s.status === "bench");
+
 function relativeTime(date) {
   const mins = Math.round((date - Date.now()) / 60000);
   if (Math.abs(mins) < 1) return "now";
@@ -202,7 +216,7 @@ function eventWhen(ev) {
   const t = (d) => d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   const now = Date.now();
   const status = now > end ? "finished" : now >= start ? "on now" : relativeTime(start);
-  return { text: `${day} · ${t(start)} – ${t(end)}`, status, live: now >= start && now <= end, over: now > end };
+  return { text: `${day} · ${t(start)} – ${t(end)}`, status, live: now >= start && now <= end, over: now > end, started: now >= start };
 }
 
 function signupName(s, ev) {
@@ -216,22 +230,36 @@ function signupName(s, ev) {
     node.classList.add("manageable");
     node.addEventListener("click", (e) => {
       const r = e.currentTarget.getBoundingClientRect();
-      const set = (status) => tryApi("PUT", `/api/events/${ev.id}/signup`, { ...s, status, user_id: s.user_id }).catch(() => {});
+      const set = (status) => setSignup(ev, { ...s, status, user_id: s.user_id });
+      const onRoster = s.status === "yes" || s.status === "late";
       openMenu(r.left, r.bottom + 4, [
-        s.status !== "yes" ? { label: "Confirm", onClick: () => set("yes") } : null,
+        onRoster ? null : { label: "Move to roster", onClick: () => set("yes") },
         s.status !== "bench" ? { label: "Move to bench", onClick: () => set("bench") } : null,
         s.status !== "tentative" ? { label: "Mark tentative", onClick: () => set("tentative") } : null,
         "sep",
-        { label: "Remove from raid", danger: true, onClick: () => tryApi("DELETE", `/api/events/${ev.id}/signups/${s.user_id}`).catch(() => {}) },
+        { label: "Remove from raid", danger: true, onClick: () => tryApi("DELETE", `/api/events/${ev.id}/signups/${s.user_id}`).then(applyEventReply, () => {}) },
       ]);
     });
   }
   return node;
 }
 
+function cancelRaid(ev, scope) {
+  const future = scope === "future";
+  const title = ev.series_id ? (future ? "Cancel this and future raids?" : "Cancel this raid?") : "Delete raid?";
+  const text = future
+    ? `"${ev.title}" on ${eventWhen(ev).text} and every later raid in the series will be cancelled, with their sign-ups.`
+    : `"${ev.title}" and all its sign-ups will be removed.`;
+  confirmBox(title, text, ev.series_id ? "Cancel raids" : "Delete").then((ok) => {
+    if (ok) tryApi("DELETE", `/api/events/${ev.id}?scope=${future ? "future" : "one"}`).catch(() => {});
+  });
+}
+
 function renderEventCard(m) {
   const ev = m.event;
   const when = eventWhen(ev);
+  const manager = canManageEvent(ev);
+  const locked = signupsLocked(ev);
   const mine = ev.signups.find((s) => s.user_id === state.me.id);
   const active = ev.signups.filter((s) => s.status === "yes" || s.status === "late");
   const column = (role, max) => {
@@ -246,38 +274,66 @@ function renderEventCard(m) {
     const people = ev.signups.filter((s) => s.status === status);
     return people.length ? el("div", { class: "ev-line" }, el("strong", {}, `${label} (${people.length}): `), ...people.flatMap((s, i) => [i ? ", " : "", signupName(s, ev)])) : null;
   };
+  const bench = benchOf(ev);
+  const benchBox = bench.length ? el("div", { class: "ev-bench" },
+    el("div", { class: "ev-bench-head" }, el("strong", {}, `🪑 Bench (${bench.length})`),
+      bench.some((s) => s.auto_bench) && !when.over ? el("span", { class: "muted small" }, "First in moves up when a spot opens") : null),
+    el("ol", {}, bench.map((s) => el("li", {},
+      signupName(s, ev),
+      el("span", { class: "ev-spec" }, ` ${ROLE_INFO[s.role]?.icon ?? ""} ${s.spec || ""}`.trimEnd(), s.auto_bench ? "" : " · by leader"))))) : null;
   const quick = (status, label) => el("button", {
-    class: `ev-btn${mine?.status === status ? " on" : ""}`,
+    class: `ev-btn${mine?.status === status || (status === "yes" && mine?.status === "bench") ? " on" : ""}`,
     onclick: (e) => status === "no" ? setSignup(ev, { status: "no" }) : openSignup(ev, e.currentTarget, status),
   }, label);
   const total = active.length;
   const slots = ev.max_tanks + ev.max_healers + ev.max_dps;
+  const closes = ev.signups_close_at ? new Date(ev.signups_close_at) : null;
+  const deadline = closes && !when.over ? el("div", { class: `ev-deadline${locked ? " locked" : ""}` },
+    locked
+      ? `🔒 Sign-ups closed${manager ? " · as raid leader you can still make changes" : ""}`
+      : `⏳ Sign-ups close ${relativeTime(closes)} (${closes.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })})`) : null;
+  const attendanceBtn = manager && when.started ? el("button", {
+    class: `ev-btn attendance${ev.attendance_taken ? " done" : ""}`,
+    onclick: () => openAttendanceDialog(ev),
+  }, ev.attendance_taken ? "📋 Attendance ✓" : "📋 Take attendance") : null;
+  const canSign = !when.over && (!locked || manager);
 
-  return el("div", { class: `event-card${when.live ? " live" : ""}${when.over ? " over" : ""}` },
+  return el("div", { class: `event-card${when.live ? " live" : ""}${when.over ? " over" : ""}${locked ? " locked" : ""}`, "data-event": ev.id },
     el("div", { class: "ev-head" },
       el("div", {},
-        el("div", { class: "ev-kicker" }, when.live ? "● HAPPENING NOW" : when.over ? "FINISHED" : "RAID SIGN-UP"),
+        el("div", { class: "ev-kicker" }, when.live ? "● HAPPENING NOW" : when.over ? "FINISHED" : "RAID SIGN-UP",
+          ev.repeat ? el("span", { class: "ev-repeat", title: "Repeating raid: each one has its own sign-ups" }, `🔁 ${repeatLabel(ev.repeat)}`) : null,
+          locked && !when.over ? el("span", { class: "ev-lock", title: "Sign-ups are closed" }, "🔒") : null),
         el("div", { class: "ev-title" }, ev.title),
         el("div", { class: "ev-when" }, `🗓 ${when.text}`, el("span", { class: "ev-rel" }, ` (${when.status})`))),
       el("div", { class: "ev-total", title: "Signed up / slots" }, el("strong", {}, total), `/${slots}`),
-      canManageEvent(ev) ? el("button", { class: "icon-btn small", title: "Raid options", onclick: (e) => {
+      manager ? el("button", { class: "icon-btn small", title: "Raid options", onclick: (e) => {
         const r = e.currentTarget.getBoundingClientRect();
+        const series = !!ev.series_id;
         openMenu(r.left, r.bottom + 4, [
-          { label: "Edit raid", onClick: () => openRaidDialog(ev) },
+          { label: series ? "Edit this raid" : "Edit raid", onClick: () => openRaidDialog(ev) },
+          series ? { label: "Edit this and future raids", onClick: () => openRaidDialog(ev, { scope: "future" }) } : null,
           { label: "Copy roster", onClick: () => copy(rosterText(ev), "Roster copied") },
+          when.started ? { label: "Take attendance", onClick: () => openAttendanceDialog(ev) } : null,
           "sep",
-          { label: "Delete raid", danger: true, onClick: async () => { if (await confirmBox("Delete raid?", `"${ev.title}" and all its sign-ups will be removed.`, "Delete")) tryApi("DELETE", `/api/events/${ev.id}`).catch(() => {}); } },
+          { label: series ? "Cancel this raid" : "Delete raid", danger: true, onClick: () => cancelRaid(ev, "one") },
+          series ? { label: "Cancel this and future raids", danger: true, onClick: () => cancelRaid(ev, "future") } : null,
         ]);
       } }, "⋯") : null),
     ev.description ? el("p", { class: "ev-desc" }, renderText(ev.description)) : null,
+    deadline,
     el("div", { class: "ev-cols" }, column("tank", ev.max_tanks), column("healer", ev.max_healers), column("dps", ev.max_dps)),
-    list("tentative", "Tentative"), list("bench", "Bench"), list("no", "Can't make it"),
-    when.over ? null : el("div", { class: "ev-actions" },
-      quick("yes", mine && mine.status !== "no" ? "Change sign-up" : "Sign up"),
-      quick("late", "Late"),
-      quick("tentative", "Tentative"),
-      quick("no", "Can't make it"),
-      mine ? el("button", { class: "ev-btn ghost", onclick: () => tryApi("DELETE", `/api/events/${ev.id}/signups/${state.me.id}`).catch(() => {}) }, "Withdraw") : null),
+    benchBox,
+    list("tentative", "Tentative"), list("no", "Can't make it"),
+    canSign || attendanceBtn ? el("div", { class: "ev-actions" },
+      canSign ? [
+        quick("yes", mine && mine.status !== "no" ? "Change sign-up" : "Sign up"),
+        quick("late", "Late"),
+        quick("tentative", "Tentative"),
+        quick("no", "Can't make it"),
+        mine ? el("button", { class: "ev-btn ghost", onclick: () => tryApi("DELETE", `/api/events/${ev.id}/signups/${state.me.id}`).then(applyEventReply, () => {}) }, "Withdraw") : null,
+      ] : null,
+      attendanceBtn) : null,
   );
 }
 
@@ -296,8 +352,21 @@ function rosterText(ev) {
 }
 
 async function setSignup(ev, body) {
-  const msg = await tryApi("PUT", `/api/events/${ev.id}/signup`, body).catch(() => null);
-  if (msg) applyMessageUpdate(msg);
+  const reply = await tryApi("PUT", `/api/events/${ev.id}/signup`, body).catch(() => null);
+  if (!reply) return;
+  applyEventReply(reply);
+  const me = reply.event?.signups.find((s) => s.user_id === state.me.id);
+  if (!body.user_id && me?.auto_bench) {
+    const place = benchOf(reply.event).filter((s) => s.auto_bench && s.role === me.role).findIndex((s) => s.user_id === state.me.id) + 1;
+    toast(`${ROLE_INFO[me.role].label} are full, so you're on the bench (#${place}). You'll move up automatically if a spot opens.`);
+  }
+}
+
+// A raid changed: its card in chat (if it has one) and any open calendar.
+function applyEventReply(reply) {
+  if (!reply) return;
+  if (reply.id) applyMessageUpdate(reply);
+  if (reply.event && typeof onEventChanged === "function") onEventChanged(reply.event);
 }
 
 function applyMessageUpdate(msg) {
@@ -315,6 +384,7 @@ function openSignup(ev, anchor, status) {
   const classes = el("div", { class: "su-classes" });
   const specs = el("div", { class: "su-specs" });
   const go = el("button", { class: "primary" }, STATUS_LABEL[status] === "Signed up" ? "Sign up" : `Sign up (${STATUS_LABEL[status].toLowerCase()})`);
+  const full = el("div", { class: "su-full muted small" });
   const paint = () => {
     classes.replaceChildren(...WOW_CLASSES.map((c) => el("button", {
       type: "button", class: `su-class${cls === c.name ? " on" : ""}`, style: `--cc:${c.colour}`, title: c.name,
@@ -326,6 +396,12 @@ function openSignup(ev, anchor, status) {
       onclick: () => { spec = n; role = r; paint(); },
     }, `${ROLE_INFO[r].icon} ${n}`)) : [el("span", { class: "muted small" }, "Pick your class first")]));
     go.disabled = !role;
+    // Heads-up when the role is already full (you'd go on the bench).
+    const max = { tank: ev.max_tanks, healer: ev.max_healers, dps: ev.max_dps }[role];
+    const taken = ev.signups.filter((s) => s.role === role && (s.status === "yes" || s.status === "late") && s.user_id !== state.me.id).length;
+    const alreadyIn = mine && mine.role === role && (mine.status === "yes" || mine.status === "late");
+    full.textContent = role && (status === "yes" || status === "late") && !alreadyIn && taken >= max
+      ? `🪑 ${ROLE_INFO[role].label} are full: you'll go on the bench and move up when a spot opens.` : "";
   };
   go.addEventListener("click", async () => {
     prefs.set("raid_class", cls); prefs.set("raid_spec", spec); prefs.set("raid_role", role);
@@ -337,7 +413,7 @@ function openSignup(ev, anchor, status) {
     el("h3", {}, ev.title),
     el("div", { class: "muted small" }, "Class"), classes,
     el("div", { class: "muted small" }, "Spec"), specs,
-    note, go), "above");
+    full, note, go), "above");
   // Line it up with the button rather than off to the side.
   const r = anchor.getBoundingClientRect();
   const above = r.top - pop.offsetHeight - 8;
@@ -348,12 +424,18 @@ function localInputValue(date) {
   const pad = (n) => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
+const localDateValue = (date) => localInputValue(date).slice(0, 10);
 
-function openRaidDialog(existing = null) {
+const DEADLINES = [[0, "Sign-ups stay open"], [60, "1 hour before"], [120, "2 hours before"], [240, "4 hours before"],
+  [720, "12 hours before"], [1440, "1 day before"], [2880, "2 days before"]];
+
+// Plan a raid (optionally on a given day), or edit one. For a raid in a
+// series, `scope: "future"` edits it and every later one.
+function openRaidDialog(existing = null, { scope = "one", date = null } = {}) {
   if (!existing && !state.channelId) return toast("Open a channel first.");
   const ev = existing;
-  const defaultStart = new Date();
-  defaultStart.setDate(defaultStart.getDate() + 1);
+  const defaultStart = date ? new Date(date) : new Date();
+  if (!date) defaultStart.setDate(defaultStart.getDate() + 1);
   defaultStart.setHours(20, 0, 0, 0);
   const title = el("input", { maxlength: 100, value: ev?.title ?? "", placeholder: "Raid night: Molten Core", required: true });
   const when = el("input", { type: "datetime-local", value: localInputValue(ev ? new Date(ev.starts_at) : defaultStart), required: true });
@@ -371,26 +453,73 @@ function openRaidDialog(existing = null) {
   });
   [tanks, healers, dps].forEach((n) => n.addEventListener("input", () => (size.value = "")));
   const desc = el("textarea", { rows: 3, maxlength: 1000, placeholder: "Which raid, difficulty, flasks/food, where to meet…" }, ev?.description ?? "");
+  const current = ev?.signup_deadline_minutes ?? 0;
+  const deadline = el("select", { class: "select", "aria-label": "Sign-ups close" },
+    (DEADLINES.some(([m]) => m === current) ? DEADLINES : [...DEADLINES, [current, `${Math.round(current / 60)} hours before`]])
+      .map(([m, label]) => el("option", { value: m, selected: m === current }, label)));
 
-  const dialog = el("dialog", { class: "raid-dialog" },
-    el("form", { method: "dialog" },
-      el("h2", {}, ev ? "Edit raid" : "Plan a raid"),
-      el("label", { class: "field" }, "Name", title),
-      el("div", { class: "raid-row" },
-        el("label", { class: "field" }, "Starts (your time)", when),
-        el("label", { class: "field" }, "Length", hours)),
+  // Repeating (new raids only).
+  const repeat = el("select", { class: "select", "aria-label": "Repeat" },
+    el("option", { value: 0 }, "Doesn't repeat"),
+    [1, 2, 3, 4].map((n) => el("option", { value: n }, n === 1 ? "Every week" : `Every ${n} weeks`)));
+  const days = new Set([weekdayOf(defaultStart)]);
+  let daysTouched = false;
+  const dayChips = el("div", { class: "day-chips", role: "group", "aria-label": "Repeats on" });
+  const paintDays = () => dayChips.replaceChildren(...WEEKDAYS.map((n, i) => el("button", {
+    type: "button", class: `day-chip${days.has(i) ? " on" : ""}`, "aria-pressed": days.has(i) ? "true" : "false",
+    onclick: () => { daysTouched = true; days.has(i) ? days.delete(i) : days.add(i); paintDays(); },
+  }, n)));
+  paintDays();
+  when.addEventListener("change", () => {
+    if (daysTouched || !when.value) return;
+    days.clear(); days.add(weekdayOf(new Date(when.value))); paintDays();
+  });
+  const ends = el("select", { class: "select", "aria-label": "Ends" },
+    el("option", { value: "count" }, "After a number of raids"),
+    el("option", { value: "until" }, "On a date"),
+    el("option", { value: "never" }, "Never"));
+  const count = el("input", { type: "number", min: 1, max: 104, value: 8, "aria-label": "Number of raids" });
+  const later = new Date(defaultStart); later.setMonth(later.getMonth() + 3);
+  const until = el("input", { type: "date", value: localDateValue(later), "aria-label": "Last day" });
+  const endsValue = el("label", { class: "field" }, "How many", count);
+  ends.addEventListener("change", () => {
+    endsValue.replaceChildren(...(ends.value === "count" ? ["How many", count] : ends.value === "until" ? ["Last day", until] : [el("span", { class: "muted small", style: "font-weight:400" }, "Until you cancel it")]));
+  });
+  const repeatBox = el("div", { class: "repeat-box", hidden: true },
+    el("div", { class: "field" }, "Repeats on", dayChips),
+    el("div", { class: "raid-row even" }, el("label", { class: "field" }, "Ends", ends), endsValue),
+    el("p", { class: "muted small", style: "margin:0" }, "Each raid gets its own sign-ups. Raids are made four weeks ahead and their sign-up card goes up in chat a week before."));
+  repeat.addEventListener("change", () => (repeatBox.hidden = repeat.value === "0"));
+
+  const heading = !ev ? "Plan a raid" : !ev.series_id ? "Edit raid" : scope === "future" ? "Edit this and future raids" : "Edit this raid";
+  const form = el("form", { method: "dialog" },
+    el("h2", {}, heading),
+    ev?.series_id ? el("p", { class: "muted small", style: "margin:0" }, scope === "future"
+      ? "Changes apply to this raid and every later one in the series. Moving the time moves them all by the same amount."
+      : "Only this raid changes; the rest of the series stays as it is.") : null,
+    el("label", { class: "field" }, "Name", title),
+    el("div", { class: "raid-row" },
+      el("label", { class: "field" }, "Starts (your time)", when),
+      el("label", { class: "field" }, "Length", hours)),
+    ev ? null : el("label", { class: "field" }, "Repeat", repeat),
+    ev ? null : repeatBox,
+    el("div", { class: "raid-row even" },
       el("label", { class: "field" }, "Size", size),
-      el("div", { class: "raid-row three" },
-        el("label", { class: "field" }, "🛡️ Tanks", tanks),
-        el("label", { class: "field" }, "✚ Healers", healers),
-        el("label", { class: "field" }, "⚔️ DPS", dps)),
-      el("label", { class: "field" }, "Details", desc),
-      el("p", { class: "muted small", style: "margin:0" }, "Everyone signed up gets an @mention 15 minutes before it starts."),
-      el("div", { class: "row" },
-        el("button", { type: "button", class: "ghost", onclick: () => dialog.close("") }, "Cancel"),
-        el("button", { type: "submit", class: "primary", value: "ok" }, ev ? "Save" : "Post raid")),
-    ),
+      el("label", { class: "field" }, "Sign-ups close", deadline)),
+    el("div", { class: "raid-row three" },
+      el("label", { class: "field" }, "🛡️ Tanks", tanks),
+      el("label", { class: "field" }, "✚ Healers", healers),
+      el("label", { class: "field" }, "⚔️ DPS", dps)),
+    el("label", { class: "field" }, "Details", desc),
+    el("p", { class: "muted small", style: "margin:0" }, "When a role fills up, extra sign-ups go on the bench and move up automatically. Everyone signed up gets an @mention 15 minutes before it starts."),
+    el("div", { class: "row" },
+      el("button", { type: "button", class: "ghost", onclick: () => dialog.close("") }, "Cancel"),
+      el("button", { type: "submit", class: "primary", value: "ok" }, ev ? "Save" : "Post raid")),
   );
+  form.addEventListener("submit", (e) => {
+    if (!ev && repeat.value !== "0" && !days.size) { e.preventDefault(); toast("Pick at least one day for it to repeat on."); }
+  });
+  const dialog = el("dialog", { class: "raid-dialog" }, form);
   dialog.addEventListener("close", async () => {
     const ok = dialog.returnValue === "ok";
     dialog.remove();
@@ -401,22 +530,43 @@ function openRaidDialog(existing = null) {
       starts_at: new Date(when.value).toISOString(),
       duration_minutes: Number(hours.value),
       max_tanks: Number(tanks.value), max_healers: Number(healers.value), max_dps: Number(dps.value),
+      signup_deadline_minutes: Number(deadline.value),
     };
     if (ev) {
-      const msg = await tryApi("PATCH", `/api/events/${ev.id}`, body).catch(() => null);
-      if (msg) applyMessageUpdate(msg);
-    } else {
-      const msg = await tryApi("POST", `/api/channels/${state.channelId}/events`, body).catch(() => null);
-      if (msg && !findMessage(msg.id)) {
-        state.messages.push(msg);
-        renderMessages.forceBottom = true;
-        renderMessages();
-      }
+      body.scope = scope;
+      applyEventReply(await tryApi("PATCH", `/api/events/${ev.id}`, body).catch(() => null));
+      return;
     }
+    if (repeat.value !== "0") {
+      body.repeat = {
+        weekdays: [...days].sort((a, b) => a - b),
+        every_weeks: Number(repeat.value),
+        count: ends.value === "count" ? Number(count.value) : null,
+        until: ends.value === "until" ? until.value : null,
+        time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+      };
+    }
+    const reply = await tryApi("POST", `/api/channels/${state.channelId}/events`, body).catch(() => null);
+    if (!reply) return;
+    if (reply.id && reply.channel_id === state.channelId && !findMessage(reply.id)) {
+      state.messages.push(reply);
+      renderMessages.forceBottom = true;
+      renderMessages();
+    }
+    if (body.repeat) toast(`Repeating raid planned: ${repeatLabel(reply.event.repeat)}.`);
+    else if (!reply.id) toast("Raid planned.");
+    applyEventReply(reply);
   });
   document.body.append(dialog);
   dialog.showModal();
   if (!ev) title.focus();
+}
+
+// Open a raid: jump to its card in chat, or show it in a window if its card isn't up yet.
+async function openRaid(ev) {
+  if (!ev.message_id) return openRaidCard(ev);
+  if (state.channelId !== ev.channel_id) await selectChannel(ev.channel_id);
+  setTimeout(() => jumpTo(ev.message_id), 300);
 }
 
 // The calendar button: upcoming raids in this outhouse, plus "Plan a raid".
@@ -424,21 +574,23 @@ async function openRaidList(anchor) {
   const box = el("div", { class: "raid-list" }, el("p", { class: "muted" }, "Loading…"));
   openPopover(anchor, box, "above");
   const events = await api("GET", `/api/guilds/${state.guildId}/events`).catch(() => []);
-  const rows = events.map((ev) => {
+  const rows = events.slice(0, 12).map((ev) => {
     const when = eventWhen(ev);
     const mine = ev.signups.find((s) => s.user_id === state.me.id);
     const ch = state.channels.find((c) => c.id === ev.channel_id);
-    return el("button", { class: "raid-row-btn", onclick: async () => {
-      closePopover();
-      if (state.channelId !== ev.channel_id) await selectChannel(ev.channel_id);
-      setTimeout(() => jumpTo(ev.message_id), 300);
-    } },
-      el("div", { class: "rl-title" }, ev.title, mine && mine.status !== "no" ? el("span", { class: "rl-mine" }, `✓ ${STATUS_LABEL[mine.status]}`) : null),
+    return el("button", { class: "raid-row-btn", onclick: () => { closePopover(); openRaid(ev); } },
+      el("div", { class: "rl-title" }, ev.title, ev.series_id ? el("span", { class: "rl-tag", title: repeatLabel(ev.repeat) }, "🔁") : null,
+        signupsLocked(ev) ? el("span", { class: "rl-tag", title: "Sign-ups closed" }, "🔒") : null,
+        mine && mine.status !== "no" ? el("span", { class: "rl-mine" }, `✓ ${STATUS_LABEL[mine.status]}`) : null),
       el("div", { class: "muted small" }, `${when.text} (${when.status})${ch ? ` · #${ch.name}` : ""}`));
   });
   box.replaceChildren(
-    el("h3", {}, "Upcoming raids"),
+    el("div", { class: "rl-head" }, el("h3", {}, "Upcoming raids"),
+      el("div", { class: "rl-tools" },
+        el("button", { type: "button", class: "rl-tool", onclick: () => { closePopover(); openCalendar(); } }, "📅 Calendar"),
+        el("button", { type: "button", class: "rl-tool", onclick: () => { closePopover(); openAttendanceTable(); } }, "📊 Attendance"))),
     ...(rows.length ? rows : [el("p", { class: "muted small" }, "Nothing planned yet.")]),
+    events.length > rows.length ? el("button", { type: "button", class: "link", onclick: () => { closePopover(); openCalendar(); } }, `+${events.length - rows.length} more in the calendar`) : null,
     can("send_messages", state.channelId) ? el("button", { class: "primary", onclick: () => { closePopover(); openRaidDialog(); } }, "＋ Plan a raid") : null,
   );
 }

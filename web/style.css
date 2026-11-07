@@ -692,3 +692,151 @@ dialog select { height: 40px; padding: 0 10px; border-radius: 8px; border: 1px s
   .poll-card { max-width: none; }
   .composer .tool { width: 32px; flex-basis: 32px; }
 }
+
+/* ---------- Raid planner extras: repeat, deadline, bench, calendar, attendance ---------- */
+.ev-kicker { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ev-repeat { font-weight: 600; letter-spacing: 0; color: var(--muted); font-size: 11px; background: var(--raised); border-radius: 6px; padding: 1px 6px; }
+.ev-lock { font-size: 12px; }
+.ev-deadline { font-size: 13px; color: var(--glow); }
+.ev-deadline.locked { color: var(--muted); background: var(--night); border: 1px dashed var(--line); border-radius: 8px; padding: 6px 10px; }
+.event-card.locked:not(.over) { border-left-color: var(--muted); }
+.ev-bench { background: var(--night); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+.ev-bench-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin-bottom: 4px; }
+.ev-bench ol { margin: 0; padding-left: 22px; display: grid; gap: 2px; }
+.ev-bench li::marker { color: var(--muted); }
+.ev-btn.attendance { margin-left: auto; border-color: var(--glow); color: var(--glow); }
+.ev-btn.attendance.done { border-color: var(--line); color: var(--muted); }
+.su-full { color: var(--glow); }
+.su-full:empty { display: none; }
+.raid-row.even { grid-template-columns: 1fr 1fr; }
+.repeat-box { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--night); }
+.repeat-box[hidden] { display: none; }
+.raid-dialog input[type=date] { height: 38px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); color-scheme: dark; }
+.day-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.day-chip { min-width: 44px; height: 34px; border: 1px solid var(--line); background: var(--panel); border-radius: 17px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.day-chip.on { background: var(--ember); border-color: var(--ember); color: #1a0d05; }
+.rl-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 2px; }
+.rl-head h3 { margin: 0; }
+.rl-tools { display: flex; gap: 4px; }
+.rl-tool { border: 1px solid var(--line); background: var(--night); border-radius: 8px; padding: 4px 8px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.rl-tool:hover { border-color: var(--ember); }
+.rl-tag { margin-left: 6px; font-size: 12px; }
+.raid-list { width: 360px; max-width: calc(100vw - 32px); }
+
+dialog.raid-host { padding: 16px; }
+dialog.raid-host .popover, dialog.raid-host .menu { z-index: 60; }
+dialog.raid-host #toast { z-index: 70; }
+.raid-close { flex: 0 0 auto; font-size: 16px; }
+dialog.raid-card-dialog { width: min(700px, 96vw); }
+.raid-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.raid-card-body .event-card { max-width: none; margin: 0; }
+
+dialog.calendar-dialog { width: min(1180px, 96vw); height: min(800px, 92vh); max-width: none; max-height: none; }
+dialog.calendar-dialog[open] { display: flex; flex-direction: column; }
+.cal { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
+.cal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.cal-nav, .cal-actions { display: flex; align-items: center; gap: 6px; }
+.cal-nav h2 { margin: 0 4px; font-size: 18px; min-width: 150px; text-align: center; }
+.cal-nav .icon-btn { font-size: 22px; }
+.cal-today { height: 34px; padding: 0 12px; border: 1px solid var(--line); background: var(--night); border-radius: 8px; font-size: 13px; font-weight: 600; }
+.cal-today:hover { border-color: var(--ember); }
+.cal-plan { height: 34px; padding: 0 14px; border-radius: 8px; }
+.cal-tz { margin-top: -2px; }
+.cal-wrap { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 12px; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-template-rows: auto repeat(6, minmax(0, 1fr)); gap: 4px; min-height: 0; }
+.cal-wd { font-size: 11px; font-weight: 700; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; padding: 0 6px 2px; }
+.cal-day { min-height: 0; overflow: hidden; display: flex; flex-direction: column; align-items: stretch; gap: 2px; text-align: left; padding: 4px; border: 1px solid var(--line); background: var(--night); border-radius: 8px; }
+.cal-day:hover { border-color: #ff6b3588; }
+.cal-day.other { opacity: .45; }
+.cal-day.selected { border-color: var(--ember); box-shadow: inset 0 0 0 1px var(--ember); }
+.cal-num { font-size: 12px; font-weight: 700; color: var(--muted); width: 22px; height: 22px; display: grid; place-items: center; border-radius: 11px; flex: 0 0 auto; }
+.cal-day.today .cal-num { background: var(--ember); color: #1a0d05; }
+.cal-chip { font-size: 11px; line-height: 16px; padding: 0 5px; border-radius: 4px; background: #ff6b3526; border-left: 3px solid var(--ember); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 0 auto; }
+.cal-chip.mine { background: #4ade8026; border-left-color: var(--vacant); }
+.cal-chip.over { opacity: .6; }
+.cal-chip-time { color: var(--muted); }
+.cal-more { font-size: 11px; color: var(--muted); padding-left: 4px; }
+.cal-daypanel { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 2px; }
+.cal-daypanel h3 { margin: 0; font-size: 15px; }
+.cal-daypanel .event-card { margin: 0; max-width: none; }
+.cal-daypanel .ev-cols { grid-template-columns: 1fr; }
+.cal-plan-day { border: 1px dashed var(--line); background: none; border-radius: 10px; padding: 10px; color: var(--glow); font-weight: 600; flex: 0 0 auto; }
+.cal-plan-day:hover { border-color: var(--ember); }
+.cal-agenda { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+.cal-agenda-day h3 { margin: 0 0 6px; font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: center; letter-spacing: .02em; }
+.cal-agenda-day.today h3 { color: var(--ember); }
+.cal-today-tag { font-size: 11px; background: var(--ember); color: #1a0d05; border-radius: 6px; padding: 0 6px; }
+.cal-agenda-item { display: grid; gap: 6px; margin-bottom: 6px; }
+.cal-agenda-item .event-card { margin: 0; }
+.cal-agenda-row { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; align-items: center; text-align: left; padding: 10px 12px; border: 1px solid var(--line); border-left: 4px solid var(--ember); border-radius: 10px; background: var(--night); }
+.cal-agenda-item.open .cal-agenda-row { border-color: var(--ember); }
+.cal-agenda-time { font-weight: 700; font-size: 13px; color: var(--glow); }
+.cal-agenda-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.cal-agenda-row .rl-mine { grid-column: 2 / 4; font-size: 12px; }
+.cal-empty { text-align: center; padding: 24px 0; }
+
+dialog.attendance-dialog { width: min(640px, 96vw); }
+dialog.attendance-dialog[open] { display: flex; flex-direction: column; gap: 10px; max-height: 92vh; }
+.att-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.att-head h2 { margin: 0; }
+.att-head-tools { display: flex; gap: 6px; align-items: center; }
+.att-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.att-tools .ghost { height: 36px; }
+.att-list { display: grid; gap: 6px; overflow-y: auto; min-height: 0; flex: 1; }
+.att-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--night); }
+.att-who { display: grid; min-width: 0; }
+.att-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-choices { display: flex; gap: 4px; }
+.att-choice { display: inline-flex; align-items: center; gap: 4px; height: 32px; padding: 0 10px; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.att-choice.on.present { background: #4ade80; border-color: #4ade80; color: #062b12; }
+.att-choice.on.late { background: var(--glow); border-color: var(--glow); color: #2b1a02; }
+.att-choice.on.absent { background: var(--occupied); border-color: var(--occupied); color: #2b0606; }
+.att-choice.on.benched { background: #93a4c3; border-color: #93a4c3; color: #0d1424; }
+.attendance-dialog select { width: 100%; }
+.att-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: var(--line); vertical-align: middle; }
+.att-dot.present { background: #4ade80; }
+.att-dot.late { background: var(--glow); }
+.att-dot.absent { background: var(--occupied); }
+.att-dot.benched { background: #93a4c3; }
+.att-dot.none { background: none; border: 1px dashed var(--line); }
+.att-legend { display: flex; gap: 14px; flex-wrap: wrap; }
+.att-legend > span { display: inline-flex; gap: 6px; align-items: center; }
+
+dialog.attendance-table-dialog { width: min(1040px, 96vw); }
+dialog.attendance-table-dialog[open] { display: flex; flex-direction: column; gap: 10px; max-height: 92vh; }
+.att-table-wrap { overflow: auto; min-height: 0; flex: 1; border: 1px solid var(--line); border-radius: 10px; }
+.att-table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13px; }
+.att-table th, .att-table td { padding: 6px 10px; text-align: center; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.att-table thead th { position: sticky; top: 0; background: var(--raised); font-size: 12px; color: var(--muted); z-index: 1; }
+.att-table th.sortable { cursor: pointer; user-select: none; }
+.att-table th.sorted { color: var(--text); }
+.att-table th.name, .att-table td.name { text-align: left; position: sticky; left: 0; background: var(--panel); z-index: 1; }
+.att-table thead th.name { z-index: 2; background: var(--raised); }
+.att-table th.raid-col { font-weight: 600; }
+.att-table td.raid-col { padding: 6px; }
+.att-member { display: inline-flex; align-items: center; gap: 8px; border: 0; background: none; padding: 0; font-weight: 600; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.att-member .avatar { font-size: 11px; }
+.pct-bar { position: relative; width: 70px; height: 20px; border-radius: 6px; background: linear-gradient(90deg, #ff6b3555 var(--pct), var(--night) var(--pct)); display: grid; place-items: center; font-weight: 700; margin: 0 auto; }
+.att-empty { padding: 24px; text-align: center; }
+.pc-attendance .pca-row { display: flex; gap: 8px; align-items: baseline; }
+.pca-pct { font-size: 20px; color: var(--glow); }
+.pca-dots { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+
+@media (max-width: 760px) {
+  dialog.calendar-dialog { width: 100vw; height: 100dvh; max-width: none; max-height: none; border-radius: 0; padding: calc(var(--safe-top) + 10px) 10px calc(var(--safe-bottom) + 10px); overflow: hidden; }
+  .cal-head { flex-wrap: nowrap; }
+  .cal-nav { gap: 2px; min-width: 0; }
+  .cal-nav h2 { font-size: 16px; min-width: 0; white-space: nowrap; }
+  .cal-actions .cal-today { display: none; }
+  .cal-nav .cal-today { padding: 0 8px; }
+  .cal-plan { padding: 0 10px; }
+  dialog.raid-card-dialog { padding: 10px; }
+  dialog.attendance-dialog, dialog.attendance-table-dialog { width: 100vw; max-width: none; max-height: none; height: 100dvh; border-radius: 0; padding: calc(var(--safe-top) + 12px) 12px calc(var(--safe-bottom) + 12px); }
+  dialog.attendance-dialog[open], dialog.attendance-table-dialog[open] { max-height: none; }
+  .att-choices { width: 100%; }
+  .att-choice { flex: 1; justify-content: center; padding: 0 4px; }
+  .att-choice .att-lbl { font-size: 11px; }
+  .att-head-tools .select { max-width: 140px; }
+  .raid-row.even { grid-template-columns: 1fr 1fr; }
+  .raid-list { width: min(360px, calc(100vw - 32px)); }
+}
