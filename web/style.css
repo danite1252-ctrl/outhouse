@@ -491,7 +491,10 @@ html.android-app { --safe-top: max(env(safe-area-inset-top, 0px), 32px); --safe-
   .members { transform: translateX(calc(100% + 8px)); }
   dialog.settings { padding-top: var(--safe-top); padding-bottom: var(--safe-bottom); }
   dialog.settings .settings-main { flex: 1; min-height: 0; overflow-y: auto; }
-  dialog.settings .close-x { top: calc(var(--safe-top) + 8px); }
+  dialog.settings .close-x { top: calc(var(--safe-top) + 8px); background: var(--night); z-index: 2; }
+  dialog.settings .settings-nav { padding-right: 52px; }
+  dialog.settings .settings-nav button { white-space: nowrap; flex: 0 0 auto; }
+  .composer textarea::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   dialog:not(.settings) { max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 16px); overflow-y: auto; }
   .popover { max-width: calc(100vw - 16px); max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 16px); overflow-y: auto; }
 }
