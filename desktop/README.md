@@ -48,7 +48,11 @@ There are two ways to have Outhouse on an Android phone:
 2. **The Android app (APK, experimental).** On your phone, sign in to GitHub in
    the browser, open the repo's **Releases** → **Outhouse (latest build)** and
    tap `Outhouse-Android.apk` (Android asks once to allow installing apps from
-   your browser). It's the same app as on Windows, without
+   your browser). Updates install over the top. If Android says **"App not
+   installed"**, your copy is from the first test builds (version 0.2.14 or
+   older, signed with a throwaway key): uninstall Outhouse once, then install
+   the new APK; from then on updates install normally. It runs on 64-bit and
+   32-bit ARM phones. It's the same app as on Windows, without
    the tray or in-game push to talk. Voice in this version depends on
    Android's built-in web view allowing the microphone; if voice doesn't work
    in it, use option 1.

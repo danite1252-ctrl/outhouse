@@ -210,7 +210,9 @@ so that's the redirect URL to register. (Running it on your PC instead? Set
 `PUBLIC_URL=http://localhost:8080` in `.env` and register
 `http://localhost:8080/api/bnet/callback`.) Advanced: `BNET_PROFILE_NAMESPACES` (default
 `profile-classic1x-{region},profile-classic-{region}`) picks which Blizzard
-character lists to try. The Battle.net sign-in token is only used once and
+character lists to try; imported characters count as WoW: Forever (as TBC if the
+namespace mentions tbc/anniversary) unless you map them, e.g.
+`BNET_NAMESPACE_GAMES=profile-classic1x-{region}=era,profile-classic-{region}=tbc`. The Battle.net sign-in token is only used once and
 isn't stored.
 
 ## If something's off
