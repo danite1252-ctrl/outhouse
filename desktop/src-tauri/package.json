@@ -1,0 +1,11 @@
+{
+  "name": "outhouse-app",
+  "private": true,
+  "description": "Build tool for the Outhouse Windows and Android apps (the Android build calls `npm run tauri`).",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

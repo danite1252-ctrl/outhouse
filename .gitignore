@@ -5,3 +5,5 @@
 /tools
 /desktop/src-tauri/target
 /desktop/src-tauri/gen
+/desktop/src-tauri/node_modules
+/desktop/src-tauri/package-lock.json

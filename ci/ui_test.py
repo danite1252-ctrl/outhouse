@@ -70,7 +70,7 @@ with sync_playwright() as p:
     browser = p.chromium.launch()
 
     # ---- Desktop ----
-    page = browser.new_page(viewport={"width": 1400, "height": 900})
+    page = browser.new_page(viewport={"width": 1280, "height": 800})
     watch(page, "desktop")
     page.add_init_script(f"localStorage.setItem('outhouse_token', {json.dumps(TOKEN)}); localStorage.setItem('outhouse_guild', {json.dumps(guild['id'])}); localStorage.setItem('outhouse_channel_{guild['id']}', {json.dumps(chan['id'])});")
     page.goto(BASE + "/")
@@ -135,7 +135,7 @@ with sync_playwright() as p:
     phone.click("#nav-toggle")
     phone.wait_for_timeout(400)
     phone.screenshot(path=f"{SHOTS}/09-phone-channels.png")
-    phone.click(".mobile-scrim")
+    phone.click(".mobile-scrim", position={"x": 370, "y": 420})
     phone.click("#members-toggle")
     phone.wait_for_timeout(400)
     phone.screenshot(path=f"{SHOTS}/10-phone-members.png")
