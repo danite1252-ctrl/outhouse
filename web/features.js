@@ -176,7 +176,6 @@ const RAID_SIZES = [
   { label: "40-player raid", tanks: 5, healers: 10, dps: 25 },
   { label: "20-player raid", tanks: 3, healers: 5, dps: 12 },
   { label: "10-player raid", tanks: 2, healers: 3, dps: 5 },
-  { label: "Dungeon (5)", tanks: 1, healers: 1, dps: 3 },
 ];
 
 function canManageEvent(ev) {
