@@ -72,6 +72,57 @@ fcode = api("POST", f"/api/guilds/{family['id']}/invites", None, dave["token"])[
 api("POST", f"/api/invites/{fcode}", None, TOKEN)
 api("POST", f"/api/channels/{fchan['id']}/messages", {"content": f"Dinner on Sunday <@{CAROL}>?"}, dave["token"])
 
+# ---- Batch 2: DMs, threads, polls, custom emoji ----
+import struct
+import zlib
+
+
+def make_png(size=32):
+    """A little orange smiley, so custom emoji look like something in screenshots."""
+    c = (size - 1) / 2
+    rows = []
+    for y in range(size):
+        row = bytearray([0])
+        for x in range(size):
+            dx, dy = x - c, y - c
+            d = (dx * dx + dy * dy) ** 0.5
+            if d > size / 2 - 1:
+                row += bytes((0, 0, 0, 0))
+            elif (abs(abs(dx) - 6) < 2.5 and abs(dy + 4) < 3) or (4 < dy < 8 and abs(dx) < 7):
+                row += bytes((40, 20, 10, 255))
+            else:
+                row += bytes((255, 179, 71, 255))
+        rows.append(bytes(row))
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(b"".join(rows))) + chunk(b"IEND", b""))
+
+
+def upload(path, fields, files, token):
+    boundary = "----outhouse" + suffix
+    body = b""
+    for k, v in fields.items():
+        body += f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
+    for k, (fname, data, ctype) in files.items():
+        body += (f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"; filename="{fname}"\r\n'
+                 f"Content-Type: {ctype}\r\n\r\n").encode() + data + b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+    req = urllib.request.Request(BASE + path, data=body, method="POST")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    req.add_header("Authorization", f"Bearer {token}")
+    with urllib.request.urlopen(req) as res:
+        return json.loads(res.read().decode())
+
+
+erin = api("POST", "/api/auth/register", {"username": f"erin{suffix}", "password": "password123", "display_name": "Erin"})
+api("POST", f"/api/invites/{code}", None, erin["token"])
+upload(f"/api/guilds/{guild['id']}/emojis", {"name": "pog"}, {"file": ("pog.png", make_png(), "image/png")}, TOKEN)
+api("POST", f"/api/channels/{chan['id']}/messages", {"content": "Who's bringing fire resist gear?"}, dave["token"])
+api("POST", f"/api/channels/{chan['id']}/messages", {"content": ":pog: gg on the Rag kill"}, dave["token"])
+
 errors = []
 
 
@@ -201,6 +252,144 @@ with sync_playwright() as p:
     page.press("#search-input", "Escape")
     page.wait_for_selector(".search-panel", state="detached")
 
+    # ---- Scroll-back: older messages load at the top ----
+    page.click(".channel:has-text('general')")
+    page.wait_for_selector("#messages article.msg:has-text('raid at 8')", timeout=10000)
+    assert page.query_selector("#messages article.msg:has-text('Ancient lore')") is None
+    page.wait_for_timeout(500)
+    page.evaluate("document.getElementById('messages').scrollTop = 0")
+    page.wait_for_selector("#messages article.msg:has-text('Ancient lore')", timeout=10000)
+    page.wait_for_selector("#messages .history-start")
+    top = page.evaluate("document.getElementById('messages').scrollTop")
+    assert top > 100, f"scroll position jumped to {top}"
+    page.screenshot(path=f"{SHOTS}/19-scrollback.png")
+
+    # ---- Threads ----
+    page.click(".channel:has-text('raids')")
+    fire = "#messages article.msg:has-text('fire resist')"
+    page.wait_for_selector(fire, timeout=10000)
+    page.hover(fire)
+    page.click(f"{fire} .msg-actions .thread-btn")
+    page.wait_for_selector("dialog[open] input")
+    page.fill("dialog[open] input", "Fire resist gear")
+    page.click("dialog[open] button.primary")
+    box = ".thread-panel .thread-composer textarea"
+    page.wait_for_selector(box, timeout=10000)
+    page.fill(box, "I've got 5 pieces, need the cloak")
+    page.press(box, "Enter")
+    page.wait_for_selector(".thread-panel article.tmsg:has-text('need the cloak')", timeout=10000)
+    page.wait_for_selector("#messages .thread-link:has-text('1 reply')", timeout=10000)
+    thread_id = page.evaluate("thread.info.id")
+    api("POST", f"/api/channels/{chan['id']}/messages", {"content": "Nice, the Onyxia cloak is a must", "thread_id": thread_id}, dave["token"])
+    page.wait_for_selector(".thread-panel article.tmsg:has-text('Onyxia cloak')", timeout=10000)
+    page.wait_for_selector("#messages .thread-link:has-text('2 replies')", timeout=10000)
+    assert page.query_selector("#messages article.msg:has-text('Onyxia cloak is a must')") is None, "thread reply leaked into the channel"
+    page.screenshot(path=f"{SHOTS}/20-thread-panel.png")
+    page.click("#threads-btn")
+    page.wait_for_selector(".threads-panel .thread-card:has-text('Fire resist gear')", timeout=10000)
+    page.screenshot(path=f"{SHOTS}/21-threads-list.png")
+    page.click(".threads-panel .thread-card:has-text('Fire resist gear')")
+    page.wait_for_selector(".thread-panel article.tmsg:has-text('Onyxia cloak')", timeout=10000)
+    page.click(".thread-panel .sp-head button[title='Close']")
+
+    # ---- Polls ----
+    page.click("#poll-btn")
+    page.wait_for_selector(".poll-dialog[open]")
+    page.fill(".poll-dialog input[aria-label='Question']", "Which raid this week?")
+    page.fill(".poll-dialog .poll-edit-row >> nth=0 >> input", "Molten Core")
+    page.fill(".poll-dialog .poll-edit-row >> nth=1 >> input", "Blackwing Lair")
+    page.click(".poll-dialog button:has-text('Add option')")
+    page.fill(".poll-dialog .poll-edit-row >> nth=2 >> input", "Onyxia")
+    page.check(".poll-dialog .check-row input")
+    page.screenshot(path=f"{SHOTS}/22-poll-dialog.png")
+    page.click(".poll-dialog button[type=submit]")
+    poll = "#messages .poll-card:has-text('Which raid this week?')"
+    page.wait_for_selector(poll, timeout=10000)
+    page.click(f"{poll} .poll-opt:has-text('Blackwing Lair')")
+    page.wait_for_selector(f"{poll} .poll-opt.mine:has-text('Blackwing Lair')", timeout=10000)
+    poll_id = page.evaluate("[...state.messages].reverse().find((m) => m.poll).id")
+    api("PUT", f"/api/channels/{chan['id']}/polls/{poll_id}/votes", {"options": [1, 2]}, dave["token"])
+    page.wait_for_selector(f"{poll} .poll-foot:has-text('2 votes')", timeout=10000)
+    page.wait_for_selector(f"{poll} .poll-opt:has-text('Blackwing Lair') .poll-count:has-text('2 · 100%')", timeout=10000)
+    page.screenshot(path=f"{SHOTS}/23-poll.png")
+    page.click(f"{poll} button:has-text('See votes')")
+    page.wait_for_selector(".poll-voters .pv-person:has-text('Dave')")
+    page.keyboard.press("Escape")
+    # /poll opens the same dialog with the question filled in.
+    page.fill("#composer-input", "/poll Pizza or pasta?")
+    page.press("#composer-input", "Enter")
+    page.wait_for_selector(".poll-dialog[open]")
+    assert page.input_value(".poll-dialog input[aria-label='Question']") == "Pizza or pasta?"
+    page.keyboard.press("Escape")
+    page.wait_for_selector(".poll-dialog", state="detached")
+
+    # ---- Custom emoji ----
+    page.wait_for_selector("#messages .msg-text img.custom-emoji[alt=':pog:']", timeout=10000)
+    pog = "#messages article.msg:has(img.custom-emoji)"
+    page.hover(pog)
+    page.click(f"{pog} .msg-actions button[title='Add reaction']")
+    page.click(".emoji-tabs .custom-tab")
+    page.wait_for_selector(".custom-pane button[title=':pog:']")
+    page.screenshot(path=f"{SHOTS}/24-emoji-picker.png")
+    page.click(".custom-pane button[title=':pog:']")
+    page.wait_for_selector(f"{pog} .reaction.me img.custom-emoji", timeout=10000)
+    page.click("#emoji-btn")
+    page.click(".emoji-tabs .custom-tab")
+    page.click(".custom-pane button[title=':pog:']")
+    assert ":pog:" in page.input_value("#composer-input")
+    page.press("#composer-input", "Enter")
+    page.wait_for_selector("#messages article.msg >> nth=-1 >> img.custom-emoji", timeout=10000)
+    page.evaluate("openSettings('emoji')")
+    page.wait_for_selector(".emoji-item:has-text(':pog:')", timeout=10000)
+    page.screenshot(path=f"{SHOTS}/25-emoji-settings.png")
+    page.keyboard.press("Escape")
+
+    # ---- Direct messages ----
+    page.click("#messages .msg-author:has-text('Dave') >> nth=0")
+    page.wait_for_selector(".profile-card .pc-message")
+    page.click(".profile-card .pc-message")
+    page.wait_for_selector("#app.home-mode", timeout=10000)
+    page.wait_for_selector("#dm-list .dm-row.active:has-text('Dave')", timeout=10000)
+    page.fill("#composer-input", "G'day Dave, got a sec?")
+    page.press("#composer-input", "Enter")
+    page.wait_for_selector("#messages article.msg:has-text('got a sec')", timeout=10000)
+    dm_id = page.evaluate("state.channelId")
+    api("POST", f"/api/channels/{dm_id}/messages", {"content": "Yeah mate, what's up?"}, dave["token"])
+    page.wait_for_selector("#messages article.msg:has-text('Yeah mate')", timeout=10000)
+    # A DM while you're in an outhouse: the Home button gets a count.
+    page.click(".guild[title='UI Test Guild']")
+    page.wait_for_selector("#app:not(.home-mode)")
+    page.wait_for_selector(".channel:has-text('raids')")
+    api("POST", f"/api/channels/{dm_id}/messages", {"content": "Bring snacks for the raid"}, dave["token"])
+    page.wait_for_function("document.querySelector('#home-btn .mention-badge')?.textContent === '1'", timeout=10000)
+    page.screenshot(path=f"{SHOTS}/26-dm-badge.png")
+    page.click("#home-btn")
+    page.wait_for_selector("#messages article.msg:has-text('Bring snacks')", timeout=10000)
+    page.wait_for_selector("#home-btn .mention-badge", state="detached", timeout=10000)
+    # Group DM.
+    page.click("#new-dm")
+    page.wait_for_selector(".people-dialog[open] .person-row")
+    page.click(".people-dialog .person-row:has-text('Dave')")
+    page.click(".people-dialog .person-row:has-text('Erin')")
+    page.fill(".people-dialog input[placeholder='Group name (optional)']", "Raid leads")
+    page.screenshot(path=f"{SHOTS}/27-new-group.png")
+    page.click(".people-dialog button[type=submit]")
+    page.wait_for_selector("#dm-list .dm-row.active:has-text('Raid leads')", timeout=10000)
+    page.fill("#composer-input", "Group chat for the raid leads")
+    page.press("#composer-input", "Enter")
+    page.wait_for_selector("#messages article.msg:has-text('Group chat for the raid leads')", timeout=10000)
+    page.screenshot(path=f"{SHOTS}/28-group-dm.png")
+    page.click("#dm-tools")
+    page.click(".menu button:has-text('Rename group')")
+    page.fill("dialog[open] input", "Officers")
+    page.click("dialog[open] button.primary")
+    page.wait_for_selector("#dm-list .dm-row:has-text('Officers')", timeout=10000)
+    page.click("#dm-tools")
+    page.click(".menu button:has-text('Leave group')")
+    page.click("dialog[open] button.primary")
+    page.wait_for_selector("#dm-list .dm-row:has-text('Officers')", state="detached", timeout=10000)
+    page.wait_for_selector("#dm-list .dm-row.active:has-text('Dave')", timeout=10000)
+
     # ---- Phone ----
     phone = browser.new_page(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
     watch(phone, "phone")
@@ -227,6 +416,32 @@ with sync_playwright() as p:
     phone.wait_for_selector(".pins-panel .sp-empty", timeout=10000)
     phone.screenshot(path=f"{SHOTS}/18-phone-pins.png")
     phone.click(".pins-panel .sp-head button[title='Close']")
+    # Poll and thread on a phone.
+    phone.wait_for_selector("#messages .poll-card", timeout=10000)
+    phone.evaluate("document.querySelector('#messages .poll-card').scrollIntoView({block: 'center'})")
+    phone.screenshot(path=f"{SHOTS}/29-phone-poll.png")
+    phone.click("#threads-btn")
+    phone.wait_for_selector(".threads-panel .thread-card", timeout=10000)
+    phone.click(".threads-panel .thread-card:has-text('Fire resist gear')")
+    phone.wait_for_selector(".thread-panel article.tmsg:has-text('Onyxia cloak')", timeout=10000)
+    phone.screenshot(path=f"{SHOTS}/30-phone-thread.png")
+    phone.click(".thread-panel .sp-head button[title='Close']")
+    # DMs on a phone: Home is at the top of the outhouse list.
+    phone.click("#nav-toggle")
+    phone.wait_for_timeout(400)
+    phone.click("#home-btn")
+    phone.wait_for_selector("#dm-list .dm-row:has-text('Dave')", timeout=10000)
+    phone.wait_for_timeout(300)
+    phone.screenshot(path=f"{SHOTS}/31-phone-dm-list.png")
+    phone.click("#dm-list .dm-row:has-text('Dave')")
+    phone.wait_for_selector("#messages article.msg:has-text('Bring snacks')", timeout=10000)
+    phone.wait_for_timeout(400)
+    phone.screenshot(path=f"{SHOTS}/32-phone-dm-chat.png")
+    phone.click("#emoji-btn")
+    phone.click(".emoji-tabs .custom-tab")
+    phone.wait_for_selector(".custom-pane button[title=':pog:']")
+    phone.screenshot(path=f"{SHOTS}/33-phone-emoji-picker.png")
+    phone.keyboard.press("Escape")
 
     # ---- Android app (draws under the status bar and navigation buttons) ----
     droid = browser.new_page(viewport={"width": 393, "height": 852}, is_mobile=True, has_touch=True)
@@ -238,6 +453,13 @@ with sync_playwright() as p:
     droid.evaluate("openUserSettings('voice')")
     droid.wait_for_timeout(600)
     droid.screenshot(path=f"{SHOTS}/12-android-settings.png")
+    droid.keyboard.press("Escape")
+    droid.click("#nav-toggle")
+    droid.wait_for_timeout(400)
+    droid.click("#home-btn")
+    droid.wait_for_selector("#dm-list .dm-row", timeout=10000)
+    droid.wait_for_timeout(300)
+    droid.screenshot(path=f"{SHOTS}/34-android-dms.png")
 
     browser.close()
 

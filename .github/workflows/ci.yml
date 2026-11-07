@@ -47,6 +47,8 @@ jobs:
           node --check web/app.js
           node --check web/features.js
           node --check web/chat-extras.js
+          node --check web/dms.js
+          node --check web/threads.js
           node --check web/sw.js
           node --check web/bots/dice-bot.mjs
       - name: Smoke test (real server + Postgres)

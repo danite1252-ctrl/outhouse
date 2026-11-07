@@ -46,7 +46,10 @@ function profileCard(p, { preview = false } = {}) {
       preview ? null : el("div", { class: "pc-actions" },
         p.id === state.me.id
           ? el("button", { class: "ghost", onclick: () => { closePopover(); openUserSettings("look"); } }, "Edit profile")
-          : el("button", { class: "ghost", onclick: () => { closePopover(); input.value += `@${shownName} `; input.focus(); autosize(); } }, "Mention")),
+          : [
+            p.bot ? null : el("button", { class: "primary pc-message", onclick: () => { closePopover(); openDmWith(p.id); } }, "Message"),
+            state.guildId ? el("button", { class: "ghost", onclick: () => { closePopover(); input.value += `@${shownName} `; input.focus(); autosize(); } }, "Mention") : null,
+          ]),
     ),
   );
   return card;

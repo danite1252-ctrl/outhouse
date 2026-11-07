@@ -312,10 +312,11 @@ document.addEventListener("contextmenu", (e) => {
   if (handler) handler(e, target);
 });
 
-function emojiPicker(anchor, onPick) {
+// `forText`: custom emoji go in as :name: (the server swaps in the picture).
+function emojiPicker(anchor, onPick, { forText = false } = {}) {
   const grid = el("div", { class: "emoji-grid" },
     EMOJI.map((e) => el("button", { title: e, onclick: () => { closePopover(); onPick(e); } }, e)));
-  openPopover(anchor, grid);
+  openPopover(anchor, typeof customEmojiTabs === "function" ? customEmojiTabs(grid, onPick, forText) : grid);
 }
 
 // Simple dialog returning the entered text (or null).
@@ -448,9 +449,11 @@ function handleEvent({ t, d }) {
       renderMe();
       renderGuilds();
       loadUnread();
+      onReady();
       const saved = localStorage.getItem("outhouse_guild");
       const pick = state.guilds.find((g) => g.id === (state.guildId || saved)) || state.guilds[0];
-      if (pick) selectGuild(pick.id, state.channelId);
+      if (state.home || (saved === "@home" && !state.guildId)) openHome(state.channelId);
+      else if (pick) selectGuild(pick.id, state.channelId);
       else renderEmpty();
       break;
     }
@@ -466,7 +469,7 @@ function handleEvent({ t, d }) {
         toast(`You're no longer in ${g.name}.`);
         state.guildId = null;
         if (state.guilds[0]) selectGuild(state.guilds[0].id);
-        else renderEmpty();
+        else openHome();
       }
       renderGuilds();
       loadUnread();
@@ -758,22 +761,37 @@ function mentionPill(kind, id) {
 
 // Plain-text version (for reply previews and the edit box).
 function plainMentions(text) {
-  return text.replace(/<@(&?)(\d+)>/g, (_, amp, id) => mentionLabel(amp ? "role" : "user", id));
+  return text.replace(/<@(&?)(\d+)>/g, (_, amp, id) => mentionLabel(amp ? "role" : "user", id))
+    .replace(/<:([a-z0-9_]{2,32}):\d+>/g, ":$1:");
+}
+
+// A custom emoji from an outhouse (falls back to :name: if it's been deleted).
+function customEmoji(name, id) {
+  const img = el("img", { class: "custom-emoji", src: `/emojis/${id}`, alt: `:${name}:`, title: `:${name}:`, loading: "lazy", draggable: "false" });
+  img.addEventListener("error", () => img.replaceWith(`:${name}:`));
+  return img;
+}
+
+// A reaction's emoji: plain text, or a picture for custom ones.
+function emojiLabel(emoji) {
+  const m = /^<:([a-z0-9_]{2,32}):(\d+)>$/.exec(emoji);
+  return m ? customEmoji(m[1], m[2]) : emoji;
 }
 
 function renderText(text) {
   const out = [];
   const usernames = new Set(state.members.map((m) => m.username));
-  const pattern = /(https?:\/\/[^\s<]+)|`([^`\n]+)`|<@(&?)(\d+)>|(@[\w.]+)/g;
+  const pattern = /(https?:\/\/[^\s<]+)|`([^`\n]+)`|<@(&?)(\d+)>|<:([a-z0-9_]{2,32}):(\d+)>|(@[\w.]+)/g;
   let last = 0;
   for (const m of text.matchAll(pattern)) {
     if (m.index > last) out.push(text.slice(last, m.index));
     if (m[1]) out.push(el("a", { href: m[1], target: "_blank", rel: "noopener noreferrer" }, m[1]));
+    else if (m[5]) out.push(customEmoji(m[5], m[6]));
     else if (m[2]) out.push(el("code", {}, m[2]));
     else if (m[4]) out.push(mentionPill(m[3] ? "role" : "user", m[4]));
     else {
-      const name = m[5].slice(1).toLowerCase();
-      out.push(name === "everyone" || name === "here" || usernames.has(name) ? el("span", { class: "mention" }, m[5]) : m[5]);
+      const name = m[7].slice(1).toLowerCase();
+      out.push(name === "everyone" || name === "here" || usernames.has(name) ? el("span", { class: "mention" }, m[7]) : m[7]);
     }
     last = m.index + m[0].length;
   }
@@ -851,7 +869,7 @@ function renderReactions(m) {
       const mine = r.user_ids.includes(state.me.id);
       const names = r.user_ids.map((id) => memberById(id)?.display_name || "someone").join(", ");
       return el("button", { class: `reaction${mine ? " me" : ""}`, title: names, onclick: () => toggleReaction(m, r.emoji) },
-        r.emoji, el("span", { class: "count" }, r.user_ids.length));
+        emojiLabel(r.emoji), el("span", { class: "count" }, r.user_ids.length));
     }),
     can("add_reactions", state.channelId)
       ? el("button", { class: "reaction", title: "Add reaction", onclick: (e) => emojiPicker(e.currentTarget, (emoji) => toggleReaction(m, emoji)) }, "＋")
@@ -866,6 +884,7 @@ function messageActions(m) {
       ? el("button", { title: "Add reaction", onclick: (e) => emojiPicker(e.currentTarget, (emoji) => toggleReaction(m, emoji)) }, "😀")
       : null,
     can("send_messages", state.channelId) ? el("button", { title: "Reply", onclick: () => startReply(m) }, "↩") : null,
+    can("send_messages", state.channelId) && !m.thread_id ? el("button", { class: "thread-btn", title: m.thread ? "Open thread" : "Start a thread", onclick: () => startThread(m) }, "🧵") : null,
     mine ? el("button", { title: "Edit", onclick: () => startEdit(m.id) }, "✎") : null,
     can("manage_messages", state.channelId)
       ? el("button", { class: `pin${m.pinned_at ? " on" : ""}`, title: m.pinned_at ? "Unpin" : "Pin", onclick: () => togglePin(m) }, "📌")
@@ -887,10 +906,11 @@ function renderMessages() {
   const nodes = [];
   let prev = null;
   for (const m of state.messages) {
-    const grouped = prev && !m.reply_to && !m.interaction && !m.event && !prev.event && prev.author_id === m.author_id && prev.author_display_name === m.author_display_name &&
+    const grouped = prev && !m.reply_to && !m.interaction && !m.event && !prev.event && !m.poll && !prev.poll && !prev.thread && prev.author_id === m.author_id && prev.author_display_name === m.author_display_name &&
       new Date(m.created_at) - new Date(prev.created_at) < 5 * 60 * 1000;
     const colour = memberColour(m.author_id);
     const imageOnly = m.embeds.length === 1 && m.embeds[0].kind === "image" && m.content.trim() === m.embeds[0].url;
+    const jumbo = /^(\s*<:[a-z0-9_]{2,32}:\d+>\s*){1,10}$/.test(m.content);
     const editing = state.editingId === m.id;
 
     const body = el("div", { class: "msg-body" },
@@ -899,12 +919,14 @@ function renderMessages() {
         m.author_bot ? el("span", { class: "bot-tag" }, "BOT") : null,
         el("time", { class: "msg-time", datetime: m.created_at, title: new Date(m.created_at).toLocaleString() }, timeLabel(m.created_at))),
       editing ? editBox(m) : (m.content && !imageOnly
-        ? el("p", { class: "msg-text" }, renderText(m.content), m.edited_at ? el("span", { class: "edited", title: new Date(m.edited_at).toLocaleString() }, "(edited)") : null)
+        ? el("p", { class: `msg-text${jumbo ? " jumbo" : ""}` }, renderText(m.content), m.edited_at ? el("span", { class: "edited", title: new Date(m.edited_at).toLocaleString() }, "(edited)") : null)
         : null),
       m.event ? renderEventCard(m) : null,
+      m.poll ? renderPollCard(m) : null,
       renderAttachments(m),
       renderEmbeds(m),
       renderReactions(m),
+      m.thread ? threadLink(m.thread) : null,
     );
 
     const article = el("article", {
@@ -928,7 +950,11 @@ function renderMessages() {
   }
   if (!nodes.length) {
     const ch = state.channels.find((c) => c.id === state.channelId);
-    nodes.push(el("div", { class: "empty" }, el("p", {}, `This is the start of #${ch ? ch.name : "channel"}.`), el("p", {}, "Say g'day.")));
+    const dm = ch && ch.kind !== TEXT && ch.kind !== VOICE;
+    nodes.push(el("div", { class: "empty" }, el("p", {}, dm ? `This is the start of your chat with ${ch.name}.` : `This is the start of #${ch ? ch.name : "channel"}.`), el("p", {}, "Say g'day.")));
+  }
+  if (nodes.length && state.historyStart === state.channelId && state.messages.length) {
+    nodes.unshift(el("div", { class: "history-start" }, "You've reached the start. Nothing older down the long drop."));
   }
   box.replaceChildren(...nodes);
   if (nearBottom || renderMessages.forceBottom) box.scrollTop = box.scrollHeight;
@@ -1251,7 +1277,7 @@ $("emoji-btn").addEventListener("click", (e) => {
     input.value = input.value.slice(0, pos) + emoji + input.value.slice(pos);
     input.focus();
     input.setSelectionRange(pos + emoji.length, pos + emoji.length);
-  });
+  }, { forText: true });
 });
 
 $("gif-btn").addEventListener("click", (e) => {
@@ -2349,7 +2375,8 @@ function updateComposer() {
   const ch = state.channels.find((c) => c.id === state.channelId);
   const canSend = ch && can("send_messages", ch.id);
   input.disabled = !canSend;
-  input.placeholder = !ch ? "Write on the wall…" : canSend ? `Write on the wall in #${ch.name}` : "You can't post in this channel.";
+  const dm = ch && ch.kind !== TEXT && ch.kind !== VOICE;
+  input.placeholder = !ch ? "Write on the wall…" : !canSend ? "You can't post in this channel." : dm ? `Message ${ch.kind === 1 ? "@" : ""}${ch.name}` : `Write on the wall in #${ch.name}`;
   $("attach-btn").hidden = !(ch && can("attach_files", ch.id));
 }
 
@@ -2371,6 +2398,7 @@ async function selectChannel(id) {
   const messages = await api("GET", `/api/channels/${id}/messages?limit=75`).catch((err) => { toast(err.message); return []; });
   if (state.channelId !== id) return;
   state.messages = messages;
+  state.historyStart = messages.length < 75 ? id : null;
   renderMessages.forceBottom = true;
   renderMessages();
   ackChannel();
@@ -2391,6 +2419,7 @@ const MENUS = {
       can("add_reactions", state.channelId) ? { quick: QUICK_REACTIONS, onPick: (emoji) => toggleReaction(m, emoji) } : null,
       can("add_reactions", state.channelId) ? { label: "Add reaction…", onClick: () => emojiPicker(node.querySelector(".msg-body"), (emoji) => toggleReaction(m, emoji)) } : null,
       can("send_messages", state.channelId) ? { label: "Reply", onClick: () => startReply(m) } : null,
+      m.thread ? { label: "Open thread", onClick: () => openThread(m.thread) } : can("send_messages", state.channelId) ? { label: "Start a thread", onClick: () => startThread(m) } : null,
       mine ? { label: "Edit message", onClick: () => startEdit(m.id) } : null,
       can("manage_messages", state.channelId) ? { label: m.pinned_at ? "Unpin message" : "Pin message", onClick: () => togglePin(m) } : null,
       "sep",
@@ -2434,7 +2463,8 @@ const MENUS = {
       here && can("create_invite") ? { label: "Invite people", onClick: invitePeople } : null,
       here && can("manage_channels") ? { label: "Create text channel", onClick: () => createChannel(TEXT) } : null,
       here && can("manage_channels") ? { label: "Create voice channel", onClick: () => createChannel(VOICE) } : null,
-      here && (can("manage_roles") || can("ban_members") || can("manage_webhooks")) ? { label: "Outhouse settings", onClick: () => openSettings(can("manage_roles") ? "roles" : can("manage_webhooks") ? "integrations" : "bans") } : null,
+      here && (can("manage_roles") || can("ban_members") || can("manage_webhooks") || can("manage_guild")) ? { label: "Outhouse settings", onClick: () => openSettings(can("manage_roles") ? "roles" : can("manage_webhooks") ? "integrations" : can("manage_guild") ? "emoji" : "bans") } : null,
+      here && can("manage_guild") ? { label: "Custom emoji", onClick: () => openSettings("emoji") } : null,
       "sep",
       { label: "Copy outhouse ID", onClick: () => copy(g.id, "ID copied") },
       "sep",
@@ -2588,6 +2618,7 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
     }
     if (can("manage_guild")) {
       nav.append(el("button", { class: activeTab === "bots" ? "active" : "", onclick: () => draw("bots") }, "Bots"));
+      nav.append(el("button", { class: activeTab === "emoji" ? "active" : "", onclick: () => draw("emoji") }, "Emoji"));
     }
     if (can("ban_members")) {
       nav.append(el("h3", {}, "MODERATION"), el("button", { class: activeTab === "bans" ? "active" : "", onclick: () => draw("bans") }, "Bans"));
@@ -2595,6 +2626,7 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
     if (activeTab === "bans") return drawBans(main);
     if (activeTab === "integrations") return drawIntegrations(main);
     if (activeTab === "bots") return drawBots(main);
+    if (activeTab === "emoji") return drawEmojiSettings(main);
     const role = roles.find((r) => r.id === roleId) || roles.find((r) => r.id !== state.guildId) || roles[0];
     if (role) drawRole(main, role, (id) => draw("roles", id));
   };
