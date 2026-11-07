@@ -1564,8 +1564,11 @@ async function joinVoice(channelId, moved = null) {
     })
     .on(RoomEvent.TrackUnsubscribed, (track) => {
       track.detach().forEach((e) => e.remove());
-      if (track.kind === "video" && typeof renderScreens === "function") renderScreens();
+      // The publication still holds the track at this point; redraw just after.
+      if (track.kind === "video" && typeof renderScreens === "function") setTimeout(renderScreens, 0);
     })
+    .on(RoomEvent.TrackUnpublished, () => { if (typeof renderScreens === "function") setTimeout(renderScreens, 0); })
+    .on(RoomEvent.ParticipantDisconnected, () => { if (typeof renderScreens === "function") setTimeout(renderScreens, 0); })
     .on(RoomEvent.LocalTrackPublished, () => { if (typeof onLocalTracksChanged === "function") onLocalTracksChanged(); })
     .on(RoomEvent.LocalTrackUnpublished, () => { if (typeof onLocalTracksChanged === "function") onLocalTracksChanged(); })
     .on(RoomEvent.ParticipantConnected, applyVolume)
@@ -1725,12 +1728,13 @@ function renderVoicePanel() {
   const status = v.connecting ? "Connecting…" : v.listenOnly ? "Listening only" : v.serverMuted || v.serverDeafened ? "Muted by a moderator" : usingPtt() ? (v.pttDown ? "Talking" : `Push to talk: ${keyLabel(prefs.get("ptt_key", "Backquote"))}`) : "Voice connected";
   const forcedMute = v.serverMuted || v.serverDeafened;
   const shareBtn = typeof screenShareButton === "function" ? screenShareButton() : null;
-  panel.replaceChildren(
+  // (replaceChildren would show a null as the text "null")
+  panel.replaceChildren(...[
     el("div", { class: "vp-top" },
       el("div", { class: "vp-info" },
         v.connecting
           ? el("div", { class: "vp-status connecting" }, status)
-          : el("button", { class: "vp-status", title: "Connection details", onclick: (e) => openVoiceStats(e.currentTarget) }, status),
+          : el("button", { class: `vp-status${forcedMute ? " forced" : ""}`, title: "Connection details", onclick: (e) => openVoiceStats(e.currentTarget) }, status),
         el("div", { class: "vp-channel" }, v.connecting ? "" : `${v.channelName}${v.guildId !== state.guildId ? ` · ${state.guilds.find((g) => g.id === v.guildId)?.name ?? ""}` : ""}`)),
       el("button", { class: "icon-btn danger", title: "Leave voice", "aria-label": "Leave voice", onclick: () => leaveVoice(true) }, "📞")),
     v.connecting ? null : el("div", { class: `vp-buttons${shareBtn ? " five" : ""}` },
@@ -1740,7 +1744,7 @@ function renderVoicePanel() {
       el("button", { class: "vp-btn", title: "Soundboard", onclick: (e) => openSoundboard(e.currentTarget) }, "🔊"),
       el("button", { class: "vp-btn", title: "Voice settings", onclick: (e) => openVoiceSettings(e.currentTarget) }, "⚙")),
     v.connecting ? null : touchPttButton(),
-  );
+  ].filter(Boolean));
 }
 
 // ---- Speaking indicator ----
@@ -2332,11 +2336,13 @@ function openSoundboard(anchor) {
       }, el("span", { class: "semoji" }, snd.emoji || "🔊"), el("span", { class: "sname" }, snd.name)),
       el("button", { class: "sound-star", title: snd.favourite ? "Remove from favourites" : "Add to favourites", "aria-label": snd.favourite ? "Remove from favourites" : "Add to favourites", onclick: () => favourite(snd) }, snd.favourite ? "★" : "☆"));
     const favs = state.sounds.filter((snd) => snd.favourite);
+    const rest = state.sounds.filter((snd) => !snd.favourite);
     const grid = el("div", { class: "sound-scroll" },
       favs.length ? el("div", { class: "sb-label" }, "★ Favourites") : null,
       favs.length ? el("div", { class: "sound-grid" }, favs.map(tile)) : null,
-      favs.length ? el("div", { class: "sb-label" }, "All sounds") : null,
-      state.sounds.length ? el("div", { class: "sound-grid" }, state.sounds.map(tile)) : el("p", { class: "muted" }, "No sounds yet."));
+      favs.length && rest.length ? el("div", { class: "sb-label" }, "Other sounds") : null,
+      rest.length ? el("div", { class: "sound-grid" }, rest.map(tile)) : null,
+      state.sounds.length ? null : el("p", { class: "muted" }, "No sounds yet."));
     const vol = el("input", { type: "range", min: 0, max: 100, step: 5, value: Math.round(prefs.get("soundboard_volume", 0.7) * 100), "aria-label": "Soundboard volume" });
     vol.addEventListener("input", () => prefs.set("soundboard_volume", vol.value / 100));
     const mute = el("input", { type: "checkbox", checked: prefs.get("soundboard_muted", false) });

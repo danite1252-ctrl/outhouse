@@ -37,6 +37,8 @@ services:
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
       # Browsers reach voice through Caddy on the same address as the site.
       LIVEKIT_URL: wss://${DOMAIN}
+      # Outhouse itself talks to LiveKit's API (server mute, disconnect) on this machine.
+      LIVEKIT_API_URL: http://host.docker.internal:7880
       GIPHY_API_KEY: ${GIPHY_API_KEY:-}
       # WoW tools (all optional; see README "WoW tools").
       PUBLIC_URL: https://${DOMAIN}
@@ -49,6 +51,8 @@ services:
       WOWHEAD_TOOLTIP_URL: ${WOWHEAD_TOOLTIP_URL:-}
       WOWHEAD_DATA_ENV: ${WOWHEAD_DATA_ENV:-}
       LINK_PREVIEWS_OFFLINE: ${LINK_PREVIEWS_OFFLINE:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - uploads:/data/uploads
       # App updates fetched from GitHub by fetch-updates.py, served at /updates/.

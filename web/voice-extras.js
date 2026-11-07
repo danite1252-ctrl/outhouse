@@ -207,6 +207,7 @@ const screens = { tiles: new Map(), focus: null, hidden: false };
 
 const screenShareSupported = () => !!navigator.mediaDevices?.getDisplayMedia
   && window.__OUTHOUSE_PLATFORM__ !== "android"
+  && !(typeof isTouch === "function" && isTouch())
   && !/Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
 // The 🖥 button in the voice panel (null where screen sharing can't work).

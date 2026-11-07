@@ -126,5 +126,10 @@ isn't stored.
   `outhouse.chat` → the server's home IP in your router's local DNS.
 - **Voice connects but no audio:** UDP 7882 isn't forwarded, or the server's
   firewall blocks it (`sudo ufw status`).
+- **Server mute / disconnect only work on the next rejoin:** Outhouse can't
+  reach LiveKit's API. It uses `http://host.docker.internal:7880` (set as
+  `LIVEKIT_API_URL` in `docker-compose.yml`); `docker compose logs server | grep LiveKit`
+  shows why. The firewall rule setup.sh adds for Caddy (172.16.0.0/12 → 7880)
+  covers it.
 - **The old Windows setup:** your PC copy still works for development
   (`.\start.ps1`); it's a separate database from the server's.

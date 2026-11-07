@@ -1003,3 +1003,4 @@ button.live-badge:hover { filter: brightness(1.15); }
   .screen-stage.focused.solo .screen-tile.big { height: 100%; }
   .screen-stage.focused .screen-tile:not(.big) { height: 72px; }
 }
+.vp-status.forced { color: #f87171; }

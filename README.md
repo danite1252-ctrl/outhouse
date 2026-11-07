@@ -20,10 +20,13 @@ A small, self-hosted Discord-style chat app for our WoW group and family, writte
 - **Custom emoji:** Outhouse settings → Emoji (needs Manage Outhouse) uploads PNG/GIF/WebP up to 256 KB; use them as `:name:` in messages (and DMs) and as reactions, from the ⭐ Outhouse tab in the emoji picker
 - **Scroll-back:** older messages load as you scroll up in channels, DMs and threads
 - **Unread and mentions:** unread channels light up, and red counts show mentions of you, your roles, @everyone and @here (and replies to you) on channels, outhouses and the browser tab
-- **Roles and permissions:** Discord-style roles with colours, 27 permissions, "show separately" in the member list, and per-channel allow/deny overrides for roles or members (e.g. private or read-only channels)
+- **Roles and permissions:** Discord-style roles with colours, 28 permissions, "show separately" in the member list, and per-channel allow/deny overrides for roles or members (e.g. private or read-only channels)
 - **Moderation:** kick, ban (with reasons, unban list), time out (5 min to 1 week)
-- **Voice channels** (via LiveKit): join/leave, who's-in-voice list with speaking rings, mute, deafen, push-to-talk or voice activity, mic/speaker picker, noise suppression, per-person volume (right-click someone in voice)
-- **Soundboard:** each outhouse has its own clips (MP3/OGG/WAV up to 1 MB); everyone in the voice channel hears them, with their own soundboard volume and mute
+- **Voice channels** (via LiveKit): join/leave, who's-in-voice list with speaking rings, mute, deafen, push-to-talk or voice activity, mic/speaker picker, noise suppression; right-click (or long-press) someone in voice for their volume (0–200%) and **Mute for me** (both only on your device)
+- **Voice moderation:** with Mute / Deafen / Move Members, right-click someone in voice to **server mute** or **server deafen** them (enforced by LiveKit, shown with a red icon, and it sticks when they rejoin until a moderator undoes it), **move** them to another voice channel, or **disconnect** them
+- **Screen sharing:** the 🖥 button in the voice panel shares a screen or window (optionally with its sound) in browsers and the Windows app; everyone in the channel sees it above the chat (click to enlarge, double-click for full screen) and a red **LIVE** badge in the voice list. Needs the Share screen permission (on for everyone by default). Not on phones (they can watch)
+- **Soundboard:** each outhouse has its own clips (MP3/OGG/WAV up to 10 seconds and 1 MB, with a name and emoji); everyone in the voice channel hears them, with their own soundboard volume and mute; ☆ marks your favourites, shown at the top; a short cooldown stops spam
+- **Entrance sounds:** User settings → Voice & audio: upload a sound (up to 5 seconds and 200 KB) that plays for everyone in a voice channel when you join it; anyone can switch other people's entrance sounds off or turn them down
 - **News feeds:** follow any RSS/Atom feed in a channel (presets for Wowhead news), with keyword filters; checked every 10 minutes
 - **Webhooks:** Discord-compatible, so any app with a "Discord webhook" option can post into Outhouse (rich cards with colours, fields, thumbnails)
 - **Presence:** online / gone home in the member list, live
@@ -127,6 +130,9 @@ All endpoints except register/login need `Authorization: Bearer <token>`.
 | GET/POST | `/api/channels/{id}/threads` | Threads in a channel / start one `{name, message_id?}`; `GET/PATCH/DELETE /api/threads/{id}` |
 | POST | `/api/channels/{id}/polls` | `{question, options, multi?, duration_minutes?}`; vote with `PUT …/polls/{message}/votes {options}`, end with `POST …/polls/{message}/close` |
 | GET/POST | `/api/guilds/{id}/emojis` | Custom emoji (multipart `name` + `file`); `PATCH/DELETE /api/emojis/{id}`; pictures at `/emojis/{id}` |
+| PATCH/DELETE | `/api/guilds/{id}/voice/{user}` | Voice moderation: `{mute?, deafen?, channel_id?}` server-mutes/deafens or moves someone; DELETE disconnects them |
+| GET/POST/DELETE | `/api/users/@me/entrance-sound` | Your entrance sound (multipart `file`) |
+| PUT/DELETE | `/api/sounds/{id}/favourite` | Add/remove a soundboard favourite |
 | … | | Roles, members, bans, channel permissions, uploads, reactions: see `crates/server/src/api/mod.rs` |
 | GET | `/api/gateway` | WebSocket: send `{"op":"IDENTIFY","d":{"token":"…"}}`, then `{"op":"HEARTBEAT"}` every 30 s |
 
