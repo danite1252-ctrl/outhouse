@@ -705,10 +705,11 @@ function renderMembers() {
   }
   const row = (m) =>
     el("div", { class: `member${isTimedOut(m) ? " timed-out" : ""}${m.online ? "" : " offline"}`, "data-menu": "member", "data-id": m.id },
-      el("div", { class: "avatar-wrap" }, avatarFor(m.id, m.display_name, 32), m.online ? el("span", { class: "status-dot" }) : null),
+      el("div", { class: "avatar-wrap", onclick: (e) => openProfile(m.id, e.currentTarget) }, avatarFor(m.id, m.display_name, 32), m.online ? el("span", { class: "status-dot" }) : null),
       el("div", { class: "info" },
         el("div", { style: memberColour(m.id) ? `color:${memberColour(m.id)}` : "" },
-          m.display_name, m.id === owner ? el("span", { class: "crown", title: "Owner" }, "👑") : null),
+          m.display_name, m.id === owner ? el("span", { class: "crown", title: "Owner" }, "👑") : null,
+          m.bot ? el("span", { class: "bot-tag" }, "BOT") : null),
         isTimedOut(m) ? el("div", { class: "sub" }, "Timed out") : null,
       ),
     );
