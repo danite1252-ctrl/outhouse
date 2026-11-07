@@ -49,7 +49,9 @@ async function drawAuditLog(main) {
       el("p", { class: "muted" }, filters.action || filters.user ? "Nothing matches those filters." : "Nothing in the log yet. Changes to roles, channels and members show up here."))]));
     more.hidden = !hasMore;
   };
+  let seq = 0;
   async function load(older) {
+    const mine = ++seq;
     const q = new URLSearchParams({ limit: "50" });
     if (filters.action) q.set("action", filters.action);
     if (filters.user) q.set("user", filters.user);
@@ -57,7 +59,7 @@ async function drawAuditLog(main) {
     more.disabled = true;
     const page = await tryApi("GET", `/api/guilds/${state.guildId}/audit-log?${q}`).catch(() => null);
     more.disabled = false;
-    if (!page) return;
+    if (!page || mine !== seq) return; // a newer filter won
     if (!actions.length) {
       actions = page.actions;
       retention = page.retention_days;
@@ -68,7 +70,7 @@ async function drawAuditLog(main) {
     hasMore = page.has_more;
     paint();
   }
-  main.append(
+  main.replaceChildren(
     el("h2", {}, "Audit log"),
     intro,
     el("div", { class: "audit-filters" }, actionSel, userSel),
@@ -91,6 +93,7 @@ function fmtUptime(seconds) {
 async function drawServerStatus(main) {
   const s = await tryApi("GET", `/api/guilds/${state.guildId}/server-status`).catch(() => null);
   if (!s) return;
+  main.replaceChildren();
   const b = s.backup;
   const backupLine = !b ? ["unknown", "No backup status yet (backups run nightly on the server; this shows once backup.sh has run)."]
     : b.ok === false ? ["bad", `Last backup failed ${b.time ? relTime(b.time) : ""}: ${b.message || "see backup.log"}`]
@@ -214,7 +217,8 @@ const BADGE_EMOJI = ["🏅", "🏆", "⭐", "🔥", "💎", "🛡️", "⚔️",
 
 async function drawBadgeSettings(main) {
   const list = await loadBadges();
-  const redraw = () => { main.replaceChildren(); drawBadgeSettings(main); };
+  main.replaceChildren();
+  const redraw = () => drawBadgeSettings(main);
   const auto = list.filter((b) => b.auto);
   const custom = list.filter((b) => !b.auto);
 
@@ -264,8 +268,8 @@ async function drawBadgeSettings(main) {
     ...(custom.length ? custom.map((b) => el("div", { class: "int-item badge-item" },
       el("div", { class: "badge-head" },
         badgeChip(b),
-        b.description ? el("span", { class: "muted small" }, b.description) : null,
-        el("span", { style: "flex:1" }),
+        b.description ? el("span", { class: "muted small badge-desc" }, b.description) : null,
+        el("div", { class: "badge-actions" },
         el("button", { class: "ghost small-btn", onclick: async () => {
           const n = await ask("Rename badge", { value: b.name, confirm: "Save" });
           if (n && n.trim() && n.trim() !== b.name) { await tryApi("PATCH", `/api/badges/${b.id}`, { name: n.trim() }).catch(() => {}); redraw(); }
@@ -274,7 +278,7 @@ async function drawBadgeSettings(main) {
           if (!(await confirmBox(`Delete ${b.emoji} ${b.name}?`, "Everyone who has it loses it.", "Delete"))) return;
           await tryApi("DELETE", `/api/badges/${b.id}`).catch(() => {});
           redraw();
-        } }, "Delete")),
+        } }, "Delete"))),
       el("div", { class: "holder-row" }, ...holderChips(b), giveSelect(b)))) : [el("p", { class: "muted small", style: "margin:0" }, "None yet.")]),
     el("h3", {}, "Automatic badges"),
     el("div", { class: "auto-badges" }, auto.map((b) => el("div", { class: "auto-badge" },

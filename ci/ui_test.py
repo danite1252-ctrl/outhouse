@@ -983,7 +983,7 @@ with sync_playwright() as p:
         pg.wait_for_selector(".event-card", timeout=15000)
         return pg
 
-    b6 = fresh(TOKEN, "batch6-desktop", viewport={"width": 1280, "height": 800})
+    b6 = fresh(TOKEN, "batch6-desktop", viewport={"width": 1280, "height": 800}, permissions=["notifications"])
     # Badges next to names in the member list (Dave has Raid MVP).
     b6.wait_for_selector(f"#member-list .member[data-id='{DAVE}'] .name-badges", timeout=10000)
     # Audit log.
@@ -1064,7 +1064,7 @@ with sync_playwright() as p:
     b6.close()
 
     # Phone.
-    ph6 = fresh(TOKEN, "batch6-phone", viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
+    ph6 = fresh(TOKEN, "batch6-phone", viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True, permissions=["notifications"])
     ph6.evaluate("openSettings('audit')")
     ph6.wait_for_selector(".audit-row", timeout=10000)
     ph6.wait_for_timeout(300)

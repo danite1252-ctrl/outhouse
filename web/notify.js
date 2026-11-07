@@ -102,7 +102,7 @@ function notifyAllowsDm(m) {
 
 const IDLE_NO_INPUT_MS = 10 * 60 * 1000;
 const IDLE_HIDDEN_MS = 60 * 1000;
-const coarsePointer = window.matchMedia?.("(pointer: coarse)").matches;
+const coarsePointer = !!window.matchMedia?.("(pointer: coarse)")?.matches;
 const idle = { lastInput: Date.now(), hiddenSince: document.hidden ? Date.now() : null, sent: false, timer: null };
 
 function isIdleNow() {
@@ -188,7 +188,7 @@ if ("serviceWorker" in navigator) {
 // ---------- Web Push on this device ----------
 
 const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-const isStandalone = window.matchMedia?.("(display-mode: standalone)").matches || navigator.standalone === true;
+const isStandalone = !!window.matchMedia?.("(display-mode: standalone)")?.matches || navigator.standalone === true;
 
 function pushSupport() {
   if (desktop) return { ok: false, why: window.__OUTHOUSE_PLATFORM__ === "android" ? "android-app" : "desktop-app" };
@@ -285,7 +285,7 @@ async function drawNotificationsPage(main) {
   const support = pushSupport();
   const sub = support.ok ? await currentSubscription().catch(() => null) : null;
   const here = sub && notify.devices.some((d) => d.endpoint === sub.endpoint);
-  const redraw = () => { main.replaceChildren(); drawNotificationsPage(main); };
+  const redraw = () => drawNotificationsPage(main);
 
   const why = {
     "android-app": ["The Android app can't get push notifications while it's closed (Android's built-in web view doesn't support them), so it only notifies you while it's open or recently in the background.",
@@ -307,10 +307,11 @@ async function drawNotificationsPage(main) {
     support.ok ? el("div", { class: "push-state" },
       el("span", { class: `push-dot${here ? " on" : ""}` }),
       el("span", {}, blocked ? "Blocked in your browser's site settings" : here ? "On for this device" : "Off for this device")) : null,
+    blocked ? el("p", { class: "muted small" }, "To allow them: click the 🔒 (or ⓘ) next to the address, Site settings → Notifications → Allow, then reload. On an installed phone app: long-press its icon → App info → Notifications.") : null,
     support.ok ? el("div", { class: "inline-row wrap" },
       here
         ? el("button", { class: "ghost", onclick: async () => { await disablePush(); redraw(); } }, "Turn off on this device")
-        : el("button", { class: "primary", disabled: blocked, onclick: async () => { if (await enablePush()) redraw(); } }, "Turn on push notifications"),
+        : blocked ? null : el("button", { class: "primary", onclick: async () => { if (await enablePush()) redraw(); } }, "Turn on push notifications"),
       notify.devices.length ? el("button", { class: "ghost", onclick: async () => {
         const res = await tryApi("POST", "/api/push/test").catch(() => null);
         if (res) toast(res.sent ? `Test sent to ${res.sent} device${res.sent === 1 ? "" : "s"}. 🚽` : "Couldn't reach any of your devices.");
@@ -361,5 +362,5 @@ async function drawNotificationsPage(main) {
       el("button", { class: "ghost small-btn", onclick: async () => { if (await setChannelMuted(m.channel_id, false)) redraw(); } }, "Unmute"))),
   );
 
-  main.append(el("h2", {}, "Notifications"), pushBox, devices, levels, muted);
+  main.replaceChildren(el("h2", {}, "Notifications"), pushBox, devices, levels, muted);
 }
