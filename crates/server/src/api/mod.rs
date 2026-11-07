@@ -6,11 +6,12 @@ mod channels;
 pub mod events;
 mod feeds;
 mod gifs;
-mod profiles;
 pub mod guilds;
 pub mod members;
 pub mod messages;
+mod profiles;
 mod roles;
+mod search;
 mod sounds;
 pub mod voice;
 mod webhooks;
@@ -37,6 +38,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/login", post(account::login))
         .route("/api/auth/logout", post(account::logout))
         .route("/api/users/@me", get(account::me).patch(account::update_me))
+        .route("/api/users/@me/unread", get(search::unread))
         // Outhouses
         .route("/api/guilds", get(guilds::list).post(guilds::create))
         .route("/api/guilds/{id}", delete(guilds::delete))
@@ -103,6 +105,12 @@ pub fn router(state: AppState) -> Router {
             put(messages::add_reaction).delete(messages::remove_reaction),
         )
         .route("/api/channels/{id}/typing", post(messages::typing))
+        .route("/api/channels/{id}/pins", get(messages::list_pins))
+        .route(
+            "/api/channels/{id}/pins/{message}",
+            put(messages::pin).delete(messages::unpin),
+        )
+        .route("/api/guilds/{id}/search", get(search::search))
         // Webhooks and news feeds
         .route("/api/guilds/{id}/webhooks", get(webhooks::list))
         .route("/api/channels/{id}/webhooks", post(webhooks::create))
@@ -129,20 +137,26 @@ pub fn router(state: AppState) -> Router {
             "/api/users/@me/avatar",
             post(profiles::upload_avatar)
                 .delete(profiles::delete_avatar)
-                .layer(DefaultBodyLimit::max(profiles::MAX_AVATAR_BYTES + 64 * 1024)),
+                .layer(DefaultBodyLimit::max(
+                    profiles::MAX_AVATAR_BYTES + 64 * 1024,
+                )),
         )
         .route(
             "/api/users/@me/banner",
             post(profiles::upload_banner)
                 .delete(profiles::delete_banner)
-                .layer(DefaultBodyLimit::max(profiles::MAX_BANNER_BYTES + 64 * 1024)),
+                .layer(DefaultBodyLimit::max(
+                    profiles::MAX_BANNER_BYTES + 64 * 1024,
+                )),
         )
         // Raid planner
         .route("/api/channels/{id}/events", post(events::create))
         .route("/api/guilds/{id}/events", get(events::list_upcoming))
         .route(
             "/api/events/{id}",
-            get(events::get).patch(events::update).delete(events::delete),
+            get(events::get)
+                .patch(events::update)
+                .delete(events::delete),
         )
         .route("/api/events/{id}/signup", put(events::signup))
         .route("/api/events/{id}/signups/{user}", delete(events::withdraw))

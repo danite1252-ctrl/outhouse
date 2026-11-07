@@ -11,7 +11,10 @@ A small, self-hosted Discord-style chat app for our WoW group and family, writte
 - **Live chat:** messages, edits, deletes, replies, reactions, typing indicator, @mentions highlighted
 - **Uploads:** images, video, audio and files (up to 10 × 25 MB) via the + button, drag and drop, or paste
 - **Link previews:** title, description and image for links (fetched safely by the server)
-- **GIF picker** (needs a free Giphy API key in `.env`)
+- **GIF picker** (needs a free Giphy API key in `.env`; results are cached for 10 minutes so the free key goes a long way)
+- **Pinned messages:** pin up to 50 messages per channel (needs Manage Messages) from a message's hover buttons or right-click menu; **📌 Pins** in the channel header lists them
+- **Search:** the search box in the channel header searches every channel you can read in the outhouse, with `from:@name`, `in:#channel` and `has:image|video|file|link` filters; click a result to jump to it
+- **Unread and mentions:** unread channels light up, and red counts show mentions of you, your roles, @everyone and @here (and replies to you) on channels, outhouses and the browser tab
 - **Roles and permissions:** Discord-style roles with colours, 27 permissions, "show separately" in the member list, and per-channel allow/deny overrides for roles or members (e.g. private or read-only channels)
 - **Moderation:** kick, ban (with reasons, unban list), time out (5 min to 1 week)
 - **Voice channels** (via LiveKit): join/leave, who's-in-voice list with speaking rings, mute, deafen, push-to-talk or voice activity, mic/speaker picker, noise suppression, per-person volume (right-click someone in voice)

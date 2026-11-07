@@ -30,7 +30,7 @@ const KEY_ALPHABET: &[u8] = b"abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ2
 // ---- Loading -----------------------------------------------------------
 
 #[derive(sqlx::FromRow)]
-struct MessageRow {
+pub(crate) struct MessageRow {
     id: i64,
     channel_id: i64,
     author_id: i64,
@@ -43,9 +43,10 @@ struct MessageRow {
     edited_at: Option<DateTime<Utc>>,
     reply_to_id: Option<i64>,
     interaction: Option<SqlJson<MessageInteraction>>,
+    pinned_at: Option<DateTime<Utc>>,
 }
 
-const MESSAGE_SELECT: &str = "
+pub(crate) const MESSAGE_SELECT: &str = "
     SELECT m.id, m.channel_id, m.author_id,
            u.username AS author_username,
            COALESCE(m.override_name, gm.nickname, u.display_name) AS author_display_name,
@@ -53,7 +54,7 @@ const MESSAGE_SELECT: &str = "
                CASE WHEN u.avatar_key IS NULL THEN NULL ELSE '/files/' || u.avatar_key || '/avatar' END)
                AS author_avatar_url,
            u.is_bot AS author_bot,
-           m.content, m.created_at, m.edited_at, m.reply_to_id, m.interaction
+           m.content, m.created_at, m.edited_at, m.reply_to_id, m.interaction, m.pinned_at
     FROM messages m
     JOIN users u ON u.id = m.author_id
     JOIN channels ch ON ch.id = m.channel_id
@@ -121,7 +122,7 @@ pub fn attachment_url(storage_key: &str, filename: &str) -> String {
 
 /// Turns database rows into full messages (attachments, embeds, reactions,
 /// reply previews), loading each kind in one query.
-async fn hydrate(db: &PgPool, rows: Vec<MessageRow>) -> AppResult<Vec<Message>> {
+pub(crate) async fn hydrate(db: &PgPool, rows: Vec<MessageRow>) -> AppResult<Vec<Message>> {
     if rows.is_empty() {
         return Ok(Vec::new());
     }
@@ -245,6 +246,7 @@ async fn hydrate(db: &PgPool, rows: Vec<MessageRow>) -> AppResult<Vec<Message>> 
             edited_at: r.edited_at,
             interaction: r.interaction.map(|i| i.0),
             event: event_map.remove(&r.id),
+            pinned_at: r.pinned_at,
         })
         .collect())
 }
@@ -394,7 +396,19 @@ pub async fn post_bot_message_full(
 pub struct HistoryQuery {
     /// Only messages older than this ID (for scrolling back).
     before: Option<String>,
+    /// Messages around this ID (half older, half newer), for jumping to an
+    /// old message from search or pins.
+    around: Option<String>,
     limit: Option<i64>,
+}
+
+fn parse_id(raw: Option<&str>, what: &str) -> AppResult<Option<i64>> {
+    raw.map(|s| {
+        s.trim()
+            .parse::<i64>()
+            .map_err(|_| AppError::BadRequest(format!("`{what}` must be a message ID.")))
+    })
+    .transpose()
 }
 
 pub async fn list(
@@ -405,14 +419,38 @@ pub async fn list(
 ) -> AppResult<Json<Vec<Message>>> {
     let access = channel_access(&st.db, channel_id, user.id).await?;
     access.require(p::READ_HISTORY)?;
-    let before = match q.before.as_deref() {
-        Some(s) => Some(
-            s.parse::<i64>()
-                .map_err(|_| AppError::BadRequest("`before` must be a message ID.".into()))?,
-        ),
-        None => None,
-    };
+    let before = parse_id(q.before.as_deref(), "before")?;
+    let around = parse_id(q.around.as_deref(), "around")?;
     let limit = q.limit.unwrap_or(50).clamp(1, 100);
+    if let Some(around) = around {
+        // The message itself and older ones, then newer ones.
+        let older_sql = format!(
+            "{MESSAGE_SELECT}
+             WHERE m.channel_id = $1 AND m.id <= $2
+             ORDER BY m.id DESC LIMIT $3"
+        );
+        let newer_sql = format!(
+            "{MESSAGE_SELECT}
+             WHERE m.channel_id = $1 AND m.id > $2
+             ORDER BY m.id ASC LIMIT $3"
+        );
+        let newer_count = limit / 2;
+        let mut rows = sqlx::query_as::<_, MessageRow>(&older_sql)
+            .bind(channel_id)
+            .bind(around)
+            .bind(limit - newer_count)
+            .fetch_all(&st.db)
+            .await?;
+        rows.reverse();
+        let newer = sqlx::query_as::<_, MessageRow>(&newer_sql)
+            .bind(channel_id)
+            .bind(around)
+            .bind(newer_count.max(1))
+            .fetch_all(&st.db)
+            .await?;
+        rows.extend(newer);
+        return Ok(Json(hydrate(&st.db, rows).await?));
+    }
     let sql = format!(
         "{MESSAGE_SELECT}
          WHERE m.channel_id = $1 AND ($2::BIGINT IS NULL OR m.id < $2)
@@ -845,6 +883,100 @@ pub async fn typing(
         },
     );
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ---- Pins ------------------------------------------------------------------
+
+/// Most pins a channel can have.
+pub const MAX_PINS: i64 = 50;
+
+/// `GET /api/channels/{id}/pins`: pinned messages, most recently pinned first.
+pub async fn list_pins(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(channel_id): Path<i64>,
+) -> AppResult<Json<Vec<Message>>> {
+    let access = channel_access(&st.db, channel_id, user.id).await?;
+    access.require(p::READ_HISTORY)?;
+    let sql = format!(
+        "{MESSAGE_SELECT}
+         WHERE m.channel_id = $1 AND m.pinned_at IS NOT NULL
+         ORDER BY m.pinned_at DESC, m.id DESC LIMIT 100"
+    );
+    let rows = sqlx::query_as::<_, MessageRow>(&sql)
+        .bind(channel_id)
+        .fetch_all(&st.db)
+        .await?;
+    Ok(Json(hydrate(&st.db, rows).await?))
+}
+
+async fn set_pinned(
+    st: &AppState,
+    user: &User,
+    channel_id: i64,
+    message_id: i64,
+    pinned: bool,
+) -> AppResult<Message> {
+    let access = channel_access(&st.db, channel_id, user.id).await?;
+    access.require(p::MANAGE_MESSAGES)?;
+    let msg = message_in_channel(&st.db, channel_id, message_id).await?;
+    if msg.pinned_at.is_some() == pinned {
+        return Ok(msg);
+    }
+    if pinned {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM messages WHERE channel_id = $1 AND pinned_at IS NOT NULL",
+        )
+        .bind(channel_id)
+        .fetch_one(&st.db)
+        .await?;
+        if count >= MAX_PINS {
+            return Err(AppError::BadRequest(format!(
+                "This channel already has {MAX_PINS} pins. Unpin one first."
+            )));
+        }
+        sqlx::query("UPDATE messages SET pinned_at = now(), pinned_by = $2 WHERE id = $1")
+            .bind(message_id)
+            .bind(user.id)
+            .execute(&st.db)
+            .await?;
+    } else {
+        sqlx::query("UPDATE messages SET pinned_at = NULL, pinned_by = NULL WHERE id = $1")
+            .bind(message_id)
+            .execute(&st.db)
+            .await?;
+    }
+    let message = fetch_message(&st.db, message_id).await?;
+    st.dispatch(
+        Audience::Channel {
+            guild_id: access.channel.guild_id,
+            channel_id,
+        },
+        ServerEvent::MessageUpdate(message.clone()),
+    );
+    Ok(message)
+}
+
+/// `PUT /api/channels/{id}/pins/{message}` (needs Manage Messages).
+pub async fn pin(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((channel_id, message_id)): Path<(i64, i64)>,
+) -> AppResult<Json<Message>> {
+    Ok(Json(
+        set_pinned(&st, &user, channel_id, message_id, true).await?,
+    ))
+}
+
+/// `DELETE /api/channels/{id}/pins/{message}` (needs Manage Messages).
+pub async fn unpin(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((channel_id, message_id)): Path<(i64, i64)>,
+) -> AppResult<Json<Message>> {
+    Ok(Json(
+        set_pinned(&st, &user, channel_id, message_id, false).await?,
+    ))
 }
 
 #[cfg(test)]

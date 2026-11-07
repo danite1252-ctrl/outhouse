@@ -57,6 +57,21 @@ api("PUT", f"/api/events/{raid['event']['id']}/signup",
     {"status": "yes", "role": "tank", "class": "Paladin", "spec": "Protection"}, dave["token"])
 api("POST", f"/api/guilds/{guild['id']}/bots", {"name": "Dice"}, TOKEN)
 
+# Search, pins and mention counts: an old message beyond the first page, then mentions of Carol.
+CAROL = carol["user"]["id"]
+general = api("POST", f"/api/guilds/{guild['id']}/channels", {"name": "general"}, TOKEN)
+api("POST", f"/api/channels/{general['id']}/messages",
+    {"content": "Ancient lore: the Onyxia key quest starts in Dustwallow Marsh"}, dave["token"])
+for i in range(80):
+    api("POST", f"/api/channels/{general['id']}/messages", {"content": f"filler chatter {i}"}, dave["token"])
+api("POST", f"/api/channels/{general['id']}/messages", {"content": f"<@{CAROL}> who has the onyxia key?"}, dave["token"])
+api("POST", f"/api/channels/{general['id']}/messages", {"content": "@everyone raid at 8, bring flasks"}, dave["token"])
+family = api("POST", "/api/guilds", {"name": "Family"}, dave["token"])
+fchan = api("POST", f"/api/guilds/{family['id']}/channels", {"name": "chat"}, dave["token"])
+fcode = api("POST", f"/api/guilds/{family['id']}/invites", None, dave["token"])["code"]
+api("POST", f"/api/invites/{fcode}", None, TOKEN)
+api("POST", f"/api/channels/{fchan['id']}/messages", {"content": f"Dinner on Sunday <@{CAROL}>?"}, dave["token"])
+
 errors = []
 
 
@@ -125,6 +140,67 @@ with sync_playwright() as p:
     page.wait_for_timeout(300)
     page.fill("#composer-input", "")
 
+    # ---- Unread markers and mention counts ----
+    def badge_text(selector):
+        return page.evaluate(f"document.querySelector({json.dumps(selector)})?.textContent ?? null")
+
+    page.wait_for_selector(".channel:has-text('general') .mention-badge", timeout=10000)
+    assert badge_text(".channel.unread .mention-badge") == "2", badge_text(".channel.unread .mention-badge")
+    assert badge_text(".guild[title='Family'] .mention-badge") == "1", badge_text(".guild[title='Family'] .mention-badge")
+    assert badge_text(".guild[title='UI Test Guild'] .mention-badge") == "2"
+    assert page.title() == "(3) Outhouse", page.title()
+    # A new mention arrives live.
+    api("POST", f"/api/channels/{fchan['id']}/messages", {"content": "@here pizza tonight?"}, dave["token"])
+    page.wait_for_function("document.querySelector(\".guild[title='Family'] .mention-badge\")?.textContent === '2'", timeout=10000)
+    page.wait_for_function("document.title === '(4) Outhouse'")
+    page.screenshot(path=f"{SHOTS}/13-mention-badges.png")
+    # Opening the channel clears its count.
+    page.click(".channel:has-text('general')")
+    page.wait_for_selector(".channel:has-text('general') .mention-badge", state="detached", timeout=10000)
+    page.wait_for_function("document.title === '(2) Outhouse'")
+    assert page.query_selector(".guild[title='UI Test Guild'] .mention-badge") is None
+
+    # ---- Pins ----
+    last = "#messages article.msg >> nth=-1"
+    page.hover(last)
+    page.click(f"{last} >> .msg-actions button[title='Pin']")
+    page.wait_for_selector("#messages article.msg.pinned", timeout=10000)
+    page.click("#pins-btn")
+    page.wait_for_selector(".pins-panel .sp-card:has-text('raid at 8')", timeout=10000)
+    # Pin another from the right-click menu; the open list updates.
+    page.click("#messages article.msg >> nth=-2", button="right")
+    page.click(".menu button:has-text('Pin message')")
+    page.wait_for_function("document.querySelectorAll('.pins-panel .sp-card').length === 2", timeout=10000)
+    page.screenshot(path=f"{SHOTS}/14-pins-panel.png")
+    page.click(".pins-panel .sp-card:has-text('who has the onyxia key')")
+    page.wait_for_selector("article.msg.flash")
+    page.click(".pins-panel .sp-head button[title='Close']")
+
+    # ---- Search ----
+    page.fill("#search-input", "onyxia key")
+    page.press("#search-input", "Enter")
+    page.wait_for_selector(".search-panel .sp-card", timeout=10000)
+    page.wait_for_function("document.querySelectorAll('.search-panel .sp-card').length === 2")
+    assert page.query_selector(".search-panel mark") is not None
+    page.screenshot(path=f"{SHOTS}/15-search-results.png")
+    # The old message is beyond the first page: it loads the messages around it.
+    page.click(".search-panel .sp-card:has-text('Ancient lore')")
+    page.wait_for_selector("#detached-bar:not([hidden])", timeout=10000)
+    page.wait_for_selector("article.msg.flash:has-text('Ancient lore')")
+    page.screenshot(path=f"{SHOTS}/16-search-jump.png")
+    page.click("#detached-bar button:has-text('Jump to present')")
+    page.wait_for_selector("#detached-bar", state="hidden", timeout=10000)
+    page.wait_for_selector("article.msg:has-text('raid at 8')")
+    # Filters.
+    page.fill("#search-input", "in:#raids sign")
+    page.press("#search-input", "Enter")
+    page.wait_for_function("document.querySelector('.search-panel .sp-count')?.textContent === '1 result'", timeout=10000)
+    page.fill("#search-input", "from:@nobody zzz")
+    page.press("#search-input", "Enter")
+    page.wait_for_selector(".search-panel .sp-empty", timeout=10000)
+    page.press("#search-input", "Escape")
+    page.wait_for_selector(".search-panel", state="detached")
+
     # ---- Phone ----
     phone = browser.new_page(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
     watch(phone, "phone")
@@ -139,6 +215,17 @@ with sync_playwright() as p:
     phone.click("#members-toggle")
     phone.wait_for_timeout(400)
     phone.screenshot(path=f"{SHOTS}/10-phone-members.png")
+    phone.click(".mobile-scrim", position={"x": 20, "y": 420})
+    phone.wait_for_timeout(300)
+    phone.click("#search-toggle")
+    phone.fill(".sp-search input", "onyxia")
+    phone.press(".sp-search input", "Enter")
+    phone.wait_for_selector(".search-panel .sp-card", timeout=10000)
+    phone.screenshot(path=f"{SHOTS}/17-phone-search.png")
+    phone.click("#pins-btn")
+    phone.wait_for_selector(".pins-panel .sp-empty", timeout=10000)
+    phone.screenshot(path=f"{SHOTS}/18-phone-pins.png")
+    phone.click(".pins-panel .sp-head button[title='Close']")
 
     # ---- Android app (draws under the status bar and navigation buttons) ----
     droid = browser.new_page(viewport={"width": 393, "height": 852}, is_mobile=True, has_touch=True)

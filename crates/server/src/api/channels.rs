@@ -129,17 +129,27 @@ pub async fn ack(
     Path(channel_id): Path<i64>,
     Json(req): Json<AckRequest>,
 ) -> AppResult<StatusCode> {
-    channel_access(&st.db, channel_id, user.id).await?;
-    sqlx::query(
+    let access = channel_access(&st.db, channel_id, user.id).await?;
+    let last_read_id: i64 = sqlx::query_scalar(
         "INSERT INTO read_states (user_id, channel_id, last_read_id) VALUES ($1, $2, $3)
          ON CONFLICT (user_id, channel_id)
-         DO UPDATE SET last_read_id = GREATEST(read_states.last_read_id, EXCLUDED.last_read_id)",
+         DO UPDATE SET last_read_id = GREATEST(read_states.last_read_id, EXCLUDED.last_read_id)
+         RETURNING last_read_id",
     )
     .bind(user.id)
     .bind(channel_id)
     .bind(req.message_id)
-    .execute(&st.db)
+    .fetch_one(&st.db)
     .await?;
+    // Your other devices clear their unread markers and mention counts too.
+    st.dispatch(
+        Audience::User(user.id),
+        ServerEvent::ChannelAck {
+            guild_id: access.channel.guild_id,
+            channel_id,
+            last_read_id,
+        },
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 

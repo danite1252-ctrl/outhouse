@@ -228,3 +228,50 @@ pub async fn can_view(db: &PgPool, guild_id: i64, channel_id: i64, user_id: i64)
         Err(_) => false,
     }
 }
+
+#[derive(sqlx::FromRow)]
+struct GuildOverwriteRow {
+    channel_id: i64,
+    target_id: i64,
+    target_kind: i16,
+    allow_bits: i64,
+    deny_bits: i64,
+}
+
+/// IDs of the text channels in the member's outhouse where they have all of
+/// `need` (two queries, however many channels there are).
+pub async fn visible_text_channels(db: &PgPool, ctx: &MemberCtx, need: u64) -> AppResult<Vec<i64>> {
+    let channel_ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM channels WHERE guild_id = $1 AND kind = 0 ORDER BY position, id",
+    )
+    .bind(ctx.guild_id)
+    .fetch_all(db)
+    .await?;
+    let rows = sqlx::query_as::<_, GuildOverwriteRow>(
+        "SELECT o.channel_id, o.target_id, o.target_kind, o.allow_bits, o.deny_bits
+         FROM channel_overwrites o
+         JOIN channels c ON c.id = o.channel_id
+         WHERE c.guild_id = $1",
+    )
+    .bind(ctx.guild_id)
+    .fetch_all(db)
+    .await?;
+    let mut by_channel: std::collections::HashMap<i64, Vec<Overwrite>> =
+        std::collections::HashMap::new();
+    for r in rows {
+        by_channel.entry(r.channel_id).or_default().push(Overwrite {
+            target_id: r.target_id,
+            is_member: r.target_kind == 1,
+            allow: r.allow_bits as u64,
+            deny: r.deny_bits as u64,
+        });
+    }
+    let need = need | p::VIEW_CHANNEL;
+    Ok(channel_ids
+        .into_iter()
+        .filter(|id| {
+            let ovs = by_channel.get(id).map(Vec::as_slice).unwrap_or(&[]);
+            channel_perms_with(ctx, ovs) & need == need
+        })
+        .collect())
+}

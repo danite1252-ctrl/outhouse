@@ -53,6 +53,15 @@ pub enum ServerEvent {
         #[serde(with = "as_string")]
         channel_id: i64,
     },
+    /// You marked a channel as read (sent to all of your own clients).
+    ChannelAck {
+        #[serde(with = "as_string")]
+        guild_id: i64,
+        #[serde(with = "as_string")]
+        channel_id: i64,
+        #[serde(with = "as_string")]
+        last_read_id: i64,
+    },
     ReactionAdd {
         #[serde(with = "as_string")]
         channel_id: i64,

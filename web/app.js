@@ -447,6 +447,7 @@ function handleEvent({ t, d }) {
       state.guilds = d.guilds;
       renderMe();
       renderGuilds();
+      loadUnread();
       const saved = localStorage.getItem("outhouse_guild");
       const pick = state.guilds.find((g) => g.id === (state.guildId || saved)) || state.guilds[0];
       if (pick) selectGuild(pick.id, state.channelId);
@@ -456,6 +457,7 @@ function handleEvent({ t, d }) {
     case "GUILD_CREATE":
       if (!state.guilds.some((g) => g.id === d.id)) state.guilds.push(d);
       renderGuilds();
+      loadUnread();
       break;
     case "GUILD_DELETE": {
       const g = state.guilds.find((x) => x.id === d.guild_id);
@@ -467,16 +469,19 @@ function handleEvent({ t, d }) {
         else renderEmpty();
       }
       renderGuilds();
+      loadUnread();
       break;
     }
     case "GUILD_REFRESH":
       if (d.guild_id === state.guildId) refreshGuild();
+      loadUnread();
       break;
     case "CHANNEL_CREATE":
       if (d.guild_id === state.guildId && !state.channels.some((c) => c.id === d.id)) {
         state.channels.push(d);
         refreshGuild();
       }
+      loadUnread();
       break;
     case "CHANNEL_DELETE":
       if (d.guild_id === state.guildId) {
@@ -487,6 +492,7 @@ function handleEvent({ t, d }) {
         }
         renderChannels();
       }
+      loadUnread();
       break;
     case "MESSAGE_CREATE": {
       clearTyping(d.channel_id, d.author_id);
@@ -494,7 +500,9 @@ function handleEvent({ t, d }) {
       desktopNotifyMessage(d, ch);
       if (ch) ch.last_message_id = d.id;
       if (d.author_id === state.me.id && ch) ch.last_read_id = d.id;
-      if (d.channel_id === state.channelId) {
+      noteUnreadMessage(d);
+      // While looking at older messages (from search or pins) new ones wait for "Jump to present".
+      if (d.channel_id === state.channelId && !state.detached) {
         if (!findMessage(d.id)) {
           state.messages.push(d);
           renderMessages();
@@ -510,6 +518,7 @@ function handleEvent({ t, d }) {
         state.messages[i] = d;
         renderMessages();
       }
+      onMessageChanged(d.channel_id);
       break;
     }
     case "MESSAGE_DELETE":
@@ -517,6 +526,10 @@ function handleEvent({ t, d }) {
         state.messages = state.messages.filter((m) => m.id !== d.id);
         renderMessages();
       }
+      onMessageChanged(d.channel_id);
+      break;
+    case "CHANNEL_ACK":
+      onChannelAck(d);
       break;
     case "REACTION_ADD":
     case "REACTION_REMOVE": {
@@ -598,6 +611,7 @@ function ackChannel() {
     const last = state.messages[state.messages.length - 1];
     if (!ch || !last || (ch.last_read_id && !idGt(last.id, ch.last_read_id))) return;
     ch.last_read_id = last.id;
+    noteChannelRead(ch.id, last.id);
     api("POST", `/api/channels/${ch.id}/ack`, { message_id: last.id }).catch(() => {});
     renderChannels();
   }, 400);
@@ -626,7 +640,7 @@ function renderGuilds() {
         "data-menu": "guild",
         "data-id": g.id,
         onclick: () => selectGuild(g.id),
-      }, initials(g.name), state.unreadGuilds.has(g.id) && g.id !== state.guildId ? el("span", { class: "badge" }) : null),
+      }, initials(g.name), guildBadge(g.id)),
     ),
   );
 }
@@ -660,7 +674,7 @@ function renderChannels() {
         "data-menu": "channel",
         "data-id": c.id,
         onclick: () => selectChannel(c.id),
-      }, el("span", { class: "hash" }, "#"), c.name),
+      }, el("span", { class: "hash" }, "#"), el("span", { class: "cname" }, c.name), channelBadge(c.id)),
     ),
   );
   $("voice-channels").replaceChildren(
@@ -853,6 +867,9 @@ function messageActions(m) {
       : null,
     can("send_messages", state.channelId) ? el("button", { title: "Reply", onclick: () => startReply(m) }, "↩") : null,
     mine ? el("button", { title: "Edit", onclick: () => startEdit(m.id) }, "✎") : null,
+    can("manage_messages", state.channelId)
+      ? el("button", { class: `pin${m.pinned_at ? " on" : ""}`, title: m.pinned_at ? "Unpin" : "Pin", onclick: () => togglePin(m) }, "📌")
+      : null,
     mine || can("manage_messages", state.channelId)
       ? el("button", { class: "danger", title: "Delete", onclick: (e) => deleteMessage(m, e.shiftKey) }, "🗑")
       : null,
@@ -891,7 +908,7 @@ function renderMessages() {
     );
 
     const article = el("article", {
-      class: `msg${grouped ? "" : " first"}${state.replyTo?.id === m.id ? " highlight" : ""}${mentionsMe(m) ? " mentions-me" : ""}`,
+      class: `msg${grouped ? "" : " first"}${state.replyTo?.id === m.id ? " highlight" : ""}${mentionsMe(m) ? " mentions-me" : ""}${state.flashId === m.id ? " flash" : ""}${m.pinned_at ? " pinned" : ""}`,
       "data-menu": "message",
       "data-id": m.id,
       id: `msg-${m.id}`,
@@ -934,7 +951,7 @@ function messageAvatar(m) {
 
 function jumpTo(id) {
   const node = $(`msg-${id}`);
-  if (!node) return toast("That message is further back.");
+  if (!node) return jumpToMessage(state.channelId, id);
   node.scrollIntoView({ behavior: "smooth", block: "center" });
   node.classList.add("highlight");
   setTimeout(() => node.classList.remove("highlight"), 1500);
@@ -2345,6 +2362,7 @@ async function selectChannel(id) {
   }
   state.channelId = id;
   localStorage.setItem(`outhouse_channel_${state.guildId}`, id);
+  onChannelChanged();
   const ch = state.channels.find((c) => c.id === id);
   $("channel-name").textContent = ch.name;
   updateComposer();
@@ -2374,6 +2392,7 @@ const MENUS = {
       can("add_reactions", state.channelId) ? { label: "Add reaction…", onClick: () => emojiPicker(node.querySelector(".msg-body"), (emoji) => toggleReaction(m, emoji)) } : null,
       can("send_messages", state.channelId) ? { label: "Reply", onClick: () => startReply(m) } : null,
       mine ? { label: "Edit message", onClick: () => startEdit(m.id) } : null,
+      can("manage_messages", state.channelId) ? { label: m.pinned_at ? "Unpin message" : "Pin message", onClick: () => togglePin(m) } : null,
       "sep",
       selection ? { label: "Copy selection", onClick: () => copy(selection, "Selection copied") } : null,
       m.content ? { label: "Copy text", onClick: () => copy(plainMentions(m.content), "Message copied") } : null,
@@ -2394,7 +2413,7 @@ const MENUS = {
       c.kind === VOICE ? (state.voice.channelId === c.id
         ? { label: "Leave voice", onClick: () => leaveVoice(true) }
         : { label: "Join voice", disabled: !can("connect", c.id), onClick: () => joinVoice(c.id) }) : null,
-      c.kind === TEXT ? { label: "Mark as read", disabled: !isUnread(c), onClick: () => { if (c.last_message_id) { c.last_read_id = c.last_message_id; api("POST", `/api/channels/${c.id}/ack`, { message_id: c.last_message_id }).catch(() => {}); renderChannels(); } } } : null,
+      c.kind === TEXT ? { label: "Mark as read", disabled: !isUnread(c) && !channelMentions(c.id), onClick: () => { if (c.last_message_id) { c.last_read_id = c.last_message_id; noteChannelRead(c.id, c.last_message_id); api("POST", `/api/channels/${c.id}/ack`, { message_id: c.last_message_id }).catch(() => {}); renderChannels(); } } } : null,
       can("create_invite") ? { label: "Invite people", onClick: invitePeople } : null,
       "sep",
       can("manage_roles") ? { label: "Edit permissions", onClick: () => openChannelPermissions(c) } : null,
@@ -2925,5 +2944,10 @@ async function start() {
 }
 
 setAuthMode(false);
-if (state.token) start();
-else showAuth();
+// Wait for features.js and chat-extras.js before anything can call into them.
+function boot() {
+  if (state.token) start();
+  else showAuth();
+}
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+else boot();

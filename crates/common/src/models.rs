@@ -213,6 +213,52 @@ pub struct Message {
     /// For a raid post: the event and its sign-ups.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event: Option<RaidEvent>,
+    /// When it was pinned to its channel (null = not pinned).
+    #[serde(default)]
+    pub pinned_at: Option<DateTime<Utc>>,
+}
+
+/// Message search results (newest first).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SearchResults {
+    /// How many messages match in total.
+    pub total: i64,
+    pub messages: Vec<Message>,
+    /// The words searched for, for highlighting.
+    pub terms: Vec<String>,
+}
+
+/// Unread state for one text channel you can see.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
+pub struct ChannelUnread {
+    #[serde(with = "as_string")]
+    pub channel_id: i64,
+    #[serde(with = "as_string")]
+    pub guild_id: i64,
+    #[serde(with = "option_as_string", default)]
+    pub last_message_id: Option<i64>,
+    #[serde(with = "option_as_string", default)]
+    pub last_read_id: Option<i64>,
+    /// Unread messages mentioning you, your roles, @everyone or @here, or
+    /// replying to you (counted up to 100).
+    pub mention_count: i64,
+}
+
+/// Your roles in one outhouse (so clients can spot role mentions).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GuildRoleIds {
+    #[serde(with = "as_string")]
+    pub guild_id: i64,
+    #[serde(with = "vec_as_string")]
+    pub role_ids: Vec<i64>,
+}
+
+/// `GET /api/users/@me/unread`: unread and mention counts everywhere.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UnreadState {
+    pub channels: Vec<ChannelUnread>,
+    pub roles: Vec<GuildRoleIds>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

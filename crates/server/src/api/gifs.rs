@@ -4,6 +4,10 @@
 //! Google shut down the Tenor API in June 2026. Klipy is another option
 //! that can be added behind the same endpoints.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
 use axum::extract::{Query, State};
 use axum::Json;
 use outhouse_common::models::Gif;
@@ -17,6 +21,68 @@ use crate::state::AppState;
 #[derive(Deserialize)]
 pub struct GifQuery {
     q: Option<String>,
+}
+
+/// How long a search (or trending) result is reused. Giphy's free keys allow
+/// 100 calls an hour, so repeats come from memory instead.
+const CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+/// Most different searches kept at once.
+const CACHE_MAX_ENTRIES: usize = 500;
+
+/// Recent Giphy results by normalised query ("" = trending).
+#[derive(Default)]
+struct GifCache {
+    entries: HashMap<String, (Instant, Vec<Gif>)>,
+}
+
+impl GifCache {
+    fn get(&mut self, key: &str, now: Instant) -> Option<Vec<Gif>> {
+        match self.entries.get(key) {
+            Some((at, gifs)) if now.duration_since(*at) < CACHE_TTL => Some(gifs.clone()),
+            Some(_) => {
+                self.entries.remove(key);
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn put(&mut self, key: String, gifs: Vec<Gif>, now: Instant) {
+        if self.entries.len() >= CACHE_MAX_ENTRIES && !self.entries.contains_key(&key) {
+            self.entries
+                .retain(|_, (at, _)| now.duration_since(*at) < CACHE_TTL);
+            while self.entries.len() >= CACHE_MAX_ENTRIES {
+                let oldest = self
+                    .entries
+                    .iter()
+                    .min_by_key(|(_, (at, _))| *at)
+                    .map(|(k, _)| k.clone());
+                match oldest {
+                    Some(k) => {
+                        self.entries.remove(&k);
+                    }
+                    None => break,
+                }
+            }
+        }
+        self.entries.insert(key, (now, gifs));
+    }
+}
+
+fn cache() -> &'static Mutex<GifCache> {
+    static CACHE: OnceLock<Mutex<GifCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(GifCache::default()))
+}
+
+/// "  Leeroy   JENKINS " and "leeroy jenkins" are the same search.
+fn normalise_query(q: &str) -> String {
+    q.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+        .chars()
+        .take(100)
+        .collect()
 }
 
 fn parse_giphy(body: &Value) -> Vec<Gif> {
@@ -62,7 +128,14 @@ pub async fn search(
     let key = st.config.giphy_api_key.as_deref().ok_or_else(|| {
         AppError::BadRequest("GIFs aren't set up yet: add GIPHY_API_KEY to .env.".into())
     })?;
-    let q = query.q.as_deref().map(str::trim).unwrap_or("");
+    let q = normalise_query(query.q.as_deref().unwrap_or(""));
+    let cached = cache()
+        .lock()
+        .expect("gif cache lock")
+        .get(&q, Instant::now());
+    if let Some(hit) = cached {
+        return Ok(Json(hit));
+    }
     let request = if q.is_empty() {
         st.http
             .get("https://api.giphy.com/v1/gifs/trending")
@@ -70,7 +143,7 @@ pub async fn search(
     } else {
         st.http.get("https://api.giphy.com/v1/gifs/search").query(&[
             ("api_key", key),
-            ("q", q),
+            ("q", q.as_str()),
             ("limit", "24"),
             ("rating", "pg-13"),
         ])
@@ -89,12 +162,64 @@ pub async fn search(
         .json()
         .await
         .map_err(|e| anyhow::anyhow!("reading GIF results: {e}"))?;
-    Ok(Json(parse_giphy(&body)))
+    let gifs = parse_giphy(&body);
+    cache()
+        .lock()
+        .expect("gif cache lock")
+        .put(q, gifs.clone(), Instant::now());
+    Ok(Json(gifs))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gif(id: &str) -> Gif {
+        Gif {
+            id: id.into(),
+            title: String::new(),
+            preview_url: String::new(),
+            url: String::new(),
+            width: 1,
+            height: 1,
+        }
+    }
+
+    #[test]
+    fn queries_are_normalised() {
+        assert_eq!(normalise_query("  Leeroy   JENKINS "), "leeroy jenkins");
+        assert_eq!(normalise_query(""), "");
+    }
+
+    #[test]
+    fn cache_expires_and_stays_bounded() {
+        let start = Instant::now();
+        let mut c = GifCache::default();
+        c.put("murloc".into(), vec![gif("a")], start);
+        assert_eq!(
+            c.get("murloc", start + Duration::from_secs(60)).unwrap()[0].id,
+            "a"
+        );
+        assert!(c
+            .get("murloc", start + CACHE_TTL + Duration::from_secs(1))
+            .is_none());
+        for i in 0..CACHE_MAX_ENTRIES + 20 {
+            c.put(
+                format!("q{i}"),
+                vec![gif("x")],
+                start + Duration::from_millis(i as u64),
+            );
+        }
+        assert!(c.entries.len() <= CACHE_MAX_ENTRIES);
+        // The oldest searches went first.
+        assert!(c.get("q0", start + Duration::from_secs(1)).is_none());
+        assert!(c
+            .get(
+                &format!("q{}", CACHE_MAX_ENTRIES + 19),
+                start + Duration::from_secs(1)
+            )
+            .is_some());
+    }
 
     #[test]
     fn parses_giphy_results() {

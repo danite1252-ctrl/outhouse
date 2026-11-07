@@ -72,6 +72,85 @@ TOKEN=""
 call POST "/api/webhooks/$WID/$WTOK" '{"content":"from a webhook"}' >/dev/null
 TOKEN=$TOKEN_A
 
+# fail_call METHOD PATH [JSON] -> succeeds only if the request is refused (4xx)
+fail_call() {
+  local method=$1 path=$2 body=${3:-}
+  local args=(-sS -X "$method" -o /tmp/body -w "%{http_code}" -H "Content-Type: application/json")
+  [ -n "$TOKEN" ] && args+=(-H "Authorization: Bearer $TOKEN")
+  [ -n "$body" ] && args+=(-d "$body")
+  local code
+  code=$(curl "${args[@]}" "$BASE$path")
+  if [[ "$code" != 4* ]]; then
+    echo "EXPECTED REFUSAL: $method $path -> $code"; cat /tmp/body; echo; exit 1
+  fi
+}
+enc() { jq -rn --arg v "$1" '$v|@uri'; }
+
+step "pinned messages"
+P=$(call POST "/api/guilds/$GUILD/channels" '{"name":"pins"}'); PINS=$(jq -r .id <<<"$P")
+P1=$(call POST "/api/channels/$PINS/messages" '{"content":"Raid rules: no ninja looting"}' | jq -r .id)
+TOKEN=$TOKEN_B; fail_call PUT "/api/channels/$PINS/pins/$P1"; TOKEN=$TOKEN_A
+call PUT "/api/channels/$PINS/pins/$P1" | jq -e '.pinned_at != null' >/dev/null
+call PUT "/api/channels/$PINS/pins/$P1" >/dev/null # pinning twice is fine
+TOKEN=$TOKEN_B; call GET "/api/channels/$PINS/pins" | jq -e --arg id "$P1" 'length == 1 and .[0].id == $id' >/dev/null; TOKEN=$TOKEN_A
+call GET "/api/channels/$PINS/messages" | jq -e --arg id "$P1" '.[] | select(.id == $id) | .pinned_at != null' >/dev/null
+fail_call PUT "/api/channels/$CHAN/pins/$P1" # message from another channel
+for i in $(seq 2 50); do
+  id=$(call POST "/api/channels/$PINS/messages" '{"content":"pin '"$i"'"}' | jq -r .id)
+  call PUT "/api/channels/$PINS/pins/$id" >/dev/null
+done
+call GET "/api/channels/$PINS/pins" | jq -e 'length == 50' >/dev/null
+EXTRA=$(call POST "/api/channels/$PINS/messages" '{"content":"one too many"}' | jq -r .id)
+fail_call PUT "/api/channels/$PINS/pins/$EXTRA"
+TOKEN=$TOKEN_B; fail_call DELETE "/api/channels/$PINS/pins/$P1"; TOKEN=$TOKEN_A
+call DELETE "/api/channels/$PINS/pins/$P1" | jq -e '.pinned_at == null' >/dev/null
+call GET "/api/channels/$PINS/pins" | jq -e 'length == 49' >/dev/null
+call PUT "/api/channels/$PINS/pins/$EXTRA" >/dev/null
+
+step "history around a message"
+call GET "/api/channels/$PINS/messages?around=$P1&limit=10" | jq -e --arg id "$P1" 'length >= 5 and (.[0].id == $id) and ([.[] | select(.id == $id)] | length == 1)' >/dev/null
+MID=$(call GET "/api/channels/$PINS/messages?limit=30" | jq -r '.[0].id')
+call GET "/api/channels/$PINS/messages?around=$MID&limit=10" | jq -e --arg id "$MID" 'length == 10 and .[4].id == $id' >/dev/null
+
+step "message search"
+call POST "/api/channels/$CHAN/messages" '{"content":"Who has the Onyxia key? https://wowhead.com/onyxia"}' >/dev/null
+TOKEN=$TOKEN_B; call POST "/api/channels/$CHAN/messages" '{"content":"onyxia attunement done"}' >/dev/null; TOKEN=$TOKEN_A
+call GET "/api/guilds/$GUILD/search?q=onyx" | jq -e '.total == 2 and (.messages | length == 2) and .terms == ["onyx"]' >/dev/null
+call GET "/api/guilds/$GUILD/search?q=$(enc 'onyxia from:@bob')" | jq -e --arg id "$BOB" '.total == 1 and .messages[0].author_id == $id' >/dev/null
+call GET "/api/guilds/$GUILD/search?q=$(enc 'onyxia has:link')" | jq -e '.total == 1' >/dev/null
+call GET "/api/guilds/$GUILD/search?q=$(enc 'in:#pins ninja')" | jq -e '.total == 1' >/dev/null
+call GET "/api/guilds/$GUILD/search?q=$(enc 'onyxia in:#pins')" | jq -e '.total == 0' >/dev/null
+call GET "/api/guilds/$GUILD/search?q=$(enc 'from:@nobody-here')" | jq -e '.total == 0' >/dev/null
+call GET "/api/guilds/$GUILD/search?q=$(enc 'pin')&limit=5&offset=5" | jq -e '.total >= 49 and (.messages | length == 5)' >/dev/null
+call GET "/api/guilds/$GUILD/search?q=$(enc "raid's & (loot) | !:*")" >/dev/null # odd characters can't break the query
+fail_call GET "/api/guilds/$GUILD/search?q="
+# A private channel's messages stay hidden from people who can't see it.
+S=$(call POST "/api/guilds/$GUILD/channels" '{"name":"officers"}'); SECRET=$(jq -r .id <<<"$S")
+call PUT "/api/channels/$SECRET/permissions/$GUILD" '{"kind":"role","allow":"0","deny":"1"}' >/dev/null
+call POST "/api/channels/$SECRET/messages" '{"content":"secret loot council plans"}' >/dev/null
+call GET "/api/guilds/$GUILD/search?q=loot+council" | jq -e '.total == 1' >/dev/null
+TOKEN=$TOKEN_B
+call GET "/api/guilds/$GUILD/search?q=loot+council" | jq -e '.total == 0' >/dev/null
+call GET "/api/users/@me/unread" | jq -e --arg id "$SECRET" '[.channels[] | select(.channel_id == $id)] | length == 0' >/dev/null
+TOKEN=$TOKEN_A
+OUT=$(call POST /api/auth/register '{"username":"outsider","password":"password123"}' | jq -r .token)
+TOKEN=$OUT; fail_call GET "/api/guilds/$GUILD/search?q=onyxia"; TOKEN=$TOKEN_A
+
+step "unread and mention counts"
+PG=$(call POST "/api/guilds/$GUILD/channels" '{"name":"pings"}'); PINGS=$(jq -r .id <<<"$PG")
+call POST "/api/channels/$PINGS/messages" '{"content":"hey <@'"$BOB"'>"}' >/dev/null
+call POST "/api/channels/$PINGS/messages" '{"content":"@everyone raid in 10"}' >/dev/null
+call POST "/api/channels/$PINGS/messages" '{"content":"nothing for bob here"}' >/dev/null
+LAST=$(call POST "/api/channels/$PINGS/messages" '{"content":"<@&'"$ROLE"'> assemble"}' | jq -r .id)
+TOKEN=$TOKEN_B
+call GET "/api/users/@me/unread" | jq -e --arg id "$PINGS" --arg last "$LAST" --arg g "$GUILD" --arg r "$ROLE" '
+  (.channels[] | select(.channel_id == $id) | .mention_count == 3 and .last_message_id == $last and .last_read_id == null)
+  and (.roles[] | select(.guild_id == $g) | .role_ids == [$r])' >/dev/null
+call POST "/api/channels/$PINGS/ack" '{"message_id":"'"$LAST"'"}' >/dev/null
+call GET "/api/users/@me/unread" | jq -e --arg id "$PINGS" --arg last "$LAST" '.channels[] | select(.channel_id == $id) | .mention_count == 0 and .last_read_id == $last' >/dev/null
+TOKEN=$TOKEN_A
+call GET "/api/users/@me/unread" | jq -e --arg id "$PINGS" '.channels[] | select(.channel_id == $id) | .mention_count == 0' >/dev/null
+
 step "voice token"
 VOICE=$(call GET "/api/guilds/$GUILD/channels" | jq -r '.[] | select(.kind == 2) | .id' | head -1)
 call POST "/api/channels/$VOICE/voice/join" >/dev/null
