@@ -172,6 +172,29 @@ api("POST", f"/api/channels/{lfgc['id']}/messages", {"content": "Logs from last 
     "and my BiS https://www.wowhead.com/classic/item=16922/leggings-of-transcendence https://raider.io/characters/us/forever/Sparkles"}, erin["token"])
 api("POST", f"/api/channels/{lfgc['id']}/wow/char", {"query": "Shieldwall"}, erin["token"])
 
+# ---- Batch 5: voice extras (moderation, entrance sounds, soundboard favourites, screen share) ----
+def make_wav(seconds, rate=8000):
+    n = int(rate * seconds)
+    # A quiet two-tone beep so it's audibly a sound if anyone listens.
+    import math
+    data = bytes(int(128 + 40 * math.sin(2 * math.pi * (440 if i < n // 2 else 660) * i / rate)) for i in range(n))
+    return (b"RIFF" + struct.pack("<I", 36 + n) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate, 1, 8)
+            + b"data" + struct.pack("<I", n) + data)
+
+
+frank = api("POST", "/api/auth/register", {"username": f"frank{suffix}", "password": "password123", "display_name": "Frank"})
+api("POST", f"/api/invites/{code}", None, frank["token"])
+FRANK = frank["user"]["id"]
+comms = api("POST", f"/api/guilds/{guild['id']}/channels", {"name": "Raid comms", "kind": 2}, TOKEN)
+afk = api("POST", f"/api/guilds/{guild['id']}/channels", {"name": "AFK", "kind": 2}, TOKEN)
+upload("/api/users/@me/entrance-sound", {}, {"file": ("hello.wav", make_wav(1), "audio/wav")}, dave["token"])
+for name, emoji in [("Leeroy", "🐔"), ("Bonk", "🔨"), ("Wipe", "💀"), ("Bloodlust", "🥁"), ("Ding", "✨")]:
+    snd = upload(f"/api/guilds/{guild['id']}/sounds", {"name": name, "emoji": emoji}, {"file": (f"{name}.wav", make_wav(0.5), "audio/wav")}, TOKEN)
+    if name in ("Leeroy", "Wipe"):
+        api("PUT", f"/api/sounds/{snd['id']}/favourite", None, TOKEN)
+with open("/tmp/entrance-test.wav", "wb") as f:
+    f.write(make_wav(1.5))
+
 def scroll_to_card(pg, title):
     """Scrolls a raid card into view (by title; cards get redrawn, so no element handles)."""
     pg.evaluate("t => [...document.querySelectorAll('#messages .event-card')].find((c) => c.querySelector('.ev-title')?.textContent.includes(t))?.scrollIntoView({block: 'center'})", title)
@@ -188,7 +211,12 @@ def watch(page, label):
 
 
 with sync_playwright() as p:
-    browser = p.chromium.launch()
+    # Fake microphone and screen for the voice tests (LiveKit runs in Docker in CI).
+    browser = p.chromium.launch(args=[
+        "--use-fake-ui-for-media-stream",
+        "--use-fake-device-for-media-stream",
+        "--autoplay-policy=no-user-gesture-required",
+    ])
 
     # ---- Desktop ----
     page = browser.new_page(viewport={"width": 1280, "height": 800})
@@ -773,6 +801,143 @@ with sync_playwright() as p:
     droid.evaluate("document.querySelector('#messages .lfg-card').scrollIntoView({block: 'start'})")
     droid.wait_for_timeout(200)
     droid.screenshot(path=f"{SHOTS}/74-android-lfg.png")
+
+    # ---- Voice extras: two people in a real LiveKit room ----
+    def voice_page(token, label, viewport=None, mobile=False, android=False):
+        pg = browser.new_page(viewport=viewport or {"width": 1280, "height": 800}, is_mobile=mobile, has_touch=mobile,
+                              permissions=["microphone", "camera"])
+        watch(pg, label)
+        extra = "window.__OUTHOUSE_DESKTOP__ = true; window.__OUTHOUSE_PLATFORM__ = 'android'; window.__OUTHOUSE_APP_VERSION__ = '0.2.1';" if android else ""
+        pg.add_init_script(extra + f"localStorage.setItem('outhouse_token', {json.dumps(token)}); localStorage.setItem('outhouse_guild', {json.dumps(guild['id'])}); localStorage.setItem('outhouse_channel_{guild['id']}', {json.dumps(chan['id'])});")
+        pg.goto(BASE + "/")
+        pg.wait_for_selector("#voice-channels .channel.voice", timeout=15000)
+        return pg
+
+    def join(pg, name, drawer=False):
+        if drawer and not pg.evaluate("document.getElementById('app').classList.contains('show-nav')"):
+            pg.click("#nav-toggle")
+            pg.wait_for_timeout(400)
+        pg.click(f"#voice-channels .channel.voice:has-text('{name}')")
+        pg.wait_for_selector("#voice-panel .vp-status:not(.connecting)", timeout=20000)
+        pg.wait_for_function("state.voice.room && state.voice.room.state === 'connected'", timeout=20000)
+
+    carolv = voice_page(TOKEN, "carol-voice")
+    join(carolv, "Raid comms")
+    davev = voice_page(dave["token"], "dave-voice")
+    join(davev, "Raid comms")
+    # Dave's entrance sound plays for Carol.
+    carolv.wait_for_function(f"state.voice.lastEntrance?.user_id === {json.dumps(DAVE)} && state.voice.lastEntrance.played", timeout=10000)
+    carolv.wait_for_selector(f"#voice-channels .voice-user[data-id='{DAVE}']", timeout=10000)
+
+    # Screen share: Carol shares, Dave sees a tile and a LIVE badge.
+    carolv.click("#voice-panel .vp-btn.share")
+    carolv.click(".menu button:has-text('Share screen') >> nth=0")
+    carolv.wait_for_selector("#screen-stage .screen-tile.mine", timeout=15000)
+    carolv.wait_for_selector("#voice-panel .vp-btn.share.on")
+    davev.wait_for_selector(f"#voice-channels .voice-user[data-id='{CAROL}'] .live-badge", timeout=10000)
+    davev.wait_for_selector(f"#screen-stage .screen-tile[data-id='{CAROL}']", timeout=15000)
+    davev.wait_for_function(f"document.querySelector(\"#screen-stage .screen-tile[data-id='{CAROL}'] video\").videoWidth > 0", timeout=15000)
+    davev.screenshot(path=f"{SHOTS}/80-screen-share-strip.png")
+    davev.click(f"#screen-stage .screen-tile[data-id='{CAROL}']")
+    davev.wait_for_selector("#screen-stage.focused .screen-tile.big")
+    davev.wait_for_timeout(300)
+    davev.screenshot(path=f"{SHOTS}/81-screen-share-focused.png")
+    davev.click("#screen-stage .screen-tile.big .st-btn[title='Back to the chat']")
+    davev.wait_for_selector("#screen-stage:not(.focused)")
+
+    # A phone watching (no share button needed there, but it can watch).
+    erinv = voice_page(erin["token"], "erin-phone", {"width": 390, "height": 844}, mobile=True)
+    join(erinv, "Raid comms", drawer=True)
+    erinv.wait_for_selector(f"#voice-channels .voice-user[data-id='{CAROL}'] .live-badge", timeout=10000)
+    erinv.screenshot(path=f"{SHOTS}/82-phone-voice-panel.png")
+    erinv.click(f"#voice-channels .voice-user[data-id='{CAROL}'] .live-badge")
+    erinv.wait_for_selector("#screen-stage.focused .screen-tile.big", timeout=15000)
+    erinv.wait_for_timeout(400)
+    erinv.screenshot(path=f"{SHOTS}/83-phone-screen-share.png")
+    erinv.keyboard.press("Escape")
+
+    # The Android app hides Share screen (Android can't capture the screen).
+    frankv = voice_page(frank["token"], "frank-android", {"width": 393, "height": 852}, mobile=True, android=True)
+    join(frankv, "Raid comms", drawer=True)
+    assert not frankv.query_selector("#voice-panel .vp-btn.share"), "share button shown on Android"
+    assert carolv.query_selector("#voice-panel .vp-btn.share"), "share button missing on desktop"
+    frankv.screenshot(path=f"{SHOTS}/84-android-voice-panel.png")
+
+    # Moderation: right-click Dave in voice.
+    carolv.click(f"#voice-channels .voice-user[data-id='{DAVE}']", button="right")
+    carolv.wait_for_selector(".menu button:has-text('Server mute')")
+    carolv.wait_for_selector(".menu .menu-slider input[max='200']")
+    carolv.screenshot(path=f"{SHOTS}/85-voice-user-menu.png")
+    carolv.click(".menu button:has-text('Server mute')")
+    davev.wait_for_selector("#voice-panel .vp-btn.forced", timeout=10000)
+    davev.wait_for_selector(f"#voice-channels .voice-user[data-id='{DAVE}'] .vicon.server", timeout=10000)
+    carolv.wait_for_selector(f"#voice-channels .voice-user[data-id='{DAVE}'] .vicon.server", timeout=10000)
+    davev.wait_for_function("state.voice.serverMuted === true")
+    davev.screenshot(path=f"{SHOTS}/86-server-muted.png")
+    # Rejoining keeps the mute.
+    davev.click("#voice-panel .icon-btn.danger")
+    davev.wait_for_selector("#voice-panel", state="hidden")
+    join(davev, "Raid comms")
+    davev.wait_for_function("state.voice.serverMuted === true", timeout=10000)
+    davev.wait_for_selector("#voice-panel .vp-btn.forced")
+    carolv.click(f"#voice-channels .voice-user[data-id='{DAVE}']", button="right")
+    carolv.click(".menu button:has-text('Server mute')")
+    davev.wait_for_function("state.voice.serverMuted === false", timeout=10000)
+    davev.wait_for_selector("#voice-panel .vp-btn.forced", state="detached")
+    # Dave can talk again: his mic gets published.
+    davev.wait_for_function("(() => { const p = state.voice.room.localParticipant.getTrackPublication(LivekitClient.Track.Source.Microphone); return !!p && !p.isMuted; })()", timeout=15000)
+
+    # Mute Dave just for Carol.
+    carolv.click(f"#voice-channels .voice-user[data-id='{DAVE}']", button="right")
+    carolv.click(".menu button:has-text('Mute for me')")
+    carolv.wait_for_selector(f"#voice-channels .voice-user[data-id='{DAVE}'] .vicon.local")
+    carolv.screenshot(path=f"{SHOTS}/87-voice-list-desktop.png")
+
+    # Move Dave to AFK, then disconnect him.
+    carolv.click(f"#voice-channels .voice-user[data-id='{DAVE}']", button="right")
+    carolv.hover(".menu button:has-text('Move to')")
+    carolv.click(".menu button:has-text('AFK')")
+    davev.wait_for_selector("#voice-panel .vp-channel:has-text('AFK')", timeout=20000)
+    davev.wait_for_function("state.voice.room && state.voice.room.state === 'connected' && state.voice.channelId === " + json.dumps(afk["id"]), timeout=20000)
+    carolv.wait_for_function(f"state.voiceStates.get({json.dumps(DAVE)})?.channel_id === {json.dumps(afk['id'])}", timeout=10000)
+    carolv.click(f"#voice-channels .voice-user[data-id='{DAVE}']", button="right")
+    carolv.click(".menu button:has-text('Disconnect from voice')")
+    davev.wait_for_selector("#voice-panel", state="hidden", timeout=10000)
+    carolv.wait_for_selector(f"#voice-channels .voice-user[data-id='{DAVE}']", state="detached", timeout=10000)
+
+    # Soundboard with favourites.
+    carolv.click("#voice-panel .vp-btn[title='Soundboard']")
+    carolv.wait_for_selector(".soundboard .sb-label:has-text('Favourites')")
+    carolv.screenshot(path=f"{SHOTS}/88-soundboard.png")
+    carolv.click(".soundboard .sound-btn:has-text('Bonk') >> nth=0")
+    carolv.wait_for_selector(".soundboard.cooling")
+    carolv.click(".soundboard .sound-tile:has-text('Ding') .sound-star")
+    carolv.wait_for_selector(".soundboard .sound-tile.fav:has-text('Ding')")
+    carolv.keyboard.press("Escape")
+
+    # Stop sharing.
+    carolv.click("#voice-panel .vp-btn.share")
+    carolv.wait_for_selector("#screen-stage", state="detached", timeout=10000)
+    erinv.wait_for_selector("#screen-stage", state="detached", timeout=10000)
+
+    # Entrance sound in settings.
+    davev.evaluate("openUserSettings('voice')")
+    davev.wait_for_selector(".entrance-box button:has-text('Play')", timeout=10000)
+    davev.set_input_files(".entrance-box input[type=file]", "/tmp/entrance-test.wav")
+    davev.wait_for_selector(".entrance-box button:has-text('1.5 s')", timeout=10000)
+    davev.evaluate("document.querySelector('.entrance-box').scrollIntoView()")
+    davev.wait_for_timeout(300)
+    davev.screenshot(path=f"{SHOTS}/89-entrance-settings.png")
+    davev.keyboard.press("Escape")
+    frankv.evaluate("openUserSettings('voice')")
+    frankv.wait_for_selector(".entrance-box", timeout=10000)
+    frankv.evaluate("document.querySelector('.entrance-box').scrollIntoView()")
+    frankv.wait_for_timeout(300)
+    frankv.screenshot(path=f"{SHOTS}/90-android-entrance-settings.png")
+
+    for pg in (carolv, davev, erinv, frankv):
+        pg.evaluate("leaveVoice(true)")
+    carolv.wait_for_timeout(500)
 
     browser.close()
 

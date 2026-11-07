@@ -48,6 +48,10 @@ const state = {
     canSpeak: true,
     pttDown: false,
     speaking: new Set(),
+    serverMuted: false,   // muted by a moderator
+    serverDeafened: false,
+    canStream: false,     // allowed to share their screen here
+    sharing: false,       // sharing their screen right now
   },
 };
 
@@ -578,6 +582,7 @@ function handleEvent({ t, d }) {
       break;
     }
     case "VOICE_STATE_UPDATE":
+      if (d.user_id === state.me.id && typeof voiceSelfUpdate === "function") voiceSelfUpdate(d);
       if (d.guild_id === state.guildId) {
         const before = state.voiceStates.get(d.user_id);
         if (d.channel_id) state.voiceStates.set(d.user_id, d);
@@ -592,7 +597,16 @@ function handleEvent({ t, d }) {
       }
       break;
     case "SOUNDBOARD_PLAY":
-      if (d.channel_id === state.voice.channelId) playSound(d.url, d.volume);
+      if (d.channel_id === state.voice.channelId && !isLocallyMuted(d.user_id)) playSound(d.url, d.volume);
+      break;
+    case "VOICE_MOVE":
+      if (typeof onVoiceMove === "function") onVoiceMove(d);
+      break;
+    case "VOICE_KICKED":
+      if (typeof onVoiceKicked === "function") onVoiceKicked(d);
+      break;
+    case "ENTRANCE_SOUND":
+      if (typeof onEntranceSound === "function") onEntranceSound(d);
       break;
     case "SOUNDS_CHANGED":
       if (d.guild_id === state.guildId) loadSounds();
@@ -699,7 +713,8 @@ function renderChannels() {
           return el("div", { class: `voice-user${speaking ? " speaking" : ""}${live ? " live" : ""}`, "data-menu": "member", "data-id": v.user_id },
             avatarFor(v.user_id, m?.display_name, 22),
             el("span", { class: "vname" }, m?.display_name ?? "Someone"),
-            v.deafened ? el("span", { class: "vicon", title: "Deafened" }, "🎧") : v.muted ? el("span", { class: "vicon", title: "Muted" }, "🔇") : null);
+            typeof voiceUserIcons === "function" ? voiceUserIcons(v, mine)
+              : v.deafened ? el("span", { class: "vicon", title: "Deafened" }, "🎧") : v.muted ? el("span", { class: "vicon", title: "Muted" }, "🔇") : null);
         }),
       ];
     }),
@@ -1329,11 +1344,19 @@ function chime(from, to) {
 }
 
 const userVolume = (userId) => prefs.get(`vol_${userId}`, 1);
+// "Mute for me": only you stop hearing them (and their soundboard clips).
+const isLocallyMuted = (userId) => prefs.get(`lmute_${userId}`, false);
+const isDeafened = () => state.voice.deafened || state.voice.serverDeafened;
 
 function applyVolume(participant) {
   if (!participant || participant.isLocal) return;
+  const off = isDeafened() || isLocallyMuted(participant.identity);
+  const volume = off ? 0 : userVolume(participant.identity) * outputVolume();
   try {
-    participant.setVolume(state.voice.deafened ? 0 : userVolume(participant.identity) * outputVolume());
+    participant.setVolume(volume);
+    // Screen share sound has its own volume in LiveKit.
+    const { Track } = LK();
+    participant.setVolume(volume, Track.Source.ScreenShareAudio);
   } catch { /* participant gone */ }
 }
 
@@ -1343,13 +1366,14 @@ function applyAllVolumes() {
 
 function volumeSlider(m) {
   const value = el("span", { class: "vol-value" }, `${Math.round(userVolume(m.id) * 100)}%`);
-  const slider = el("input", { type: "range", min: 0, max: 100, step: 5, value: Math.round(userVolume(m.id) * 100), "aria-label": `Volume for ${m.display_name}` });
+  const slider = el("input", { type: "range", min: 0, max: 200, step: 5, value: Math.round(userVolume(m.id) * 100), "aria-label": `Volume for ${m.display_name}` });
   slider.addEventListener("input", () => {
     prefs.set(`vol_${m.id}`, slider.value / 100);
     value.textContent = `${slider.value}%`;
     applyVolume(state.voice.room?.remoteParticipants.get(m.id));
   });
-  return el("div", { class: "menu-slider" }, el("div", { class: "row" }, el("span", {}, "User volume"), value), slider);
+  slider.addEventListener("dblclick", () => { slider.value = 100; slider.dispatchEvent(new Event("input")); });
+  return el("div", { class: "menu-slider", title: "Double-click to reset to 100%" }, el("div", { class: "row" }, el("span", {}, "User volume"), value), slider);
 }
 
 // ---- Microphone pipeline ----
@@ -1456,13 +1480,16 @@ function teardownMic() {
 
 const wantMic = () => {
   const v = state.voice;
-  return !v.muted && !v.deafened && (!usingPtt() || v.pttDown);
+  return !v.muted && !v.deafened && !v.serverMuted && !v.serverDeafened && (!usingPtt() || v.pttDown);
 };
 
 async function setMic(on) {
   const room = state.voice.room;
   if (!room || !state.voice.canSpeak) return;
   try {
+    // LiveKit drops the mic track if a moderator's server mute took away the
+    // right to publish it; start a fresh one when it's needed again.
+    if (micPipe.room === room && micPipe.pub && !room.localParticipant.trackPublications.has(micPipe.pub.trackSid)) teardownMic();
     if (on && micPipe.room !== room) {
       micPipe.ready = micPipe.ready || buildMic(room).catch((err) => { teardownMic(); throw err; });
       await micPipe.ready;
@@ -1494,13 +1521,15 @@ async function syncMic() {
 
 async function pushVoiceState() {
   if (!state.voice.room) return;
-  api("POST", "/api/voice/state", { muted: state.voice.muted, deafened: state.voice.deafened }).catch(() => {});
+  api("POST", "/api/voice/state", { muted: state.voice.muted, deafened: state.voice.deafened, streaming: !!state.voice.sharing }).catch(() => {});
 }
 
-async function joinVoice(channelId) {
+// `moved`: a moderator moved you, maybe to an outhouse you're not looking at
+// ({ guildId, name }); the server has already checked you can join.
+async function joinVoice(channelId, moved = null) {
   if (state.voice.channelId === channelId || state.voice.connecting) return;
   if (!LK()) return toast("The voice library didn't load. Check your internet connection and refresh.");
-  if (!can("connect", channelId)) return toast("You can't join this voice channel.");
+  if (!moved && !can("connect", channelId)) return toast("You can't join this voice channel.");
   await leaveVoice(true);
   state.voice.connecting = true;
   renderVoicePanel();
@@ -1526,13 +1555,19 @@ async function joinVoice(channelId) {
   });
   room
     .on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
+      if (track.kind === "video") { if (typeof renderScreens === "function") renderScreens(); return; }
       if (track.kind !== "audio") return;
       const audio = track.attach();
       audio.dataset.identity = participant.identity;
       $("voice-audio").append(audio);
       applyVolume(participant);
     })
-    .on(RoomEvent.TrackUnsubscribed, (track) => track.detach().forEach((e) => e.remove()))
+    .on(RoomEvent.TrackUnsubscribed, (track) => {
+      track.detach().forEach((e) => e.remove());
+      if (track.kind === "video" && typeof renderScreens === "function") renderScreens();
+    })
+    .on(RoomEvent.LocalTrackPublished, () => { if (typeof onLocalTracksChanged === "function") onLocalTracksChanged(); })
+    .on(RoomEvent.LocalTrackUnpublished, () => { if (typeof onLocalTracksChanged === "function") onLocalTracksChanged(); })
     .on(RoomEvent.ParticipantConnected, applyVolume)
     .on(RoomEvent.MediaDevicesError, (err) => toast(`Microphone problem: ${err.message}`))
     .on(RoomEvent.Disconnected, () => {
@@ -1554,9 +1589,10 @@ async function joinVoice(channelId) {
   // Browsers only allow microphones on https:// or localhost.
   const micAllowed = window.isSecureContext && !!navigator.mediaDevices?.getUserMedia;
   Object.assign(state.voice, {
-    room, channelId, guildId: state.guildId, connecting: false, canSpeak: res.can_speak && micAllowed,
+    room, channelId, guildId: moved?.guildId ?? state.guildId, connecting: false, canSpeak: res.can_speak && micAllowed,
     listenOnly: res.can_speak && !micAllowed,
-    channelName: ch?.name ?? "Voice", speaking: new Set(),
+    channelName: moved?.name ?? ch?.name ?? "Voice", speaking: new Set(),
+    serverMuted: !!res.server_muted, serverDeafened: !!res.server_deafened, canStream: !!res.can_stream, sharing: false,
   });
   if (!state.voice.canSpeak) state.voice.muted = true;
   if (state.voice.listenOnly) {
@@ -1578,6 +1614,8 @@ async function leaveVoice(callServer = true) {
   state.voice.room = null;
   state.voice.channelId = null;
   state.voice.speaking = new Set();
+  state.voice.sharing = false;
+  if (typeof clearScreens === "function") clearScreens();
   stopSpeakingMeter();
   teardownMic();
   if (desktop) desktopInvoke("set_ptt", { code: null });
@@ -1593,6 +1631,7 @@ async function leaveVoice(callServer = true) {
 async function toggleMute() {
   if (state.voice.listenOnly) return toast("Your browser blocks the microphone on this http:// address, so you can listen but not talk.");
   if (!state.voice.canSpeak) return toast("You don't have permission to speak here.");
+  if (state.voice.serverMuted || state.voice.serverDeafened) return toast("A moderator has muted you in this outhouse.");
   state.voice.muted = !state.voice.muted;
   if (!state.voice.muted && state.voice.deafened) state.voice.deafened = false;
   await syncMic();
@@ -1602,6 +1641,7 @@ async function toggleMute() {
 }
 
 async function toggleDeafen() {
+  if (state.voice.serverDeafened) return toast("A moderator has deafened you in this outhouse.");
   state.voice.deafened = !state.voice.deafened;
   await syncMic();
   applyAllVolumes();
@@ -1617,7 +1657,7 @@ function isTyping(e) {
 // A quiet click when push to talk opens/closes your mic. Only you hear it.
 function pttBlip(down) {
   const v = state.voice;
-  if (!prefs.get("ptt_sounds", true) || v.muted || v.deafened || !v.canSpeak) return;
+  if (!prefs.get("ptt_sounds", true) || v.muted || v.deafened || v.serverMuted || v.serverDeafened || !v.canSpeak) return;
   try {
     chimeCtx = chimeCtx || new AudioContext();
     const osc = chimeCtx.createOscillator();
@@ -1682,7 +1722,9 @@ function renderVoicePanel() {
   const v = state.voice;
   if (!v.room && !v.connecting) { panel.hidden = true; return; }
   panel.hidden = false;
-  const status = v.connecting ? "Connecting…" : v.listenOnly ? "Listening only" : usingPtt() ? (v.pttDown ? "Talking" : `Push to talk: ${keyLabel(prefs.get("ptt_key", "Backquote"))}`) : "Voice connected";
+  const status = v.connecting ? "Connecting…" : v.listenOnly ? "Listening only" : v.serverMuted || v.serverDeafened ? "Muted by a moderator" : usingPtt() ? (v.pttDown ? "Talking" : `Push to talk: ${keyLabel(prefs.get("ptt_key", "Backquote"))}`) : "Voice connected";
+  const forcedMute = v.serverMuted || v.serverDeafened;
+  const shareBtn = typeof screenShareButton === "function" ? screenShareButton() : null;
   panel.replaceChildren(
     el("div", { class: "vp-top" },
       el("div", { class: "vp-info" },
@@ -1691,9 +1733,10 @@ function renderVoicePanel() {
           : el("button", { class: "vp-status", title: "Connection details", onclick: (e) => openVoiceStats(e.currentTarget) }, status),
         el("div", { class: "vp-channel" }, v.connecting ? "" : `${v.channelName}${v.guildId !== state.guildId ? ` · ${state.guilds.find((g) => g.id === v.guildId)?.name ?? ""}` : ""}`)),
       el("button", { class: "icon-btn danger", title: "Leave voice", "aria-label": "Leave voice", onclick: () => leaveVoice(true) }, "📞")),
-    v.connecting ? null : el("div", { class: "vp-buttons" },
-      el("button", { class: `vp-btn${v.muted ? " off" : ""}`, title: v.muted ? "Unmute" : "Mute", onclick: toggleMute }, v.muted ? "🔇" : "🎙"),
-      el("button", { class: `vp-btn${v.deafened ? " off" : ""}`, title: v.deafened ? "Undeafen" : "Deafen", onclick: toggleDeafen }, v.deafened ? "🔕" : "🎧"),
+    v.connecting ? null : el("div", { class: `vp-buttons${shareBtn ? " five" : ""}` },
+      el("button", { class: `vp-btn${v.muted || forcedMute ? " off" : ""}${forcedMute ? " forced" : ""}`, title: forcedMute ? "Muted by a moderator" : v.muted ? "Unmute" : "Mute", onclick: toggleMute }, v.muted || forcedMute ? "🔇" : "🎙"),
+      el("button", { class: `vp-btn${isDeafened() ? " off" : ""}${v.serverDeafened ? " forced" : ""}`, title: v.serverDeafened ? "Deafened by a moderator" : v.deafened ? "Undeafen" : "Deafen", onclick: toggleDeafen }, isDeafened() ? "🔕" : "🎧"),
+      shareBtn,
       el("button", { class: "vp-btn", title: "Soundboard", onclick: (e) => openSoundboard(e.currentTarget) }, "🔊"),
       el("button", { class: "vp-btn", title: "Voice settings", onclick: (e) => openVoiceSettings(e.currentTarget) }, "⚙")),
     v.connecting ? null : touchPttButton(),
@@ -2225,6 +2268,7 @@ async function drawVoicePage(main) {
     globalPtt ? el("p", { class: `small desktop-status${desktopStatus.ok ? "" : " bad"}`, style: "margin:-6px 0 0" }, desktopStatus.text || "Desktop app: checking…") : null,
     el("p", { class: "muted small", style: "margin:-6px 0 0" }, `Push to talk works with a keyboard key or the middle / side mouse buttons. ${globalPtt ? "In the desktop app it works while you're in game too." : "In the browser it only works while this tab is focused; the Outhouse desktop app makes it work in game."}`),
     ...c.checks,
+    typeof entranceSoundSection === "function" ? await entranceSoundSection() : null,
   );
 }
 
@@ -2237,28 +2281,46 @@ async function loadSounds() {
 }
 
 function playSound(url, volume = 1, preview = false) {
-  if (!preview && (state.voice.deafened || prefs.get("soundboard_muted", false))) return;
+  if (!preview && (isDeafened() || prefs.get("soundboard_muted", false))) return;
   const audio = new Audio(url);
-  audio.volume = Math.max(0, Math.min(1, volume * prefs.get("soundboard_volume", 0.7)));
+  audio.volume = Math.max(0, Math.min(1, volume * prefs.get("soundboard_volume", 0.7) * outputVolume()));
   const out = prefs.get("output_device", "");
   if (out && audio.setSinkId) audio.setSinkId(out).catch(() => {});
   audio.play().catch(() => {});
 }
 
+let soundCoolUntil = 0;
 function openSoundboard(anchor) {
   const draw = () => {
     const canPlay = state.voice.room && state.voice.guildId === state.guildId && can("use_soundboard", state.voice.channelId);
-    const grid = el("div", { class: "sound-grid" },
-      state.sounds.length ? state.sounds.map((snd) => el("button", {
+    const play = async (snd, btn) => {
+      if (Date.now() < soundCoolUntil) return toast("Easy on the soundboard!");
+      const ok = await tryApi("POST", `/api/sounds/${snd.id}/play`).then(() => true).catch(() => false);
+      if (!ok) return;
+      soundCoolUntil = Date.now() + 2000;
+      const grid = btn.closest(".soundboard");
+      grid?.classList.add("cooling");
+      setTimeout(() => grid?.classList.remove("cooling"), 2000);
+    };
+    const favourite = async (snd) => {
+      const on = !snd.favourite;
+      const ok = await tryApi(on ? "PUT" : "DELETE", `/api/sounds/${snd.id}/favourite`).then(() => true).catch(() => false);
+      if (!ok) return;
+      snd.favourite = on;
+      redraw();
+    };
+    const tile = (snd) => el("div", { class: `sound-tile${snd.favourite ? " fav" : ""}` },
+      el("button", {
         class: "sound-btn",
         title: canPlay ? `Play ${snd.name}` : "Join voice in this outhouse to play sounds",
         disabled: !canPlay,
-        onclick: () => tryApi("POST", `/api/sounds/${snd.id}/play`).catch(() => {}),
+        onclick: (e) => play(snd, e.currentTarget),
         oncontextmenu: (e) => {
           e.preventDefault();
           e.stopPropagation();
           openMenu(e.clientX, e.clientY, [
             { label: "Preview (just you)", onClick: () => playSound(snd.url, snd.volume, true) },
+            { label: snd.favourite ? "Remove from favourites" : "Add to favourites", onClick: () => favourite(snd) },
             can("manage_sounds") ? "sep" : null,
             can("manage_sounds") ? { label: "Delete sound", danger: true, onClick: async () => {
               await tryApi("DELETE", `/api/sounds/${snd.id}`).catch(() => {});
@@ -2267,7 +2329,14 @@ function openSoundboard(anchor) {
             } } : null,
           ]);
         },
-      }, el("span", { class: "semoji" }, snd.emoji || "🔊"), el("span", { class: "sname" }, snd.name))) : [el("p", { class: "muted" }, "No sounds yet.")]);
+      }, el("span", { class: "semoji" }, snd.emoji || "🔊"), el("span", { class: "sname" }, snd.name)),
+      el("button", { class: "sound-star", title: snd.favourite ? "Remove from favourites" : "Add to favourites", "aria-label": snd.favourite ? "Remove from favourites" : "Add to favourites", onclick: () => favourite(snd) }, snd.favourite ? "★" : "☆"));
+    const favs = state.sounds.filter((snd) => snd.favourite);
+    const grid = el("div", { class: "sound-scroll" },
+      favs.length ? el("div", { class: "sb-label" }, "★ Favourites") : null,
+      favs.length ? el("div", { class: "sound-grid" }, favs.map(tile)) : null,
+      favs.length ? el("div", { class: "sb-label" }, "All sounds") : null,
+      state.sounds.length ? el("div", { class: "sound-grid" }, state.sounds.map(tile)) : el("p", { class: "muted" }, "No sounds yet."));
     const vol = el("input", { type: "range", min: 0, max: 100, step: 5, value: Math.round(prefs.get("soundboard_volume", 0.7) * 100), "aria-label": "Soundboard volume" });
     vol.addEventListener("input", () => prefs.set("soundboard_volume", vol.value / 100));
     const mute = el("input", { type: "checkbox", checked: prefs.get("soundboard_muted", false) });
@@ -2279,7 +2348,7 @@ function openSoundboard(anchor) {
       el("div", { class: "sb-foot" },
         el("label", { class: "check-row" }, "Volume", vol),
         el("label", { class: "check-row" }, mute, "Mute soundboard")),
-      el("p", { class: "muted small", style: "margin:0" }, "Right-click a sound to preview it."),
+      el("p", { class: "muted small", style: "margin:0" }, "☆ adds a favourite. Right-click (or long-press) a sound to preview it."),
     );
   };
   const redraw = () => { if (popover) popover.replaceChildren(draw()); };
@@ -2291,7 +2360,7 @@ function openSoundboard(anchor) {
     const dialog = el("dialog", {},
       el("form", { method: "dialog" },
         el("h2", {}, "Add a sound"),
-        el("p", { class: "muted", style: "margin:0" }, "MP3, OGG or WAV, up to 1 MB. Short clips (a few seconds) work best."),
+        el("p", { class: "muted", style: "margin:0" }, "MP3, OGG or WAV, up to 10 seconds and 1 MB. Short clips work best."),
         el("label", { class: "field" }, "Name", name),
         el("label", { class: "field" }, "Emoji", emoji),
         el("label", { class: "field" }, "Volume", volume),
@@ -2482,8 +2551,10 @@ const MENUS = {
       "sep",
     ];
     if (m.id !== state.me.id && state.voice.room && state.voiceStates.get(m.id)?.channel_id === state.voice.channelId) {
-      items.unshift({ custom: volumeSlider(m), label: "volume" }, "sep");
+      items.unshift({ custom: volumeSlider(m), label: "volume" },
+        { label: "Mute for me", checked: isLocallyMuted(m.id), onClick: () => toggleLocalMute(m) }, "sep");
     }
+    if (typeof voiceModerationItems === "function") items.push(...voiceModerationItems(m));
     if (can("manage_roles") && assignable.length) {
       items.push({
         label: "Roles",

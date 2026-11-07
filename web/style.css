@@ -945,3 +945,61 @@ dialog.char-dialog { width: min(480px, 94vw); }
 .reply-ref { flex-shrink: 0; }
 /* Let messages with group or WoW cards use the chat's width (cards cap themselves). */
 .msg-body:has(> .lfg-card), .msg-body:has(> .wow-embed) { flex: 1; }
+
+/* ---------- Voice extras: moderation icons, screen share, favourites, entrance sounds ---------- */
+.vp-buttons.five { grid-template-columns: repeat(5, 1fr); }
+.vp-btn { color: var(--text); display: inline-flex; align-items: center; justify-content: center; }
+.vp-btn.forced { background: #ef444440; box-shadow: inset 0 0 0 1px #ef4444; cursor: not-allowed; }
+.vp-btn.share.on { background: color-mix(in srgb, var(--vacant) 28%, transparent); color: var(--vacant); }
+.voice-user .vicon { display: inline-flex; align-items: center; flex: 0 0 auto; }
+.voice-user .vicon.self, .voice-user .vicon.local { color: var(--muted); }
+.voice-user .vicon.server { color: #f87171; }
+.live-badge { flex: 0 0 auto; font: 800 10px/1 Inter, system-ui, sans-serif; letter-spacing: .05em; color: #fff; background: #e11d48; border: 0; border-radius: 4px; padding: 3px 5px; cursor: pointer; }
+button.live-badge:hover { filter: brightness(1.15); }
+
+.chat { position: relative; }
+.screen-stage { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); overflow-x: auto; background: color-mix(in srgb, var(--night) 70%, var(--panel)); }
+.screen-stage[hidden] { display: none; }
+.screen-tile { position: relative; flex: 0 0 auto; height: 126px; aspect-ratio: 16 / 9; background: #000; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; cursor: zoom-in; }
+.screen-tile:hover, .screen-tile:focus-visible { border-color: var(--ember); outline: none; }
+.screen-tile video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+.st-label { position: absolute; left: 6px; bottom: 6px; max-width: calc(100% - 12px); display: flex; align-items: center; gap: 6px; padding: 3px 7px 3px 3px; border-radius: 6px; background: rgba(0, 0, 0, .65); font-size: 12px; font-weight: 600; color: #fff; }
+.st-label .live-badge { cursor: default; }
+.st-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-tools { position: absolute; top: 8px; right: 8px; display: none; gap: 6px; }
+.st-btn { height: 30px; padding: 0 10px; border: 0; border-radius: 8px; background: rgba(0, 0, 0, .65); color: #fff; font-size: 13px; font-weight: 600; }
+.st-btn:hover { background: rgba(0, 0, 0, .85); }
+.st-hide { flex: 0 0 auto; align-self: center; height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: none; color: var(--muted); font-size: 12px; }
+.screen-stage.focused { position: absolute; inset: 56px 0 0 0; z-index: 30; flex-wrap: wrap; align-content: flex-start; padding: 12px; background: var(--night); border: 0; overflow: hidden; }
+.screen-stage.focused .screen-tile.big { order: -1; flex: 1 1 100%; height: calc(100% - 120px); aspect-ratio: auto; cursor: default; }
+.screen-stage.focused.solo .screen-tile.big { height: calc(100% - 44px); }
+.screen-stage.focused .screen-tile:not(.big) { height: 84px; }
+.screen-stage.focused .screen-tile.big .st-tools { display: flex; }
+.screen-stage.focused .st-hide { display: none; }
+.screen-tile:fullscreen { border: 0; border-radius: 0; cursor: default; }
+.screen-tile:fullscreen .st-tools { display: none; }
+
+.sound-scroll { display: grid; gap: 6px; max-height: 300px; overflow-y: auto; }
+.sound-scroll .sound-grid { max-height: none; overflow: visible; }
+.sb-label { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.sound-tile { position: relative; display: grid; }
+.sound-tile .sound-btn { width: 100%; }
+.sound-star { position: absolute; top: 1px; right: 3px; border: 0; background: none; padding: 2px 3px; font-size: 14px; line-height: 1; color: var(--muted); opacity: 0; transition: opacity .1s; }
+.sound-tile:hover .sound-star, .sound-tile.fav .sound-star, .sound-star:focus-visible { opacity: 1; }
+.sound-tile.fav .sound-star { color: var(--glow); }
+.soundboard.cooling .sound-btn:not(:disabled) { opacity: .55; }
+@media (pointer: coarse) { .sound-star { opacity: 1; font-size: 16px; } }
+
+.entrance-box { display: grid; gap: 10px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.entrance-box h3 { margin: 0; font-size: 15px; }
+.entrance-row { flex-wrap: wrap; }
+.entrance-row .ghost { height: 34px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: none; }
+.entrance-row .ghost.danger { color: var(--occupied); }
+
+@media (max-width: 760px) {
+  .screen-tile { height: 96px; }
+  .screen-stage.focused { inset: 0; padding: 8px; padding-top: calc(env(safe-area-inset-top, 0px) + 8px); }
+  .screen-stage.focused .screen-tile.big { height: calc(100% - 100px); }
+  .screen-stage.focused.solo .screen-tile.big { height: 100%; }
+  .screen-stage.focused .screen-tile:not(.big) { height: 72px; }
+}

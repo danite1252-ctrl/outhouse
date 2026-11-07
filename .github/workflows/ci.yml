@@ -51,6 +51,7 @@ jobs:
           node --check web/threads.js
           node --check web/raids.js
           node --check web/wow.js
+          node --check web/voice-extras.js
           node --check web/sw.js
           node --check web/bots/dice-bot.mjs
       - name: Smoke test (real server + Postgres)
@@ -69,8 +70,10 @@ jobs:
           BIND_ADDR: 127.0.0.1:8080
           WEB_DIR: web
           UPLOAD_DIR: /tmp/outhouse-uploads
+          # A real LiveKit (dev mode: key "devkey", secret "secret") for the voice tests.
           LIVEKIT_API_KEY: devkey
-          LIVEKIT_API_SECRET: secret-secret-secret-secret-secret
+          LIVEKIT_API_SECRET: secret
+          LIVEKIT_API_URL: http://127.0.0.1:7880
           # Wowhead and Battle.net stand-ins (ci/wow_mock.py).
           WOWHEAD_URL: http://127.0.0.1:8099
           WOWHEAD_TOOLTIP_URL: http://127.0.0.1:8099
@@ -81,8 +84,12 @@ jobs:
           BNET_OAUTH_URL: http://127.0.0.1:8099/oauth
           BNET_API_URL: http://127.0.0.1:8099/api
         run: |
+          docker run -d --name livekit --network host livekit/livekit-server:latest \
+            --dev --bind 127.0.0.1 --node-ip 127.0.0.1 > /dev/null
           pip install --quiet playwright
           python -m playwright install --with-deps chromium >/dev/null
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:7880 >/dev/null 2>&1 && break; sleep 1; done
+          curl -fsS http://127.0.0.1:7880 >/dev/null || { docker logs livekit; exit 1; }
           python3 ci/wow_mock.py 8099 > /tmp/wow-mock-ui.log 2>&1 &
           ./target/debug/outhouse-server > /tmp/ui-server.log 2>&1 &
           python ci/ui_test.py
@@ -105,6 +112,7 @@ jobs:
         run: |
           cat /tmp/outhouse-server.log 2>/dev/null || true
           cat /tmp/ui-server.log 2>/dev/null || true
+          docker logs livekit 2>&1 | tail -80 || true
 
   desktop:
     name: Desktop app (Windows installer)
