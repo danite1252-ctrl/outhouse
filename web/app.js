@@ -1933,7 +1933,7 @@ async function openVoiceSettings(anchor) {
   openPopover(anchor, el("div", { class: "voice-settings" },
     el("h3", {}, "Voice settings"),
     ...c.devices, ...c.mode, ...c.checks,
-    el("p", { class: "muted small", style: "margin:0" }, window.__OUTHOUSE_DESKTOP__ ? "Push to talk works in other apps and games too." : "In the browser, push to talk only works while this tab is focused. The Outhouse desktop app makes it work in game."),
+    el("p", { class: "muted small", style: "margin:0" }, globalPtt ? "Push to talk works in other apps and games too." : "In the browser, push to talk only works while this tab is focused. The Outhouse desktop app makes it work in game."),
     el("button", { type: "button", class: "ghost", onclick: () => { closePopover(); openUserSettings("voice"); } }, "All settings…"),
   ));
 }
@@ -1943,6 +1943,8 @@ async function openVoiceSettings(anchor) {
 // works in game, notifications and opening links in your browser. In a normal
 // browser `desktop` is null and none of this does anything.
 const desktop = !!window.__OUTHOUSE_DESKTOP__;
+// Push to talk that works in other apps: the Windows app only.
+const globalPtt = desktop && window.__OUTHOUSE_PLATFORM__ !== "android";
 // The app answers on this address (it never leaves your PC).
 const BRIDGE = "http://outhouse.localhost";
 const desktopStatus = { text: "", ok: true };
@@ -1970,7 +1972,7 @@ const desktopInvoke = (cmd, args) => {
 
 // Tell the app which key to watch: only while in voice with push to talk on.
 async function syncDesktopPtt() {
-  if (!desktop) return;
+  if (!globalPtt) return;
   const watching = state.voice.room && state.voice.canSpeak && usingPtt();
   const key = prefs.get("ptt_key", "Backquote");
   const ok = await desktopCall("ptt", { code: watching ? key : "" });
@@ -2112,7 +2114,7 @@ function stopMicTest() {
 
 async function drawVoicePage(main) {
   const c = await voiceSettingsControls();
-  if (desktop) setTimeout(syncDesktopPtt, 0);
+  if (globalPtt) setTimeout(syncDesktopPtt, 0);
   const bar = el("div", { class: "mic-bar" });
   const meter = el("div", { class: "mic-meter" }, bar, el("div", { class: "vad-line", title: "Sensitivity" }));
   const testBtn = el("button", { class: "ghost" }, "Test my mic");
@@ -2176,8 +2178,8 @@ async function drawVoicePage(main) {
     el("label", { class: "check-row" }, playback, "Play back what my mic hears (use headphones, or speakers will echo)"),
     el("p", { class: "muted small", style: "margin:-6px 0 0" }, "Talk and watch the bar. In voice activity mode the line is your sensitivity: the bar turns green when you're above it and your mic would be sending. With playback on you hear exactly what others would, a moment later, through the speakers/headset chosen above."),
     ...c.mode,
-    desktop ? el("p", { class: `small desktop-status${desktopStatus.ok ? "" : " bad"}`, style: "margin:-6px 0 0" }, desktopStatus.text || "Desktop app: checking…") : null,
-    el("p", { class: "muted small", style: "margin:-6px 0 0" }, `Push to talk works with a keyboard key or the middle / side mouse buttons. ${window.__OUTHOUSE_DESKTOP__ ? "In the desktop app it works while you're in game too." : "In the browser it only works while this tab is focused; the Outhouse desktop app makes it work in game."}`),
+    globalPtt ? el("p", { class: `small desktop-status${desktopStatus.ok ? "" : " bad"}`, style: "margin:-6px 0 0" }, desktopStatus.text || "Desktop app: checking…") : null,
+    el("p", { class: "muted small", style: "margin:-6px 0 0" }, `Push to talk works with a keyboard key or the middle / side mouse buttons. ${globalPtt ? "In the desktop app it works while you're in game too." : "In the browser it only works while this tab is focused; the Outhouse desktop app makes it work in game."}`),
     ...c.checks,
   );
 }
