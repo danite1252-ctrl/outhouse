@@ -1189,3 +1189,4 @@ span.audit-target { cursor: default; }
   .post-extra { flex-basis: 100%; }
   .raid-dialog .raid-row.lfg-what { grid-template-columns: 1fr; }
 }
+.char-place:not(.even) { grid-template-columns: 1fr; }

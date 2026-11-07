@@ -633,7 +633,7 @@ function openCharacterDialog(existing, onSaved) {
     onclick: () => { professions.has(p) ? professions.delete(p) : professions.size < 5 && professions.add(p); paintProfs(); },
   }, p)));
   const nameRow = el("div", { class: "raid-row even" });
-  const placeRow = el("div", { class: "raid-row even" });
+  const placeRow = el("div", { class: "raid-row even char-place" });
   const nameHint = el("p", { class: "muted small", style: "margin:0" });
   // The form follows the game: names, realm or ruleset, races, level cap, professions.
   const paintGame = () => {
@@ -644,9 +644,12 @@ function openCharacterDialog(existing, onSaved) {
     ruleset.replaceChildren(...g.rulesets.map((r) => el("option", { value: r, selected: r === keepRuleset }, r)));
     const keepRace = race.value || c?.race || "";
     race.replaceChildren(el("option", { value: "" }, "Race (optional)"), ...g.races.map((r) => el("option", { value: r, selected: r === keepRace }, r)));
-    placeRow.replaceChildren(
+    placeRow.replaceChildren(...[
       g.two_names ? el("label", { class: "field" }, "Ruleset", ruleset) : null,
-      el("label", { class: "field" }, "Race", race));
+      el("label", { class: "field" }, "Race", race)].filter(Boolean));
+    placeRow.classList.toggle("even", g.two_names);
+    // A new character starts at the game's level cap.
+    if (!c && (!level.value || Number(level.value) === Number(level.max))) level.value = g.max_level;
     level.max = g.max_level;
     if (Number(level.value) > g.max_level) level.value = g.max_level;
     for (const p of [...professions]) if (!g.professions.includes(p)) professions.delete(p);

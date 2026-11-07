@@ -154,7 +154,8 @@ function drawCalendar() {
       el("button", { type: "button", class: "cal-today", onclick: () => openAttendanceTable() }, "📊 Attendance"),
       canPlanHere() ? el("button", { type: "button", class: "primary cal-plan", title: "Plan a raid", onclick: () => planOn(cal.selected) }, "＋ Plan", el("span", { class: "plan-long" }, " a raid")) : null,
       closeX(cal.dialog)));
-  const tz = el("div", { class: "cal-tz muted small" }, `Times are in your time zone (${myTimeZone()}).`, cal.loading ? " Loading…" : "");
+  const pendingNote = !isPhoneWidth() && cal.events.some(signupsNotOpen) ? " Blue raids: sign-ups aren't open yet." : "";
+  const tz = el("div", { class: "cal-tz muted small" }, `Times are in your time zone (${myTimeZone()}).`, pendingNote, cal.loading ? " Loading…" : "");
   const body = isPhoneWidth() ? drawAgenda(byDay, todayKey) : drawMonth(byDay, todayKey);
   cal.root.replaceChildren(head, tz, body);
   const s = cal.root.querySelector(".cal-scroll");
@@ -179,7 +180,7 @@ function drawMonth(byDay, todayKey) {
     },
       el("span", { class: "cal-num" }, d.getDate()),
       evs.slice(0, 3).map((ev) => el("span", { class: `cal-chip${myMark(ev) ? " mine" : ""}${eventWhen(ev).over ? " over" : ""}${signupsNotOpen(ev) ? " pending" : ""}`, title: `${timeOf(ev.starts_at)} ${ev.title}${signupsNotOpen(ev) ? ` · ${opensText(ev)}` : ""}` },
-        el("span", { class: "cal-chip-time" }, timeOf(ev.starts_at)), signupsNotOpen(ev) ? " 📬" : "", ` ${ev.title}`)),
+        el("span", { class: "cal-chip-time" }, timeOf(ev.starts_at)), ` ${ev.title}`)),
       evs.length > 3 ? el("span", { class: "cal-more" }, `+${evs.length - 3} more`) : null));
   }
   const grid = el("div", { class: "cal-grid" },
