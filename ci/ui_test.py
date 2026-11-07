@@ -51,7 +51,7 @@ api("PATCH", "/api/users/@me", {"about_me": "Holy priest, will heal for gold.", 
 api("POST", f"/api/channels/{chan['id']}/messages", {"content": "Raid tonight, sign up below"}, TOKEN)
 start = time.strftime("%Y-%m-%dT20:00:00Z", time.gmtime(time.time() + 2 * 86400))
 raid = api("POST", f"/api/channels/{chan['id']}/events", {
-    "title": "Manaforge Omega (Heroic)", "description": "Bring flasks and food.", "starts_at": start,
+    "title": "Molten Core", "description": "Bring flasks and food.", "starts_at": start,
 }, TOKEN)
 api("PUT", f"/api/events/{raid['event']['id']}/signup",
     {"status": "yes", "role": "tank", "class": "Paladin", "spec": "Protection"}, dave["token"])

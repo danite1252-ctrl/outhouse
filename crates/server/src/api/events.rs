@@ -209,9 +209,10 @@ pub async fn create(
     let title = clean_title(&req.title)?;
     let description = clean_text(&req.description, 1000);
     let duration = check_duration(req.duration_minutes)?.unwrap_or(180);
-    let tanks = check_slots(req.max_tanks)?.unwrap_or(2);
-    let healers = check_slots(req.max_healers)?.unwrap_or(4);
-    let dps = check_slots(req.max_dps)?.unwrap_or(14);
+    // Defaults: a 40-player raid.
+    let tanks = check_slots(req.max_tanks)?.unwrap_or(5);
+    let healers = check_slots(req.max_healers)?.unwrap_or(10);
+    let dps = check_slots(req.max_dps)?.unwrap_or(25);
     if req.starts_at < Utc::now() - chrono::Duration::hours(1) {
         return Err(AppError::BadRequest("That time has already passed.".into()));
     }

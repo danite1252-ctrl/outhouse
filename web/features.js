@@ -156,18 +156,14 @@ async function drawProfileLook(main) {
 // Raid planner
 // ======================================================================
 
-// Classes, specs and their roles (Midnight).
+// WoW: Forever's nine classes and their talent trees. Feral can tank (Bear) or deal damage (Cat).
 const WOW_CLASSES = [
-  { name: "Death Knight", colour: "#C41E3A", specs: [["Blood", "tank"], ["Frost", "dps"], ["Unholy", "dps"]] },
-  { name: "Demon Hunter", colour: "#A330C9", specs: [["Havoc", "dps"], ["Vengeance", "tank"], ["Devourer", "dps"]] },
-  { name: "Druid", colour: "#FF7C0A", specs: [["Balance", "dps"], ["Feral", "dps"], ["Guardian", "tank"], ["Restoration", "healer"]] },
-  { name: "Evoker", colour: "#33937F", specs: [["Devastation", "dps"], ["Preservation", "healer"], ["Augmentation", "dps"]] },
+  { name: "Druid", colour: "#FF7C0A", specs: [["Balance", "dps"], ["Feral (Bear)", "tank"], ["Feral (Cat)", "dps"], ["Restoration", "healer"]] },
   { name: "Hunter", colour: "#AAD372", specs: [["Beast Mastery", "dps"], ["Marksmanship", "dps"], ["Survival", "dps"]] },
   { name: "Mage", colour: "#3FC7EB", specs: [["Arcane", "dps"], ["Fire", "dps"], ["Frost", "dps"]] },
-  { name: "Monk", colour: "#00FF98", specs: [["Brewmaster", "tank"], ["Mistweaver", "healer"], ["Windwalker", "dps"]] },
   { name: "Paladin", colour: "#F48CBA", specs: [["Holy", "healer"], ["Protection", "tank"], ["Retribution", "dps"]] },
   { name: "Priest", colour: "#FFFFFF", specs: [["Discipline", "healer"], ["Holy", "healer"], ["Shadow", "dps"]] },
-  { name: "Rogue", colour: "#FFF468", specs: [["Assassination", "dps"], ["Outlaw", "dps"], ["Subtlety", "dps"]] },
+  { name: "Rogue", colour: "#FFF468", specs: [["Assassination", "dps"], ["Combat", "dps"], ["Subtlety", "dps"]] },
   { name: "Shaman", colour: "#0070DD", specs: [["Elemental", "dps"], ["Enhancement", "dps"], ["Restoration", "healer"]] },
   { name: "Warlock", colour: "#8788EE", specs: [["Affliction", "dps"], ["Demonology", "dps"], ["Destruction", "dps"]] },
   { name: "Warrior", colour: "#C69B6D", specs: [["Arms", "dps"], ["Fury", "dps"], ["Protection", "tank"]] },
@@ -177,11 +173,10 @@ const ROLE_INFO = { tank: { icon: "🛡️", label: "Tanks" }, healer: { icon: "
 const STATUS_LABEL = { yes: "Signed up", late: "Running late", tentative: "Tentative", bench: "Bench", no: "Can't make it" };
 
 const RAID_SIZES = [
-  { label: "Mythic raid (20)", tanks: 2, healers: 4, dps: 14 },
-  { label: "Heroic / Normal (25)", tanks: 2, healers: 5, dps: 18 },
-  { label: "Heroic / Normal (30)", tanks: 2, healers: 6, dps: 22 },
-  { label: "Small raid (10)", tanks: 2, healers: 2, dps: 6 },
-  { label: "Dungeon / M+ (5)", tanks: 1, healers: 1, dps: 3 },
+  { label: "40-player raid", tanks: 5, healers: 10, dps: 25 },
+  { label: "20-player raid", tanks: 3, healers: 5, dps: 12 },
+  { label: "10-player raid", tanks: 2, healers: 3, dps: 5 },
+  { label: "Dungeon (5)", tanks: 1, healers: 1, dps: 3 },
 ];
 
 function canManageEvent(ev) {
@@ -358,13 +353,13 @@ function openRaidDialog(existing = null) {
   const defaultStart = new Date();
   defaultStart.setDate(defaultStart.getDate() + 1);
   defaultStart.setHours(20, 0, 0, 0);
-  const title = el("input", { maxlength: 100, value: ev?.title ?? "", placeholder: "Raid night: Heroic", required: true });
+  const title = el("input", { maxlength: 100, value: ev?.title ?? "", placeholder: "Raid night: Molten Core", required: true });
   const when = el("input", { type: "datetime-local", value: localInputValue(ev ? new Date(ev.starts_at) : defaultStart), required: true });
   const hours = el("select", { class: "select" }, [1, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6].map((h) =>
     el("option", { value: h * 60, selected: (ev?.duration_minutes ?? 180) === h * 60 }, `${h} hour${h === 1 ? "" : "s"}`)));
-  const tanks = el("input", { type: "number", min: 0, max: 40, value: ev?.max_tanks ?? 2 });
-  const healers = el("input", { type: "number", min: 0, max: 40, value: ev?.max_healers ?? 4 });
-  const dps = el("input", { type: "number", min: 0, max: 40, value: ev?.max_dps ?? 14 });
+  const tanks = el("input", { type: "number", min: 0, max: 40, value: ev?.max_tanks ?? RAID_SIZES[0].tanks });
+  const healers = el("input", { type: "number", min: 0, max: 40, value: ev?.max_healers ?? RAID_SIZES[0].healers });
+  const dps = el("input", { type: "number", min: 0, max: 40, value: ev?.max_dps ?? RAID_SIZES[0].dps });
   const size = el("select", { class: "select" },
     el("option", { value: "" }, "Custom"),
     RAID_SIZES.map((s, i) => el("option", { value: i, selected: !ev && i === 0 }, s.label)));

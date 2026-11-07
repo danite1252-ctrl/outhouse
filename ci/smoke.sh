@@ -95,7 +95,7 @@ call DELETE /api/users/@me/avatar | jq -e '.avatar_url == null' >/dev/null
 
 step "raid planner"
 START=$(date -u -d '+2 days' +%Y-%m-%dT20:00:00Z)
-E=$(call POST "/api/channels/$CHAN/events" '{"title":"Liberation of Undermine","description":"Heroic, bring flasks","starts_at":"'"$START"'","duration_minutes":180,"max_tanks":2,"max_healers":4,"max_dps":14}')
+E=$(call POST "/api/channels/$CHAN/events" '{"title":"Molten Core","description":"Heroic, bring flasks","starts_at":"'"$START"'","duration_minutes":180,"max_tanks":2,"max_healers":4,"max_dps":14}')
 EVENT=$(jq -r .event.id <<<"$E")
 call PUT "/api/events/$EVENT/signup" '{"status":"yes","role":"tank","class":"Paladin","spec":"Protection"}' >/dev/null
 TOKEN=$TOKEN_B
@@ -103,7 +103,7 @@ call PUT "/api/events/$EVENT/signup" '{"status":"tentative","role":"healer","cla
 if (call PATCH "/api/events/$EVENT" '{"title":"nope"}') >/dev/null 2>&1; then echo "non-organiser could edit"; exit 1; fi
 TOKEN=$TOKEN_A
 call PUT "/api/events/$EVENT/signup" '{"status":"bench","role":"healer","class":"Priest","spec":"Holy","user_id":"'"$BOB"'"}' >/dev/null
-call PATCH "/api/events/$EVENT" '{"title":"Undermine (Heroic)"}' | jq -e '.event.title == "Undermine (Heroic)"' >/dev/null
+call PATCH "/api/events/$EVENT" '{"title":"Molten Core (40)"}' | jq -e '.event.title == "Molten Core (40)"' >/dev/null
 call GET "/api/guilds/$GUILD/events" | jq -e 'length == 1' >/dev/null
 call GET "/api/channels/$CHAN/messages" | jq -e '[.[] | select(.event != null)] | length == 1' >/dev/null
 call DELETE "/api/events/$EVENT/signups/$ALICE" >/dev/null
