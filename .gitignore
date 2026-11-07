@@ -9,3 +9,4 @@
 /desktop/src-tauri/package-lock.json
 /deploy/updates
 /github-secrets.txt
+__pycache__/
