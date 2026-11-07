@@ -108,12 +108,15 @@ jobs:
           node-version: 22
       - name: Set the version (and updater files when the signing key is set)
         shell: bash
+        env:
+          PUBKEY: ${{ secrets.OUTHOUSE_UPDATER_PUBKEY }}
         run: |
           node -e '
             const fs = require("fs"), f = "desktop/src-tauri/tauri.conf.json";
             const c = JSON.parse(fs.readFileSync(f));
             c.version = process.env.VERSION;
             if (process.env.HAS_SIGNING_KEY === "yes") c.bundle.createUpdaterArtifacts = true;
+            if (process.env.PUBKEY) c.plugins.updater.pubkey = process.env.PUBKEY.trim();
             fs.writeFileSync(f, JSON.stringify(c, null, 2));'
           [ "$HAS_SIGNING_KEY" = yes ] || echo "::warning::TAURI_SIGNING_PRIVATE_KEY isn't set, so this build can't auto-update."
       - name: Build installer
