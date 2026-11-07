@@ -887,6 +887,17 @@ with sync_playwright() as p:
     # Dave can talk again: his mic gets published.
     davev.wait_for_function("(() => { const p = state.voice.room.localParticipant.getTrackPublication(LivekitClient.Track.Source.Microphone); return !!p && !p.isMuted; })()", timeout=15000)
 
+    # Server deafen, then undeafen: Dave hears Carol again.
+    carolv.click(f"#voice-channels .voice-user[data-id='{DAVE}']", button="right")
+    carolv.click(".menu button:has-text('Server deafen')")
+    davev.wait_for_function("state.voice.serverDeafened === true", timeout=10000)
+    davev.wait_for_selector("#voice-panel .vp-btn.forced")
+    carolv.wait_for_selector(f"#voice-channels .voice-user[data-id='{DAVE}'] .vicon.server")
+    carolv.click(f"#voice-channels .voice-user[data-id='{DAVE}']", button="right")
+    carolv.click(".menu button:has-text('Server deafen')")
+    davev.wait_for_function("state.voice.serverDeafened === false", timeout=10000)
+    davev.wait_for_function(f"(() => {{ const p = state.voice.room.remoteParticipants.get({json.dumps(CAROL)}); const pub = p && p.getTrackPublication(LivekitClient.Track.Source.Microphone); return !!pub && pub.isSubscribed && !!pub.track; }})()", timeout=15000)
+
     # Mute Dave just for Carol.
     carolv.click(f"#voice-channels .voice-user[data-id='{DAVE}']", button="right")
     carolv.click(".menu button:has-text('Mute for me')")

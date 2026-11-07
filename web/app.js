@@ -2262,7 +2262,8 @@ async function drawVoicePage(main) {
     tick();
   });
 
-  main.append(
+  // (append would show a null as the text "null")
+  main.append(...[
     el("h2", {}, "Voice & audio"),
     ...c.devices,
     el("div", { class: "field-like" }, el("div", { class: "inline-row" }, testBtn, meter)),
@@ -2273,7 +2274,7 @@ async function drawVoicePage(main) {
     el("p", { class: "muted small", style: "margin:-6px 0 0" }, `Push to talk works with a keyboard key or the middle / side mouse buttons. ${globalPtt ? "In the desktop app it works while you're in game too." : "In the browser it only works while this tab is focused; the Outhouse desktop app makes it work in game."}`),
     ...c.checks,
     typeof entranceSoundSection === "function" ? await entranceSoundSection() : null,
-  );
+  ].filter(Boolean));
 }
 
 // ---------- soundboard ----------
