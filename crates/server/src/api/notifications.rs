@@ -36,6 +36,16 @@ pub struct Device {
     pub last_ok_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct MutedChannel {
+    #[serde(with = "as_string")]
+    pub channel_id: i64,
+    /// 0 for a direct message.
+    #[serde(with = "as_string")]
+    pub guild_id: i64,
+    pub name: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct NotificationSettings {
     /// The server's VAPID public key (null = push isn't available).
@@ -44,6 +54,8 @@ pub struct NotificationSettings {
     pub levels: Vec<LevelRow>,
     #[serde(with = "vec_as_string")]
     pub muted_channels: Vec<i64>,
+    /// The muted channels with their names, for the settings page.
+    pub muted: Vec<MutedChannel>,
     pub devices: Vec<Device>,
 }
 
@@ -58,11 +70,15 @@ pub async fn get(
     .bind(user.id)
     .fetch_all(&st.db)
     .await?;
-    let muted_channels: Vec<i64> =
-        sqlx::query_scalar("SELECT channel_id FROM channel_mutes WHERE user_id = $1")
-            .bind(user.id)
-            .fetch_all(&st.db)
-            .await?;
+    let muted = sqlx::query_as::<_, MutedChannel>(
+        "SELECT cm.channel_id, COALESCE(c.guild_id, 0) AS guild_id, c.name
+         FROM channel_mutes cm JOIN channels c ON c.id = cm.channel_id
+         WHERE cm.user_id = $1 ORDER BY cm.created_at",
+    )
+    .bind(user.id)
+    .fetch_all(&st.db)
+    .await?;
+    let muted_channels = muted.iter().map(|m| m.channel_id).collect();
     let devices = sqlx::query_as::<_, Device>(
         "SELECT id, endpoint, user_agent, created_at, last_ok_at
          FROM push_subscriptions WHERE user_id = $1 ORDER BY created_at",
@@ -74,6 +90,7 @@ pub async fn get(
         vapid_public_key: st.vapid.as_ref().map(|v| v.public_key.clone()),
         levels,
         muted_channels,
+        muted,
         devices,
     }))
 }

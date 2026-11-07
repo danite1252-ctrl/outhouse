@@ -52,6 +52,8 @@ jobs:
           node --check web/raids.js
           node --check web/wow.js
           node --check web/voice-extras.js
+          node --check web/notify.js
+          node --check web/admin-extras.js
           node --check web/sw.js
           node --check web/bots/dice-bot.mjs
       - name: Deploy scripts check (bash -n + shellcheck)

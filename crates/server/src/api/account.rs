@@ -203,6 +203,10 @@ pub const PROFILE_THEMES: &[&str] = &[
     "abyss",
     "goldleaf",
     "outhouse",
+    // Animated ones.
+    "emberdrift",
+    "starfield",
+    "aurora",
 ];
 
 /// Tells every outhouse you're in to re-fetch members (name or picture changed).

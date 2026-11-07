@@ -580,9 +580,12 @@ async fn message_push(st: &AppState, guild_id: i64, message: &Message) -> anyhow
         if level == Level::Nothing || !st.is_away(c.user_id) {
             continue;
         }
-        let kind;
-        if guild_id == DM_GUILD {
-            kind = if promoted { "raid" } else { "dm" };
+        let kind = if guild_id == DM_GUILD {
+            if promoted {
+                "raid"
+            } else {
+                "dm"
+            }
         } else {
             if !perms::can_view(&st.db, guild_id, channel_id, c.user_id).await {
                 continue;
@@ -605,7 +608,7 @@ async fn message_push(st: &AppState, guild_id: i64, message: &Message) -> anyhow
             if level == Level::Mentions && !mentioned {
                 continue;
             }
-            kind = if raid_reminder && mentioned {
+            if raid_reminder && mentioned {
                 "raid"
             } else if message.reply_to.as_ref().map(|r| r.author_id) == Some(c.user_id) {
                 "reply"
@@ -613,8 +616,8 @@ async fn message_push(st: &AppState, guild_id: i64, message: &Message) -> anyhow
                 "mention"
             } else {
                 "message"
-            };
-        }
+            }
+        };
         let title = match (kind, guild_id == DM_GUILD) {
             ("raid", true) => "🎉 You're off the bench!".to_string(),
             ("raid", false) => "⏰ Raid reminder".to_string(),

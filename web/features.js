@@ -17,8 +17,13 @@ const PROFILE_THEMES = [
   { key: "abyss", name: "Abyss", css: "radial-gradient(circle at 50% 120%, #2a8fbf 0%, #0a2a43 40%, #04070f 80%)" },
   { key: "goldleaf", name: "Gold leaf", css: "linear-gradient(135deg, #3b2a05 0%, #c79a2b 50%, #fff1b8 100%)" },
   { key: "outhouse", name: "Starry night", css: "radial-gradient(circle at 82% 28%, #fff6d5 0 5%, transparent 6%), radial-gradient(1px 1px at 20% 30%, #fff 50%, transparent 51%), radial-gradient(1px 1px at 40% 15%, #fff 50%, transparent 51%), radial-gradient(1px 1px at 60% 40%, #fff 50%, transparent 51%), linear-gradient(180deg, #0b1026 0%, #1d2a52 60%, #ff6a2b 100%)" },
+  // Animated (gently; switched off for people who ask for less motion).
+  { key: "emberdrift", name: "Ember drift", anim: true, css: "radial-gradient(circle at 50% 130%, #ff8a3d 0%, #9a2a08 38%, #2a0b04 70%, #120503 100%)" },
+  { key: "starfield", name: "Starfield", anim: true, css: "radial-gradient(ellipse at 50% -10%, #2b3a78 0%, #0d1433 50%, #04050d 100%)" },
+  { key: "aurora", name: "Aurora", anim: true, css: "linear-gradient(180deg, #030b14 0%, #08283a 55%, #0b2a1e 100%)" },
 ];
 const themeCss = (key) => PROFILE_THEMES.find((t) => t.key === key)?.css ?? null;
+const themeAnimated = (key) => !!PROFILE_THEMES.find((t) => t.key === key)?.anim;
 
 function profileBanner(p) {
   if (p.banner_url) return `center / cover no-repeat url("${p.banner_url}")`;
@@ -31,8 +36,10 @@ function profileCard(p, { preview = false } = {}) {
   const theme = themeCss(p.profile_theme);
   const shownName = member?.display_name ?? p.display_name;
   const since = (iso) => new Date(iso).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
-  const card = el("div", { class: `profile-card${theme ? " themed" : ""}`, style: theme ? `--theme:${theme}` : (p.accent_color ? `--accent-ring:${hexColour(p.accent_color)}` : "") },
-    el("div", { class: "pc-banner", style: `background:${profileBanner(p)}` }),
+  const anim = theme && themeAnimated(p.profile_theme) ? ` anim anim-${p.profile_theme}` : "";
+  const card = el("div", { class: `profile-card${theme ? " themed" : ""}${anim}`, style: theme ? `--theme:${theme}` : (p.accent_color ? `--accent-ring:${hexColour(p.accent_color)}` : "") },
+    anim ? el("div", { class: "pc-fx", "aria-hidden": "true" }) : null,
+    el("div", { class: `pc-banner${p.banner_url ? " img" : ""}`, style: `background:${profileBanner(p)}` }),
     el("div", { class: "pc-avatar" }, avatarFor(p.id, shownName, 84, p.avatar_url || undefined)),
     el("div", { class: "pc-body" },
       el("div", { class: "pc-name" }, shownName, p.bot ? el("span", { class: "bot-tag" }, "BOT") : null),
@@ -116,7 +123,7 @@ async function drawProfileLook(main) {
   const drawThemes = () => themes.replaceChildren(
     el("button", { type: "button", class: `theme-swatch none${draft.profile_theme ? "" : " on"}`, title: "No background", onclick: () => { draft.profile_theme = ""; drawThemes(); paint(); } }, "None"),
     ...PROFILE_THEMES.map((t) => el("button", {
-      type: "button", class: `theme-swatch${draft.profile_theme === t.key ? " on" : ""}`, title: t.name, style: `background:${t.css}`,
+      type: "button", class: `theme-swatch${draft.profile_theme === t.key ? " on" : ""}${t.anim ? ` anim anim-${t.key}` : ""}`, title: t.name, style: `background:${t.css}`,
       onclick: () => { draft.profile_theme = t.key; drawThemes(); paint(); },
     }, el("span", {}, t.name))),
   );

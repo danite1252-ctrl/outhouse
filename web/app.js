@@ -2118,7 +2118,8 @@ async function openUserSettings(tab = "account") {
     ["look", "Profile & picture"],
     ["profile", "Outhouse nicknames"],
     ["voice", "Voice & audio"],
-  ];
+    typeof drawNotificationsPage === "function" ? ["notifications", "Notifications"] : null,
+  ].filter(Boolean);
   const draw = (active) => {
     stopMicTest();
     nav.replaceChildren(
@@ -2131,6 +2132,7 @@ async function openUserSettings(tab = "account") {
     if (active === "look") return drawProfileLook(main);
     if (active === "profile") return drawProfiles(main);
     if (active === "voice") return drawVoicePage(main);
+    if (active === "notifications") return drawNotificationsPage(main);
     return drawAccount(main);
   };
   draw(tab);
@@ -2520,6 +2522,7 @@ const MENUS = {
         : { label: "Join voice", disabled: !can("connect", c.id), onClick: () => joinVoice(c.id) }) : null,
       c.kind === TEXT ? { label: "Mark as read", disabled: !isUnread(c) && !channelMentions(c.id), onClick: () => { if (c.last_message_id) { c.last_read_id = c.last_message_id; noteChannelRead(c.id, c.last_message_id); api("POST", `/api/channels/${c.id}/ack`, { message_id: c.last_message_id }).catch(() => {}); renderChannels(); } } } : null,
       can("create_invite") ? { label: "Invite people", onClick: invitePeople } : null,
+      ...(c.kind === TEXT && typeof notifyMenuItems === "function" ? notifyMenuItems("channel", c) : []),
       "sep",
       can("manage_roles") ? { label: "Edit permissions", onClick: () => openChannelPermissions(c) } : null,
       c.kind === TEXT && can("manage_webhooks", c.id) ? { label: "Webhooks & news feeds", onClick: () => openSettings("integrations") } : null,
@@ -2539,8 +2542,9 @@ const MENUS = {
       here && can("create_invite") ? { label: "Invite people", onClick: invitePeople } : null,
       here && can("manage_channels") ? { label: "Create text channel", onClick: () => createChannel(TEXT) } : null,
       here && can("manage_channels") ? { label: "Create voice channel", onClick: () => createChannel(VOICE) } : null,
-      here && (can("manage_roles") || can("ban_members") || can("manage_webhooks") || can("manage_guild")) ? { label: "Outhouse settings", onClick: () => openSettings(can("manage_roles") ? "roles" : can("manage_webhooks") ? "integrations" : can("manage_guild") ? "emoji" : "bans") } : null,
+      here && (can("manage_roles") || can("ban_members") || can("manage_webhooks") || can("manage_guild") || can("view_audit_log")) ? { label: "Outhouse settings", onClick: () => openSettings(can("manage_roles") ? "roles" : can("manage_webhooks") ? "integrations" : can("manage_guild") ? "emoji" : can("ban_members") ? "bans" : "audit") } : null,
       here && can("manage_guild") ? { label: "Custom emoji", onClick: () => openSettings("emoji") } : null,
+      ...(typeof notifyMenuItems === "function" ? ["sep", ...notifyMenuItems("guild", g)] : []),
       "sep",
       { label: "Copy outhouse ID", onClick: () => copy(g.id, "ID copied") },
       "sep",
@@ -2698,10 +2702,24 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
       nav.append(el("button", { class: activeTab === "bots" ? "active" : "", onclick: () => draw("bots") }, "Bots"));
       nav.append(el("button", { class: activeTab === "emoji" ? "active" : "", onclick: () => draw("emoji") }, "Emoji"));
     }
+    if (can("manage_guild") && typeof drawBadgeSettings === "function") {
+      nav.append(el("button", { class: activeTab === "badges" ? "active" : "", onclick: () => draw("badges") }, "Badges"));
+    }
+    const canAudit = (can("view_audit_log") || can("manage_guild")) && typeof drawAuditLog === "function";
+    if (can("ban_members") || canAudit) nav.append(el("h3", {}, "MODERATION"));
     if (can("ban_members")) {
-      nav.append(el("h3", {}, "MODERATION"), el("button", { class: activeTab === "bans" ? "active" : "", onclick: () => draw("bans") }, "Bans"));
+      nav.append(el("button", { class: activeTab === "bans" ? "active" : "", onclick: () => draw("bans") }, "Bans"));
+    }
+    if (canAudit) {
+      nav.append(el("button", { class: activeTab === "audit" ? "active" : "", onclick: () => draw("audit") }, "Audit log"));
+    }
+    if (can("manage_guild") && typeof drawServerStatus === "function") {
+      nav.append(el("h3", {}, "SERVER"), el("button", { class: activeTab === "status" ? "active" : "", onclick: () => draw("status") }, "Server status"));
     }
     if (activeTab === "bans") return drawBans(main);
+    if (activeTab === "audit") return drawAuditLog(main);
+    if (activeTab === "badges") return drawBadgeSettings(main);
+    if (activeTab === "status") return drawServerStatus(main);
     if (activeTab === "integrations") return drawIntegrations(main);
     if (activeTab === "bots") return drawBots(main);
     if (activeTab === "emoji") return drawEmojiSettings(main);

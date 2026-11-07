@@ -55,6 +55,19 @@ call() {
   cat /tmp/body
 }
 step() { echo "== $*"; }
+# fail_call METHOD PATH [JSON] -> succeeds only if the request is refused (4xx)
+fail_call() {
+  local method=$1 path=$2 body=${3:-}
+  local args=(-sS -X "$method" -o /tmp/body -w "%{http_code}" -H "Content-Type: application/json")
+  [ -n "$TOKEN" ] && args+=(-H "Authorization: Bearer $TOKEN")
+  [ -n "$body" ] && args+=(-d "$body")
+  local code
+  code=$(curl "${args[@]}" "$BASE$path")
+  if [[ "$code" != 4* ]]; then
+    echo "EXPECTED REFUSAL: $method $path -> $code"; cat /tmp/body; echo; exit 1
+  fi
+}
+enc() { jq -rn --arg v "$1" '$v|@uri'; }
 
 step "register two users"
 A=$(call POST /api/auth/register '{"username":"alice","password":"password123","display_name":"Alice"}')
@@ -112,19 +125,6 @@ TOKEN=""
 call POST "/api/webhooks/$WID/$WTOK" '{"content":"from a webhook"}' >/dev/null
 TOKEN=$TOKEN_A
 
-# fail_call METHOD PATH [JSON] -> succeeds only if the request is refused (4xx)
-fail_call() {
-  local method=$1 path=$2 body=${3:-}
-  local args=(-sS -X "$method" -o /tmp/body -w "%{http_code}" -H "Content-Type: application/json")
-  [ -n "$TOKEN" ] && args+=(-H "Authorization: Bearer $TOKEN")
-  [ -n "$body" ] && args+=(-d "$body")
-  local code
-  code=$(curl "${args[@]}" "$BASE$path")
-  if [[ "$code" != 4* ]]; then
-    echo "EXPECTED REFUSAL: $method $path -> $code"; cat /tmp/body; echo; exit 1
-  fi
-}
-enc() { jq -rn --arg v "$1" '$v|@uri'; }
 
 step "pinned messages"
 P=$(call POST "/api/guilds/$GUILD/channels" '{"name":"pins"}'); PINS=$(jq -r .id <<<"$P")
