@@ -943,3 +943,5 @@ dialog.char-dialog { width: min(480px, 94vw); }
 
 /* Reply and "used /command" lines must not get squashed when the chat overflows. */
 .reply-ref { flex-shrink: 0; }
+/* Let messages with group or WoW cards use the chat's width (cards cap themselves). */
+.msg-body:has(> .lfg-card), .msg-body:has(> .wow-embed) { flex: 1; }
