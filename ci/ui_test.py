@@ -151,6 +151,12 @@ past = api("POST", f"/api/channels/{chan['id']}/events", {"title": "Molten Core 
 api("PUT", f"/api/events/{past['event']['id']}/signup", {"status": "yes", "role": "dps", "class": "Rogue", "spec": "Combat"}, dave["token"])
 api("PUT", f"/api/events/{past['event']['id']}/signup", {"status": "yes", "role": "healer", "class": "Priest", "spec": "Holy"}, erin["token"])
 
+def scroll_to_card(pg, title):
+    """Scrolls a raid card into view (by title; cards get redrawn, so no element handles)."""
+    pg.evaluate("t => [...document.querySelectorAll('#messages .event-card')].find((c) => c.querySelector('.ev-title')?.textContent.includes(t))?.scrollIntoView({block: 'center'})", title)
+    pg.wait_for_timeout(250)
+
+
 errors = []
 
 
@@ -426,17 +432,17 @@ with sync_playwright() as p:
     bench_card = ".event-card:has-text('Bench raid')"
     page.wait_for_selector(f"{bench_card} .ev-bench li:has-text('Erin')", timeout=10000)
     assert "Dave" in page.inner_text(f"{bench_card} .ev-col.tank")
-    page.locator(bench_card).scroll_into_view_if_needed()
+    scroll_to_card(page, "Bench raid")
     page.screenshot(path=f"{SHOTS}/40-bench-card.png")
     locked_card = ".event-card:has-text('sign-ups closed')"
     page.wait_for_selector(f"{locked_card} .ev-deadline.locked")
-    page.locator(locked_card).scroll_into_view_if_needed()
+    scroll_to_card(page, "sign-ups closed")
     page.screenshot(path=f"{SHOTS}/41-locked-card.png")
     series_card = ".event-card:has-text('BWL weekly')"
     page.wait_for_selector(f"{series_card} .ev-repeat", timeout=10000)
     page.wait_for_selector(f"{series_card} .ev-deadline")
     # A repeating raid's menu offers "this one" and "this and future".
-    page.locator(series_card).first.scroll_into_view_if_needed()
+    scroll_to_card(page, "BWL weekly")
     page.click(f"{series_card} >> nth=0 >> button[title='Raid options']")
     page.wait_for_selector(".menu button:has-text('Edit this and future raids')")
     page.screenshot(path=f"{SHOTS}/42-series-menu.png")
@@ -482,7 +488,7 @@ with sync_playwright() as p:
     page.wait_for_selector(".calendar-dialog", state="detached")
     # Take attendance after the raid starts.
     past_card = ".event-card:has-text('Molten Core run')"
-    page.locator(past_card).scroll_into_view_if_needed()
+    scroll_to_card(page, "Molten Core run")
     page.click(f"{past_card} .ev-btn.attendance")
     page.wait_for_selector(".attendance-dialog .att-row:has-text('Erin')")
     page.click(".attendance-dialog .att-all")
@@ -565,7 +571,7 @@ with sync_playwright() as p:
         phone.click(".channel:has-text('raids')")
     phone.wait_for_selector(".event-card:has-text('Bench raid')", timeout=10000)
     phone.wait_for_timeout(400)
-    phone.locator(".event-card:has-text('Bench raid')").scroll_into_view_if_needed()
+    scroll_to_card(phone, "Bench raid")
     phone.screenshot(path=f"{SHOTS}/50-phone-bench-card.png")
     phone.click("#raid-btn")
     phone.wait_for_selector(".raid-list .rl-tool")
@@ -586,7 +592,7 @@ with sync_playwright() as p:
     phone.wait_for_selector(".attendance-table-dialog .att-table tbody tr", timeout=10000)
     phone.screenshot(path=f"{SHOTS}/54-phone-attendance-table.png")
     phone.click(".attendance-table-dialog button[title='Close']")
-    phone.locator(".event-card:has-text('Molten Core run')").scroll_into_view_if_needed()
+    scroll_to_card(phone, "Molten Core run")
     phone.click(".event-card:has-text('Molten Core run') .ev-btn.attendance")
     phone.wait_for_selector(".attendance-dialog .att-row")
     phone.screenshot(path=f"{SHOTS}/55-phone-take-attendance.png")
