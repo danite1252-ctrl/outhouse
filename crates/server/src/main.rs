@@ -9,6 +9,7 @@ mod files;
 mod gateway;
 mod perms;
 mod state;
+mod wowhead;
 
 use std::net::SocketAddr;
 
@@ -58,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
     feeds::spawn_poller(state.clone());
     api::events::spawn_reminders(state.clone());
     api::polls::spawn_closer(state.clone());
+    api::lfg::spawn_expirer(state.clone());
     let app = api::router(state)
         .fallback_service(ServeDir::new(&web_dir))
         .layer(axum::middleware::map_response(no_stale_files))

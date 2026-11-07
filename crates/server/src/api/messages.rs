@@ -225,6 +225,7 @@ pub(crate) async fn hydrate(db: &PgPool, rows: Vec<MessageRow>) -> AppResult<Vec
         });
     }
     let mut event_map = crate::api::events::events_for_messages(db, &ids).await?;
+    let mut lfg_map = crate::api::lfg::groups_for_messages(db, &ids).await?;
     let thread_sql = format!("{THREAD_SELECT} WHERE starter_message_id = ANY($1)");
     let mut thread_map: HashMap<i64, ThreadInfo> = sqlx::query_as::<_, ThreadInfo>(&thread_sql)
         .bind(&ids[..])
@@ -325,6 +326,7 @@ pub(crate) async fn hydrate(db: &PgPool, rows: Vec<MessageRow>) -> AppResult<Vec
             thread_id: r.thread_id,
             thread: thread_map.remove(&r.id),
             poll: poll_map.remove(&r.id),
+            lfg: lfg_map.remove(&r.id),
         })
         .collect())
 }

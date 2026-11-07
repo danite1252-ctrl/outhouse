@@ -2,6 +2,7 @@
 
 mod account;
 mod attendance;
+mod bnet;
 mod bots;
 mod channels;
 mod dms;
@@ -10,6 +11,7 @@ pub mod events;
 mod feeds;
 mod gifs;
 pub mod guilds;
+pub mod lfg;
 pub mod members;
 pub mod messages;
 pub mod polls;
@@ -20,6 +22,7 @@ mod sounds;
 mod threads;
 pub mod voice;
 mod webhooks;
+pub mod wow;
 
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{delete, get, patch, post, put};
@@ -210,6 +213,29 @@ pub fn router(state: AppState) -> Router {
             "/api/guilds/{id}/attendance/{user}",
             get(attendance::member),
         )
+        // WoW tools: group finder, items, characters, Battle.net
+        .route("/api/wow/info", get(wow::info))
+        .route("/api/channels/{id}/lfg", post(lfg::create))
+        .route("/api/channels/{id}/lfg/{message}/join", put(lfg::join))
+        .route(
+            "/api/channels/{id}/lfg/{message}/members/{user}",
+            delete(lfg::remove_member),
+        )
+        .route("/api/channels/{id}/lfg/{message}/close", post(lfg::close))
+        .route("/api/channels/{id}/wow/item", post(wow::item_command))
+        .route("/api/channels/{id}/wow/char", post(wow::char_command))
+        .route(
+            "/api/users/@me/characters",
+            get(wow::list_mine).post(wow::create_character),
+        )
+        .route(
+            "/api/characters/{id}",
+            patch(wow::update_character).delete(wow::delete_character),
+        )
+        .route("/api/bnet/status", get(bnet::status))
+        .route("/api/bnet/authorize", post(bnet::authorize))
+        .route("/api/bnet/link", delete(bnet::unlink))
+        .route("/api/bnet/callback", get(bnet::callback))
         // Bots and slash commands
         .route("/api/guilds/{id}/bots", get(bots::list).post(bots::create))
         .route("/api/bots/{id}", delete(bots::delete))

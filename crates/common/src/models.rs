@@ -239,6 +239,9 @@ pub struct Message {
     /// For a poll: the question, options and votes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poll: Option<Poll>,
+    /// For a group finder post: the group and who's in it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lfg: Option<crate::wow::LfgGroup>,
 }
 
 /// A thread: a side conversation off a channel (often off one message).
@@ -464,6 +467,9 @@ pub struct Profile {
     pub accent_color: i32,
     pub bot: bool,
     pub created_at: DateTime<Utc>,
+    /// Their WoW characters (main first).
+    #[serde(default)]
+    pub characters: Vec<crate::wow::WowCharacter>,
 }
 
 /// A bot made in an outhouse (shown to people who can manage it).

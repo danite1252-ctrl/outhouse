@@ -60,6 +60,7 @@ pub async fn get(
         accent_color: row.accent_color,
         bot: row.is_bot,
         created_at: row.created_at,
+        characters: super::wow::characters_of(&st.db, row.id).await?,
     }))
 }
 

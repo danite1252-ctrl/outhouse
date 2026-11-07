@@ -57,6 +57,17 @@ pub fn spawn_previews(
     tokio::spawn(async move {
         let mut embeds = Vec::new();
         for url in urls {
+            // WoW sites get their own cards (and one even if the fetch fails).
+            if let Some((parsed, site)) = Url::parse(&url)
+                .ok()
+                .and_then(|u| crate::wowhead::classify(&u).map(|s| (u, s)))
+            {
+                embeds.push(crate::wowhead::preview(&st, &url, &parsed, site).await);
+                continue;
+            }
+            if st.config.previews_offline {
+                continue;
+            }
             match fetch_preview(&url).await {
                 Ok(Some(embed)) => embeds.push(embed),
                 Ok(None) => {}

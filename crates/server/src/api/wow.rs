@@ -1,0 +1,577 @@
+//! WoW tools: characters on profiles, `/item` cards from Wowhead and `/char`
+//! character cards.
+
+use std::time::Duration;
+
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::Json;
+use outhouse_common::models::{channel_kind, Embed, EmbedField, Message, MessageInteraction};
+use outhouse_common::permissions as p;
+use outhouse_common::wow::{
+    activities, class_name, CharacterRequest, WowCharacter, WowInfo, WowLookupRequest, CLASSES,
+    MAX_LEVEL, PROFESSIONS,
+};
+use reqwest::Url;
+use sqlx::PgPool;
+
+use super::messages::post_bot_message_full;
+use crate::auth::AuthUser;
+use crate::error::{AppError, AppResult};
+use crate::perms::{channel_access, ChannelAccess};
+use crate::state::AppState;
+use crate::wowhead;
+
+pub const MAX_CHARACTERS: i64 = 20;
+const MAX_PROFESSIONS: usize = 5;
+const MAX_QUERY_CHARS: usize = 100;
+
+pub const CHARACTER_SELECT: &str = "SELECT id, user_id, name, realm, class, level, is_main,
+    professions, armory_url, source FROM wow_characters";
+
+pub fn class_colour(class: &str) -> Option<i32> {
+    Some(match class {
+        "Druid" => 0xFF7C0A,
+        "Hunter" => 0xAAD372,
+        "Mage" => 0x3FC7EB,
+        "Paladin" => 0xF48CBA,
+        "Priest" => 0xFFFFFF,
+        "Rogue" => 0xFFF468,
+        "Shaman" => 0x0070DD,
+        "Warlock" => 0x8788EE,
+        "Warrior" => 0xC69B6D,
+        _ => return None,
+    })
+}
+
+/// Someone's characters, main first.
+pub async fn characters_of(db: &PgPool, user_id: i64) -> AppResult<Vec<WowCharacter>> {
+    let sql = format!(
+        "{CHARACTER_SELECT} WHERE user_id = $1 ORDER BY is_main DESC, level DESC, lower(name)"
+    );
+    Ok(sqlx::query_as::<_, WowCharacter>(&sql)
+        .bind(user_id)
+        .fetch_all(db)
+        .await?)
+}
+
+/// `GET /api/wow/info`
+pub async fn info(State(st): State<AppState>, AuthUser(_user): AuthUser) -> Json<WowInfo> {
+    let cfg = &st.config;
+    Json(WowInfo {
+        activities: activities(),
+        classes: CLASSES.iter().map(|c| c.to_string()).collect(),
+        professions: PROFESSIONS.iter().map(|c| c.to_string()).collect(),
+        bnet_enabled: cfg.bnet.is_some(),
+        wowhead_url: if cfg.wowhead_branch.is_empty() {
+            cfg.wowhead_url.clone()
+        } else {
+            format!("{}/{}", cfg.wowhead_url, cfg.wowhead_branch)
+        },
+    })
+}
+
+// ---- Characters ----------------------------------------------------------------
+
+/// "tHRALL" → "Thrall". WoW names are letters only.
+fn clean_name(raw: &str) -> AppResult<String> {
+    let name = raw.trim();
+    let count = name.chars().count();
+    if !(2..=24).contains(&count) || !name.chars().all(char::is_alphabetic) {
+        return Err(AppError::BadRequest(
+            "Character names are 2 to 24 letters (no spaces or numbers).".into(),
+        ));
+    }
+    let mut chars = name.chars();
+    let first: String = chars
+        .next()
+        .map(|c| c.to_uppercase().collect())
+        .unwrap_or_default();
+    Ok(first + &chars.as_str().to_lowercase())
+}
+
+pub struct CleanCharacter {
+    pub name: String,
+    pub realm: String,
+    pub class: String,
+    pub level: i32,
+    pub professions: Vec<String>,
+    pub armory_url: String,
+}
+
+pub fn clean_character(req: &CharacterRequest) -> AppResult<CleanCharacter> {
+    let name = clean_name(&req.name)?;
+    let realm: String = req
+        .realm
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(40)
+        .collect();
+    let class = class_name(&req.class)
+        .ok_or_else(|| AppError::BadRequest("Pick one of the nine classes.".into()))?
+        .to_string();
+    let level = req.level.unwrap_or(MAX_LEVEL);
+    if !(1..=MAX_LEVEL).contains(&level) {
+        return Err(AppError::BadRequest(format!(
+            "Levels go from 1 to {MAX_LEVEL}."
+        )));
+    }
+    let mut professions: Vec<String> = Vec::new();
+    for raw in &req.professions {
+        let found = PROFESSIONS
+            .iter()
+            .find(|p| p.eq_ignore_ascii_case(raw.trim()))
+            .ok_or_else(|| AppError::BadRequest(format!("“{}” isn't a profession.", raw.trim())))?;
+        if !professions.iter().any(|p| p == found) {
+            professions.push(found.to_string());
+        }
+    }
+    if professions.len() > MAX_PROFESSIONS {
+        return Err(AppError::BadRequest(format!(
+            "Up to {MAX_PROFESSIONS} professions."
+        )));
+    }
+    let armory_url = req.armory_url.trim().to_string();
+    if !armory_url.is_empty() {
+        let ok = armory_url.len() <= 300
+            && Url::parse(&armory_url).is_ok_and(|u| matches!(u.scheme(), "http" | "https"));
+        if !ok {
+            return Err(AppError::BadRequest(
+                "The armory link needs to be a full web address (https://…).".into(),
+            ));
+        }
+    }
+    Ok(CleanCharacter {
+        name,
+        realm,
+        class,
+        level,
+        professions,
+        armory_url,
+    })
+}
+
+async fn fetch_character(db: &PgPool, id: i64) -> AppResult<WowCharacter> {
+    let sql = format!("{CHARACTER_SELECT} WHERE id = $1");
+    sqlx::query_as::<_, WowCharacter>(&sql)
+        .bind(id)
+        .fetch_optional(db)
+        .await?
+        .ok_or(AppError::NotFound)
+}
+
+fn duplicate(e: sqlx::Error) -> AppError {
+    match &e {
+        sqlx::Error::Database(d) if d.is_unique_violation() => {
+            AppError::Conflict("You already have a character with that name on that realm.".into())
+        }
+        _ => AppError::Db(e),
+    }
+}
+
+/// Makes sure someone with characters has exactly one main.
+async fn fix_main(db: &PgPool, user_id: i64, main: Option<i64>) -> AppResult<()> {
+    if let Some(main) = main {
+        sqlx::query("UPDATE wow_characters SET is_main = (id = $2) WHERE user_id = $1")
+            .bind(user_id)
+            .bind(main)
+            .execute(db)
+            .await?;
+    } else {
+        sqlx::query(
+            "UPDATE wow_characters SET is_main = true
+             WHERE id = (SELECT id FROM wow_characters WHERE user_id = $1
+                         ORDER BY level DESC, created_at LIMIT 1)
+               AND NOT EXISTS (SELECT 1 FROM wow_characters WHERE user_id = $1 AND is_main)",
+        )
+        .bind(user_id)
+        .execute(db)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Gives someone with characters a main if they have none.
+pub async fn ensure_main(db: &PgPool, user_id: i64) -> AppResult<()> {
+    fix_main(db, user_id, None).await
+}
+
+/// `GET /api/users/@me/characters`
+pub async fn list_mine(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<Vec<WowCharacter>>> {
+    Ok(Json(characters_of(&st.db, user.id).await?))
+}
+
+/// `POST /api/users/@me/characters`
+pub async fn create_character(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<CharacterRequest>,
+) -> AppResult<(StatusCode, Json<WowCharacter>)> {
+    let c = clean_character(&req)?;
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM wow_characters WHERE user_id = $1")
+        .bind(user.id)
+        .fetch_one(&st.db)
+        .await?;
+    if count >= MAX_CHARACTERS {
+        return Err(AppError::BadRequest(format!(
+            "That's {MAX_CHARACTERS} characters already. Remove one first."
+        )));
+    }
+    let id = st.ids.next_id();
+    sqlx::query(
+        "INSERT INTO wow_characters (id, user_id, name, realm, class, level, professions, armory_url)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind(id)
+    .bind(user.id)
+    .bind(&c.name)
+    .bind(&c.realm)
+    .bind(&c.class)
+    .bind(c.level)
+    .bind(&c.professions)
+    .bind(&c.armory_url)
+    .execute(&st.db)
+    .await
+    .map_err(duplicate)?;
+    fix_main(&st.db, user.id, req.is_main.then_some(id)).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(fetch_character(&st.db, id).await?),
+    ))
+}
+
+/// `PATCH /api/characters/{id}` (send every field)
+pub async fn update_character(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<i64>,
+    Json(req): Json<CharacterRequest>,
+) -> AppResult<Json<WowCharacter>> {
+    let existing = fetch_character(&st.db, id).await?;
+    if existing.user_id != user.id {
+        return Err(AppError::NotFound);
+    }
+    let c = clean_character(&req)?;
+    sqlx::query(
+        "UPDATE wow_characters SET name = $2, realm = $3, class = $4, level = $5,
+             professions = $6, armory_url = $7
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(&c.name)
+    .bind(&c.realm)
+    .bind(&c.class)
+    .bind(c.level)
+    .bind(&c.professions)
+    .bind(&c.armory_url)
+    .execute(&st.db)
+    .await
+    .map_err(duplicate)?;
+    if req.is_main {
+        fix_main(&st.db, user.id, Some(id)).await?;
+    } else if existing.is_main {
+        // Unticking "main" hands it to another character, if there is one.
+        sqlx::query("UPDATE wow_characters SET is_main = false WHERE id = $1")
+            .bind(id)
+            .execute(&st.db)
+            .await?;
+        let other: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM wow_characters WHERE user_id = $1 AND id <> $2
+             ORDER BY level DESC, created_at LIMIT 1",
+        )
+        .bind(user.id)
+        .bind(id)
+        .fetch_optional(&st.db)
+        .await?;
+        fix_main(&st.db, user.id, Some(other.unwrap_or(id))).await?;
+    }
+    Ok(Json(fetch_character(&st.db, id).await?))
+}
+
+/// `DELETE /api/characters/{id}`
+pub async fn delete_character(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<i64>,
+) -> AppResult<StatusCode> {
+    let existing = fetch_character(&st.db, id).await?;
+    if existing.user_id != user.id {
+        return Err(AppError::NotFound);
+    }
+    sqlx::query("DELETE FROM wow_characters WHERE id = $1")
+        .bind(id)
+        .execute(&st.db)
+        .await?;
+    fix_main(&st.db, user.id, None).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---- /item and /char -----------------------------------------------------------
+
+fn lookup_query(req: &WowLookupRequest) -> AppResult<String> {
+    let q: String = req
+        .query
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(MAX_QUERY_CHARS)
+        .collect();
+    if q.is_empty() {
+        return Err(AppError::BadRequest("What should I look up?".into()));
+    }
+    Ok(q)
+}
+
+async fn post_card(
+    st: &AppState,
+    access: &ChannelAccess,
+    user_id: i64,
+    display_name: String,
+    command: &str,
+    embed: Embed,
+) -> AppResult<Message> {
+    post_bot_message_full(
+        st,
+        access.channel.guild_id,
+        access.channel.id,
+        user_id,
+        None,
+        None,
+        String::new(),
+        vec![embed],
+        Some(MessageInteraction {
+            user_id,
+            display_name,
+            command: command.into(),
+        }),
+    )
+    .await
+}
+
+async fn writable_text_channel(
+    st: &AppState,
+    channel_id: i64,
+    user_id: i64,
+) -> AppResult<ChannelAccess> {
+    let access = channel_access(&st.db, channel_id, user_id).await?;
+    access.require(p::SEND_MESSAGES)?;
+    if access.channel.kind == channel_kind::VOICE {
+        return Err(AppError::BadRequest("That goes in a text channel.".into()));
+    }
+    Ok(access)
+}
+
+/// `POST /api/channels/{id}/wow/item` `{"query": "Thunderfury"}`: posts an
+/// item card (or, if Wowhead can't be reached, a search link).
+pub async fn item_command(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(channel_id): Path<i64>,
+    Json(req): Json<WowLookupRequest>,
+) -> AppResult<Json<Message>> {
+    let access = writable_text_channel(&st, channel_id, user.id).await?;
+    let query = lookup_query(&req)?;
+    let cfg = &st.config;
+    let embed =
+        match tokio::time::timeout(Duration::from_secs(9), wowhead::lookup(&st, &query)).await {
+            Ok(Ok(Some(item))) => wowhead::item_embed(cfg, &item, None),
+            Ok(Ok(None)) => wowhead::search_embed(
+                cfg,
+                &query,
+                "Nothing on Wowhead matched that exactly, so here's a search instead.",
+            ),
+            Ok(Err(e)) => {
+                tracing::info!(error = %e, "item lookup failed");
+                wowhead::search_embed(
+                    cfg,
+                    &query,
+                    "Couldn't reach Wowhead just now, so here's a search link instead.",
+                )
+            }
+            Err(_) => wowhead::search_embed(
+                cfg,
+                &query,
+                "Wowhead took too long to answer, so here's a search link instead.",
+            ),
+        };
+    let name = display_name(&st, &access, user.id, &user.display_name).await?;
+    Ok(Json(
+        post_card(&st, &access, user.id, name, "item", embed).await?,
+    ))
+}
+
+async fn display_name(
+    st: &AppState,
+    access: &ChannelAccess,
+    user_id: i64,
+    fallback: &str,
+) -> AppResult<String> {
+    let nick: Option<String> = sqlx::query_scalar(
+        "SELECT nickname FROM guild_members WHERE guild_id = $1 AND user_id = $2",
+    )
+    .bind(access.channel.guild_id)
+    .bind(user_id)
+    .fetch_optional(&st.db)
+    .await?
+    .flatten();
+    Ok(nick.unwrap_or_else(|| fallback.to_string()))
+}
+
+#[derive(sqlx::FromRow)]
+struct FoundCharacter {
+    id: i64,
+    user_id: i64,
+    owner_name: String,
+}
+
+/// `POST /api/channels/{id}/wow/char` `{"query": "Thrall"}` (or "Thrall-Realm"):
+/// posts the card of a character belonging to someone here.
+pub async fn char_command(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(channel_id): Path<i64>,
+    Json(req): Json<WowLookupRequest>,
+) -> AppResult<Json<Message>> {
+    let access = writable_text_channel(&st, channel_id, user.id).await?;
+    let query = lookup_query(&req)?;
+    let (name, realm) = match query.split_once('-') {
+        Some((n, r)) => (n.trim().to_string(), r.trim().to_string()),
+        None => (query.clone(), String::new()),
+    };
+    // People in this outhouse, or in this DM.
+    let people_sql = if access.channel.guild_id == outhouse_common::models::DM_GUILD {
+        "SELECT user_id, NULL::TEXT AS nickname FROM dm_participants
+         WHERE channel_id = $2 AND $1::BIGINT IS NOT NULL"
+    } else {
+        "SELECT user_id, nickname FROM guild_members
+         WHERE guild_id = $1 AND $2::BIGINT IS NOT NULL"
+    };
+    let sql = format!(
+        "WITH people AS ({people_sql})
+         SELECT c.id, c.user_id, COALESCE(pp.nickname, u.display_name) AS owner_name
+         FROM wow_characters c
+         JOIN people pp ON pp.user_id = c.user_id
+         JOIN users u ON u.id = c.user_id
+         WHERE ($4 = '' OR lower(c.realm) = lower($4))
+           AND (lower(c.name) = lower($3) OR lower(c.name) LIKE lower($3) || '%')
+         ORDER BY (lower(c.name) = lower($3)) DESC, c.is_main DESC, c.level DESC
+         LIMIT 1"
+    );
+    let found = sqlx::query_as::<_, FoundCharacter>(&sql)
+        .bind(access.channel.guild_id)
+        .bind(channel_id)
+        .bind(name.replace(['%', '_'], ""))
+        .bind(&realm)
+        .fetch_optional(&st.db)
+        .await?
+        .ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "Nobody here has a character called {name}. Characters are added in Settings → Profile & picture."
+            ))
+        })?;
+    let character = fetch_character(&st.db, found.id).await?;
+    let others: Vec<WowCharacter> = characters_of(&st.db, found.user_id)
+        .await?
+        .into_iter()
+        .filter(|c| c.id != character.id)
+        .collect();
+    let embed = character_embed(&character, &found.owner_name, &others);
+    let me = display_name(&st, &access, user.id, &user.display_name).await?;
+    Ok(Json(
+        post_card(&st, &access, user.id, me, "char", embed).await?,
+    ))
+}
+
+pub fn character_embed(c: &WowCharacter, owner: &str, others: &[WowCharacter]) -> Embed {
+    let mut fields = vec![EmbedField {
+        name: "Played by".into(),
+        value: format!("{owner}{}", if c.is_main { " (main)" } else { " (alt)" }),
+        inline: true,
+    }];
+    if !c.professions.is_empty() {
+        fields.push(EmbedField {
+            name: "Professions".into(),
+            value: c.professions.join(", "),
+            inline: true,
+        });
+    }
+    if !others.is_empty() {
+        fields.push(EmbedField {
+            name: "Also plays".into(),
+            value: others
+                .iter()
+                .take(6)
+                .map(|o| format!("{} ({} {})", o.name, o.level, o.class))
+                .collect::<Vec<_>>()
+                .join(", "),
+            inline: false,
+        });
+    }
+    Embed {
+        url: c.armory_url.clone(),
+        kind: "wow-char".into(),
+        title: Some(c.name.clone()),
+        description: Some(format!(
+            "Level {} {}{}",
+            c.level,
+            c.class,
+            if c.realm.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}", c.realm)
+            }
+        )),
+        site_name: Some("Character".into()),
+        color: class_colour(&c.class),
+        author_name: Some(owner.to_string()),
+        footer: Some(if c.source == "bnet" {
+            "Imported from Battle.net".into()
+        } else {
+            "Added on Outhouse".into()
+        }),
+        fields,
+        ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tidies_characters() {
+        let c = clean_character(&CharacterRequest {
+            name: "tHRALL".into(),
+            realm: "  Wow   Forever ".into(),
+            class: "shaman".into(),
+            level: Some(60),
+            professions: vec!["mining".into(), "Mining".into(), "Fishing".into()],
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(c.name, "Thrall");
+        assert_eq!(c.realm, "Wow Forever");
+        assert_eq!(c.class, "Shaman");
+        assert_eq!(c.professions, vec!["Mining", "Fishing"]);
+        for bad in ["Death Knight", "Monk", "Evoker", "Demon Hunter"] {
+            assert!(clean_character(&CharacterRequest {
+                name: "Arthas".into(),
+                class: bad.into(),
+                ..Default::default()
+            })
+            .is_err());
+        }
+        assert!(clean_character(&CharacterRequest {
+            name: "Has Space".into(),
+            class: "Mage".into(),
+            ..Default::default()
+        })
+        .is_err());
+    }
+}

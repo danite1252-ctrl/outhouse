@@ -36,6 +36,68 @@ pub struct Config {
     pub livekit_api_secret: Option<String>,
     /// Public LiveKit address; None = work it out from the request.
     pub livekit_url: Option<String>,
+    /// Where Wowhead lives (links and name searches), e.g. https://www.wowhead.com.
+    pub wowhead_url: String,
+    /// Wowhead's section for the game: "classic" for Classic era / WoW: Forever.
+    pub wowhead_branch: String,
+    /// Wowhead's tooltip service (item details as JSON).
+    pub wowhead_tooltip_url: String,
+    /// Wowhead's data set for tooltips (4 = Classic era).
+    pub wowhead_data_env: String,
+    /// Item icons: `{this}/{icon}.jpg`.
+    pub wowhead_icon_url: String,
+    /// Don't fetch pages for link previews (air-gapped servers and tests).
+    /// WoW links still get a card made from the link itself.
+    pub previews_offline: bool,
+    /// The site's public address (e.g. https://outhouse.example), used for
+    /// the Battle.net sign-in return address.
+    pub public_url: Option<String>,
+    /// Battle.net sign-in, when its keys are set.
+    pub bnet: Option<BnetConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BnetConfig {
+    pub client_id: String,
+    pub client_secret: String,
+    /// "us", "eu", "kr" or "tw".
+    pub region: String,
+    /// https://oauth.battle.net
+    pub oauth_url: String,
+    /// https://{region}.api.blizzard.com
+    pub api_url: String,
+    /// Profile namespaces to try for the character list, in order.
+    pub namespaces: Vec<String>,
+}
+
+impl BnetConfig {
+    fn from_env() -> Option<Self> {
+        let client_id = env_opt("BNET_CLIENT_ID")?;
+        let client_secret = env_opt("BNET_CLIENT_SECRET")?;
+        let region = env_opt("BNET_REGION")
+            .unwrap_or_else(|| "us".into())
+            .to_ascii_lowercase();
+        let namespaces = env_opt("BNET_PROFILE_NAMESPACES")
+            .unwrap_or_else(|| "profile-classic1x-{region},profile-classic-{region}".into())
+            .split(',')
+            .map(|n| n.trim().replace("{region}", &region))
+            .filter(|n| !n.is_empty())
+            .collect();
+        Some(Self {
+            api_url: env_opt("BNET_API_URL")
+                .unwrap_or_else(|| format!("https://{region}.api.blizzard.com"))
+                .trim_end_matches('/')
+                .to_string(),
+            oauth_url: env_opt("BNET_OAUTH_URL")
+                .unwrap_or_else(|| "https://oauth.battle.net".into())
+                .trim_end_matches('/')
+                .to_string(),
+            client_id,
+            client_secret,
+            region,
+            namespaces,
+        })
+    }
 }
 
 impl Config {
@@ -48,8 +110,32 @@ impl Config {
             livekit_api_key: env_opt("LIVEKIT_API_KEY"),
             livekit_api_secret: env_opt("LIVEKIT_API_SECRET"),
             livekit_url: env_opt("LIVEKIT_URL"),
+            wowhead_url: url_env("WOWHEAD_URL", "https://www.wowhead.com"),
+            wowhead_branch: env_opt("WOWHEAD_BRANCH")
+                .unwrap_or_else(|| "classic".into())
+                .trim_matches('/')
+                .to_string(),
+            wowhead_tooltip_url: url_env("WOWHEAD_TOOLTIP_URL", "https://nether.wowhead.com"),
+            wowhead_data_env: env_opt("WOWHEAD_DATA_ENV").unwrap_or_else(|| "4".into()),
+            wowhead_icon_url: url_env(
+                "WOWHEAD_ICON_URL",
+                "https://wow.zamimg.com/images/wow/icons/large",
+            ),
+            previews_offline: matches!(
+                env_opt("LINK_PREVIEWS_OFFLINE").as_deref(),
+                Some("1" | "true" | "yes" | "on")
+            ),
+            public_url: env_opt("PUBLIC_URL").map(|u| u.trim_end_matches('/').to_string()),
+            bnet: BnetConfig::from_env(),
         }
     }
+}
+
+fn url_env(name: &str, default: &str) -> String {
+    env_opt(name)
+        .unwrap_or_else(|| default.into())
+        .trim_end_matches('/')
+        .to_string()
 }
 
 fn env_opt(name: &str) -> Option<String> {
