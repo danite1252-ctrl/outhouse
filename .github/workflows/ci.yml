@@ -156,3 +156,26 @@ jobs:
           name: Outhouse-Android-APK
           path: desktop/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
           if-no-files-found: error
+
+  release:
+    name: Publish downloads (Releases → "latest")
+    needs: [server, desktop, android]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+      - name: Replace the "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir out
+          cp "$(find dl/Outhouse-Android-APK -name '*.apk' | head -1)" out/Outhouse-Android.apk
+          cp "$(find dl/Outhouse-Windows-installer -name '*.exe' | head -1)" out/Outhouse-Windows-Setup.exe
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest out/* --target "$GITHUB_SHA" --title "Outhouse (latest build)" \
+            --notes "Built from $(echo $GITHUB_SHA | cut -c1-7). On Android, tap Outhouse-Android.apk to download and install it. On Windows, run Outhouse-Windows-Setup.exe."

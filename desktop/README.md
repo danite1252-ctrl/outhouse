@@ -8,8 +8,8 @@ The Outhouse app for your PC. It shows your Outhouse server in its own window an
 - Links to other websites open in your normal browser.
 
 ## Get the installer
-Every push to GitHub builds it: open the repo's **Actions** tab → the latest
-**CI** run → **Artifacts** → `Outhouse-Windows-installer`. Or build it yourself:
+Every push to GitHub builds it and publishes it under the repo's **Releases**
+→ **Outhouse (latest build)** → `Outhouse-Windows-Setup.exe`. Or build it yourself:
 
 ## Build the installer yourself
 You already have Rust and the C++ build tools from building the server.
@@ -45,10 +45,10 @@ There are two ways to have Outhouse on an Android phone:
    tap ⋮ → **Add to Home screen** (or **Install app**). It gets its own icon and
    full screen, and voice works because it's Chrome underneath. Push to talk
    shows a big **Hold to talk** button in the voice panel.
-2. **The Android app (APK, experimental).** Every push to GitHub builds
-   `Outhouse-Android-APK` (Actions → the latest CI run → Artifacts). Unzip it,
-   copy the `.apk` to your phone and open it (Android asks once to allow
-   installing apps from that source). It's the same app as on Windows, without
+2. **The Android app (APK, experimental).** On your phone, sign in to GitHub in
+   the browser, open the repo's **Releases** → **Outhouse (latest build)** and
+   tap `Outhouse-Android.apk` (Android asks once to allow installing apps from
+   your browser). It's the same app as on Windows, without
    the tray or in-game push to talk. Voice in this version depends on
    Android's built-in web view allowing the microphone; if voice doesn't work
    in it, use option 1.
