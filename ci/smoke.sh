@@ -377,6 +377,127 @@ code=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE/emojis/$EMOJI"); [[ "$code
 # Leave one behind for the UI test.
 code=$(upload_emoji "$TOKEN_A" partyparrot /tmp/pixel.png); [[ "$code" == 2* ]] || { echo "emoji upload -> $code"; cat /tmp/body; exit 1; }
 
+step "repeating raids"
+RX=$(call POST "/api/guilds/$GUILD/channels" '{"name":"raid-extras"}' | jq -r .id)
+FIRST=$(date -u -d '+1 day' +%Y-%m-%dT09:00:00Z)
+D1=$(( $(date -u -d '+1 day' +%u) - 1 )) # 0 = Monday
+D2=$(( (D1 + 3) % 7 ))
+fail_call POST "/api/channels/$RX/events" '{"title":"No days","starts_at":"'"$FIRST"'","repeat":{"weekdays":[],"every_weeks":1,"time_zone":"UTC"}}'
+fail_call POST "/api/channels/$RX/events" '{"title":"Bad zone","starts_at":"'"$FIRST"'","repeat":{"weekdays":[1],"every_weeks":1,"time_zone":"Mars/Olympus"}}'
+fail_call POST "/api/channels/$RX/events" '{"title":"Too far apart","starts_at":"'"$FIRST"'","repeat":{"weekdays":[1],"every_weeks":9,"time_zone":"UTC"}}'
+SR=$(call POST "/api/channels/$RX/events" '{"title":"BWL","starts_at":"'"$FIRST"'","max_tanks":1,"repeat":{"weekdays":['"$D1"','"$D2"'],"every_weeks":1,"count":6,"time_zone":"Australia/Sydney"}}')
+SERIES=$(jq -r .event.series_id <<<"$SR")
+jq -e --arg f "$FIRST" '.event.starts_at == $f and .event.repeat.count == 6 and .event.repeat.time_zone == "Australia/Sydney" and (.event.repeat.weekdays | length == 2) and .event.message_id != null' <<<"$SR" >/dev/null
+FROM=$(date -u +%Y-%m-%dT%H:%M:%SZ); TO=$(date -u -d '+60 days' +%Y-%m-%dT%H:%M:%SZ)
+series() { call GET "/api/guilds/$GUILD/events?from=$FROM&to=$TO" | jq --arg s "$SERIES" '[.[] | select(.series_id == $s)]'; }
+series | jq -e 'length == 6' >/dev/null
+# Only raids within a week have their chat card yet.
+series | jq -e '[.[] | select(.message_id != null)] | length == 2' >/dev/null
+call GET "/api/channels/$RX/messages" | jq -e '[.[] | select(.event != null)] | length == 2' >/dev/null
+# Same wall-clock time in Sydney every time (daylight saving can't shift it).
+[ "$(series | jq -r '.[].starts_at' | while read -r t; do TZ=Australia/Sydney date -d "$t" +%H:%M; done | sort -u | wc -l)" = 1 ]
+fail_call GET "/api/guilds/$GUILD/events?from=$FROM&to=$(date -u -d '+100 days' +%Y-%m-%dT%H:%M:%SZ)"
+S0=$(series | jq -r '.[0].id'); S1=$(series | jq -r '.[1].id'); S2=$(series | jq -r '.[2].id'); S3=$(series | jq -r '.[3].id')
+# Sign-ups are separate per raid, even before the card is posted.
+TOKEN=$TOKEN_B
+call PUT "/api/events/$S2/signup" '{"status":"yes","role":"healer","class":"Priest","spec":"Holy"}' | jq -e '.event.signups | length == 1' >/dev/null
+call GET "/api/events/$S0" | jq -e '.signups | length == 0' >/dev/null
+fail_call PATCH "/api/events/$S2" '{"title":"bob edits","scope":"future"}'
+fail_call DELETE "/api/events/$S2?scope=future"
+TOKEN=$TOKEN_A
+# Edit just one.
+call PATCH "/api/events/$S1" '{"title":"BWL (just this one)"}' >/dev/null
+# Edit this and future: an hour later from the third raid on.
+OLD2=$(series | jq -r '.[2].starts_at')
+NEW2=$(date -u -d "@$(( $(date -d "$OLD2" +%s) + 3600 ))" +%Y-%m-%dT%H:%M:%SZ)
+call PATCH "/api/events/$S2" '{"title":"BWL (late start)","starts_at":"'"$NEW2"'","scope":"future"}' | jq -e --arg t "$NEW2" '.event.title == "BWL (late start)" and .event.starts_at == $t' >/dev/null
+series | jq -e '[.[].title] == ["BWL", "BWL (just this one)", "BWL (late start)", "BWL (late start)", "BWL (late start)", "BWL (late start)"]' >/dev/null
+series | jq -e '(.[5].starts_at | fromdate) - (.[4].starts_at | fromdate) < 8 * 86400' >/dev/null
+call GET "/api/events/$S2" | jq -e '.signups | length == 1' >/dev/null # sign-ups survive the move
+# Cancel just one, then this and future.
+call DELETE "/api/events/$S1?scope=one" >/dev/null
+series | jq -e 'length == 5' >/dev/null
+call DELETE "/api/events/$S3?scope=future" >/dev/null
+series | jq -e --arg a "$S0" --arg b "$S2" '[.[].id] == [$a, $b]' >/dev/null
+fail_call GET "/api/events/$S3"
+# Every second week, in UTC.
+E2W=$(call POST "/api/channels/$RX/events" '{"title":"Onyxia","starts_at":"'"$FIRST"'","repeat":{"weekdays":['"$D1"'],"every_weeks":2,"count":2,"time_zone":"UTC"}}' | jq -r .event.series_id)
+call GET "/api/guilds/$GUILD/events?from=$FROM&to=$TO" | jq -e --arg s "$E2W" '[.[] | select(.series_id == $s)] | length == 2 and ((.[1].starts_at | fromdate) - (.[0].starts_at | fromdate) == 14 * 86400) and .[1].message_id == null' >/dev/null
+
+step "sign-up deadline"
+SOON2=$(date -u -d '+2 hours' +%Y-%m-%dT%H:%M:%SZ)
+DL=$(call POST "/api/channels/$RX/events" '{"title":"Locked raid","starts_at":"'"$SOON2"'","signup_deadline_minutes":180}')
+DLE=$(jq -r .event.id <<<"$DL")
+jq -e '.event.signup_deadline_minutes == 180 and .event.signups_close_at != null' <<<"$DL" >/dev/null
+fail_call POST "/api/channels/$RX/events" '{"title":"Too early","starts_at":"'"$SOON2"'","signup_deadline_minutes":20000}'
+TOKEN=$TOKEN_B
+fail_call PUT "/api/events/$DLE/signup" '{"status":"yes","role":"dps","class":"Rogue","spec":"Combat"}'
+TOKEN=$TOKEN_A
+call PUT "/api/events/$DLE/signup" '{"status":"yes","role":"tank","class":"Warrior","spec":"Protection"}' >/dev/null # the leader still can
+call PUT "/api/events/$DLE/signup" '{"status":"yes","role":"dps","class":"Rogue","spec":"Combat","user_id":"'"$BOB"'"}' >/dev/null
+TOKEN=$TOKEN_B; fail_call DELETE "/api/events/$DLE/signups/$BOB"; TOKEN=$TOKEN_A
+call PATCH "/api/events/$DLE" '{"signup_deadline_minutes":0}' | jq -e '.event.signups_close_at == null' >/dev/null
+TOKEN=$TOKEN_B; call DELETE "/api/events/$DLE/signups/$BOB" >/dev/null; TOKEN=$TOKEN_A
+
+step "auto-bench and promotion"
+BE=$(call POST "/api/channels/$RX/events" '{"title":"Bench test","starts_at":"'"$START"'","max_tanks":1,"max_healers":1,"max_dps":1}' | jq -r .event.id)
+call PUT "/api/events/$BE/signup" '{"status":"yes","role":"tank","class":"Warrior","spec":"Protection"}' >/dev/null
+TOKEN=$TOKEN_B
+call PUT "/api/events/$BE/signup" '{"status":"yes","role":"tank","class":"Druid","spec":"Feral (Bear)"}' | jq -e --arg b "$BOB" '.event.signups[] | select(.user_id == $b) | .status == "bench" and .auto_bench' >/dev/null
+call PUT "/api/events/$BE/signup" '{"status":"yes","role":"tank","class":"Druid","spec":"Feral (Bear)","note":"keen"}' | jq -e --arg b "$BOB" '.event.signups[] | select(.user_id == $b) | .status == "bench" and .note == "keen"' >/dev/null
+TOKEN=$TOKEN_C
+call PUT "/api/events/$BE/signup" '{"status":"late","role":"tank","class":"Paladin","spec":"Protection"}' | jq -e --arg c "$CARL" '.event.signups[] | select(.user_id == $c) | .status == "bench" and .auto_bench' >/dev/null
+call PUT "/api/events/$BE/signup" '{"status":"yes","role":"healer","class":"Paladin","spec":"Holy"}' | jq -e --arg c "$CARL" '.event.signups[] | select(.user_id == $c) | .status == "yes" and (.auto_bench | not)' >/dev/null
+call PUT "/api/events/$BE/signup" '{"status":"late","role":"tank","class":"Paladin","spec":"Protection"}' >/dev/null # back in the tank queue, behind Bob
+TOKEN=$TOKEN_A
+call GET "/api/events/$BE" | jq -e --arg b "$BOB" --arg c "$CARL" '[.signups[] | select(.status == "bench") | .user_id] == [$b, $c]' >/dev/null
+# Alice drops out: Bob (first on the bench) moves up and hears about it.
+call DELETE "/api/events/$BE/signups/$ALICE" | jq -e --arg b "$BOB" --arg c "$CARL" '(.event.signups[] | select(.user_id == $b) | .status == "yes" and (.auto_bench | not)) and (.event.signups[] | select(.user_id == $c) | .status == "bench")' >/dev/null
+TOKEN=$TOKEN_B
+HDM=$(call GET /api/dms | jq -r '[.[] | select(any(.recipients[]; .bot))][0].id')
+[ "$HDM" != "null" ]
+call GET "/api/channels/$HDM/messages" | jq -e '.[-1].content | contains("off the bench") and contains("Bench test")' >/dev/null
+fail_call PUT "/api/events/$BE/signup" '{"status":"bench","role":"tank","user_id":"'"$CARL"'"}' # not the leader
+TOKEN=$TOKEN_A
+# The leader moves people by hand: Carl onto the roster, Bob to the bench.
+call PUT "/api/events/$BE/signup" '{"status":"yes","role":"tank","class":"Paladin","spec":"Protection","user_id":"'"$CARL"'"}' >/dev/null
+call PUT "/api/events/$BE/signup" '{"status":"bench","role":"tank","class":"Druid","spec":"Feral (Bear)","user_id":"'"$BOB"'"}' | jq -e --arg b "$BOB" '.event.signups[] | select(.user_id == $b) | .status == "bench" and (.auto_bench | not)' >/dev/null
+# Someone the leader benched isn't moved up automatically.
+TOKEN=$TOKEN_C; call DELETE "/api/events/$BE/signups/$CARL" >/dev/null; TOKEN=$TOKEN_A
+call GET "/api/events/$BE" | jq -e --arg b "$BOB" '.signups[] | select(.user_id == $b) | .status == "bench"' >/dev/null
+# More slots let the queue in.
+call PUT "/api/events/$BE/signup" '{"status":"yes","role":"healer","class":"Priest","spec":"Holy"}' >/dev/null
+TOKEN=$TOKEN_C; call PUT "/api/events/$BE/signup" '{"status":"yes","role":"healer","class":"Paladin","spec":"Holy"}' | jq -e --arg c "$CARL" '.event.signups[] | select(.user_id == $c) | .status == "bench"' >/dev/null; TOKEN=$TOKEN_A
+call PATCH "/api/events/$BE" '{"max_healers":2}' | jq -e --arg c "$CARL" '.event.signups[] | select(.user_id == $c) | .status == "yes"' >/dev/null
+
+step "attendance"
+PAST=$(date -u -d '-40 minutes' +%Y-%m-%dT%H:%M:%SZ)
+AT=$(call POST "/api/channels/$RX/events" '{"title":"Last night","starts_at":"'"$PAST"'"}' | jq -r .event.id)
+call PUT "/api/events/$AT/signup" '{"status":"yes","role":"tank","class":"Warrior","spec":"Protection"}' >/dev/null
+call PUT "/api/events/$AT/signup" '{"status":"bench","role":"dps","class":"Druid","spec":"Feral (Cat)","user_id":"'"$BOB"'"}' >/dev/null
+call PUT "/api/events/$AT/signup" '{"status":"yes","role":"dps","class":"Paladin","spec":"Retribution","user_id":"'"$CARL"'"}' >/dev/null
+fail_call PUT "/api/events/$BE/attendance" '{"all_signed_up":true}' # hasn't started yet
+fail_call PUT "/api/events/$AT/attendance" '{"records":[{"user_id":"'"$CARL"'","status":"asleep"}]}'
+fail_call PUT "/api/events/$AT/attendance" '{"records":[{"user_id":"'"$OUTSIDER"'","status":"present"}]}'
+TOKEN=$TOKEN_B; fail_call PUT "/api/events/$AT/attendance" '{"all_signed_up":true}'; TOKEN=$TOKEN_A
+call PUT "/api/events/$AT/attendance" '{"all_signed_up":true,"records":[{"user_id":"'"$CARL"'","status":"late"}]}' \
+  | jq -e --arg a "$ALICE" --arg b "$BOB" --arg c "$CARL" 'length == 3 and (map({(.user_id): .status}) | add) == {($a): "present", ($b): "benched", ($c): "late"}' >/dev/null
+call GET "/api/events/$AT" | jq -e '.attendance_taken' >/dev/null
+TOKEN=$TOKEN_B; call GET "/api/events/$AT/attendance" | jq -e 'length == 3' >/dev/null; TOKEN=$TOKEN_A
+AT2=$(call POST "/api/channels/$RX/events" '{"title":"The night before","starts_at":"'"$PAST"'"}' | jq -r .event.id)
+call PUT "/api/events/$AT2/attendance" '{"records":[{"user_id":"'"$BOB"'","status":"absent"},{"user_id":"'"$CARL"'","status":"present"}]}' >/dev/null
+call GET "/api/guilds/$GUILD/attendance?limit=10" | jq -e --arg b "$BOB" --arg c "$CARL" --arg at2 "$AT2" '
+  (.raids | length == 2) and .raids[0].id == $at2
+  and (.members[] | select(.user_id == $b) | .total == 2 and .percent == 50 and .history == ["absent", "benched"])
+  and (.members[] | select(.user_id == $c) | .late == 1 and .present == 1 and .percent == 100)' >/dev/null
+call GET "/api/guilds/$GUILD/attendance?limit=1" | jq -e '.raids | length == 1' >/dev/null
+TOKEN=$TOKEN_B
+call GET "/api/guilds/$GUILD/attendance/$BOB" | jq -e '.total == 2 and .percent == 50 and .recent[0].status == "absent" and .recent[0].title == "The night before"' >/dev/null
+TOKEN=$OUT; fail_call GET "/api/guilds/$GUILD/attendance"; fail_call GET "/api/events/$AT/attendance"; TOKEN=$TOKEN_A
+call PUT "/api/events/$AT2/attendance" '{"records":[{"user_id":"'"$BOB"'","status":""},{"user_id":"'"$CARL"'","status":""}]}' | jq -e 'length == 0' >/dev/null
+call GET "/api/events/$AT2" | jq -e '.attendance_taken | not' >/dev/null
+call GET "/api/guilds/$GUILD/attendance/$BOB" | jq -e '.total == 1 and .percent == 100' >/dev/null
+
 step "raid reminder"
 for i in $(seq 1 75); do
   call GET "/api/channels/$CHAN/messages" | jq -e '[.[] | select(.content | startswith("⏰"))] | length == 1' >/dev/null 2>&1 && break

@@ -1,6 +1,7 @@
 //! REST API routes.
 
 mod account;
+mod attendance;
 mod bots;
 mod channels;
 mod dms;
@@ -200,6 +201,15 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/events/{id}/signup", put(events::signup))
         .route("/api/events/{id}/signups/{user}", delete(events::withdraw))
+        .route(
+            "/api/events/{id}/attendance",
+            get(attendance::get).put(attendance::set),
+        )
+        .route("/api/guilds/{id}/attendance", get(attendance::guild_table))
+        .route(
+            "/api/guilds/{id}/attendance/{user}",
+            get(attendance::member),
+        )
         // Bots and slash commands
         .route("/api/guilds/{id}/bots", get(bots::list).post(bots::create))
         .route("/api/bots/{id}", delete(bots::delete))

@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::id::{as_string, option_as_string};
-use crate::models::{Channel, DmChannel, Guild, Member, Message, ThreadInfo, User};
+use crate::models::{Channel, DmChannel, Guild, Member, Message, RaidEvent, ThreadInfo, User};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", content = "d", rename_all = "SCREAMING_SNAKE_CASE")]
@@ -171,6 +171,27 @@ pub enum ServerEvent {
     EmojisChanged {
         #[serde(with = "as_string")]
         guild_id: i64,
+    },
+    /// A raid was planned or changed (details, sign-ups, attendance). Raid
+    /// cards also get a MESSAGE_UPDATE; this one is for calendars and lists.
+    EventUpdate(RaidEvent),
+    /// A raid was cancelled.
+    EventDelete {
+        #[serde(with = "as_string")]
+        id: i64,
+        #[serde(with = "as_string")]
+        guild_id: i64,
+    },
+    /// You were moved off the bench and onto a raid's roster (sent to you only).
+    RaidPromoted {
+        #[serde(with = "as_string")]
+        event_id: i64,
+        #[serde(with = "as_string")]
+        guild_id: i64,
+        #[serde(with = "as_string")]
+        channel_id: i64,
+        title: String,
+        role: String,
     },
     /// Identify failed or the session expired; sign in again.
     InvalidSession {

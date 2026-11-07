@@ -80,13 +80,12 @@ pub async fn login(
     Json(req): Json<LoginRequest>,
 ) -> AppResult<Json<AuthResponse>> {
     let username = req.username.trim().to_lowercase();
-    let row = sqlx::query_as::<_, LoginRow>(
-        "SELECT id, password_hash FROM users WHERE username = $1",
-    )
-    .bind(&username)
-    .fetch_optional(&st.db)
-    .await?
-    .ok_or(AppError::InvalidCredentials)?;
+    let row =
+        sqlx::query_as::<_, LoginRow>("SELECT id, password_hash FROM users WHERE username = $1")
+            .bind(&username)
+            .fetch_optional(&st.db)
+            .await?
+            .ok_or(AppError::InvalidCredentials)?;
 
     if !auth::verify_password(req.password, row.password_hash).await {
         return Err(AppError::InvalidCredentials);
@@ -194,8 +193,16 @@ pub async fn update_me(
 
 /// The built-in profile backgrounds (the web client draws them).
 pub const PROFILE_THEMES: &[&str] = &[
-    "ember", "dusk", "moonwell", "felfire", "frostfall", "verdant", "stormwind", "abyss",
-    "goldleaf", "outhouse",
+    "ember",
+    "dusk",
+    "moonwell",
+    "felfire",
+    "frostfall",
+    "verdant",
+    "stormwind",
+    "abyss",
+    "goldleaf",
+    "outhouse",
 ];
 
 /// Tells every outhouse you're in to re-fetch members (name or picture changed).

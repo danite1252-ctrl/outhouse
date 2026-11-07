@@ -255,7 +255,9 @@ pub async fn set_commands(
     Json(commands): Json<Vec<SlashCommand>>,
 ) -> AppResult<Json<Vec<SlashCommand>>> {
     if !user.bot {
-        return Err(AppError::BadRequest("Only bots can register commands.".into()));
+        return Err(AppError::BadRequest(
+            "Only bots can register commands.".into(),
+        ));
     }
     member_ctx(&st.db, guild_id, user.id).await?;
     if commands.len() > MAX_COMMANDS {
@@ -270,8 +272,7 @@ pub async fn set_commands(
                 c.name
             )));
         }
-        if c.options.len() > MAX_OPTIONS || c.options.iter().any(|o| !valid_command_name(&o.name))
-        {
+        if c.options.len() > MAX_OPTIONS || c.options.iter().any(|o| !valid_command_name(&o.name)) {
             return Err(AppError::BadRequest(format!(
                 "/{} has invalid options (up to {MAX_OPTIONS}, named like commands).",
                 c.name
@@ -342,7 +343,12 @@ pub async fn interact(
         .ok_or(AppError::NotFound)?
         .into();
     for o in &command.options {
-        if o.required && req.options.get(&o.name).map_or(true, |v| v.trim().is_empty()) {
+        if o.required
+            && req
+                .options
+                .get(&o.name)
+                .map_or(true, |v| v.trim().is_empty())
+        {
             return Err(AppError::BadRequest(format!(
                 "/{} needs a value for {}.",
                 command.name, o.name

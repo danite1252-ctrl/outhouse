@@ -422,3 +422,41 @@ pub async fn leave(
     announce(&st, channel_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+/// Opens (or reopens) the one-to-one DM between two users without any
+/// checks: used by the server itself, e.g. the helper bot messaging someone.
+pub async fn open_direct(st: &AppState, a: i64, b: i64) -> AppResult<i64> {
+    let key = format!("{}:{}", a.min(b), a.max(b));
+    let id: Option<i64> = sqlx::query_scalar(
+        "INSERT INTO channels (id, guild_id, name, kind, position, dm_key)
+         VALUES ($1, NULL, '', $2, 0, $3)
+         ON CONFLICT (dm_key) DO NOTHING
+         RETURNING id",
+    )
+    .bind(st.ids.next_id())
+    .bind(channel_kind::DM)
+    .bind(&key)
+    .fetch_optional(&st.db)
+    .await?;
+    match id {
+        Some(id) => {
+            sqlx::query(
+                "INSERT INTO dm_participants (channel_id, user_id) VALUES ($1, $2), ($1, $3)
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(id)
+            .bind(a)
+            .bind(b)
+            .execute(&st.db)
+            .await?;
+            announce(st, id).await?;
+            Ok(id)
+        }
+        None => Ok(
+            sqlx::query_scalar("SELECT id FROM channels WHERE dm_key = $1")
+                .bind(&key)
+                .fetch_one(&st.db)
+                .await?,
+        ),
+    }
+}

@@ -1,6 +1,6 @@
 //! Data shapes used by the REST API and the gateway.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::id::{as_string, option_as_string, vec_as_string};
@@ -384,8 +384,10 @@ pub struct RaidEvent {
     pub guild_id: i64,
     #[serde(with = "as_string")]
     pub channel_id: i64,
-    #[serde(with = "as_string")]
-    pub message_id: i64,
+    /// The chat message with its sign-up card. Raids in a repeating series
+    /// get their card a week before they start; until then this is null.
+    #[serde(with = "option_as_string", default)]
+    pub message_id: Option<i64>,
     #[serde(with = "as_string")]
     pub creator_id: i64,
     pub title: String,
@@ -396,6 +398,37 @@ pub struct RaidEvent {
     pub max_healers: i32,
     pub max_dps: i32,
     pub signups: Vec<EventSignup>,
+    /// The repeating series this raid belongs to, if any.
+    #[serde(with = "option_as_string", default)]
+    pub series_id: Option<i64>,
+    #[serde(default)]
+    pub repeat: Option<RepeatInfo>,
+    /// Sign-ups lock this many minutes before the start (null: they don't).
+    #[serde(default)]
+    pub signup_deadline_minutes: Option<i32>,
+    /// When sign-ups lock, if they do.
+    #[serde(default)]
+    pub signups_close_at: Option<DateTime<Utc>>,
+    /// The raid leader has marked who turned up.
+    #[serde(default)]
+    pub attendance_taken: bool,
+}
+
+/// How a repeating raid repeats.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RepeatInfo {
+    /// 0 = Monday … 6 = Sunday.
+    pub weekdays: Vec<u8>,
+    /// 1 = every week, 2 = every second week, …
+    pub every_weeks: i32,
+    /// Last day it can fall on (in `time_zone`).
+    #[serde(default)]
+    pub until: Option<NaiveDate>,
+    /// How many raids in total.
+    #[serde(default)]
+    pub count: Option<i32>,
+    /// IANA time zone the raid time is kept in (so daylight saving doesn't move it).
+    pub time_zone: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -411,6 +444,10 @@ pub struct EventSignup {
     pub spec: String,
     pub note: String,
     pub signed_at: DateTime<Utc>,
+    /// On the bench because their role was full; moved up automatically
+    /// (in sign-up order) when a spot opens.
+    #[serde(default)]
+    pub auto_bench: bool,
 }
 
 /// Everything shown on someone's profile card.
@@ -573,6 +610,13 @@ pub struct CreateEventRequest {
     pub max_tanks: Option<i32>,
     pub max_healers: Option<i32>,
     pub max_dps: Option<i32>,
+    /// Lock sign-ups this many minutes before the start (0 or null: never).
+    #[serde(default)]
+    pub signup_deadline_minutes: Option<i32>,
+    /// Make it a repeating raid (the first one is at `starts_at` or the
+    /// first matching day after it).
+    #[serde(default)]
+    pub repeat: Option<RepeatInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -584,6 +628,30 @@ pub struct UpdateEventRequest {
     pub max_tanks: Option<i32>,
     pub max_healers: Option<i32>,
     pub max_dps: Option<i32>,
+    /// 0 removes the deadline.
+    #[serde(default)]
+    pub signup_deadline_minutes: Option<i32>,
+    /// For a repeating raid: "one" (default) or "future" (this and later ones).
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+/// `PUT /api/events/{id}/attendance`
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AttendanceRequest {
+    /// First mark everyone signed up as present (bench: benched).
+    #[serde(default)]
+    pub all_signed_up: bool,
+    #[serde(default)]
+    pub records: Vec<AttendanceMark>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttendanceMark {
+    #[serde(with = "as_string")]
+    pub user_id: i64,
+    /// "present", "late", "absent", "benched", or "" to clear.
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

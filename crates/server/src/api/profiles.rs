@@ -92,13 +92,17 @@ fn column(kind: &str) -> &'static str {
     }
 }
 
-async fn replace_image(st: &AppState, user_id: i64, kind: &str, new_key: Option<String>) -> AppResult<()> {
+async fn replace_image(
+    st: &AppState,
+    user_id: i64,
+    kind: &str,
+    new_key: Option<String>,
+) -> AppResult<()> {
     let col = column(kind);
-    let old: Option<String> =
-        sqlx::query_scalar(&format!("SELECT {col} FROM users WHERE id = $1"))
-            .bind(user_id)
-            .fetch_one(&st.db)
-            .await?;
+    let old: Option<String> = sqlx::query_scalar(&format!("SELECT {col} FROM users WHERE id = $1"))
+        .bind(user_id)
+        .fetch_one(&st.db)
+        .await?;
     sqlx::query(&format!("UPDATE users SET {col} = $2 WHERE id = $1"))
         .bind(user_id)
         .bind(&new_key)
