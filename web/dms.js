@@ -224,10 +224,11 @@ async function selectDm(id) {
   state.members = dm.recipients.map(asMember);
   renderMembers();
   setChatIcon(dm.kind === DM ? "@" : "👥");
-  updateDmTools();
   const opening = selectChannel(id);
+  updateDmTools(); // selectChannel has set state.channelId by now
   renderDmList();
   await opening;
+  updateDmTools();
   renderDmList();
 }
 
@@ -408,7 +409,7 @@ handleEvent = function (ev) {
         if (d.author_id === state.me?.id) dm.last_read_id = d.id;
         sortDms();
         if (state.home) syncDmChannels();
-        if (desktop && d.author_id !== state.me?.id && !document.hasFocus()) {
+        if (desktop && d.author_id !== state.me?.id && !document.hasFocus() && !mentionsMe(d)) {
           const text = plainMentions(d.content).trim() || (d.attachments?.length ? "Sent an attachment" : d.poll ? `📊 ${d.poll.question}` : "");
           desktopInvoke("notify", { title: dm.kind === DM ? d.author_display_name : `${d.author_display_name} in ${dmName(dm)}`, body: text.slice(0, 200) });
         }
