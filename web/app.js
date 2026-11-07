@@ -98,11 +98,19 @@ function initials(name) {
   return name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => [...w][0].toUpperCase()).join("");
 }
 
-function avatarFor(id, name, size = 40) {
-  const node = el("div", { class: "avatar", style: `width:${size}px;height:${size}px;flex-basis:${size}px` },
-    [...(name || "?").trim()][0]?.toUpperCase() || "?");
-  node.style.background = colourFor(id);
-  return node;
+// A picture if they've uploaded one, otherwise their first letter on a colour.
+function avatarFor(id, name, size = 40, url) {
+  const style = `width:${size}px;height:${size}px;flex-basis:${size}px`;
+  const letter = () => {
+    const node = el("div", { class: "avatar", style }, [...(name || "?").trim()][0]?.toUpperCase() || "?");
+    node.style.background = colourFor(id);
+    return node;
+  };
+  const src = url ?? memberById(id)?.avatar_url ?? (state.me && id === state.me.id ? state.me.avatar_url : null);
+  if (!src) return letter();
+  const img = el("img", { class: "avatar img", src, alt: "", style });
+  img.addEventListener("error", () => img.replaceWith(letter()));
+  return img;
 }
 
 function toast(text) {
@@ -573,6 +581,9 @@ function handleEvent({ t, d }) {
     case "SOUNDS_CHANGED":
       if (d.guild_id === state.guildId) loadSounds();
       break;
+    case "COMMANDS_CHANGED":
+      if (d.guild_id === state.guildId) loadCommands();
+      break;
     case "INVALID_SESSION":
       signOut(false);
       break;
@@ -598,8 +609,11 @@ window.addEventListener("focus", ackChannel);
 function renderMe() {
   $("me-name").textContent = state.me.display_name;
   const a = $("me-avatar");
-  a.textContent = [...state.me.display_name][0].toUpperCase();
-  a.style.background = colourFor(state.me.id);
+  const url = state.me.avatar_url;
+  a.textContent = url ? "" : [...state.me.display_name][0].toUpperCase();
+  a.style.background = url ? `center / cover no-repeat url("${url}")` : colourFor(state.me.id);
+  a.style.cursor = "pointer";
+  a.onclick = (e) => openProfile(state.me.id, e.currentTarget);
 }
 
 function renderGuilds() {
@@ -855,7 +869,7 @@ function renderMessages() {
   const nodes = [];
   let prev = null;
   for (const m of state.messages) {
-    const grouped = prev && !m.reply_to && prev.author_id === m.author_id && prev.author_display_name === m.author_display_name &&
+    const grouped = prev && !m.reply_to && !m.interaction && !m.event && !prev.event && prev.author_id === m.author_id && prev.author_display_name === m.author_display_name &&
       new Date(m.created_at) - new Date(prev.created_at) < 5 * 60 * 1000;
     const colour = memberColour(m.author_id);
     const imageOnly = m.embeds.length === 1 && m.embeds[0].kind === "image" && m.content.trim() === m.embeds[0].url;
@@ -863,12 +877,13 @@ function renderMessages() {
 
     const body = el("div", { class: "msg-body" },
       grouped ? null : el("div", { class: "msg-meta" },
-        el("span", { class: "msg-author", style: colour ? `color:${colour}` : "" }, authorName(m)),
+        el("span", { class: "msg-author", style: colour ? `color:${colour}` : "", onclick: (e) => openProfile(m.author_id, e.currentTarget) }, authorName(m)),
         m.author_bot ? el("span", { class: "bot-tag" }, "BOT") : null,
         el("time", { class: "msg-time", datetime: m.created_at, title: new Date(m.created_at).toLocaleString() }, timeLabel(m.created_at))),
       editing ? editBox(m) : (m.content && !imageOnly
         ? el("p", { class: "msg-text" }, renderText(m.content), m.edited_at ? el("span", { class: "edited", title: new Date(m.edited_at).toLocaleString() }, "(edited)") : null)
         : null),
+      m.event ? renderEventCard(m) : null,
       renderAttachments(m),
       renderEmbeds(m),
       renderReactions(m),
@@ -881,6 +896,11 @@ function renderMessages() {
       id: `msg-${m.id}`,
     }, grouped ? el("div", { class: "gutter" }) : messageAvatar(m), body, editing ? null : messageActions(m));
 
+    if (m.interaction) {
+      nodes.push(el("div", { class: "reply-ref interaction-ref" },
+        "↱ ", el("strong", {}, memberById(m.interaction.user_id)?.display_name ?? m.interaction.display_name),
+        " used ", el("code", {}, `/${m.interaction.command}`)));
+    }
     if (m.reply_to) {
       nodes.push(el("div", { class: "reply-ref", onclick: () => jumpTo(m.reply_to.id) },
         "↱ ", el("strong", {}, m.reply_to.author_display_name), " ", plainMentions(m.reply_to.content) || "(attachment)"));
@@ -903,12 +923,12 @@ function renderMessages() {
 }
 
 function messageAvatar(m) {
-  if (m.author_avatar_url) {
-    const img = el("img", { class: "avatar img", src: m.author_avatar_url, alt: "" });
-    img.addEventListener("error", () => img.replaceWith(avatarFor(m.author_id, m.author_display_name)));
-    return img;
-  }
-  return avatarFor(m.author_id, m.author_display_name);
+  // Real people and bots follow their current picture; webhook posts keep the one they were sent with.
+  const live = memberById(m.author_id)?.avatar_url;
+  const node = avatarFor(m.author_id, authorName(m), 40, (m.author_bot && !memberById(m.author_id) ? m.author_avatar_url : live ?? m.author_avatar_url) || undefined);
+  node.style.cursor = "pointer";
+  node.addEventListener("click", (e) => openProfile(m.author_id, e.currentTarget));
+  return node;
 }
 
 function jumpTo(id) {
@@ -1193,10 +1213,12 @@ $("composer").addEventListener("submit", async (e) => {
   e.preventDefault();
   const content = input.value.trim();
   if ((!content && !state.pendingFiles.length) || !state.channelId) return;
+  const command = !state.pendingFiles.length && matchCommand(content);
   input.value = "";
   autosize();
   try {
-    await sendMessage(content);
+    if (command) await runCommand(command, content);
+    else await sendMessage(content);
   } catch (err) {
     input.value = content;
     autosize();
@@ -1630,6 +1652,7 @@ function renderVoicePanel() {
       el("button", { class: `vp-btn${v.deafened ? " off" : ""}`, title: v.deafened ? "Undeafen" : "Deafen", onclick: toggleDeafen }, v.deafened ? "🔕" : "🎧"),
       el("button", { class: "vp-btn", title: "Soundboard", onclick: (e) => openSoundboard(e.currentTarget) }, "🔊"),
       el("button", { class: "vp-btn", title: "Voice settings", onclick: (e) => openVoiceSettings(e.currentTarget) }, "⚙")),
+    v.connecting ? null : touchPttButton(),
   );
 }
 
@@ -1999,7 +2022,8 @@ async function openUserSettings(tab = "account") {
   dialog.addEventListener("close", stopMicTest);
   const pages = [
     ["account", "My account"],
-    ["profile", "Outhouse profiles"],
+    ["look", "Profile & picture"],
+    ["profile", "Outhouse nicknames"],
     ["voice", "Voice & audio"],
   ];
   const draw = (active) => {
@@ -2011,6 +2035,7 @@ async function openUserSettings(tab = "account") {
       el("button", { onclick: () => { dialog.close(); signOut(); } }, "Sign out"),
     );
     main.replaceChildren();
+    if (active === "look") return drawProfileLook(main);
     if (active === "profile") return drawProfiles(main);
     if (active === "voice") return drawVoicePage(main);
     return drawAccount(main);
@@ -2056,7 +2081,7 @@ function drawAccount(main) {
 }
 
 async function drawProfiles(main) {
-  main.append(el("h2", {}, "Outhouse profiles"),
+  main.append(el("h2", {}, "Outhouse nicknames"),
     el("p", { class: "muted", style: "margin:0" }, "Use a different name in each outhouse. Leave it blank to use your display name."));
   if (!state.guilds.length) return main.append(el("p", { class: "muted" }, "You're not in any outhouses yet."));
   for (const g of state.guilds) {
@@ -2293,6 +2318,7 @@ async function selectGuild(id, preferChannel) {
   state.messages = [];
   await refreshGuild();
   if (state.guildId !== id) return;
+  loadCommands();
   const saved = localStorage.getItem(`outhouse_channel_${id}`);
   const pick = state.channels.find((c) => c.id === (preferChannel || saved) && c.kind === TEXT) || state.channels.find((c) => c.kind === TEXT);
   if (pick) selectChannel(pick.id);
@@ -2399,6 +2425,7 @@ const MENUS = {
     if (!m) return;
     const assignable = state.roles.filter((r) => r.id !== state.guildId && myTop() > r.position).sort((a, b) => b.position - a.position);
     const items = [
+      { label: "View profile", onClick: () => openProfile(m.id, node) },
       { label: "Mention", onClick: () => { input.value += `@${m.display_name} `; input.focus(); autosize(); } },
       "sep",
     ];
@@ -2533,14 +2560,19 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
         if (role) draw("roles", role.id);
       } }, "＋ Create role"));
     }
+    if (can("manage_webhooks") || can("manage_guild")) nav.append(el("h3", {}, "APPS"));
     if (can("manage_webhooks")) {
-      nav.append(el("h3", {}, "APPS"), el("button", { class: activeTab === "integrations" ? "active" : "", onclick: () => draw("integrations") }, "Webhooks & news feeds"));
+      nav.append(el("button", { class: activeTab === "integrations" ? "active" : "", onclick: () => draw("integrations") }, "Webhooks & news feeds"));
+    }
+    if (can("manage_guild")) {
+      nav.append(el("button", { class: activeTab === "bots" ? "active" : "", onclick: () => draw("bots") }, "Bots"));
     }
     if (can("ban_members")) {
       nav.append(el("h3", {}, "MODERATION"), el("button", { class: activeTab === "bans" ? "active" : "", onclick: () => draw("bans") }, "Bans"));
     }
     if (activeTab === "bans") return drawBans(main);
     if (activeTab === "integrations") return drawIntegrations(main);
+    if (activeTab === "bots") return drawBots(main);
     const role = roles.find((r) => r.id === roleId) || roles.find((r) => r.id !== state.guildId) || roles[0];
     if (role) drawRole(main, role, (id) => draw("roles", id));
   };

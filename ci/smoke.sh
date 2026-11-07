@@ -3,6 +3,7 @@
 # flows, so SQL and routing mistakes fail CI instead of failing in front of
 # people. Add a section here for each new feature.
 set -euo pipefail
+trap 'echo "Smoke test failed at line $LINENO"' ERR
 
 BASE=http://127.0.0.1:8080
 LOG=/tmp/outhouse-server.log
@@ -87,7 +88,7 @@ code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $TOKEN_
 AVATAR=$(jq -r .avatar_url /tmp/body)
 curl -fsS "$BASE$AVATAR" -o /dev/null
 call GET "/api/guilds/$GUILD/members" | jq -e --arg id "$ALICE" '.[] | select(.id == $id) | .avatar_url != null' >/dev/null
-call GET "/api/channels/$CHAN/messages" | jq -e '.[-1].author_avatar_url != null' >/dev/null
+call GET "/api/channels/$CHAN/messages" | jq -e --arg id "$ALICE" '[.[] | select(.author_id == $id)] | .[-1].author_avatar_url != null' >/dev/null
 code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $TOKEN_A" -F "file=@/tmp/pixel.png;type=image/png" "$BASE/api/users/@me/banner")
 [[ "$code" == 2* ]] || { echo "banner upload -> $code"; cat /tmp/body; exit 1; }
 call DELETE /api/users/@me/avatar | jq -e '.avatar_url == null' >/dev/null
@@ -118,7 +119,7 @@ BOT_TOKEN=$(jq -r .token <<<"$BOTRES"); BOT_ID=$(jq -r .bot.id <<<"$BOTRES")
 TOKEN=$BOT_TOKEN
 call GET /api/users/@me | jq -e '.bot == true' >/dev/null
 TOKEN=$TOKEN_A
-OUTHOUSE_URL=$BASE OUTHOUSE_BOT_TOKEN=$BOT_TOKEN node examples/bots/dice-bot.mjs >/tmp/bot.log 2>&1 &
+OUTHOUSE_URL=$BASE OUTHOUSE_BOT_TOKEN=$BOT_TOKEN node web/bots/dice-bot.mjs >/tmp/bot.log 2>&1 &
 BOT_PID=$!
 trap 'kill $SERVER $BOT_PID 2>/dev/null || true' EXIT
 for i in $(seq 1 20); do

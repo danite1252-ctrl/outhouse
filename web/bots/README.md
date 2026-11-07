@@ -10,7 +10,7 @@ roles allow) and it can offer **slash commands** people run from the chat box.
 3. Give it roles like any member if it needs extra permissions.
 4. Run your bot code somewhere that stays on, e.g. the Outhouse server itself.
 
-[`dice-bot.mjs`](dice-bot.mjs) is a complete example (Node.js 22+, no packages).
+[`dice-bot.mjs`](dice-bot.mjs) (also downloadable from your Outhouse at `/bots/dice-bot.mjs`) is a complete example (Node.js 22+, no packages).
 
 ## The API in brief
 Send `Authorization: Bot <token>` with every request.

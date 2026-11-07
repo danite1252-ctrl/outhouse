@@ -45,7 +45,9 @@ jobs:
       - name: Website and example bot syntax check
         run: |
           node --check web/app.js
-          node --check examples/bots/dice-bot.mjs
+          node --check web/features.js
+          node --check web/sw.js
+          node --check web/bots/dice-bot.mjs
       - name: Smoke test (real server + Postgres)
         env:
           DATABASE_URL: postgres://outhouse:outhouse@localhost:5432/outhouse
