@@ -58,9 +58,30 @@ jobs:
           LIVEKIT_API_SECRET: secret-secret-secret-secret-secret
           RUST_LOG: outhouse_server=info
         run: bash ci/smoke.sh
+      - name: UI test (headless Chrome, screenshots)
+        env:
+          DATABASE_URL: postgres://outhouse:outhouse@localhost:5432/outhouse
+          BIND_ADDR: 127.0.0.1:8080
+          WEB_DIR: web
+          UPLOAD_DIR: /tmp/outhouse-uploads
+          LIVEKIT_API_KEY: devkey
+          LIVEKIT_API_SECRET: secret-secret-secret-secret-secret
+        run: |
+          pip install --quiet playwright
+          python -m playwright install --with-deps chromium >/dev/null
+          ./target/debug/outhouse-server > /tmp/ui-server.log 2>&1 &
+          python ci/ui_test.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-screenshots
+          path: /tmp/ui-shots/
+          if-no-files-found: ignore
       - name: Server log
         if: always()
-        run: cat /tmp/outhouse-server.log 2>/dev/null || true
+        run: |
+          cat /tmp/outhouse-server.log 2>/dev/null || true
+          cat /tmp/ui-server.log 2>/dev/null || true
 
   desktop:
     name: Desktop app (Windows installer)
