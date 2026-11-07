@@ -14,6 +14,11 @@ A small, self-hosted Discord-style chat app for our WoW group and family, writte
 - **GIF picker** (needs a free Giphy API key in `.env`; results are cached for 10 minutes so the free key goes a long way)
 - **Pinned messages:** pin up to 50 messages per channel (needs Manage Messages) from a message's hover buttons or right-click menu; **📌 Pins** in the channel header lists them
 - **Search:** the search box in the channel header searches every channel you can read in the outhouse, with `from:@name`, `in:#channel` and `has:image|video|file|link` filters; click a result to jump to it
+- **Direct messages:** the Home button (top of the left rail) holds your DMs; click someone's name and pick **Message**, or press **+** to start a group DM with up to 10 people (anyone you share an outhouse with). Groups can be renamed, people added, and you can leave. Unread DMs show a red count on the Home button
+- **Threads:** start a thread from any message (🧵 hover button) or from **🧵 Threads** in the channel header; replies open in a side panel and the message shows "N replies"
+- **Polls:** the 📊 composer button or `/poll` asks a question with 2–10 options, one or many picks, and an optional end time; votes update live and "See votes" shows who picked what
+- **Custom emoji:** Outhouse settings → Emoji (needs Manage Outhouse) uploads PNG/GIF/WebP up to 256 KB; use them as `:name:` in messages (and DMs) and as reactions, from the ⭐ Outhouse tab in the emoji picker
+- **Scroll-back:** older messages load as you scroll up in channels, DMs and threads
 - **Unread and mentions:** unread channels light up, and red counts show mentions of you, your roles, @everyone and @here (and replies to you) on channels, outhouses and the browser tab
 - **Roles and permissions:** Discord-style roles with colours, 27 permissions, "show separately" in the member list, and per-channel allow/deny overrides for roles or members (e.g. private or read-only channels)
 - **Moderation:** kick, ban (with reasons, unban list), time out (5 min to 1 week)
@@ -106,7 +111,12 @@ All endpoints except register/login need `Authorization: Bearer <token>`.
 | GET | `/api/guilds/{id}/members` | Member list |
 | POST | `/api/guilds/{id}/invites` | Create an invite code |
 | POST | `/api/invites/{code}` | Join with a code |
-| GET/POST | `/api/channels/{id}/messages` | History (`?before=&limit=`) / send `{content}` |
+| GET/POST | `/api/channels/{id}/messages` | History (`?before=&around=&thread=&limit=`) / send `{content, reply_to_id?, thread_id?}` |
+| GET/POST | `/api/dms` | Your DMs / start one `{user_ids, name?}` (one person = one-to-one, more = group) |
+| PATCH | `/api/dms/{id}` | Rename a group DM `{name}`; `POST /api/dms/{id}/recipients {user_id}` adds someone, `DELETE /api/dms/{id}/recipients/@me` leaves |
+| GET/POST | `/api/channels/{id}/threads` | Threads in a channel / start one `{name, message_id?}`; `GET/PATCH/DELETE /api/threads/{id}` |
+| POST | `/api/channels/{id}/polls` | `{question, options, multi?, duration_minutes?}`; vote with `PUT …/polls/{message}/votes {options}`, end with `POST …/polls/{message}/close` |
+| GET/POST | `/api/guilds/{id}/emojis` | Custom emoji (multipart `name` + `file`); `PATCH/DELETE /api/emojis/{id}`; pictures at `/emojis/{id}` |
 | … | | Roles, members, bans, channel permissions, uploads, reactions: see `crates/server/src/api/mod.rs` |
 | GET | `/api/gateway` | WebSocket: send `{"op":"IDENTIFY","d":{"token":"…"}}`, then `{"op":"HEARTBEAT"}` every 30 s |
 
