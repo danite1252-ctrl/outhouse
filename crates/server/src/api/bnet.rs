@@ -154,8 +154,9 @@ fn text(v: &Value) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Characters in a `/profile/user/wow` answer: (name, realm, class, level).
-pub fn characters_in(profile: &Value) -> Vec<CharacterRequest> {
+/// Characters in a `/profile/user/wow` answer: (name, realm, class, level),
+/// from `game`.
+pub fn characters_in(profile: &Value, game: &str) -> Vec<CharacterRequest> {
     let mut out = Vec::new();
     for account in profile["wow_accounts"].as_array().into_iter().flatten() {
         for c in account["characters"].as_array().into_iter().flatten() {
@@ -169,6 +170,7 @@ pub fn characters_in(profile: &Value) -> Vec<CharacterRequest> {
                     .unwrap_or_default(),
                 class: text(&c["playable_class"]["name"]).unwrap_or_default(),
                 level: c["level"].as_i64().map(|l| l as i32),
+                game: game.to_string(),
                 ..Default::default()
             });
         }
@@ -288,7 +290,7 @@ async fn finish(st: &AppState, q: CallbackQuery) -> Result<(String, usize), Stri
         match client.get(&url).bearer_auth(&access).send().await {
             Ok(r) if r.status().is_success() => {
                 if let Ok(v) = r.json::<Value>().await {
-                    found.extend(characters_in(&v));
+                    found.extend(characters_in(&v, cfg.game_for(ns)));
                 }
             }
             Ok(r) => {
@@ -317,17 +319,24 @@ async fn finish(st: &AppState, q: CallbackQuery) -> Result<(String, usize), Stri
 async fn import(st: &AppState, user_id: i64, found: &[CharacterRequest]) -> AppResult<usize> {
     let mut count = 0;
     for req in found {
-        // Skips anything that isn't one of the nine classes or has an odd name.
-        let Ok(c) = clean_character(req) else {
+        // Skips anything that isn't one of the nine classes, has an odd name
+        // or a level the game doesn't have. WoW: Forever characters come in
+        // without a last name; their players can add it.
+        let Ok(c) = clean_character(req, true) else {
             continue;
         };
+        // The same character: same game and name (and realm, outside WoW:
+        // Forever, which has none; a last name added since doesn't matter).
         let existing: Option<i64> = sqlx::query_scalar(
             "SELECT id FROM wow_characters
-             WHERE user_id = $1 AND lower(name) = lower($2) AND lower(realm) = lower($3)",
+             WHERE user_id = $1 AND game = $4 AND lower(name) = lower($2)
+               AND ($4 = 'forever' OR lower(realm) = lower($3))
+             ORDER BY created_at LIMIT 1",
         )
         .bind(user_id)
         .bind(&c.name)
         .bind(&c.realm)
+        .bind(&c.game)
         .fetch_optional(&st.db)
         .await?;
         if let Some(id) = existing {
@@ -347,8 +356,9 @@ async fn import(st: &AppState, user_id: i64, found: &[CharacterRequest]) -> AppR
                 continue;
             }
             sqlx::query(
-                "INSERT INTO wow_characters (id, user_id, name, realm, class, level, source)
-                 VALUES ($1, $2, $3, $4, $5, $6, 'bnet')",
+                "INSERT INTO wow_characters (id, user_id, name, realm, class, level, source, game,
+                     ruleset)
+                 VALUES ($1, $2, $3, $4, $5, $6, 'bnet', $7, $8)",
             )
             .bind(st.ids.next_id())
             .bind(user_id)
@@ -356,6 +366,8 @@ async fn import(st: &AppState, user_id: i64, found: &[CharacterRequest]) -> AppR
             .bind(&c.realm)
             .bind(&c.class)
             .bind(c.level)
+            .bind(&c.game)
+            .bind(&c.ruleset)
             .execute(&st.db)
             .await?;
         }
@@ -378,8 +390,9 @@ mod tests {
             ]}]}"#,
         )
         .unwrap();
-        let list = characters_in(&v);
+        let list = characters_in(&v, "tbc");
         assert_eq!(list.len(), 2);
+        assert_eq!(list[0].game, "tbc");
         assert_eq!(list[0].name, "Tankadin");
         assert_eq!(list[0].class, "Paladin");
         assert_eq!(list[1].realm, "Forever");

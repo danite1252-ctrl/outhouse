@@ -80,6 +80,27 @@ pub struct BnetConfig {
     pub api_url: String,
     /// Profile namespaces to try for the character list, in order.
     pub namespaces: Vec<String>,
+    /// Which game each namespace's characters are from
+    /// (`BNET_NAMESPACE_GAMES=profile-classic1x-{region}=era,…`).
+    pub namespace_games: Vec<(String, String)>,
+}
+
+impl BnetConfig {
+    /// The game a namespace's characters belong to: as configured, else TBC
+    /// for namespaces that say so, else WoW: Forever.
+    pub fn game_for(&self, namespace: &str) -> &'static str {
+        if let Some((_, g)) = self.namespace_games.iter().find(|(n, _)| n == namespace) {
+            if let Some(id) = outhouse_common::wow::game_id(g) {
+                return id;
+            }
+        }
+        let ns = namespace.to_ascii_lowercase();
+        if ns.contains("tbc") || ns.contains("anniversary") || ns.contains("-bc-") {
+            "tbc"
+        } else {
+            outhouse_common::wow::DEFAULT_GAME
+        }
+    }
 }
 
 impl BnetConfig {
@@ -95,6 +116,12 @@ impl BnetConfig {
             .map(|n| n.trim().replace("{region}", &region))
             .filter(|n| !n.is_empty())
             .collect();
+        let namespace_games = env_opt("BNET_NAMESPACE_GAMES")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|pair| pair.split_once('='))
+            .map(|(n, g)| (n.trim().replace("{region}", &region), g.trim().to_string()))
+            .collect();
         Some(Self {
             api_url: env_opt("BNET_API_URL")
                 .unwrap_or_else(|| format!("https://{region}.api.blizzard.com"))
@@ -108,6 +135,7 @@ impl BnetConfig {
             client_secret,
             region,
             namespaces,
+            namespace_games,
         })
     }
 }

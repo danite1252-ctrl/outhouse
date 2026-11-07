@@ -58,7 +58,7 @@ function openRaidCard(ev) {
   raidCard.dialog = dialog;
   raidCard.body = el("div", { class: "raid-card-body" });
   dialog.append(el("div", { class: "raid-card-head" },
-    el("span", { class: "muted small" }, ev.message_id ? "" : "The sign-up card goes up in chat a week before."), closeX(dialog)), raidCard.body);
+    el("span", { class: "muted small" }, signupsNotOpen(ev) ? `📬 ${opensText(ev)} (the sign-up post goes up in chat then).` : ""), closeX(dialog)), raidCard.body);
   drawRaidCard();
 }
 
@@ -123,7 +123,8 @@ function eventsByDay() {
   return map;
 }
 
-const canPlanHere = () => !!state.channelId && state.channels.some((c) => c.id === state.channelId && c.kind === 0) && can("send_messages", state.channelId);
+// The plan dialog asks which channel to post in, so any channel you can post raids in will do.
+const canPlanHere = () => raidChannels().length > 0;
 
 function planOn(key) {
   const date = keyDate(key);
@@ -177,8 +178,8 @@ function drawMonth(byDay, todayKey) {
       ondblclick: () => canPlanHere() && planOn(key),
     },
       el("span", { class: "cal-num" }, d.getDate()),
-      evs.slice(0, 3).map((ev) => el("span", { class: `cal-chip${myMark(ev) ? " mine" : ""}${eventWhen(ev).over ? " over" : ""}`, title: `${timeOf(ev.starts_at)} ${ev.title}` },
-        el("span", { class: "cal-chip-time" }, timeOf(ev.starts_at)), ` ${ev.title}`)),
+      evs.slice(0, 3).map((ev) => el("span", { class: `cal-chip${myMark(ev) ? " mine" : ""}${eventWhen(ev).over ? " over" : ""}${signupsNotOpen(ev) ? " pending" : ""}`, title: `${timeOf(ev.starts_at)} ${ev.title}${signupsNotOpen(ev) ? ` · ${opensText(ev)}` : ""}` },
+        el("span", { class: "cal-chip-time" }, timeOf(ev.starts_at)), signupsNotOpen(ev) ? " 📬" : "", ` ${ev.title}`)),
       evs.length > 3 ? el("span", { class: "cal-more" }, `+${evs.length - 3} more`) : null));
   }
   const grid = el("div", { class: "cal-grid" },
@@ -209,7 +210,8 @@ function drawAgenda(byDay, todayKey) {
             el("span", { class: "cal-agenda-time" }, timeOf(ev.starts_at)),
             el("span", { class: "cal-agenda-title" }, ev.title,
               ev.series_id ? el("span", { class: "rl-tag" }, "🔁") : null,
-              signupsLocked(ev) ? el("span", { class: "rl-tag" }, "🔒") : null),
+              signupsLocked(ev) ? el("span", { class: "rl-tag" }, "🔒") : null,
+              signupsNotOpen(ev) ? el("span", { class: "cal-opens muted small" }, `📬 ${opensText(ev)}`) : null),
             el("span", { class: "cal-agenda-count muted small" }, `${active}/${ev.max_tanks + ev.max_healers + ev.max_dps}`),
             mine ? el("span", { class: "rl-mine" }, `✓ ${STATUS_LABEL[mine.status]}`) : null),
           open ? renderEventCard({ event: ev }) : null);

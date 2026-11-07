@@ -151,18 +151,29 @@ past = api("POST", f"/api/channels/{chan['id']}/events", {"title": "Molten Core 
 api("PUT", f"/api/events/{past['event']['id']}/signup", {"status": "yes", "role": "dps", "class": "Rogue", "spec": "Combat"}, dave["token"])
 api("PUT", f"/api/events/{past['event']['id']}/signup", {"status": "yes", "role": "healer", "class": "Priest", "spec": "Holy"}, erin["token"])
 
+# ---- Batch 7: sign-up posting times, games ----
+# A raid in 10 days whose sign-up post goes up 3 days before (so it's only in the calendar for now).
+pending_start = iso((time.time() // 86400 + 10) * 86400 + 20 * 3600)
+pending = api("POST", f"/api/channels/{chan['id']}/events", {
+    "title": "Naxxramas prep", "starts_at": pending_start, "game": "forever",
+    "post_rule": {"mode": "days", "days": 3, "time_zone": "UTC"},
+}, TOKEN)
+assert pending["event"]["message_id"] is None and pending["event"]["signups_open_at"], pending
+
 # ---- Batch 4: WoW tools (Wowhead and Battle.net are the mock in ci/wow_mock.py) ----
 lfgc = api("POST", f"/api/guilds/{guild['id']}/channels", {"name": "lfg"}, TOKEN)
-api("POST", "/api/users/@me/characters", {"name": "Lightwell", "realm": "Forever", "class": "Priest", "level": 60,
+api("POST", "/api/users/@me/characters", {"name": "Lightwell", "last_name": "Dawnstar", "ruleset": "PvP", "race": "Human", "class": "Priest", "level": 60,
     "professions": ["Tailoring", "Enchanting"], "armory_url": "https://example.com/lightwell", "is_main": True}, TOKEN)
-api("POST", "/api/users/@me/characters", {"name": "Bubbles", "realm": "Forever", "class": "Paladin", "level": 58,
+api("POST", "/api/users/@me/characters", {"name": "Bubbles", "last_name": "Hearthglen", "class": "Paladin", "level": 58,
     "professions": ["Mining", "Blacksmithing"]}, TOKEN)
-api("POST", "/api/users/@me/characters", {"name": "Shieldwall", "realm": "Forever", "class": "Warrior", "level": 60, "professions": ["Mining"]}, dave["token"])
-api("POST", "/api/users/@me/characters", {"name": "Sparkles", "realm": "Forever", "class": "Mage", "level": 59}, erin["token"])
+api("POST", "/api/users/@me/characters", {"game": "tbc", "name": "Gemcutter", "realm": "Spineshatter", "race": "Blood Elf", "class": "Paladin", "level": 70,
+    "professions": ["Jewelcrafting", "Mining"]}, TOKEN)
+api("POST", "/api/users/@me/characters", {"name": "Shieldwall", "last_name": "Ironfoe", "class": "Warrior", "level": 60, "professions": ["Mining"]}, dave["token"])
+api("POST", "/api/users/@me/characters", {"name": "Sparkles", "last_name": "Fizzwick", "class": "Mage", "level": 59}, erin["token"])
 api("POST", f"/api/channels/{lfgc['id']}/messages", {"content": "Anyone keen for dungeons tonight?"}, TOKEN)
 scholo = api("POST", f"/api/channels/{lfgc['id']}/lfg", {"activity": "Scholomance", "note": "Got the key. Need a healer, then we go.",
-    "leader": {"role": "tank", "class": "Warrior", "character": "Shieldwall", "level": 60}}, dave["token"])
-api("PUT", f"/api/channels/{lfgc['id']}/lfg/{scholo['id']}/join", {"role": "dps", "class": "Mage", "character": "Sparkles", "level": 59}, erin["token"])
+    "game": "forever", "leader": {"role": "tank", "class": "Warrior", "character": "Shieldwall Ironfoe", "level": 60}}, dave["token"])
+api("PUT", f"/api/channels/{lfgc['id']}/lfg/{scholo['id']}/join", {"role": "dps", "class": "Mage", "character": "Sparkles Fizzwick", "level": 59}, erin["token"])
 gold = api("POST", f"/api/channels/{lfgc['id']}/lfg", {"activity": "Gold farming in Searing Gorge", "max_tanks": 0, "max_healers": 0, "max_dps": 2,
     "starts_at": iso(time.time() + 3 * 3600), "leader": {"role": "dps", "class": "Mage", "character": "Sparkles", "level": 59}}, erin["token"])
 api("PUT", f"/api/channels/{lfgc['id']}/lfg/{gold['id']}/join", {"role": "dps", "class": "Warrior", "character": "Shieldwall", "level": 60}, dave["token"])
@@ -202,6 +213,52 @@ def scroll_to_card(pg, title):
 
 
 errors = []
+
+
+def check_settings_tabs(pg, opener, label):
+    """Clicks through every tab of a settings window, forwards then backwards, and checks
+    each time that only that page is showing (nothing left over from the one before)."""
+    pg.wait_for_selector("dialog.settings", state="detached")
+    pg.evaluate(opener)
+    pg.wait_for_selector("dialog.settings .settings-nav button")
+    pg.wait_for_timeout(800)
+    tabs = pg.evaluate("""[...document.querySelectorAll('dialog.settings .settings-nav button')]
+        .map((b) => b.textContent.trim()).filter((t) => t && !t.startsWith('＋') && t !== 'Sign out')""")
+    roles = {r["name"] for r in api("GET", f"/api/guilds/{G}/roles", None, TOKEN)}
+    heads = {}
+    for n, order in enumerate([tabs, list(reversed(tabs))]):
+        for t in order:
+            pg.click(f"dialog.settings .settings-nav button:text-is({json.dumps(t)})")
+            pg.wait_for_function("document.querySelector('dialog.settings .settings-main h2')", timeout=10000)
+            info, last = None, None
+            for _ in range(25):  # until the page has finished drawing
+                pg.wait_for_timeout(400)
+                info = pg.evaluate("""() => { const m = document.querySelector('dialog.settings .settings-main');
+                    return { pages: m.children.length, heads: [...m.querySelectorAll('h2')].map((h) => h.textContent.trim()) }; }""")
+                if info == last:
+                    break
+                last = info
+            assert info["pages"] == 1, f"{label}/{t}: {info['pages']} pages showing"
+            assert len(set(info["heads"])) == len(info["heads"]), f"{label}/{t}: page shown twice: {info['heads']}"
+            if t in heads:
+                assert info["heads"] == heads[t], f"{label}/{t}: {info['heads']} now, {heads[t]} the first time"
+            heads[t] = info["heads"]
+            if n == 0 and t in ("Bots", "Emoji", "Badges", "Audit log", "Profile & picture", "Webhooks & news feeds"):
+                pg.screenshot(path=f"{SHOTS}/120-{label}-{''.join(ch for ch in t.lower() if ch.isalnum())[:14]}.png")
+    pages = {t: h for t, h in heads.items() if t not in roles and h}
+    for a, ha in pages.items():
+        for b, hb in pages.items():
+            assert a == b or ha[0] not in hb, f"{label}: {a}'s heading {ha[0]!r} showed on {b}: {hb}"
+    # Two quick clicks: only the second page ends up showing.
+    if "Bots" in tabs and "Emoji" in tabs:
+        pg.click("dialog.settings .settings-nav button:text-is('Bots')")
+        pg.click("dialog.settings .settings-nav button:text-is('Emoji')")
+        pg.wait_for_timeout(1200)
+        got = pg.evaluate("[...document.querySelectorAll('dialog.settings .settings-main h2')].map((h) => h.textContent.trim())")
+        assert got == heads["Emoji"], f"{label}: after Bots then Emoji: {got}"
+    print(f"settings tabs ({label}):", {t: h[:1] for t, h in heads.items()})
+    pg.keyboard.press("Escape")
+    pg.wait_for_selector("dialog.settings", state="detached")
 
 
 def watch(page, label):
@@ -536,6 +593,37 @@ with sync_playwright() as p:
     page.wait_for_function("!document.querySelector('.calendar-dialog .cal-tz').textContent.includes('Loading')")
     page.click(".calendar-dialog button[title='Close']")
     page.wait_for_selector(".calendar-dialog", state="detached")
+    # Raids whose sign-ups open later show as such; planning from the calendar asks where to post.
+    page.evaluate(f"openCalendar(new Date({json.dumps(pending_start)}))")
+    page.wait_for_selector(".calendar-dialog .cal-tz")
+    page.wait_for_function("!document.querySelector('.calendar-dialog .cal-tz').textContent.includes('Loading')")
+    page.wait_for_selector(".calendar-dialog .cal-chip.pending:has-text('Naxxramas prep')", timeout=10000)
+    page.wait_for_selector(".calendar-dialog .cal-daypanel .event-card.not-open .ev-opens:has-text('Sign-ups open')")
+    page.wait_for_timeout(200)
+    page.screenshot(path=f"{SHOTS}/113-calendar-signups-open-later.png")
+    page.click(".calendar-dialog .cal-plan-day")
+    page.wait_for_selector(".raid-dialog[open] select[aria-label='Post in']")
+    opts = page.evaluate("[...document.querySelectorAll(\".raid-dialog select[aria-label='Post in'] option\")].map((o) => o.textContent)")
+    assert "# raids" in opts and "# general" in opts and "# lfg" in opts, opts
+    assert page.input_value(".raid-dialog select[aria-label='Post in']") == chan["id"]
+    assert page.input_value(".raid-dialog select[aria-label='Post sign-ups']") == "now"
+    page.select_option(".raid-dialog select[aria-label='Post in']", general["id"])
+    page.fill(".raid-dialog input[maxlength='100']", "AQ40 from the calendar")
+    page.select_option(".raid-dialog select[aria-label='Game']", "tbc")
+    page.select_option(".raid-dialog select[aria-label='Post sign-ups']", "weekday")
+    page.select_option(".raid-dialog select[aria-label='Post on']", "0")
+    page.fill(".raid-dialog input[aria-label='Post at']", "09:00")
+    page.wait_for_selector(".raid-dialog .post-preview:has-text('goes up')")
+    page.screenshot(path=f"{SHOTS}/110-plan-from-calendar.png")
+    page.click(".raid-dialog button[type=submit]")
+    page.wait_for_selector(".calendar-dialog .cal-daypanel .event-card.not-open:has-text('AQ40 from the calendar') .ev-game:has-text('TBC')", timeout=10000)
+    page.wait_for_timeout(200)
+    page.screenshot(path=f"{SHOTS}/114-calendar-after-plan.png")
+    page.click(".calendar-dialog button[title='Close']")
+    page.wait_for_selector(".calendar-dialog", state="detached")
+    aq = [e for e in api("GET", f"/api/guilds/{guild['id']}/events", None, TOKEN) if e["title"] == "AQ40 from the calendar"]
+    assert len(aq) == 1 and aq[0]["channel_id"] == general["id"] and aq[0]["message_id"] is None and aq[0]["game"] == "tbc", aq
+    assert aq[0]["post_rule"]["mode"] == "weekday" and aq[0]["post_rule"]["time"] == "09:00", aq
     # Take attendance after the raid starts.
     past_card = ".event-card:has-text('Molten Core run')"
     scroll_to_card(page, "Molten Core run")
@@ -613,13 +701,43 @@ with sync_playwright() as p:
     page.select_option(".char-dialog select[aria-label='Class']", "Rogue")
     page.fill(".char-dialog input[aria-label='Level']", "34")
     page.click(".char-dialog .prof-chip:has-text('Skinning')")
+    # WoW: Forever needs a last name.
+    page.click(".char-dialog button[type=submit]")
+    page.wait_for_selector(".char-dialog .error:has-text('last name')")
+    page.fill(".char-dialog input[aria-label='Last name']", "Shadowstep")
+    page.select_option(".char-dialog select[aria-label='Ruleset']", "Hardcore")
     page.screenshot(path=f"{SHOTS}/66-add-character.png")
     page.click(".char-dialog button[type=submit]")
-    page.wait_for_selector(".chars-settings .char-row:has-text('Stabbystab')", timeout=10000)
+    page.wait_for_selector(".chars-settings .char-row:has-text('Stabbystab Shadowstep'):has-text('Hardcore')", timeout=10000)
+    # TBC: one name and a realm, level 70, Jewelcrafting, Blood Elf / Draenei.
+    page.click(".chars-settings .add-char")
+    page.wait_for_selector(".char-dialog[open]")
+    page.select_option(".char-dialog select[aria-label='Game']", "tbc")
+    page.wait_for_selector(".char-dialog input[aria-label='Realm']")
+    assert not page.query_selector(".char-dialog input[aria-label='Last name']")
+    assert page.get_attribute(".char-dialog input[aria-label='Level']", "max") == "70"
+    page.fill(".char-dialog input[aria-label='Name']", "Shinybolt")
+    page.fill(".char-dialog input[aria-label='Realm']", "Thunderstrike")
+    page.select_option(".char-dialog select[aria-label='Race']", "Draenei")
+    page.select_option(".char-dialog select[aria-label='Class']", "Shaman")
+    page.fill(".char-dialog input[aria-label='Level']", "70")
+    page.click(".char-dialog .prof-chip:has-text('Jewelcrafting')")
+    page.screenshot(path=f"{SHOTS}/111-add-character-tbc.png")
+    # Back to Forever: the TBC-only profession goes.
+    page.select_option(".char-dialog select[aria-label='Game']", "forever")
+    assert not page.query_selector(".char-dialog .prof-chip:has-text('Jewelcrafting')")
+    page.select_option(".char-dialog select[aria-label='Game']", "tbc")
+    page.click(".char-dialog .prof-chip:has-text('Jewelcrafting')")
+    page.click(".char-dialog button[type=submit]")
+    page.wait_for_selector(".chars-settings .char-row:has-text('Shinybolt'):has-text('Thunderstrike') .char-game:has-text('TBC')", timeout=10000)
+    page.evaluate("document.querySelector('.chars-settings').scrollIntoView()")
+    page.wait_for_timeout(200)
+    page.screenshot(path=f"{SHOTS}/112-characters-with-games.png")
     page.keyboard.press("Escape")
     page.wait_for_selector("dialog.settings", state="detached")
     page.click("#messages .msg-author:has-text('Carol') >> nth=0")
-    page.wait_for_selector(".profile-card .pc-chars .char-chip:has-text('Lightwell')", timeout=10000)
+    page.wait_for_selector(".profile-card .pc-chars .char-chip:has-text('Lightwell Dawnstar')", timeout=10000)
+    page.wait_for_selector(".profile-card .pc-chars .char-chip:has-text('Gemcutter') .char-game:has-text('TBC')")
     page.screenshot(path=f"{SHOTS}/67-profile-characters.png")
     page.keyboard.press("Escape")
 
@@ -746,6 +864,49 @@ with sync_playwright() as p:
     phone.wait_for_timeout(200)
     phone.screenshot(path=f"{SHOTS}/72-phone-lfg-dialog.png")
     phone.keyboard.press("Escape")
+    phone.wait_for_selector(".lfg-dialog", state="detached")
+    # Sign-ups that open later, and planning from the calendar (phone).
+    phone.evaluate(f"openCalendar(new Date({json.dumps(pending_start)}))")
+    phone.wait_for_selector(".calendar-dialog .cal-agenda .cal-opens:has-text('Sign-ups open')", timeout=10000)
+    phone.wait_for_timeout(200)
+    phone.screenshot(path=f"{SHOTS}/115-phone-calendar-pending.png")
+    phone.click(".calendar-dialog .cal-agenda-row:has-text('Naxxramas prep')")
+    phone.wait_for_selector(".calendar-dialog .cal-agenda-item.open .event-card.not-open .ev-opens")
+    phone.wait_for_timeout(200)
+    phone.screenshot(path=f"{SHOTS}/115b-phone-calendar-pending-open.png")
+    phone.click(".calendar-dialog .cal-plan-day")
+    phone.wait_for_selector(".raid-dialog[open] select[aria-label='Post in']")
+    phone.select_option(".raid-dialog select[aria-label='Repeat']", "1")
+    phone.wait_for_selector(".raid-dialog .post-extra:not([hidden]) input[aria-label='Post at']")
+    assert phone.input_value(".raid-dialog select[aria-label='Post sign-ups']") == "weekday"
+    phone.evaluate("document.querySelector('.raid-dialog .post-field').scrollIntoView({block: 'center'})")
+    phone.wait_for_timeout(200)
+    phone.screenshot(path=f"{SHOTS}/116-phone-plan-post-time.png")
+    phone.evaluate("document.querySelector('.raid-dialog h2').scrollIntoView({block: 'start'})")
+    phone.wait_for_timeout(200)
+    phone.screenshot(path=f"{SHOTS}/116b-phone-plan-top.png")
+    phone.keyboard.press("Escape")
+    phone.wait_for_selector(".raid-dialog", state="detached")
+    phone.click(".calendar-dialog button[title='Close']")
+    phone.wait_for_selector(".calendar-dialog", state="detached")
+    # Character form on a phone: WoW: Forever, then TBC.
+    phone.evaluate("openUserSettings('look')")
+    phone.wait_for_selector(".chars-settings .add-char", timeout=10000)
+    phone.evaluate("document.querySelector('.chars-settings').scrollIntoView()")
+    phone.wait_for_timeout(200)
+    phone.screenshot(path=f"{SHOTS}/117-phone-characters.png")
+    phone.click(".chars-settings .add-char")
+    phone.wait_for_selector(".char-dialog[open] input[aria-label='Last name']")
+    phone.wait_for_timeout(200)
+    phone.screenshot(path=f"{SHOTS}/117b-phone-character-forever.png")
+    phone.select_option(".char-dialog select[aria-label='Game']", "tbc")
+    phone.wait_for_selector(".char-dialog input[aria-label='Realm']")
+    phone.wait_for_timeout(200)
+    phone.screenshot(path=f"{SHOTS}/118-phone-character-tbc.png")
+    phone.keyboard.press("Escape")
+    phone.wait_for_selector(".char-dialog", state="detached")
+    phone.keyboard.press("Escape")
+    phone.wait_for_selector("dialog.settings", state="detached")
 
     # ---- Android app (draws under the status bar and navigation buttons) ----
     droid = browser.new_page(viewport={"width": 393, "height": 852}, is_mobile=True, has_touch=True)
@@ -785,12 +946,23 @@ with sync_playwright() as p:
     droid.select_option(".raid-dialog select[aria-label='Repeat']", "2")
     droid.wait_for_timeout(200)
     droid.screenshot(path=f"{SHOTS}/57-android-plan-repeating.png")
+    droid.evaluate("document.querySelector('.raid-dialog .post-field').scrollIntoView({block: 'center'})")
+    droid.wait_for_timeout(200)
+    droid.screenshot(path=f"{SHOTS}/119-android-plan-post-time.png")
     droid.keyboard.press("Escape")
     droid.evaluate("openUserSettings('look')")
     droid.wait_for_selector(".chars-settings .char-row", timeout=10000)
     droid.evaluate("document.querySelector('.chars-settings').scrollIntoView()")
     droid.wait_for_timeout(300)
     droid.screenshot(path=f"{SHOTS}/73-android-characters.png")
+    droid.click(".chars-settings .add-char")
+    droid.wait_for_selector(".char-dialog[open]")
+    droid.select_option(".char-dialog select[aria-label='Game']", "tbc")
+    droid.wait_for_selector(".char-dialog input[aria-label='Realm']")
+    droid.wait_for_timeout(200)
+    droid.screenshot(path=f"{SHOTS}/119b-android-character-tbc.png")
+    droid.keyboard.press("Escape")
+    droid.wait_for_selector(".char-dialog", state="detached")
     droid.keyboard.press("Escape")
     droid.wait_for_selector("dialog.settings", state="detached")
     droid.click("#nav-toggle")
@@ -1065,6 +1237,9 @@ with sync_playwright() as p:
     b6.screenshot(path=f"{SHOTS}/99-animated-themes.png")
     b6.keyboard.press("Escape")
     # Reduced motion: no animation.
+    # Every settings tab shows only its own page (desktop).
+    check_settings_tabs(b6, "openUserSettings('account')", "user")
+    check_settings_tabs(b6, "openSettings('roles')", "outhouse")
     b6.emulate_media(reduced_motion="reduce")
     b6.click("#messages .msg-author:has-text('Carol') >> nth=0")
     b6.wait_for_selector(".profile-card.anim-emberdrift")
@@ -1075,6 +1250,7 @@ with sync_playwright() as p:
 
     # Phone.
     ph6 = fresh(TOKEN, "batch6-phone", viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True, permissions=["notifications"])
+    check_settings_tabs(ph6, "openSettings('roles')", "phone-outhouse")
     ph6.evaluate("openSettings('audit')")
     ph6.wait_for_selector(".audit-row", timeout=10000)
     ph6.wait_for_timeout(300)

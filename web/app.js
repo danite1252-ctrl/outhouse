@@ -2128,12 +2128,12 @@ async function openUserSettings(tab = "account") {
       el("div", { style: "flex:1" }),
       el("button", { onclick: () => { dialog.close(); signOut(); } }, "Sign out"),
     );
-    main.replaceChildren();
-    if (active === "look") return drawProfileLook(main);
-    if (active === "profile") return drawProfiles(main);
-    if (active === "voice") return drawVoicePage(main);
-    if (active === "notifications") return drawNotificationsPage(main);
-    return drawAccount(main);
+    const page = settingsPage(main);
+    if (active === "look") return drawProfileLook(page);
+    if (active === "profile") return drawProfiles(page);
+    if (active === "voice") return drawVoicePage(page);
+    if (active === "notifications") return drawNotificationsPage(page);
+    return drawAccount(page);
   };
   draw(tab);
 }
@@ -2661,6 +2661,15 @@ async function banMember(m) {
 
 // ---------- settings: roles and bans ----------
 
+// Each settings page draws into its own fresh box, so a page that's still
+// loading (or that adds to what's there) can never end up under another one.
+function settingsPage(main) {
+  const page = el("div", { class: "settings-page" });
+  main.replaceChildren(page);
+  main.scrollTop = 0;
+  return page;
+}
+
 function settingsShell(title, navItems, renderMain) {
   const nav = el("nav", { class: "settings-nav" });
   const main = el("section", { class: "settings-main" });
@@ -2675,8 +2684,13 @@ function settingsShell(title, navItems, renderMain) {
 async function openSettings(tab = "roles", selectedRoleId = null) {
   const shell = settingsShell("Outhouse settings");
   const { nav, main } = shell;
+  let drawing = 0;
   const draw = async (activeTab, roleId) => {
+    const mine = ++drawing;
+    // Mark the tab straight away; the page follows once the roles are in.
+    nav.querySelectorAll("button.active").forEach((b) => b.classList.remove("active"));
     const roles = await api("GET", `/api/guilds/${state.guildId}/roles`);
+    if (mine !== drawing) return; // another tab was picked meanwhile
     state.roles = roles;
     nav.replaceChildren(el("h3", {}, currentGuild().name.toUpperCase()));
     if (can("manage_roles")) {
@@ -2716,15 +2730,16 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
     if (can("manage_guild") && typeof drawServerStatus === "function") {
       nav.append(el("h3", {}, "SERVER"), el("button", { class: activeTab === "status" ? "active" : "", onclick: () => draw("status") }, "Server status"));
     }
-    if (activeTab === "bans") return drawBans(main);
-    if (activeTab === "audit") return drawAuditLog(main);
-    if (activeTab === "badges") return drawBadgeSettings(main);
-    if (activeTab === "status") return drawServerStatus(main);
-    if (activeTab === "integrations") return drawIntegrations(main);
-    if (activeTab === "bots") return drawBots(main);
-    if (activeTab === "emoji") return drawEmojiSettings(main);
+    const page = settingsPage(main);
+    if (activeTab === "bans") return drawBans(page);
+    if (activeTab === "audit") return drawAuditLog(page);
+    if (activeTab === "badges") return drawBadgeSettings(page);
+    if (activeTab === "status") return drawServerStatus(page);
+    if (activeTab === "integrations") return drawIntegrations(page);
+    if (activeTab === "bots") return drawBots(page);
+    if (activeTab === "emoji") return drawEmojiSettings(page);
     const role = roles.find((r) => r.id === roleId) || roles.find((r) => r.id !== state.guildId) || roles[0];
-    if (role) drawRole(main, role, (id) => draw("roles", id));
+    if (role) drawRole(page, role, (id) => draw("roles", id));
   };
   draw(tab, selectedRoleId);
 }

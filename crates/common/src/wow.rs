@@ -27,7 +27,126 @@ pub const PROFESSIONS: [&str; 12] = [
     "First Aid",
 ];
 
+/// Level cap in WoW: Forever and Classic Era.
 pub const MAX_LEVEL: i32 = 60;
+/// Highest level cap of any game we know (TBC: 70).
+pub const TOP_LEVEL: i32 = 70;
+
+// ---- Games -------------------------------------------------------------------
+
+/// The games characters can be from: WoW: Forever (realmless, first and last
+/// names, rulesets), Burning Crusade Classic / Anniversary, and Classic Era.
+pub const GAMES: [&str; 3] = ["forever", "tbc", "era"];
+pub const DEFAULT_GAME: &str = "forever";
+
+/// WoW: Forever rulesets (instead of realms).
+pub const RULESETS: [&str; 4] = ["Normal", "PvP", "Roleplay", "Hardcore"];
+
+pub const CLASSIC_RACES: [&str; 8] = [
+    "Human",
+    "Dwarf",
+    "Night Elf",
+    "Gnome",
+    "Orc",
+    "Undead",
+    "Tauren",
+    "Troll",
+];
+pub const TBC_RACES: [&str; 10] = [
+    "Human",
+    "Dwarf",
+    "Night Elf",
+    "Gnome",
+    "Draenei",
+    "Orc",
+    "Undead",
+    "Tauren",
+    "Troll",
+    "Blood Elf",
+];
+
+/// The canonical id of a game ("WoW: Forever" → "forever"), if it is one.
+pub fn game_id(raw: &str) -> Option<&'static str> {
+    let k: String = raw
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    Some(match k.as_str() {
+        "" | "forever" | "wowforever" => "forever",
+        "tbc" | "bc" | "burningcrusade" | "tbcclassic" | "tbcanniversary" => "tbc",
+        "era" | "classicera" | "classic" | "vanilla" => "era",
+        _ => return None,
+    })
+}
+
+pub fn game_label(game: &str) -> &'static str {
+    match game {
+        "tbc" => "TBC",
+        "era" => "Classic Era",
+        "forever" => "WoW: Forever",
+        _ => "",
+    }
+}
+
+pub fn max_level_for(game: &str) -> i32 {
+    if game == "tbc" {
+        70
+    } else {
+        MAX_LEVEL
+    }
+}
+
+pub fn professions_for(game: &str) -> Vec<&'static str> {
+    let mut list: Vec<&'static str> = PROFESSIONS.to_vec();
+    if game == "tbc" {
+        // Jewelcrafting sits with the other primary professions.
+        list.insert(4, "Jewelcrafting");
+    }
+    list
+}
+
+pub fn races_for(game: &str) -> &'static [&'static str] {
+    if game == "tbc" {
+        &TBC_RACES
+    } else {
+        &CLASSIC_RACES
+    }
+}
+
+/// What the character form needs to know about a game.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GameInfo {
+    pub id: String,
+    pub name: String,
+    pub max_level: i32,
+    /// First and last names plus a ruleset (WoW: Forever), instead of one
+    /// name and a realm.
+    pub two_names: bool,
+    pub rulesets: Vec<String>,
+    pub professions: Vec<String>,
+    pub races: Vec<String>,
+}
+
+pub fn games() -> Vec<GameInfo> {
+    GAMES
+        .iter()
+        .map(|&g| GameInfo {
+            id: g.into(),
+            name: game_label(g).into(),
+            max_level: max_level_for(g),
+            two_names: g == "forever",
+            rulesets: if g == "forever" {
+                RULESETS.iter().map(|r| r.to_string()).collect()
+            } else {
+                Vec::new()
+            },
+            professions: professions_for(g).iter().map(|p| p.to_string()).collect(),
+            races: races_for(g).iter().map(|r| r.to_string()).collect(),
+        })
+        .collect()
+}
 
 /// The canonical spelling of a class name ("paladin" → "Paladin"), if it is one.
 pub fn class_name(raw: &str) -> Option<&'static str> {
@@ -140,6 +259,9 @@ pub struct LfgGroup {
     pub max_dps: i32,
     pub starts_at: Option<DateTime<Utc>>,
     pub note: String,
+    /// Which game it's for ("" = any).
+    #[serde(default)]
+    pub game: String,
     /// The leader closed it.
     pub closed: bool,
     /// Its time ran out.
@@ -190,6 +312,9 @@ pub struct CreateLfgRequest {
     /// The leader joins straight away in this role (optional).
     #[serde(default)]
     pub leader: Option<JoinLfgRequest>,
+    /// "forever", "tbc", "era" or empty (any).
+    #[serde(default)]
+    pub game: String,
 }
 
 /// `PUT /api/channels/{id}/lfg/{message}/join`
@@ -213,6 +338,7 @@ pub struct WowCharacter {
     pub id: i64,
     #[serde(with = "as_string")]
     pub user_id: i64,
+    /// The (first) name.
     pub name: String,
     pub realm: String,
     pub class: String,
@@ -222,6 +348,20 @@ pub struct WowCharacter {
     pub armory_url: String,
     /// "manual" or "bnet".
     pub source: String,
+    /// "forever", "tbc" or "era".
+    #[serde(default)]
+    pub game: String,
+    /// WoW: Forever's second name ("" if not given).
+    #[serde(default)]
+    pub last_name: String,
+    /// "First Last" for WoW: Forever, otherwise the name.
+    #[serde(default)]
+    pub full_name: String,
+    /// WoW: Forever ruleset (Normal, PvP, Roleplay, Hardcore).
+    #[serde(default)]
+    pub ruleset: String,
+    #[serde(default)]
+    pub race: String,
 }
 
 /// Add or change a character (`POST /api/users/@me/characters`,
@@ -241,6 +381,17 @@ pub struct CharacterRequest {
     pub professions: Vec<String>,
     #[serde(default)]
     pub armory_url: String,
+    /// "forever" (default), "tbc" or "era".
+    #[serde(default)]
+    pub game: String,
+    /// WoW: Forever's second name.
+    #[serde(default)]
+    pub last_name: String,
+    /// WoW: Forever ruleset.
+    #[serde(default)]
+    pub ruleset: String,
+    #[serde(default)]
+    pub race: String,
 }
 
 /// `/item` and `/char`: what to look up.
@@ -265,6 +416,9 @@ pub struct WowInfo {
     pub activities: Vec<Activity>,
     pub classes: Vec<String>,
     pub professions: Vec<String>,
+    /// The games characters can be from, with their own options.
+    #[serde(default)]
+    pub games: Vec<GameInfo>,
     pub bnet_enabled: bool,
     /// Where item links point (e.g. https://www.wowhead.com/classic).
     pub wowhead_url: String,
@@ -281,6 +435,23 @@ mod tests {
             assert!(class_name(banned).is_none());
         }
         assert_eq!(class_name("paladin"), Some("Paladin"));
+    }
+
+    #[test]
+    fn games_differ() {
+        assert_eq!(game_id(""), Some("forever"));
+        assert_eq!(game_id("WoW: Forever"), Some("forever"));
+        assert_eq!(game_id("TBC"), Some("tbc"));
+        assert_eq!(game_id("Classic Era"), Some("era"));
+        assert_eq!(game_id("Retail"), None);
+        assert_eq!(max_level_for("tbc"), 70);
+        assert_eq!(max_level_for("forever"), 60);
+        assert!(professions_for("tbc").contains(&"Jewelcrafting"));
+        assert!(!professions_for("forever").contains(&"Jewelcrafting"));
+        assert!(races_for("tbc").contains(&"Blood Elf"));
+        assert!(!races_for("era").contains(&"Draenei"));
+        let g = games();
+        assert!(g[0].two_names && g[0].rulesets.len() == 4 && !g[1].two_names);
     }
 
     #[test]

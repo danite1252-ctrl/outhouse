@@ -9,8 +9,8 @@ use axum::Json;
 use outhouse_common::models::{channel_kind, Embed, EmbedField, Message, MessageInteraction};
 use outhouse_common::permissions as p;
 use outhouse_common::wow::{
-    activities, class_name, CharacterRequest, WowCharacter, WowInfo, WowLookupRequest, CLASSES,
-    MAX_LEVEL, PROFESSIONS,
+    activities, class_name, game_id, game_label, games, max_level_for, professions_for, races_for,
+    CharacterRequest, WowCharacter, WowInfo, WowLookupRequest, CLASSES, PROFESSIONS, RULESETS,
 };
 use reqwest::Url;
 use sqlx::PgPool;
@@ -27,7 +27,9 @@ const MAX_PROFESSIONS: usize = 5;
 const MAX_QUERY_CHARS: usize = 100;
 
 pub const CHARACTER_SELECT: &str = "SELECT id, user_id, name, realm, class, level, is_main,
-    professions, armory_url, source FROM wow_characters";
+    professions, armory_url, source, game, last_name, ruleset, race,
+    CASE WHEN last_name <> '' THEN name || ' ' || last_name ELSE name END AS full_name
+    FROM wow_characters";
 
 pub fn class_colour(class: &str) -> Option<i32> {
     Some(match class {
@@ -62,6 +64,7 @@ pub async fn info(State(st): State<AppState>, AuthUser(_user): AuthUser) -> Json
         activities: activities(),
         classes: CLASSES.iter().map(|c| c.to_string()).collect(),
         professions: PROFESSIONS.iter().map(|c| c.to_string()).collect(),
+        games: games(),
         bnet_enabled: cfg.bnet.is_some(),
         wowhead_url: if cfg.wowhead_branch.is_empty() {
             cfg.wowhead_url.clone()
@@ -73,14 +76,14 @@ pub async fn info(State(st): State<AppState>, AuthUser(_user): AuthUser) -> Json
 
 // ---- Characters ----------------------------------------------------------------
 
-/// "tHRALL" → "Thrall". WoW names are letters only.
-fn clean_name(raw: &str) -> AppResult<String> {
+/// "tHRALL" → "Thrall". WoW names are 2 to 12 letters.
+fn clean_name(raw: &str, what: &str) -> AppResult<String> {
     let name = raw.trim();
     let count = name.chars().count();
-    if !(2..=24).contains(&count) || !name.chars().all(char::is_alphabetic) {
-        return Err(AppError::BadRequest(
-            "Character names are 2 to 24 letters (no spaces or numbers).".into(),
-        ));
+    if !(2..=12).contains(&count) || !name.chars().all(char::is_alphabetic) {
+        return Err(AppError::BadRequest(format!(
+            "{what} 2 to 12 letters (no spaces or numbers)."
+        )));
     }
     let mut chars = name.chars();
     let first: String = chars
@@ -91,39 +94,104 @@ fn clean_name(raw: &str) -> AppResult<String> {
 }
 
 pub struct CleanCharacter {
+    pub game: String,
     pub name: String,
+    pub last_name: String,
     pub realm: String,
+    pub ruleset: String,
+    pub race: String,
     pub class: String,
     pub level: i32,
     pub professions: Vec<String>,
     pub armory_url: String,
 }
 
-pub fn clean_character(req: &CharacterRequest) -> AppResult<CleanCharacter> {
-    let name = clean_name(&req.name)?;
-    let realm: String = req
-        .realm
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(40)
-        .collect();
+/// Checks a character for its game. `keep_empty_last_name`: a WoW: Forever
+/// character may go without a last name (one moved over from before game
+/// types, or imported from Battle.net) until its player adds one.
+pub fn clean_character(
+    req: &CharacterRequest,
+    keep_empty_last_name: bool,
+) -> AppResult<CleanCharacter> {
+    let game = game_id(&req.game)
+        .ok_or_else(|| {
+            AppError::BadRequest("Pick a game: WoW: Forever, TBC or Classic Era.".into())
+        })?
+        .to_string();
+    let forever = game == "forever";
+    let name = if forever {
+        clean_name(&req.name, "First names are")?
+    } else {
+        clean_name(&req.name, "Character names are")?
+    };
+    let (last_name, realm, ruleset) = if forever {
+        let last = if req.last_name.trim().is_empty() && keep_empty_last_name {
+            String::new()
+        } else if req.last_name.trim().is_empty() {
+            return Err(AppError::BadRequest(
+                "WoW: Forever characters have a last name too (2 to 12 letters).".into(),
+            ));
+        } else {
+            clean_name(&req.last_name, "Last names are")?
+        };
+        let ruleset = if req.ruleset.trim().is_empty() {
+            "Normal"
+        } else {
+            RULESETS
+                .iter()
+                .find(|r| r.eq_ignore_ascii_case(req.ruleset.trim()))
+                .copied()
+                .ok_or_else(|| {
+                    AppError::BadRequest("The ruleset is Normal, PvP, Roleplay or Hardcore.".into())
+                })?
+        };
+        (last, String::new(), ruleset.to_string())
+    } else {
+        let realm: String = req
+            .realm
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(40)
+            .collect();
+        (String::new(), realm, String::new())
+    };
+    let race = if req.race.trim().is_empty() {
+        String::new()
+    } else {
+        races_for(&game)
+            .iter()
+            .find(|r| r.eq_ignore_ascii_case(req.race.trim()))
+            .ok_or_else(|| {
+                AppError::BadRequest(format!("That race isn't in {}.", game_label(&game)))
+            })?
+            .to_string()
+    };
     let class = class_name(&req.class)
         .ok_or_else(|| AppError::BadRequest("Pick one of the nine classes.".into()))?
         .to_string();
-    let level = req.level.unwrap_or(MAX_LEVEL);
-    if !(1..=MAX_LEVEL).contains(&level) {
+    let max_level = max_level_for(&game);
+    let level = req.level.unwrap_or(max_level);
+    if !(1..=max_level).contains(&level) {
         return Err(AppError::BadRequest(format!(
-            "Levels go from 1 to {MAX_LEVEL}."
+            "Levels in {} go from 1 to {max_level}.",
+            game_label(&game)
         )));
     }
+    let allowed = professions_for(&game);
     let mut professions: Vec<String> = Vec::new();
     for raw in &req.professions {
-        let found = PROFESSIONS
+        let found = allowed
             .iter()
             .find(|p| p.eq_ignore_ascii_case(raw.trim()))
-            .ok_or_else(|| AppError::BadRequest(format!("“{}” isn't a profession.", raw.trim())))?;
+            .ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "“{}” isn't a profession in {}.",
+                    raw.trim(),
+                    game_label(&game)
+                ))
+            })?;
         if !professions.iter().any(|p| p == found) {
             professions.push(found.to_string());
         }
@@ -144,8 +212,12 @@ pub fn clean_character(req: &CharacterRequest) -> AppResult<CleanCharacter> {
         }
     }
     Ok(CleanCharacter {
+        game,
         name,
+        last_name,
         realm,
+        ruleset,
+        race,
         class,
         level,
         professions,
@@ -165,7 +237,7 @@ async fn fetch_character(db: &PgPool, id: i64) -> AppResult<WowCharacter> {
 fn duplicate(e: sqlx::Error) -> AppError {
     match &e {
         sqlx::Error::Database(d) if d.is_unique_violation() => {
-            AppError::Conflict("You already have a character with that name on that realm.".into())
+            AppError::Conflict("You already have a character with that name (and realm).".into())
         }
         _ => AppError::Db(e),
     }
@@ -212,7 +284,7 @@ pub async fn create_character(
     AuthUser(user): AuthUser,
     Json(req): Json<CharacterRequest>,
 ) -> AppResult<(StatusCode, Json<WowCharacter>)> {
-    let c = clean_character(&req)?;
+    let c = clean_character(&req, false)?;
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM wow_characters WHERE user_id = $1")
         .bind(user.id)
         .fetch_one(&st.db)
@@ -224,8 +296,9 @@ pub async fn create_character(
     }
     let id = st.ids.next_id();
     sqlx::query(
-        "INSERT INTO wow_characters (id, user_id, name, realm, class, level, professions, armory_url)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "INSERT INTO wow_characters (id, user_id, name, realm, class, level, professions, armory_url,
+             game, last_name, ruleset, race)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(id)
     .bind(user.id)
@@ -235,6 +308,10 @@ pub async fn create_character(
     .bind(c.level)
     .bind(&c.professions)
     .bind(&c.armory_url)
+    .bind(&c.game)
+    .bind(&c.last_name)
+    .bind(&c.ruleset)
+    .bind(&c.race)
     .execute(&st.db)
     .await
     .map_err(duplicate)?;
@@ -256,10 +333,14 @@ pub async fn update_character(
     if existing.user_id != user.id {
         return Err(AppError::NotFound);
     }
-    let c = clean_character(&req)?;
+    // A Forever character without a last name (from before game types) can
+    // be saved as it is until its player adds one.
+    let keep_empty = existing.game == "forever" && existing.last_name.is_empty();
+    let c = clean_character(&req, keep_empty)?;
     sqlx::query(
         "UPDATE wow_characters SET name = $2, realm = $3, class = $4, level = $5,
-             professions = $6, armory_url = $7
+             professions = $6, armory_url = $7, game = $8, last_name = $9, ruleset = $10,
+             race = $11
          WHERE id = $1",
     )
     .bind(id)
@@ -269,6 +350,10 @@ pub async fn update_character(
     .bind(c.level)
     .bind(&c.professions)
     .bind(&c.armory_url)
+    .bind(&c.game)
+    .bind(&c.last_name)
+    .bind(&c.ruleset)
+    .bind(&c.race)
     .execute(&st.db)
     .await
     .map_err(duplicate)?;
@@ -440,6 +525,8 @@ pub async fn char_command(
 ) -> AppResult<Json<Message>> {
     let access = writable_text_channel(&st, channel_id, user.id).await?;
     let query = lookup_query(&req)?;
+    // "Name-Realm" (TBC / Classic Era), or a first, last or full name
+    // ("Thrall", "Stormborn" or "Thrall Stormborn" in WoW: Forever).
     let (name, realm) = match query.split_once('-') {
         Some((n, r)) => (n.trim().to_string(), r.trim().to_string()),
         None => (query.clone(), String::new()),
@@ -453,14 +540,22 @@ pub async fn char_command(
          WHERE guild_id = $1 AND $2::BIGINT IS NOT NULL"
     };
     let sql = format!(
-        "WITH people AS ({people_sql})
+        "WITH people AS ({people_sql}),
+         chars AS (SELECT c.*, lower(CASE WHEN c.last_name <> '' THEN c.name || ' ' || c.last_name
+                                          ELSE c.name END) AS full_lc
+                   FROM wow_characters c)
          SELECT c.id, c.user_id, COALESCE(pp.nickname, u.display_name) AS owner_name
-         FROM wow_characters c
+         FROM chars c
          JOIN people pp ON pp.user_id = c.user_id
          JOIN users u ON u.id = c.user_id
          WHERE ($4 = '' OR lower(c.realm) = lower($4))
-           AND (lower(c.name) = lower($3) OR lower(c.name) LIKE lower($3) || '%')
-         ORDER BY (lower(c.name) = lower($3)) DESC, c.is_main DESC, c.level DESC
+           AND (c.full_lc = lower($3)
+                OR lower(c.name) = lower($3)
+                OR (c.last_name <> '' AND lower(c.last_name) = lower($3))
+                OR c.full_lc LIKE lower($3) || '%'
+                OR (c.last_name <> '' AND lower(c.last_name) LIKE lower($3) || '%'))
+         ORDER BY (c.full_lc = lower($3)) DESC, (lower(c.name) = lower($3)) DESC,
+                  (lower(c.last_name) = lower($3)) DESC, c.is_main DESC, c.level DESC
          LIMIT 1"
     );
     let found = sqlx::query_as::<_, FoundCharacter>(&sql)
@@ -507,26 +602,31 @@ pub fn character_embed(c: &WowCharacter, owner: &str, others: &[WowCharacter]) -
             value: others
                 .iter()
                 .take(6)
-                .map(|o| format!("{} ({} {})", o.name, o.level, o.class))
+                .map(|o| format!("{} ({} {})", o.full_name, o.level, o.class))
                 .collect::<Vec<_>>()
                 .join(", "),
             inline: false,
         });
     }
+    let mut about = vec![if c.race.is_empty() {
+        format!("Level {} {}", c.level, c.class)
+    } else {
+        format!("Level {} {} {}", c.level, c.race, c.class)
+    }];
+    about.push(game_label(&c.game).to_string());
+    if c.game == "forever" {
+        if !c.ruleset.is_empty() {
+            about.push(c.ruleset.clone());
+        }
+    } else if !c.realm.is_empty() {
+        about.push(c.realm.clone());
+    }
+    about.retain(|a| !a.is_empty());
     Embed {
         url: c.armory_url.clone(),
         kind: "wow-char".into(),
-        title: Some(c.name.clone()),
-        description: Some(format!(
-            "Level {} {}{}",
-            c.level,
-            c.class,
-            if c.realm.is_empty() {
-                String::new()
-            } else {
-                format!(" · {}", c.realm)
-            }
-        )),
+        title: Some(c.full_name.clone()),
+        description: Some(about.join(" · ")),
         site_name: Some("Character".into()),
         color: class_colour(&c.class),
         author_name: Some(owner.to_string()),
@@ -546,32 +646,155 @@ mod tests {
 
     #[test]
     fn tidies_characters() {
-        let c = clean_character(&CharacterRequest {
-            name: "tHRALL".into(),
-            realm: "  Wow   Forever ".into(),
-            class: "shaman".into(),
-            level: Some(60),
-            professions: vec!["mining".into(), "Mining".into(), "Fishing".into()],
-            ..Default::default()
-        })
+        let c = clean_character(
+            &CharacterRequest {
+                name: "tHRALL".into(),
+                last_name: "stormBORN".into(),
+                realm: "  Wow   Forever ".into(),
+                class: "shaman".into(),
+                level: Some(60),
+                ruleset: "pvp".into(),
+                professions: vec!["mining".into(), "Mining".into(), "Fishing".into()],
+                ..Default::default()
+            },
+            false,
+        )
         .unwrap();
+        assert_eq!(c.game, "forever");
         assert_eq!(c.name, "Thrall");
-        assert_eq!(c.realm, "Wow Forever");
+        assert_eq!(c.last_name, "Stormborn");
+        assert_eq!(c.realm, "");
+        assert_eq!(c.ruleset, "PvP");
         assert_eq!(c.class, "Shaman");
         assert_eq!(c.professions, vec!["Mining", "Fishing"]);
         for bad in ["Death Knight", "Monk", "Evoker", "Demon Hunter"] {
-            assert!(clean_character(&CharacterRequest {
-                name: "Arthas".into(),
-                class: bad.into(),
-                ..Default::default()
-            })
+            assert!(clean_character(
+                &CharacterRequest {
+                    name: "Arthas".into(),
+                    last_name: "Menethil".into(),
+                    class: bad.into(),
+                    ..Default::default()
+                },
+                false
+            )
             .is_err());
         }
-        assert!(clean_character(&CharacterRequest {
-            name: "Has Space".into(),
+        let base = CharacterRequest {
+            name: "Jaina".into(),
+            last_name: "Proudmoore".into(),
             class: "Mage".into(),
             ..Default::default()
-        })
+        };
+        // Forever: a last name is needed (unless keeping an old one without),
+        // names are 2-12 letters, level 60 tops, no Jewelcrafting.
+        assert!(clean_character(
+            &CharacterRequest {
+                last_name: "".into(),
+                ..base.clone()
+            },
+            false
+        )
+        .is_err());
+        assert!(clean_character(
+            &CharacterRequest {
+                last_name: "".into(),
+                ..base.clone()
+            },
+            true
+        )
+        .is_ok());
+        assert!(clean_character(
+            &CharacterRequest {
+                name: "Has Space".into(),
+                ..base.clone()
+            },
+            false
+        )
+        .is_err());
+        assert!(clean_character(
+            &CharacterRequest {
+                name: "Thirteenchars".into(),
+                ..base.clone()
+            },
+            false
+        )
+        .is_err());
+        assert!(clean_character(
+            &CharacterRequest {
+                level: Some(70),
+                ..base.clone()
+            },
+            false
+        )
+        .is_err());
+        assert!(clean_character(
+            &CharacterRequest {
+                ruleset: "Retail".into(),
+                ..base.clone()
+            },
+            false
+        )
+        .is_err());
+        assert!(clean_character(
+            &CharacterRequest {
+                professions: vec!["Jewelcrafting".into()],
+                ..base.clone()
+            },
+            false
+        )
+        .is_err());
+        assert!(clean_character(
+            &CharacterRequest {
+                race: "Blood Elf".into(),
+                ..base.clone()
+            },
+            false
+        )
+        .is_err());
+        // TBC: one name and a realm, level 70, Jewelcrafting, Blood Elves.
+        let tbc = clean_character(
+            &CharacterRequest {
+                game: "tbc".into(),
+                name: "kaelthas".into(),
+                last_name: "Ignored".into(),
+                realm: "Spineshatter".into(),
+                class: "Mage".into(),
+                race: "blood elf".into(),
+                level: Some(70),
+                professions: vec!["jewelcrafting".into()],
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                tbc.name.as_str(),
+                tbc.last_name.as_str(),
+                tbc.realm.as_str()
+            ),
+            ("Kaelthas", "", "Spineshatter")
+        );
+        assert_eq!(
+            (tbc.race.as_str(), tbc.level, tbc.ruleset.as_str()),
+            ("Blood Elf", 70, "")
+        );
+        assert!(clean_character(
+            &CharacterRequest {
+                game: "era".into(),
+                level: Some(61),
+                ..base.clone()
+            },
+            false
+        )
+        .is_err());
+        assert!(clean_character(
+            &CharacterRequest {
+                game: "retail".into(),
+                ..base
+            },
+            false
+        )
         .is_err());
     }
 }

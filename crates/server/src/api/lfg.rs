@@ -14,7 +14,8 @@ use outhouse_common::gateway::ServerEvent;
 use outhouse_common::models::{channel_kind, Message};
 use outhouse_common::permissions as p;
 use outhouse_common::wow::{
-    class_name, find_activity, CreateLfgRequest, JoinLfgRequest, LfgGroup, LfgMember, MAX_LEVEL,
+    class_name, find_activity, game_id, max_level_for, CreateLfgRequest, JoinLfgRequest, LfgGroup,
+    LfgMember, TOP_LEVEL,
 };
 use sqlx::PgPool;
 
@@ -26,7 +27,8 @@ use crate::state::AppState;
 
 const MAX_ACTIVITY_CHARS: usize = 80;
 const MAX_NOTE_CHARS: usize = 300;
-const MAX_CHARACTER_CHARS: usize = 24;
+/// "First Last" in WoW: Forever: two names of up to 12 letters.
+const MAX_CHARACTER_CHARS: usize = 25;
 const MAX_SLOTS: i32 = 40;
 const DEFAULT_EXPIRY_MINUTES: i32 = 120;
 /// Two days.
@@ -55,6 +57,7 @@ struct GroupRow {
     max_dps: i32,
     starts_at: Option<DateTime<Utc>>,
     note: String,
+    game: String,
     closed: bool,
     expired: bool,
     expires_at: DateTime<Utc>,
@@ -86,7 +89,7 @@ pub async fn groups_for_messages(db: &PgPool, ids: &[i64]) -> AppResult<HashMap<
     let groups = sqlx::query_as::<_, GroupRow>(
         "SELECT g.message_id, m.channel_id, g.leader_id, g.activity, g.activity_kind,
                 g.min_level, g.max_level, g.max_tanks, g.max_healers, g.max_dps, g.starts_at,
-                g.note, g.closed, g.expired, g.expires_at
+                g.note, g.game, g.closed, g.expired, g.expires_at
          FROM lfg_groups g JOIN messages m ON m.id = g.message_id
          WHERE g.message_id = ANY($1)",
     )
@@ -148,6 +151,7 @@ pub async fn groups_for_messages(db: &PgPool, ids: &[i64]) -> AppResult<HashMap<
                     max_dps: g.max_dps,
                     starts_at: g.starts_at,
                     note: g.note,
+                    game: g.game,
                     closed: g.closed,
                     expired: g.expired || g.expires_at <= Utc::now(),
                     expires_at: g.expires_at,
@@ -181,9 +185,9 @@ fn clean_join(req: &JoinLfgRequest) -> AppResult<CleanJoin> {
             .to_string()
     };
     if let Some(level) = req.level {
-        if !(1..=MAX_LEVEL).contains(&level) {
+        if !(1..=TOP_LEVEL).contains(&level) {
             return Err(AppError::BadRequest(format!(
-                "Levels go from 1 to {MAX_LEVEL}."
+                "Levels go from 1 to {TOP_LEVEL}."
             )));
         }
     }
@@ -255,13 +259,24 @@ pub async fn create(
             "A group needs 1 to {MAX_SLOTS} spots in total."
         )));
     }
+    // Which game it's for ("" = any).
+    let game = if req.game.trim().is_empty() {
+        String::new()
+    } else {
+        game_id(&req.game)
+            .ok_or_else(|| AppError::BadRequest("Unknown game.".into()))?
+            .to_string()
+    };
+    let top = if game.is_empty() {
+        TOP_LEVEL
+    } else {
+        max_level_for(&game)
+    };
     let min_level = req.min_level.or(listed.as_ref().map(|a| a.min_level));
     let max_level = req.max_level.or(listed.as_ref().map(|a| a.max_level));
     for level in [min_level, max_level].into_iter().flatten() {
-        if !(1..=MAX_LEVEL).contains(&level) {
-            return Err(AppError::BadRequest(format!(
-                "Levels go from 1 to {MAX_LEVEL}."
-            )));
+        if !(1..=top).contains(&level) {
+            return Err(AppError::BadRequest(format!("Levels go from 1 to {top}.")));
         }
     }
     if let (Some(lo), Some(hi)) = (min_level, max_level) {
@@ -319,8 +334,8 @@ pub async fn create(
     .await?;
     sqlx::query(
         "INSERT INTO lfg_groups (message_id, leader_id, activity, activity_kind, min_level,
-             max_level, max_tanks, max_healers, max_dps, starts_at, note, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+             max_level, max_tanks, max_healers, max_dps, starts_at, note, expires_at, game)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
     )
     .bind(id)
     .bind(user.id)
@@ -334,6 +349,7 @@ pub async fn create(
     .bind(req.starts_at)
     .bind(&note)
     .bind(expires_at)
+    .bind(&game)
     .execute(&mut *tx)
     .await?;
     if let Some(l) = &leader {

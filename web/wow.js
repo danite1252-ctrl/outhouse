@@ -25,6 +25,10 @@ const ROLES = ["tank", "healer", "dps"];
 const ROLE_ONE = { tank: "Tank", healer: "Healer", dps: "DPS" };
 const canPlay = (cls, role) => !!WOW_CLASSES.find((c) => c.name === cls)?.specs.some(([, r]) => r === role);
 const mainCharacter = () => state.myCharacters.find((c) => c.is_main) ?? state.myCharacters[0] ?? null;
+const charName = (c) => c.full_name || c.name;
+// Characters you could bring to something for this game ("" = any).
+const charsFor = (game) => state.myCharacters.filter((c) => !game || (c.game || "forever") === game);
+const gameInfo = (id) => state.wowInfo?.games?.find((g) => g.id === id) ?? null;
 const nameOfUser = (id, fallback) => memberById(id)?.display_name ?? (id === state.me.id ? state.me.display_name : fallback);
 
 function classChip(c, { onclick, on = false, small = false } = {}) {
@@ -33,12 +37,13 @@ function classChip(c, { onclick, on = false, small = false } = {}) {
     type: onclick ? "button" : null,
     class: `char-chip${on ? " on" : ""}${small ? " small" : ""}`,
     style: `--cc:${colour}`,
-    title: [c.realm, c.professions?.length ? c.professions.join(", ") : null].filter(Boolean).join(" · ") || null,
+    title: [GAME_LABEL[c.game], c.game === "forever" ? c.ruleset : c.realm, c.race, c.professions?.length ? c.professions.join(", ") : null].filter(Boolean).join(" · ") || null,
     onclick,
   },
   c.is_main ? el("span", { class: "char-star", title: "Main" }, "★") : null,
-  el("span", { class: "char-name" }, c.name),
-  el("span", { class: "char-meta" }, `${c.level} ${c.class}`));
+  el("span", { class: "char-name" }, charName(c)),
+  el("span", { class: "char-meta" }, `${c.level} ${c.class}`),
+  c.game ? el("span", { class: `char-game g-${c.game}` }, GAME_SHORT[c.game] ?? c.game) : null);
 }
 
 // ======================================================================
@@ -122,7 +127,9 @@ function renderLfgCard(m) {
   return el("div", { class: `lfg-card ${status} kind-${g.activity_kind}`, "data-lfg": m.id },
     el("div", { class: "lfg-head" },
       el("div", { class: "lfg-head-main" },
-        el("div", { class: "lfg-kicker" }, `🔎 LOOKING FOR GROUP · ${kind}`, pill ? el("span", { class: `lfg-pill ${status}` }, pill) : null),
+        el("div", { class: "lfg-kicker" }, `🔎 LOOKING FOR GROUP · ${kind}`,
+          g.game ? el("span", { class: `ev-game g-${g.game}`, title: GAME_LABEL[g.game] ?? g.game }, GAME_SHORT[g.game] ?? g.game) : null,
+          pill ? el("span", { class: `lfg-pill ${status}` }, pill) : null),
         el("div", { class: "lfg-title" }, g.activity),
         el("div", { class: "lfg-when" },
           [lfgLevels(g),
@@ -175,13 +182,14 @@ async function lfgClose(m) {
 function openLfgJoin(m, role, anchor) {
   const g = m.lfg;
   const mine = g.members.find((x) => x.user_id === state.me.id);
-  const chars = state.myCharacters.filter((c) => canPlay(c.class, role));
+  const chars = charsFor(g.game).filter((c) => canPlay(c.class, role));
   const main = mainCharacter();
+  const fits = main && canPlay(main.class, role) && (!g.game || main.game === g.game);
   const start = mine?.role === role ? mine
-    : (main && canPlay(main.class, role) ? { class: main.class, character: main.name, level: main.level } : chars[0] ? { class: chars[0].class, character: chars[0].name, level: chars[0].level } : null);
+    : (fits ? { class: main.class, character: charName(main), level: main.level } : chars[0] ? { class: chars[0].class, character: charName(chars[0]), level: chars[0].level } : null);
   let cls = start?.class ?? (canPlay(prefs.get("raid_class", ""), role) ? prefs.get("raid_class", "") : "");
-  const charName = el("input", { placeholder: "Character name (optional)", maxlength: 24, value: start?.character ?? "", "aria-label": "Character name" });
-  const level = el("input", { type: "number", min: 1, max: 60, placeholder: "Level", value: start?.level ?? "", "aria-label": "Level" });
+  const charInput = el("input", { placeholder: "Character name (optional)", maxlength: 25, value: start?.character ?? "", "aria-label": "Character name" });
+  const level = el("input", { type: "number", min: 1, max: gameInfo(g.game)?.max_level ?? 70, placeholder: "Level", value: start?.level ?? "", "aria-label": "Level" });
   const charRow = el("div", { class: "char-chips" });
   const classes = el("div", { class: "su-classes" });
   const go = el("button", { class: "primary" }, `${ROLE_INFO[role].icon} Join as ${ROLE_ONE[role]}`);
@@ -189,8 +197,8 @@ function openLfgJoin(m, role, anchor) {
   const levelHint = el("div", { class: "muted small" });
   const paint = () => {
     charRow.replaceChildren(...chars.map((c) => classChip(c, {
-      on: charName.value === c.name && cls === c.class,
-      onclick: () => { cls = c.class; charName.value = c.name; level.value = c.level; paint(); },
+      on: charInput.value === charName(c) && cls === c.class,
+      onclick: () => { cls = c.class; charInput.value = charName(c); level.value = c.level; paint(); },
     })));
     charRow.hidden = !chars.length;
     classes.replaceChildren(...WOW_CLASSES.filter((c) => canPlay(c.name, role)).map((c) => el("button", {
@@ -202,12 +210,12 @@ function openLfgJoin(m, role, anchor) {
     levelHint.textContent = lvl && ((g.min_level && lvl < g.min_level) || (g.max_level && lvl > g.max_level)) ? `Heads up: they're after ${lv?.toLowerCase()}.` : "";
   };
   level.addEventListener("input", paint);
-  charName.addEventListener("input", paint);
+  charInput.addEventListener("input", paint);
   go.addEventListener("click", async () => {
     closePopover();
     prefs.set("raid_class", cls);
     const msg = await tryApi("PUT", `/api/channels/${m.channel_id}/lfg/${m.id}/join`, {
-      role, class: cls, character: charName.value.trim(), level: level.value ? Number(level.value) : null,
+      role, class: cls, character: charInput.value.trim(), level: level.value ? Number(level.value) : null,
     }).catch(() => null);
     if (msg) applyMessageUpdate(msg);
   });
@@ -216,7 +224,7 @@ function openLfgJoin(m, role, anchor) {
     el("h3", {}, `${g.activity}${lv ? ` · ${lv}` : ""}`),
     chars.length ? el("div", { class: "muted small" }, "Your characters") : null, charRow,
     el("div", { class: "muted small" }, "Class"), classes,
-    el("div", { class: "lfg-join-row" }, charName, level),
+    el("div", { class: "lfg-join-row" }, charInput, level),
     levelHint,
     state.myCharacters.length ? null : el("div", { class: "muted small" }, "Tip: add your characters in Settings → Profile & picture to fill this in with one tap."),
     go), "above");
@@ -237,8 +245,12 @@ function openLfgDialog(activity = "") {
   const datalist = el("datalist", { id: listId }, list.map((a) => el("option", { value: a.name }, `${a.kind === "raid" ? "Raid" : "Dungeon"} · ${a.min_level === a.max_level ? a.min_level : `${a.min_level}–${a.max_level}`}`)));
   const act = el("input", { maxlength: 80, value: activity, placeholder: "Scholomance, Molten Core, gold farming…", list: listId, required: true, "aria-label": "Activity" });
   const quick = el("div", { class: "lfg-quick" });
-  const minL = el("input", { type: "number", min: 1, max: 60, placeholder: "Any", "aria-label": "Lowest level" });
-  const maxL = el("input", { type: "number", min: 1, max: 60, placeholder: "Any", "aria-label": "Highest level" });
+  const minL = el("input", { type: "number", min: 1, max: 70, placeholder: "Any", "aria-label": "Lowest level" });
+  const maxL = el("input", { type: "number", min: 1, max: 70, placeholder: "Any", "aria-label": "Highest level" });
+  const game = el("select", { class: "select", "aria-label": "Game" },
+    el("option", { value: "" }, "Any game"),
+    Object.entries(GAME_LABEL).map(([id, label]) => el("option", { value: id }, label)));
+  game.value = prefs.get("lfg_game", mainCharacter()?.game ?? "");
   const tanks = el("input", { type: "number", min: 0, max: 40, value: 1, "aria-label": "Tanks" });
   const healers = el("input", { type: "number", min: 0, max: 40, value: 1, "aria-label": "Healers" });
   const dps = el("input", { type: "number", min: 0, max: 40, value: 3, "aria-label": "DPS" });
@@ -251,8 +263,17 @@ function openLfgDialog(activity = "") {
   const myRole = el("select", { class: "select", "aria-label": "Your role" },
     el("option", { value: "" }, "Not joining myself"),
     ROLES.map((r) => el("option", { value: r }, `${ROLE_INFO[r].icon} ${ROLE_ONE[r]}`)));
-  const myChar = el("select", { class: "select", "aria-label": "Your character" },
-    state.myCharacters.length ? state.myCharacters.map((c) => el("option", { value: c.id }, `${c.is_main ? "★ " : ""}${c.name} · ${c.level} ${c.class}`)) : el("option", { value: "" }, "No characters yet"));
+  const myChar = el("select", { class: "select", "aria-label": "Your character" });
+  const paintChars = () => {
+    const list = charsFor(game.value);
+    const keep = myChar.value;
+    myChar.replaceChildren(...(list.length ? list.map((c) => el("option", { value: c.id }, `${c.is_main ? "★ " : ""}${charName(c)} · ${c.level} ${c.class}`)) : [el("option", { value: "" }, "No characters for this game")]));
+    if (list.some((c) => c.id === keep)) myChar.value = keep;
+    const top = gameInfo(game.value)?.max_level ?? 70;
+    minL.max = maxL.max = top;
+  };
+  game.addEventListener("change", paintChars);
+  paintChars();
   const error = el("p", { class: "error" });
 
   const fill = () => {
@@ -272,7 +293,9 @@ function openLfgDialog(activity = "") {
 
   const form = el("form", { method: "dialog" },
     el("h2", {}, "🔎 Looking for group"),
-    el("label", { class: "field" }, "What for", act, datalist),
+    el("div", { class: "raid-row lfg-what" },
+      el("label", { class: "field" }, "What for", act, datalist),
+      el("label", { class: "field" }, "Game", game)),
     suggestions.length ? quick : null,
     el("div", { class: "raid-row three" },
       el("label", { class: "field" }, "🛡️ Tanks", tanks),
@@ -302,14 +325,16 @@ function openLfgDialog(activity = "") {
       min_level: num(minL), max_level: num(maxL),
       max_tanks: num(tanks) ?? 0, max_healers: num(healers) ?? 0, max_dps: num(dps) ?? 0,
       note: note.value.trim(),
+      game: game.value,
     };
+    prefs.set("lfg_game", game.value);
     if (timed.checked && when.value) body.starts_at = new Date(when.value).toISOString();
     else body.expires_minutes = Number(expiry.value);
     prefs.set("lfg_role", myRole.value);
     if (myRole.value) {
       const c = state.myCharacters.find((x) => x.id === myChar.value);
-      body.leader = { role: myRole.value, class: c?.class ?? "", character: c?.name ?? "", level: c?.level ?? null };
-      if (c && !canPlay(c.class, myRole.value)) { error.textContent = `${c.name} can't play ${ROLE_ONE[myRole.value]}.`; return; }
+      body.leader = { role: myRole.value, class: c?.class ?? "", character: c ? charName(c) : "", level: c?.level ?? null };
+      if (c && !canPlay(c.class, myRole.value)) { error.textContent = `${charName(c)} can't play ${ROLE_ONE[myRole.value]}.`; return; }
     }
     error.textContent = "";
     try {
@@ -418,7 +443,7 @@ renderEmbeds = function (m) {
 const WOW_COMMANDS = [
   { name: "lfg", description: "Post a looking-for-group card", options: [{ name: "activity", description: "Dungeon, raid or anything else", required: false }] },
   { name: "item", description: "Show a WoW item from Wowhead", options: [{ name: "item", description: "Item name or ID", required: true }] },
-  { name: "char", description: "Show a WoW character from someone here", options: [{ name: "name", description: "Character name (Name-Realm works too)", required: true }] },
+  { name: "char", description: "Show a WoW character from someone here", options: [{ name: "name", description: "First, last or full name (Name-Realm for TBC and Era)", required: true }] },
 ].map((c) => ({ ...c, id: c.name, bot_id: "0", bot_name: "Outhouse", builtin: true }));
 
 const wowBaseLoadCommands = loadCommands;
@@ -483,16 +508,17 @@ openSignup = function (ev, anchor, status) {
   wowBaseOpenSignup(ev, anchor, status);
   const pop = popover;
   const box = pop?.querySelector(".signup-pop");
-  if (!box || !state.myCharacters.length) return;
+  const mineChars = charsFor(ev.game);
+  if (!box || !mineChars.length) return;
   const note = box.querySelector("input[placeholder^='Note']");
   const mine = ev.signups.find((s) => s.user_id === state.me.id);
   let autoNote = "";
   const pick = (c) => {
     box.querySelector(`.su-class[title="${c.class}"]`)?.click();
-    if (note && (!note.value || note.value === autoNote)) { autoNote = `on ${c.name}`; note.value = autoNote; }
+    if (note && (!note.value || note.value === autoNote)) { autoNote = `on ${charName(c)}`; note.value = autoNote; }
     row.querySelectorAll(".char-chip").forEach((b) => b.classList.toggle("on", b.dataset.id === c.id));
   };
-  const row = el("div", { class: "char-chips" }, state.myCharacters.slice(0, 8).map((c) => {
+  const row = el("div", { class: "char-chips" }, mineChars.slice(0, 8).map((c) => {
     const b = classChip(c, { onclick: () => pick(c), small: true });
     b.dataset.id = c.id;
     return b;
@@ -501,7 +527,7 @@ openSignup = function (ev, anchor, status) {
   box.insertBefore(row, box.children[1]);
   box.insertBefore(label, row);
   const main = mainCharacter();
-  if (!mine && !prefs.get("raid_class", "") && main) pick(main);
+  if (!mine && !prefs.get("raid_class", "") && main && mineChars.includes(main)) pick(main);
   const r = anchor.getBoundingClientRect();
   const above = r.top - pop.offsetHeight - 8;
   placeFixed(pop, r.left, above >= 8 ? above : r.bottom + 8);
@@ -525,9 +551,11 @@ async function drawCharacters(section) {
   const redraw = () => drawCharacters(section);
   const rows = chars.map((c) => el("div", { class: `char-row${c.is_main ? " main" : ""}`, style: `--cc:${classColour(c.class) ?? "var(--text)"}` },
     el("div", { class: "char-row-main" },
-      el("div", { class: "char-row-name" }, c.is_main ? el("span", { class: "char-star", title: "Main" }, "★ ") : null, c.name,
-        c.source === "bnet" ? el("span", { class: "char-src", title: "Imported from Battle.net" }, "Battle.net") : null),
-      el("div", { class: "muted small" }, [`Level ${c.level} ${c.class}`, c.realm, c.professions.join(", ")].filter(Boolean).join(" · ")),
+      el("div", { class: "char-row-name" }, c.is_main ? el("span", { class: "char-star", title: "Main" }, "★ ") : null, charName(c),
+        el("span", { class: `char-game g-${c.game}` }, GAME_SHORT[c.game] ?? c.game),
+        c.source === "bnet" ? el("span", { class: "char-src", title: "Imported from Battle.net" }, "Battle.net") : null,
+        c.game === "forever" && !c.last_name ? el("button", { type: "button", class: "char-fix", onclick: () => openCharacterDialog(c, redraw) }, "Add last name") : null),
+      el("div", { class: "muted small" }, [`Level ${c.level} ${[c.race, c.class].filter(Boolean).join(" ")}`, c.game === "forever" ? c.ruleset : c.realm, c.professions.join(", ")].filter(Boolean).join(" · ")),
       c.armory_url ? el("a", { class: "small", href: c.armory_url, target: "_blank", rel: "noopener noreferrer" }, "Armory ↗") : null),
     el("div", { class: "char-row-actions" },
       c.is_main ? null : el("button", { class: "ghost small-btn", onclick: async () => {
@@ -535,8 +563,8 @@ async function drawCharacters(section) {
         if (ok) redraw();
       } }, "Make main"),
       el("button", { class: "ghost small-btn", onclick: () => openCharacterDialog(c, redraw) }, "Edit"),
-      el("button", { class: "ghost small-btn danger", "aria-label": `Remove ${c.name}`, onclick: async () => {
-        if (!(await confirmBox(`Remove ${c.name}?`, "They'll come off your profile. You can add them again any time.", "Remove"))) return;
+      el("button", { class: "ghost small-btn danger", "aria-label": `Remove ${charName(c)}`, onclick: async () => {
+        if (!(await confirmBox(`Remove ${charName(c)}?`, "They'll come off your profile. You can add them again any time.", "Remove"))) return;
         const ok = await tryApi("DELETE", `/api/characters/${c.id}`).then(() => true, () => false);
         if (ok) redraw();
       } }, "Remove"))));
@@ -584,27 +612,60 @@ async function linkBattleNet(onDone) {
 
 function openCharacterDialog(existing, onSaved) {
   const c = existing;
+  const games = state.wowInfo?.games?.length ? state.wowInfo.games : [
+    { id: "forever", name: "WoW: Forever", max_level: 60, two_names: true, rulesets: ["Normal", "PvP", "Roleplay", "Hardcore"], professions: state.wowInfo?.professions ?? [], races: [] },
+  ];
+  let g = games.find((x) => x.id === (c?.game || prefs.get("char_game", "forever"))) ?? games[0];
   const professions = new Set(c?.professions ?? []);
-  const name = el("input", { maxlength: 24, value: c?.name ?? "", placeholder: "Thrall", required: true, "aria-label": "Name" });
-  const realm = el("input", { maxlength: 40, value: c?.realm ?? "", placeholder: "Your realm", "aria-label": "Realm" });
+  const game = el("select", { class: "select", "aria-label": "Game" }, games.map((x) => el("option", { value: x.id, selected: x.id === g.id }, x.name)));
+  const name = el("input", { maxlength: 12, value: c?.name ?? "", placeholder: "Thrall", required: true, "aria-label": "Name" });
+  const lastName = el("input", { maxlength: 12, value: c?.last_name ?? "", placeholder: "Stormborn", "aria-label": "Last name" });
+  const realm = el("input", { maxlength: 40, value: c?.game !== "forever" ? c?.realm ?? "" : "", placeholder: "Your realm", "aria-label": "Realm" });
+  const ruleset = el("select", { class: "select", "aria-label": "Ruleset" });
+  const race = el("select", { class: "select", "aria-label": "Race" });
   const cls = el("select", { class: "select", "aria-label": "Class" },
     el("option", { value: "" }, "Pick a class…"),
     WOW_CLASSES.map((k) => el("option", { value: k.name, selected: c?.class === k.name }, k.name)));
-  const level = el("input", { type: "number", min: 1, max: 60, value: c?.level ?? 60, "aria-label": "Level" });
+  const level = el("input", { type: "number", min: 1, max: g.max_level, value: c?.level ?? g.max_level, "aria-label": "Level" });
   const profBox = el("div", { class: "prof-chips", role: "group", "aria-label": "Professions" });
-  const paintProfs = () => profBox.replaceChildren(...(state.wowInfo?.professions ?? []).map((p) => el("button", {
+  const paintProfs = () => profBox.replaceChildren(...g.professions.map((p) => el("button", {
     type: "button", class: `day-chip prof-chip${professions.has(p) ? " on" : ""}`, "aria-pressed": professions.has(p) ? "true" : "false",
     onclick: () => { professions.has(p) ? professions.delete(p) : professions.size < 5 && professions.add(p); paintProfs(); },
   }, p)));
-  paintProfs();
+  const nameRow = el("div", { class: "raid-row even" });
+  const placeRow = el("div", { class: "raid-row even" });
+  const nameHint = el("p", { class: "muted small", style: "margin:0" });
+  // The form follows the game: names, realm or ruleset, races, level cap, professions.
+  const paintGame = () => {
+    nameRow.replaceChildren(
+      el("label", { class: "field" }, g.two_names ? "First name" : "Name", name),
+      g.two_names ? el("label", { class: "field" }, "Last name", lastName) : el("label", { class: "field" }, "Realm", realm));
+    const keepRuleset = ruleset.value || c?.ruleset || "Normal";
+    ruleset.replaceChildren(...g.rulesets.map((r) => el("option", { value: r, selected: r === keepRuleset }, r)));
+    const keepRace = race.value || c?.race || "";
+    race.replaceChildren(el("option", { value: "" }, "Race (optional)"), ...g.races.map((r) => el("option", { value: r, selected: r === keepRace }, r)));
+    placeRow.replaceChildren(
+      g.two_names ? el("label", { class: "field" }, "Ruleset", ruleset) : null,
+      el("label", { class: "field" }, "Race", race));
+    level.max = g.max_level;
+    if (Number(level.value) > g.max_level) level.value = g.max_level;
+    for (const p of [...professions]) if (!g.professions.includes(p)) professions.delete(p);
+    nameHint.textContent = g.two_names
+      ? "WoW: Forever has no realms: characters have a first and a last name (2 to 12 letters each) and a ruleset. Level cap 60."
+      : `${g.name}: one name (2 to 12 letters) and a realm. Level cap ${g.max_level}.`;
+    paintProfs();
+  };
+  game.addEventListener("change", () => { g = games.find((x) => x.id === game.value) ?? games[0]; paintGame(); });
+  paintGame();
   const armory = el("input", { type: "url", maxlength: 300, value: c?.armory_url ?? "", placeholder: "https://… (optional)", "aria-label": "Armory link" });
   const isMain = el("input", { type: "checkbox", checked: c ? c.is_main : !state.myCharacters.length });
   const error = el("p", { class: "error" });
   const form = el("form", { method: "dialog" },
-    el("h2", {}, c ? `Edit ${c.name}` : "Add a character"),
-    el("div", { class: "raid-row even" },
-      el("label", { class: "field" }, "Name", name),
-      el("label", { class: "field" }, "Realm", realm)),
+    el("h2", {}, c ? `Edit ${charName(c)}` : "Add a character"),
+    el("label", { class: "field" }, "Game", game),
+    nameRow,
+    nameHint,
+    placeRow,
     el("div", { class: "raid-row even" },
       el("label", { class: "field" }, "Class", cls),
       el("label", { class: "field" }, "Level", level)),
@@ -618,11 +679,19 @@ function openCharacterDialog(existing, onSaved) {
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (!cls.value) { error.textContent = "Pick a class."; return; }
-    const body = { name: name.value.trim(), realm: realm.value.trim(), class: cls.value, level: Number(level.value) || 60, professions: [...professions], armory_url: armory.value.trim(), is_main: isMain.checked };
+    const body = {
+      game: g.id, name: name.value.trim(),
+      last_name: g.two_names ? lastName.value.trim() : "",
+      realm: g.two_names ? "" : realm.value.trim(),
+      ruleset: g.two_names ? ruleset.value : "",
+      race: race.value,
+      class: cls.value, level: Number(level.value) || g.max_level, professions: [...professions], armory_url: armory.value.trim(), is_main: isMain.checked,
+    };
     try {
-      await api(c ? "PATCH" : "POST", c ? `/api/characters/${c.id}` : "/api/users/@me/characters", body);
+      const saved = await api(c ? "PATCH" : "POST", c ? `/api/characters/${c.id}` : "/api/users/@me/characters", body);
+      prefs.set("char_game", g.id);
       dialog.close();
-      toast(c ? "Character saved." : `${body.name} added.`);
+      toast(c ? "Character saved." : `${charName(saved)} added.`);
       onSaved();
     } catch (err) {
       error.textContent = err.message;

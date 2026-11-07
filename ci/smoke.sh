@@ -439,9 +439,15 @@ call GET "/api/channels/$RX/messages" | jq -e '[.[] | select(.event != null)] | 
 [ "$(series | jq -r '.[].starts_at' | while read -r t; do TZ=Australia/Sydney date -d "$t" +%H:%M; done | sort -u | wc -l)" = 1 ]
 fail_call GET "/api/guilds/$GUILD/events?from=$FROM&to=$(date -u -d '+100 days' +%Y-%m-%dT%H:%M:%SZ)"
 S0=$(series | jq -r '.[0].id'); S1=$(series | jq -r '.[1].id'); S2=$(series | jq -r '.[2].id'); S3=$(series | jq -r '.[3].id')
-# Sign-ups are separate per raid, even before the card is posted.
+# Series planned without a posting rule keep the old one: a week before.
+series | jq -e '[.[] | select(.message_id == null) | .post_rule.mode == "days" and .post_rule.days == 7 and .signups_open_at != null] | all' >/dev/null
+# Sign-ups open when the card goes up (raid leaders can add people before).
 TOKEN=$TOKEN_B
-call PUT "/api/events/$S2/signup" '{"status":"yes","role":"healer","class":"Priest","spec":"Holy"}' | jq -e '.event.signups | length == 1' >/dev/null
+fail_call PUT "/api/events/$S2/signup" '{"status":"yes","role":"healer","class":"Priest","spec":"Holy"}'
+TOKEN=$TOKEN_A
+call PUT "/api/events/$S2/signup" '{"status":"yes","role":"healer","class":"Priest","spec":"Holy","user_id":"'"$BOB"'"}' | jq -e '.event.signups | length == 1' >/dev/null
+TOKEN=$TOKEN_B
+fail_call DELETE "/api/events/$S2/signups/$BOB"
 call GET "/api/events/$S0" | jq -e '.signups | length == 0' >/dev/null
 fail_call PATCH "/api/events/$S2" '{"title":"bob edits","scope":"future"}'
 fail_call DELETE "/api/events/$S2?scope=future"
@@ -464,6 +470,71 @@ fail_call GET "/api/events/$S3"
 # Every second week, in UTC.
 E2W=$(call POST "/api/channels/$RX/events" '{"title":"Onyxia","starts_at":"'"$FIRST"'","repeat":{"weekdays":['"$D1"'],"every_weeks":2,"count":2,"time_zone":"UTC"}}' | jq -r .event.series_id)
 call GET "/api/guilds/$GUILD/events?from=$FROM&to=$TO" | jq -e --arg s "$E2W" '[.[] | select(.series_id == $s)] | length == 2 and ((.[1].starts_at | fromdate) - (.[0].starts_at | fromdate) == 14 * 86400) and .[1].message_id == null' >/dev/null
+
+step "raid sign-up posting times, games and channel choice"
+PT=$(call POST "/api/guilds/$GUILD/channels" '{"name":"raid-signups"}' | jq -r .id)
+VOICE=$(call GET "/api/guilds/$GUILD/channels" | jq -r '[.[] | select(.kind == 2)][0].id')
+LATER=$(date -u -d '+10 days' +%Y-%m-%dT20:00:00Z)
+fail_call POST "/api/channels/$VOICE/events" '{"title":"In voice","starts_at":"'"$LATER"'"}'
+fail_call POST "/api/channels/$PT/events" '{"title":"Bad","starts_at":"'"$LATER"'","post_rule":{"mode":"days","days":15}}'
+fail_call POST "/api/channels/$PT/events" '{"title":"Bad","starts_at":"'"$LATER"'","post_rule":{"mode":"weekday","weekday":7}}'
+fail_call POST "/api/channels/$PT/events" '{"title":"Bad","starts_at":"'"$LATER"'","post_rule":{"mode":"weekday","weekday":0,"time":"25:00"}}'
+fail_call POST "/api/channels/$PT/events" '{"title":"Bad","starts_at":"'"$LATER"'","post_rule":{"mode":"days","days":2,"time_zone":"Mars/Olympus"}}'
+fail_call POST "/api/channels/$PT/events" '{"title":"Bad","starts_at":"'"$LATER"'","post_rule":{"mode":"sometime"}}'
+fail_call POST "/api/channels/$PT/events" '{"title":"Bad","starts_at":"'"$LATER"'","game":"retail"}'
+TOKEN=$OUT; fail_call POST "/api/channels/$PT/events" '{"title":"Outsider","starts_at":"'"$LATER"'"}'; TOKEN=$TOKEN_A
+# "Right away" in another channel than the one you're in: the card goes there.
+NOW1=$(call POST "/api/channels/$PT/events" '{"title":"Right away","starts_at":"'"$LATER"'","game":"forever","post_rule":{"mode":"now"}}')
+jq -e --arg pt "$PT" '.channel_id == $pt and .event.message_id != null and .event.signups_open_at == null and .event.game == "forever"' <<<"$NOW1" >/dev/null
+call GET "/api/channels/$PT/messages" | jq -e '[.[] | select(.event != null)] | length == 1' >/dev/null
+# Sunday 8pm raid in Sydney on 4 Apr 2027, the day daylight saving ends. Posted "Monday 9am before":
+# Mon 29 Mar 9am AEDT = 28 Mar 22:00 UTC (not a plain 6 days before). "7 days before": 28 Mar 8pm AEDT.
+DST=$(call POST "/api/channels/$PT/events" '{"title":"Sunday raid","starts_at":"2027-04-04T10:00:00Z","game":"tbc","post_rule":{"mode":"weekday","weekday":0,"time":"09:00","time_zone":"Australia/Sydney"}}')
+jq -e --arg pt "$PT" '.event | .message_id == null and .signups_open_at == "2027-03-28T22:00:00Z" and .post_rule.mode == "weekday" and .post_rule.weekday == 0 and .post_rule.time == "09:00" and .game == "tbc" and .channel_id == $pt' <<<"$DST" >/dev/null
+DSTID=$(jq -r .event.id <<<"$DST")
+call PATCH "/api/events/$DSTID" '{"post_rule":{"mode":"days","days":7,"time_zone":"Australia/Sydney"}}' | jq -e '.event.signups_open_at == "2027-03-28T09:00:00Z" and .event.message_id == null and .event.post_rule.days == 7' >/dev/null
+call GET "/api/guilds/$GUILD/events?from=2027-03-20T00:00:00Z&to=2027-04-10T00:00:00Z" | jq -e --arg id "$DSTID" '[.[] | select(.id == $id and .signups_open_at == "2027-03-28T09:00:00Z")] | length == 1' >/dev/null
+call GET "/api/channels/$PT/messages" | jq -e '[.[] | select(.event != null)] | length == 1' >/dev/null
+# Not open yet: members can't sign up or withdraw; the raid leader can add people.
+TOKEN=$TOKEN_B
+fail_call PUT "/api/events/$DSTID/signup" '{"status":"yes","role":"dps","class":"Mage","spec":"Fire"}'
+fail_call PATCH "/api/events/$DSTID" '{"post_rule":{"mode":"now"}}'
+TOKEN=$TOKEN_A
+call PUT "/api/events/$DSTID/signup" '{"status":"yes","role":"tank","class":"Warrior","spec":"Protection"}' >/dev/null
+# Changing the rule to "now" posts it straight away.
+call PATCH "/api/events/$DSTID" '{"post_rule":{"mode":"now"}}' | jq -e '.event.message_id != null and .event.signups_open_at == null' >/dev/null
+TOKEN=$TOKEN_B
+call PUT "/api/events/$DSTID/signup" '{"status":"yes","role":"dps","class":"Mage","spec":"Fire"}' | jq -e '.event.signups | length == 2' >/dev/null
+TOKEN=$TOKEN_A
+# The scheduler posts a card when its time comes: a raid tomorrow (+90s), posted 1 day before.
+TICK_START=$(date -u -d '+1 day 90 seconds' +%Y-%m-%dT%H:%M:%SZ)
+TICK=$(call POST "/api/channels/$PT/events" '{"title":"Posted by the clock","starts_at":"'"$TICK_START"'","post_rule":{"mode":"days","days":1,"time_zone":"UTC"}}')
+jq -e '.event.message_id == null and .event.signups_open_at != null' <<<"$TICK" >/dev/null
+TICKID=$(jq -r .event.id <<<"$TICK")
+TOKEN=$TOKEN_B; fail_call PUT "/api/events/$TICKID/signup" '{"status":"yes","role":"dps","class":"Mage","spec":"Fire"}'; TOKEN=$TOKEN_A
+# A weekly Sunday raid in Sydney whose sign-ups go up the Monday before at 9am.
+SUN=$(python3 -c 'import datetime as d; t=d.date.today()+d.timedelta(days=1); t+=d.timedelta(days=(6-t.weekday())%7); print(t.isoformat())')
+SUNSTART=$(TZ=Australia/Sydney date -u -d "$SUN 20:00" +%Y-%m-%dT%H:%M:%SZ)
+WK=$(call POST "/api/channels/$PT/events" '{"title":"Weekly Sunday","starts_at":"'"$SUNSTART"'","game":"forever","repeat":{"weekdays":[6],"every_weeks":1,"count":4,"time_zone":"Australia/Sydney"},"post_rule":{"mode":"weekday","weekday":0,"time":"09:00"}}')
+WKS=$(jq -r .event.series_id <<<"$WK")
+WFROM=$(date -u +%Y-%m-%dT%H:%M:%SZ); WTO=$(date -u -d '+45 days' +%Y-%m-%dT%H:%M:%SZ)
+weekly() { call GET "/api/guilds/$GUILD/events?from=$WFROM&to=$WTO" | jq --arg s "$WKS" '[.[] | select(.series_id == $s)]'; }
+weekly | jq -e 'length == 4 and all(.[]; .game == "forever" and .post_rule.mode == "weekday")' >/dev/null
+# Each unposted one opens on the Monday before, 9am Sydney time, 6 days ahead of the raid.
+weekly | jq -r '.[] | select(.message_id == null) | "\(.starts_at) \(.signups_open_at)"' | while read -r st op; do
+  [ "$(TZ=Australia/Sydney date -d "$op" +%u-%H:%M)" = "1-09:00" ] || { echo "opens at $op for $st"; exit 1; }
+  [ "$(TZ=Australia/Sydney date -d "$st" +%u-%H:%M)" = "7-20:00" ] || { echo "odd start $st"; exit 1; }
+done
+[ "$(weekly | jq '[.[] | select(.message_id == null)] | length')" -ge 3 ]
+# Edit this and future: post 3 days before instead, from the second raid on.
+W1=$(weekly | jq -r '.[1].id')
+call PATCH "/api/events/$W1" '{"scope":"future","post_rule":{"mode":"days","days":3}}' >/dev/null
+weekly | jq -r '.[1:][] | select(.message_id == null) | "\(.starts_at) \(.signups_open_at) \(.post_rule.days)"' | while read -r st op d; do
+  [ "$d" = 3 ] || { echo "rule not changed: $d"; exit 1; }
+  [ "$(TZ=Australia/Sydney date -d "$op" +%u-%H:%M)" = "4-20:00" ] || { echo "3 days before $st should be Thursday 8pm, got $op"; exit 1; }
+done
+weekly | jq -e '.[0].post_rule.mode == "weekday"' >/dev/null
+call GET "/api/guilds/$GUILD/events?from=$WFROM&to=$WTO" | jq -e '[.[] | select(.title == "Posted by the clock")] | length == 1' >/dev/null
 
 step "sign-up deadline"
 SOON2=$(date -u -d '+2 hours' +%Y-%m-%dT%H:%M:%SZ)
@@ -540,28 +611,63 @@ call GET "/api/events/$AT2" | jq -e '.attendance_taken | not' >/dev/null
 call GET "/api/guilds/$GUILD/attendance/$BOB" | jq -e '.total == 1 and .percent == 100' >/dev/null
 
 step "wow: info and characters"
-call GET /api/wow/info | jq -e '(.classes | length == 9) and (.classes | index("Monk") | not) and (.activities | map(.name) | index("Molten Core")) and .bnet_enabled and (.wowhead_url | endswith("/classic"))' >/dev/null
-CH1=$(call POST /api/users/@me/characters '{"name":"tankadin","realm":"Forever","class":"paladin","level":60,"professions":["Mining","blacksmithing"],"armory_url":"https://example.com/armory/tankadin"}')
+call GET /api/wow/info | jq -e '(.classes | length == 9) and (.classes | index("Monk") | not) and (.activities | map(.name) | index("Molten Core")) and .bnet_enabled and (.wowhead_url | endswith("/classic"))
+  and (.games | map(.id) == ["forever","tbc","era"])
+  and (.games[0] | .two_names and .max_level == 60 and .rulesets == ["Normal","PvP","Roleplay","Hardcore"] and (.professions | index("Jewelcrafting") | not))
+  and (.games[1] | (.two_names | not) and .max_level == 70 and (.professions | index("Jewelcrafting")) and (.races | index("Blood Elf")) and (.races | index("Draenei")))
+  and (.games[2] | .max_level == 60 and (.races | index("Draenei") | not))' >/dev/null
+# WoW: Forever (the default): first and last name, a ruleset, no realm.
+CH1=$(call POST /api/users/@me/characters '{"name":"tankadin","last_name":"lightBRINGER","realm":"Forever","ruleset":"pvp","race":"dwarf","class":"paladin","level":60,"professions":["Mining","blacksmithing"],"armory_url":"https://example.com/armory/tankadin"}')
 CH1ID=$(jq -r .id <<<"$CH1")
-jq -e '.name == "Tankadin" and .class == "Paladin" and .is_main and .professions == ["Mining","Blacksmithing"] and .source == "manual"' <<<"$CH1" >/dev/null
-CH2ID=$(call POST /api/users/@me/characters '{"name":"Frostbolt","realm":"Forever","class":"Mage","level":42}' | jq -r 'select(.is_main | not) | .id')
-fail_call POST /api/users/@me/characters '{"name":"Arthas","class":"Death Knight"}'
-fail_call POST /api/users/@me/characters '{"name":"Chen","class":"Monk"}'
-fail_call POST /api/users/@me/characters '{"name":"Two Words","class":"Mage"}'
-fail_call POST /api/users/@me/characters '{"name":"Tankadin","realm":"forever","class":"Paladin"}'
-fail_call POST /api/users/@me/characters '{"name":"Linky","class":"Rogue","armory_url":"javascript:alert(1)"}'
-call PATCH "/api/characters/$CH2ID" '{"name":"Frostbolt","realm":"Forever","class":"Mage","level":43,"is_main":true}' | jq -e '.is_main and .level == 43' >/dev/null
+jq -e '.game == "forever" and .name == "Tankadin" and .last_name == "Lightbringer" and .full_name == "Tankadin Lightbringer" and .realm == "" and .ruleset == "PvP" and .race == "Dwarf"
+  and .class == "Paladin" and .is_main and .professions == ["Mining","Blacksmithing"] and .source == "manual"' <<<"$CH1" >/dev/null
+CH2ID=$(call POST /api/users/@me/characters '{"name":"Frostbolt","last_name":"Fizzle","class":"Mage","level":42}' | jq -r 'select(.is_main | not) | .ruleset as $r | select($r == "Normal") | .id')
+fail_call POST /api/users/@me/characters '{"name":"Arthas","last_name":"Menethil","class":"Death Knight"}'
+fail_call POST /api/users/@me/characters '{"name":"Chen","last_name":"Stormstout","class":"Monk"}'
+fail_call POST /api/users/@me/characters '{"name":"Two Words","last_name":"Smith","class":"Mage"}'
+fail_call POST /api/users/@me/characters '{"name":"Nolastname","class":"Mage"}'
+fail_call POST /api/users/@me/characters '{"name":"Thirteenchars","last_name":"Smith","class":"Mage"}'
+fail_call POST /api/users/@me/characters '{"name":"Toohigh","last_name":"Smith","class":"Mage","level":70}'
+fail_call POST /api/users/@me/characters '{"name":"Gemmy","last_name":"Smith","class":"Mage","professions":["Jewelcrafting"]}'
+fail_call POST /api/users/@me/characters '{"name":"Belfy","last_name":"Smith","class":"Mage","race":"Blood Elf"}'
+fail_call POST /api/users/@me/characters '{"name":"Rules","last_name":"Smith","class":"Mage","ruleset":"Retail"}'
+fail_call POST /api/users/@me/characters '{"name":"Tankadin","last_name":"Lightbringer","class":"Paladin"}'
+fail_call POST /api/users/@me/characters '{"name":"Linky","last_name":"Smith","class":"Rogue","armory_url":"javascript:alert(1)"}'
+fail_call POST /api/users/@me/characters '{"name":"Retail","class":"Mage","game":"retail"}'
+# Same first name, different last name: a different character.
+call POST /api/users/@me/characters '{"name":"Tankadin","last_name":"Other","class":"Paladin","level":12}' | jq -e '.full_name == "Tankadin Other"' >/dev/null
+# TBC: one name and a realm, level 70, Jewelcrafting, Blood Elves and Draenei.
+TBC=$(call POST /api/users/@me/characters '{"game":"TBC","name":"kaelthas","last_name":"ignored","realm":"Spineshatter","race":"blood elf","class":"Mage","level":70,"professions":["jewelcrafting","Tailoring"]}')
+jq -e '.game == "tbc" and .name == "Kaelthas" and .last_name == "" and .full_name == "Kaelthas" and .realm == "Spineshatter" and .race == "Blood Elf" and .level == 70 and .professions == ["Jewelcrafting","Tailoring"]' <<<"$TBC" >/dev/null
+fail_call POST /api/users/@me/characters '{"game":"tbc","name":"Toohigh","class":"Mage","level":71}'
+fail_call POST /api/users/@me/characters '{"game":"tbc","name":"Kaelthas","realm":"spineshatter","class":"Mage"}'
+# Same name on another realm, or in Classic Era: different characters.
+call POST /api/users/@me/characters '{"game":"tbc","name":"Kaelthas","realm":"Thunderstrike","class":"Mage","level":20}' >/dev/null
+ERA=$(call POST /api/users/@me/characters '{"game":"era","name":"Kaelthas","realm":"Spineshatter","class":"Mage","level":60}')
+jq -e '.game == "era" and .realm == "Spineshatter"' <<<"$ERA" >/dev/null
+fail_call POST /api/users/@me/characters '{"game":"era","name":"Gemmy","class":"Mage","professions":["Jewelcrafting"]}'
+fail_call POST /api/users/@me/characters '{"game":"era","name":"Dranei","class":"Mage","race":"Draenei"}'
+fail_call POST /api/users/@me/characters '{"game":"era","name":"Toohigh","class":"Mage","level":61}'
+# Switching a character's game re-checks it.
+fail_call PATCH "/api/characters/$(jq -r .id <<<"$TBC")" '{"game":"forever","name":"Kaelthas","class":"Mage","level":70}'
+for c in $(call GET /api/users/@me/characters | jq -r '.[] | select(.game != "forever" or .last_name == "Other") | .id'); do call DELETE "/api/characters/$c" >/dev/null; done
+call PATCH "/api/characters/$CH2ID" '{"name":"Frostbolt","last_name":"Fizzle","class":"Mage","level":43,"is_main":true}' | jq -e '.is_main and .level == 43' >/dev/null
 call GET /api/users/@me/characters | jq -e 'length == 2 and .[0].name == "Frostbolt" and ([.[] | select(.is_main)] | length == 1)' >/dev/null
 TOKEN=$TOKEN_B
 fail_call PATCH "/api/characters/$CH1ID" '{"name":"Stolen","class":"Mage"}'
 fail_call DELETE "/api/characters/$CH1ID"
 call GET "/api/profiles/$ALICE" | jq -e '.characters | length == 2 and .[0].is_main' >/dev/null
-call POST /api/users/@me/characters '{"name":"Holybob","realm":"Forever","class":"Priest","level":59,"professions":["Tailoring","Enchanting"]}' >/dev/null
+call POST /api/users/@me/characters '{"game":"tbc","name":"Holybob","realm":"Forever","class":"Priest","level":59,"professions":["Tailoring","Enchanting"]}' >/dev/null
 TOKEN=$OUT; fail_call GET "/api/profiles/$ALICE"; TOKEN=$TOKEN_A
 
 step "wow: /char"
-call POST "/api/channels/$CHAN/wow/char" '{"query":"tank"}' | jq -e '.interaction.command == "char" and (.embeds[0] | .kind == "wow-char" and .title == "Tankadin" and .color == 16026810 and .url == "https://example.com/armory/tankadin" and (.description | contains("Level 60 Paladin")) and (.fields | map(.name) | index("Also plays")))' >/dev/null
-call POST "/api/channels/$CHAN/wow/char" '{"query":"holybob-forever"}' | jq -e '.embeds[0].title == "Holybob" and .embeds[0].author_name == "Bob"' >/dev/null
+call POST "/api/channels/$CHAN/wow/char" '{"query":"tank"}' | jq -e '.interaction.command == "char" and (.embeds[0] | .kind == "wow-char" and .title == "Tankadin Lightbringer" and .color == 16026810 and .url == "https://example.com/armory/tankadin" and (.description | contains("Level 60 Dwarf Paladin") and contains("WoW: Forever") and contains("PvP")) and (.fields | map(.name) | index("Also plays")) and (.fields[] | select(.name == "Also plays") | .value | contains("Frostbolt Fizzle")))' >/dev/null
+# WoW: Forever characters are found by first, last or full name.
+call POST "/api/channels/$CHAN/wow/char" '{"query":"Lightbringer"}' | jq -e '.embeds[0].title == "Tankadin Lightbringer"' >/dev/null
+call POST "/api/channels/$CHAN/wow/char" '{"query":"frostbolt fizzle"}' | jq -e '.embeds[0].title == "Frostbolt Fizzle"' >/dev/null
+call POST "/api/channels/$CHAN/wow/char" '{"query":"fizz"}' | jq -e '.embeds[0].title == "Frostbolt Fizzle"' >/dev/null
+# TBC / Era: Name-Realm.
+call POST "/api/channels/$CHAN/wow/char" '{"query":"holybob-forever"}' | jq -e '.embeds[0].title == "Holybob" and .embeds[0].author_name == "Bob" and (.embeds[0].description | contains("TBC · Forever"))' >/dev/null
 fail_call POST "/api/channels/$CHAN/wow/char" '{"query":"Nobodyhere"}'
 fail_call POST "/api/channels/$CHAN/wow/char" '{"query":""}'
 TOKEN=$OUT; fail_call POST "/api/channels/$CHAN/wow/char" '{"query":"tank"}'; TOKEN=$TOKEN_A
@@ -866,6 +972,15 @@ call POST "/api/channels/$DMID/messages" '{"content":"last dm for bob"}' >/dev/n
 call POST /api/push/subscriptions '{"endpoint":"'"$PUSH"'/push/gone","keys":'"$(jq -c .keys <<<"$SUB_A")"'}' >/dev/null
 call POST /api/push/test | jq -e '.sent == 1 and .removed == 1' >/dev/null
 call GET /api/users/@me/notifications | jq -e '.devices | length == 1' >/dev/null
+
+step "raid sign-up card posted by the scheduler"
+for i in $(seq 1 120); do
+  call GET "/api/events/$TICKID" | jq -e '.message_id != null' >/dev/null 2>&1 && break
+  sleep 1
+done
+call GET "/api/events/$TICKID" | jq -e '.message_id != null and .signups_open_at == null' >/dev/null || { echo "card never posted"; exit 1; }
+call GET "/api/channels/$PT/messages" | jq -e --arg id "$TICKID" '[.[] | select(.event.id == $id)] | length == 1' >/dev/null
+TOKEN=$TOKEN_B; call PUT "/api/events/$TICKID/signup" '{"status":"yes","role":"dps","class":"Mage","spec":"Fire"}' >/dev/null; TOKEN=$TOKEN_A
 
 step "raid reminder"
 for i in $(seq 1 75); do

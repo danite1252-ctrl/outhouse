@@ -2,8 +2,9 @@
 //! spec), shown as a live card in chat, with a reminder before they start.
 //!
 //! Extras: repeating raids (the server makes each raid a few weeks ahead so
-//! it has its own sign-ups, and posts its card a week before), sign-up
-//! deadlines, an automatic bench when a role is full (first in, first
+//! it has its own sign-ups), a chosen time for the sign-up card to go up
+//! (straight away, N days before, or on a set weekday and time; sign-ups
+//! open then), sign-up deadlines, an automatic bench when a role is full (first in, first
 //! promoted), and attendance (see `attendance.rs`).
 
 use std::collections::HashMap;
@@ -15,12 +16,13 @@ use axum::Json;
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use outhouse_common::gateway::ServerEvent;
 use outhouse_common::models::{
-    CreateEventRequest, EventSignup, Message, RaidEvent, RepeatInfo, SignupRequest,
-    UpdateEventRequest,
+    channel_kind, CreateEventRequest, EventSignup, Message, PostRule, RaidEvent, RepeatInfo,
+    SignupRequest, UpdateEventRequest,
 };
 use outhouse_common::permissions as p;
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::types::Json as DbJson;
+use sqlx::{PgExecutor, PgPool, Postgres, Transaction};
 
 use super::messages::{fetch_message, post_bot_message};
 use crate::auth::{self, AuthUser};
@@ -34,8 +36,8 @@ const ROLES: &[&str] = &["tank", "healer", "dps", ""];
 const REMIND_MINUTES: i64 = 15;
 /// Repeating raids are made this many days ahead.
 const AHEAD_DAYS: i64 = 28;
-/// A repeating raid's chat card is posted this many days before it starts.
-const CARD_DAYS: i64 = 7;
+/// "N days before" for the sign-up card goes up to two weeks.
+const MAX_POST_DAYS: i32 = 14;
 /// Longest sign-up deadline: a week before the start.
 const MAX_DEADLINE_MINUTES: i32 = 7 * 24 * 60;
 
@@ -56,9 +58,17 @@ pub(crate) struct EventRow {
     series_id: Option<i64>,
     signup_deadline_minutes: Option<i32>,
     attendance_taken: bool,
+    post_rule: Option<DbJson<PostRule>>,
+    post_at: Option<DateTime<Utc>>,
+    game: String,
 }
 
 impl EventRow {
+    /// The card isn't up yet and it isn't time for it: sign-ups aren't open.
+    fn not_open(&self) -> bool {
+        self.message_id.is_none() && self.post_at.is_some_and(|t| t > Utc::now())
+    }
+
     fn max_for(&self, role: &str) -> i32 {
         match role {
             "tank" => self.max_tanks,
@@ -119,16 +129,18 @@ struct SeriesRow {
     max_count: Option<i32>,
     made_count: i32,
     generated_through: Option<NaiveDate>,
+    post_rule: Option<DbJson<PostRule>>,
+    game: String,
 }
 
 pub(crate) const EVENT_COLUMNS: &str = "id, guild_id, channel_id, message_id, creator_id, title,
     description, starts_at, duration_minutes, max_tanks, max_healers, max_dps,
-    series_id, signup_deadline_minutes, attendance_taken";
+    series_id, signup_deadline_minutes, attendance_taken, post_rule, post_at, game";
 
 const SERIES_COLUMNS: &str = "id, guild_id, channel_id, creator_id, title, description,
     duration_minutes, max_tanks, max_healers, max_dps, signup_deadline_minutes, time_zone,
     start_date, local_time, weekdays, every_weeks, until_date, max_count, made_count,
-    generated_through";
+    generated_through, post_rule, game";
 
 /// The response to anything that changes a raid: its chat message (with
 /// the card) when it has one, otherwise just `{"event": …}`.
@@ -216,7 +228,15 @@ pub(crate) async fn build(db: &PgPool, rows: Vec<EventRow>) -> AppResult<Vec<Rai
         .into_iter()
         .map(|r| {
             let closes = r.closes_at();
+            let opens = if r.message_id.is_none() {
+                r.post_at
+            } else {
+                None
+            };
             RaidEvent {
+                post_rule: r.post_rule.map(|j| j.0),
+                signups_open_at: opens,
+                game: r.game,
                 signups: signups.remove(&r.id).unwrap_or_default(),
                 repeat: r.series_id.and_then(|s| repeats.get(&s).cloned()),
                 id: r.id,
@@ -350,6 +370,149 @@ fn check_deadline(n: Option<i32>) -> AppResult<Option<Option<i32>>> {
     }
 }
 
+/// "" (any game) or a known game id.
+fn check_game(raw: Option<&str>) -> AppResult<Option<String>> {
+    match raw.map(str::trim) {
+        None => Ok(None),
+        Some("") => Ok(Some(String::new())),
+        Some(g) => outhouse_common::wow::game_id(g)
+            .map(|id| Some(id.to_string()))
+            .ok_or_else(|| AppError::BadRequest("Unknown game.".into())),
+    }
+}
+
+async fn check_tz(db: &PgPool, raw: &str) -> AppResult<String> {
+    let tz = raw.trim().to_string();
+    let known: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_timezone_names WHERE name = $1)")
+            .bind(&tz)
+            .fetch_one(db)
+            .await?;
+    if tz.is_empty() || tz.len() > 64 || !known {
+        return Err(AppError::BadRequest("Unknown time zone.".into()));
+    }
+    Ok(tz)
+}
+
+/// Tidies a sign-up posting rule. `None` (or "now"): straight away.
+/// `default_tz` is used when the rule doesn't say (a series' own zone).
+async fn check_post_rule(
+    db: &PgPool,
+    rule: Option<&PostRule>,
+    default_tz: &str,
+) -> AppResult<Option<PostRule>> {
+    let Some(rule) = rule else {
+        return Ok(None);
+    };
+    let tz = match rule.time_zone.as_deref().map(str::trim) {
+        Some(tz) if !tz.is_empty() => check_tz(db, tz).await?,
+        _ => default_tz.to_string(),
+    };
+    match rule.mode.as_str() {
+        "" | "now" => Ok(None),
+        "days" => {
+            let days = rule.days.unwrap_or(7);
+            if !(1..=MAX_POST_DAYS).contains(&days) {
+                return Err(AppError::BadRequest(format!(
+                    "Sign-ups can go up 1 to {MAX_POST_DAYS} days before."
+                )));
+            }
+            Ok(Some(PostRule {
+                mode: "days".into(),
+                days: Some(days),
+                time_zone: Some(tz),
+                ..Default::default()
+            }))
+        }
+        "weekday" => {
+            let weekday = rule.weekday.unwrap_or(0);
+            if weekday > 6 {
+                return Err(AppError::BadRequest("Unknown day of the week.".into()));
+            }
+            let time = rule.time.as_deref().unwrap_or("09:00").trim();
+            let parsed = NaiveTime::parse_from_str(time, "%H:%M")
+                .map_err(|_| AppError::BadRequest("Give the posting time as HH:MM.".into()))?;
+            Ok(Some(PostRule {
+                mode: "weekday".into(),
+                weekday: Some(weekday),
+                time: Some(parsed.format("%H:%M").to_string()),
+                time_zone: Some(tz),
+                ..Default::default()
+            }))
+        }
+        _ => Err(AppError::BadRequest(
+            "Post sign-ups right away, some days before, or on a set day.".into(),
+        )),
+    }
+}
+
+/// When the sign-up card for a raid starting at `starts_at` goes up
+/// (`None`: straight away). Worked out in the rule's time zone, so a change
+/// to or from daylight saving in between doesn't move it.
+async fn post_at_for<'c, E: PgExecutor<'c>>(
+    ex: E,
+    rule: Option<&PostRule>,
+    starts_at: DateTime<Utc>,
+) -> AppResult<Option<DateTime<Utc>>> {
+    let Some(rule) = rule else {
+        return Ok(None);
+    };
+    let tz = rule.time_zone.clone().unwrap_or_else(|| "UTC".into());
+    let at: DateTime<Utc> = match rule.mode.as_str() {
+        "days" => {
+            sqlx::query_scalar(
+                "SELECT (($1::timestamptz AT TIME ZONE $2) - make_interval(days => $3)) AT TIME ZONE $2",
+            )
+            .bind(starts_at)
+            .bind(&tz)
+            .bind(rule.days.unwrap_or(7))
+            .fetch_one(ex)
+            .await?
+        }
+        "weekday" => {
+            let time = rule
+                .time
+                .as_deref()
+                .and_then(|t| NaiveTime::parse_from_str(t, "%H:%M").ok())
+                .unwrap_or_else(|| NaiveTime::from_hms_opt(9, 0, 0).expect("9am is a time"));
+            // The last such weekday before the raid's day: 1 to 7 days back.
+            sqlx::query_scalar(
+                "WITH l AS (SELECT ($1::timestamptz AT TIME ZONE $2) AS lt),
+                      d AS (SELECT lt, ((EXTRACT(ISODOW FROM lt)::int - 1 - $3) % 7 + 7) % 7 AS back
+                            FROM l)
+                 SELECT ((lt::date - (CASE WHEN back = 0 THEN 7 ELSE back END)) + $4::time)
+                        AT TIME ZONE $2
+                 FROM d",
+            )
+            .bind(starts_at)
+            .bind(&tz)
+            .bind(rule.weekday.unwrap_or(0) as i32)
+            .bind(time)
+            .fetch_one(ex)
+            .await?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(at))
+}
+
+/// Works out the posting time again for raids whose card isn't up yet.
+async fn refresh_post_times(st: &AppState, ids: &[i64]) -> AppResult<()> {
+    for &id in ids {
+        let row = load_row(&st.db, id).await?;
+        if row.message_id.is_some() {
+            continue;
+        }
+        let at = post_at_for(&st.db, row.post_rule.as_ref().map(|j| &j.0), row.starts_at).await?;
+        sqlx::query("UPDATE events SET post_at = $2 WHERE id = $1 AND message_id IS NULL")
+            .bind(id)
+            .bind(at)
+            .execute(&st.db)
+            .await?;
+    }
+    Ok(())
+}
+
 // ---- Repeating raids ---------------------------------------------------
 
 struct Pattern {
@@ -383,15 +546,7 @@ async fn check_pattern(db: &PgPool, r: &RepeatInfo) -> AppResult<Pattern> {
             "A series can have 1 to 104 raids.".into(),
         ));
     }
-    let tz = r.time_zone.trim().to_string();
-    let known: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_timezone_names WHERE name = $1)")
-            .bind(&tz)
-            .fetch_one(db)
-            .await?;
-    if tz.is_empty() || tz.len() > 64 || !known {
-        return Err(AppError::BadRequest("Unknown time zone.".into()));
-    }
+    let tz = check_tz(db, &r.time_zone).await?;
     Ok(Pattern {
         mask,
         every_weeks: r.every_weeks,
@@ -460,11 +615,14 @@ async fn materialise(st: &AppState, series_id: i64, at_least_one: bool) -> AppRe
             // Skip ones already over (e.g. a series that started today, earlier on).
             if starts_at > now - chrono::Duration::minutes(30) {
                 let id = st.ids.next_id();
+                let rule = s.post_rule.as_ref().map(|j| &j.0);
+                let post_at = post_at_for(&mut *tx, rule, starts_at).await?;
                 sqlx::query(
                     "INSERT INTO events (id, guild_id, channel_id, message_id, creator_id, title,
                          description, starts_at, duration_minutes, max_tanks, max_healers,
-                         max_dps, series_id, signup_deadline_minutes)
-                     VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+                         max_dps, series_id, signup_deadline_minutes, post_rule, post_at, game)
+                     VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                             $15, $16)",
                 )
                 .bind(id)
                 .bind(s.guild_id)
@@ -479,6 +637,9 @@ async fn materialise(st: &AppState, series_id: i64, at_least_one: bool) -> AppRe
                 .bind(s.max_dps)
                 .bind(s.id)
                 .bind(s.signup_deadline_minutes)
+                .bind(&s.post_rule)
+                .bind(post_at)
+                .bind(&s.game)
                 .execute(&mut *tx)
                 .await?;
                 new_ids.push(id);
@@ -515,20 +676,26 @@ async fn materialise(st: &AppState, series_id: i64, at_least_one: bool) -> AppRe
     Ok(new_ids)
 }
 
-/// Posts the chat card for raids starting within [`CARD_DAYS`] that don't
-/// have one yet (only this series' raids if given).
-async fn post_due_cards(st: &AppState, series_id: Option<i64>) -> AppResult<()> {
+/// Posts the chat card for raids whose posting time has come and that
+/// don't have one yet (only this series' raids, or these raids, if given).
+async fn post_due_cards(
+    st: &AppState,
+    series_id: Option<i64>,
+    ids: Option<&[i64]>,
+) -> AppResult<()> {
     let sql = format!(
         "SELECT {EVENT_COLUMNS} FROM events
          WHERE message_id IS NULL
-           AND starts_at <= now() + make_interval(days => {CARD_DAYS})
+           AND (post_at IS NULL OR post_at <= now())
            AND starts_at + make_interval(mins => duration_minutes) > now()
            AND ($1::BIGINT IS NULL OR series_id = $1)
+           AND ($2::BIGINT[] IS NULL OR id = ANY($2))
          ORDER BY starts_at, id
          LIMIT 100"
     );
     let rows = sqlx::query_as::<_, EventRow>(&sql)
         .bind(series_id)
+        .bind(ids)
         .fetch_all(&st.db)
         .await?;
     for row in rows {
@@ -561,13 +728,15 @@ async fn post_due_cards(st: &AppState, series_id: Option<i64>) -> AppResult<()> 
             .await?;
         tx.commit().await?;
         let message = fetch_message(&st.db, message_id).await?;
-        st.dispatch(
-            Audience::Channel {
-                guild_id: row.guild_id,
-                channel_id: row.channel_id,
-            },
-            ServerEvent::MessageCreate(message),
-        );
+        let audience = Audience::Channel {
+            guild_id: row.guild_id,
+            channel_id: row.channel_id,
+        };
+        if let Some(ev) = &message.event {
+            // Calendars drop the "sign-ups open …" label.
+            st.dispatch(audience.clone(), ServerEvent::EventUpdate(ev.clone()));
+        }
+        st.dispatch(audience, ServerEvent::MessageCreate(message));
     }
     Ok(())
 }
@@ -587,7 +756,7 @@ async fn run_series(st: &AppState) -> AppResult<()> {
             tracing::warn!(error = %e, series = id, "making repeating raids failed");
         }
     }
-    post_due_cards(st, None).await
+    post_due_cards(st, None, None).await
 }
 
 // ---- Endpoints ---------------------------------------------------------
@@ -606,6 +775,12 @@ pub async fn create(
             "Raids are planned in an outhouse, not in DMs.".into(),
         ));
     }
+    if access.channel.kind == channel_kind::VOICE {
+        return Err(AppError::BadRequest(
+            "Raid sign-ups go in a text channel.".into(),
+        ));
+    }
+    let game = check_game(req.game.as_deref())?.unwrap_or_default();
     let title = clean_title(&req.title)?;
     let description = clean_text(&req.description, 1000);
     let duration = check_duration(req.duration_minutes)?.unwrap_or(180);
@@ -626,6 +801,18 @@ pub async fn create(
 
     if let Some(repeat) = &req.repeat {
         let pat = check_pattern(&st.db, repeat).await?;
+        // Without a rule, a series' cards go up a week ahead (as they always did).
+        let week_before = PostRule {
+            mode: "days".into(),
+            days: Some(7),
+            ..Default::default()
+        };
+        let post_rule = check_post_rule(
+            &st.db,
+            Some(req.post_rule.as_ref().unwrap_or(&week_before)),
+            &pat.time_zone,
+        )
+        .await?;
         let local = local_time_in(&st.db, req.starts_at, &pat.time_zone).await?;
         if pat.until.is_some_and(|u| u < local.date()) {
             return Err(AppError::BadRequest(
@@ -644,8 +831,10 @@ pub async fn create(
         sqlx::query(
             "INSERT INTO event_series (id, guild_id, channel_id, creator_id, title, description,
                  duration_minutes, max_tanks, max_healers, max_dps, signup_deadline_minutes,
-                 time_zone, start_date, local_time, weekdays, every_weeks, until_date, max_count)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)",
+                 time_zone, start_date, local_time, weekdays, every_weeks, until_date, max_count,
+                 post_rule, game)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+                     $18, $19, $20)",
         )
         .bind(series_id)
         .bind(guild_id)
@@ -665,6 +854,8 @@ pub async fn create(
         .bind(pat.every_weeks)
         .bind(pat.until)
         .bind(pat.count)
+        .bind(post_rule.map(DbJson))
+        .bind(&game)
         .execute(&st.db)
         .await?;
         let made = materialise(&st, series_id, true).await?;
@@ -677,12 +868,42 @@ pub async fn create(
                 "That pattern doesn't have any raids in it.".into(),
             ));
         };
-        post_due_cards(&st, Some(series_id)).await?;
+        post_due_cards(&st, Some(series_id), None).await?;
         return Ok(Json(broadcast(&st, first).await?));
     }
 
-    let message_id = st.ids.next_id();
+    let post_rule = check_post_rule(&st.db, req.post_rule.as_ref(), "UTC").await?;
+    let post_at = post_at_for(&st.db, post_rule.as_ref(), req.starts_at).await?;
     let event_id = st.ids.next_id();
+    if post_at.is_some_and(|t| t > Utc::now()) {
+        // The card goes up later; until then it's only in the calendar.
+        sqlx::query(
+            "INSERT INTO events (id, guild_id, channel_id, message_id, creator_id, title,
+                 description, starts_at, duration_minutes, max_tanks, max_healers, max_dps,
+                 signup_deadline_minutes, post_rule, post_at, game)
+             VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+        )
+        .bind(event_id)
+        .bind(guild_id)
+        .bind(channel_id)
+        .bind(user.id)
+        .bind(&title)
+        .bind(&description)
+        .bind(req.starts_at)
+        .bind(duration)
+        .bind(tanks)
+        .bind(healers)
+        .bind(dps)
+        .bind(deadline)
+        .bind(post_rule.map(DbJson))
+        .bind(post_at)
+        .bind(&game)
+        .execute(&st.db)
+        .await?;
+        return Ok(Json(broadcast(&st, event_id).await?));
+    }
+
+    let message_id = st.ids.next_id();
     let mut tx = st.db.begin().await?;
     sqlx::query(
         "INSERT INTO messages (id, channel_id, author_id, content) VALUES ($1, $2, $3, '')",
@@ -695,8 +916,8 @@ pub async fn create(
     sqlx::query(
         "INSERT INTO events (id, guild_id, channel_id, message_id, creator_id, title, description,
                              starts_at, duration_minutes, max_tanks, max_healers, max_dps,
-                             signup_deadline_minutes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+                             signup_deadline_minutes, post_rule, game)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
     )
     .bind(event_id)
     .bind(guild_id)
@@ -711,6 +932,8 @@ pub async fn create(
     .bind(healers)
     .bind(dps)
     .bind(deadline)
+    .bind(post_rule.map(DbJson))
+    .bind(&game)
     .execute(&mut *tx)
     .await?;
     sqlx::query("UPDATE channels SET last_message_id = $2 WHERE id = $1")
@@ -859,6 +1082,25 @@ pub async fn update(
     let dps = check_slots(req.max_dps)?.unwrap_or(row.max_dps);
     let deadline =
         check_deadline(req.signup_deadline_minutes)?.unwrap_or(row.signup_deadline_minutes);
+    let game = check_game(req.game.as_deref())?.unwrap_or_else(|| row.game.clone());
+    // A new posting rule (only raids whose card isn't up yet are affected).
+    let series_tz: Option<String> = match row.series_id {
+        Some(series_id) => {
+            sqlx::query_scalar("SELECT time_zone FROM event_series WHERE id = $1")
+                .bind(series_id)
+                .fetch_optional(&st.db)
+                .await?
+        }
+        None => None,
+    };
+    let rule_given = req.post_rule.is_some();
+    let post_rule = check_post_rule(
+        &st.db,
+        req.post_rule.as_ref(),
+        series_tz.as_deref().unwrap_or("UTC"),
+    )
+    .await?
+    .map(DbJson);
 
     let changed: Vec<i64> = match (future, row.series_id) {
         (true, Some(series_id)) => {
@@ -868,7 +1110,9 @@ pub async fn update(
                         starts_at = starts_at + make_interval(secs => $5),
                         duration_minutes = $6, max_tanks = $7, max_healers = $8, max_dps = $9,
                         signup_deadline_minutes = $10,
-                        reminded = reminded AND NOT $11
+                        reminded = reminded AND NOT $11,
+                        game = $12,
+                        post_rule = CASE WHEN $13 THEN $14 ELSE post_rule END
                  WHERE series_id = $1 AND starts_at >= $2
                  RETURNING id",
             )
@@ -883,15 +1127,13 @@ pub async fn update(
             .bind(dps)
             .bind(deadline)
             .bind(moved)
+            .bind(&game)
+            .bind(rule_given)
+            .bind(&post_rule)
             .fetch_all(&st.db)
             .await?;
             // Future raids the server hasn't made yet follow the new details too.
-            let tz: Option<String> =
-                sqlx::query_scalar("SELECT time_zone FROM event_series WHERE id = $1")
-                    .bind(series_id)
-                    .fetch_optional(&st.db)
-                    .await?;
-            if let Some(tz) = tz {
+            if let Some(tz) = series_tz.clone() {
                 let old_local = local_time_in(&st.db, row.starts_at, &tz).await?;
                 let new_local = local_time_in(&st.db, starts_at, &tz).await?;
                 let shift = (new_local.date() - old_local.date()).num_days();
@@ -903,7 +1145,9 @@ pub async fn update(
                             weekdays = (((weekdays << $10) | (weekdays >> (7 - $10))) & 127),
                             start_date = start_date + $11::int,
                             generated_through = generated_through + $11::int,
-                            until_date = until_date + $11::int
+                            until_date = until_date + $11::int,
+                            game = $12,
+                            post_rule = CASE WHEN $13 THEN $14 ELSE post_rule END
                      WHERE id = $1",
                 )
                 .bind(series_id)
@@ -917,6 +1161,9 @@ pub async fn update(
                 .bind(new_local.time())
                 .bind(rot as i32)
                 .bind(shift as i32)
+                .bind(&game)
+                .bind(rule_given)
+                .bind(&post_rule)
                 .execute(&st.db)
                 .await?;
             }
@@ -927,7 +1174,9 @@ pub async fn update(
                 "UPDATE events SET title = $2, description = $3, starts_at = $4,
                         duration_minutes = $5, max_tanks = $6, max_healers = $7, max_dps = $8,
                         signup_deadline_minutes = $9,
-                        reminded = reminded AND NOT $10
+                        reminded = reminded AND NOT $10,
+                        game = $11,
+                        post_rule = CASE WHEN $12 THEN $13 ELSE post_rule END
                  WHERE id = $1",
             )
             .bind(event_id)
@@ -940,11 +1189,16 @@ pub async fn update(
             .bind(dps)
             .bind(deadline)
             .bind(moved)
+            .bind(&game)
+            .bind(rule_given)
+            .bind(&post_rule)
             .execute(&st.db)
             .await?;
             vec![event_id]
         }
     };
+    // A new time or posting rule moves when unposted cards go up.
+    refresh_post_times(&st, &changed).await?;
     // More slots may let people off the bench.
     for &id in &changed {
         let promoted = {
@@ -960,10 +1214,8 @@ pub async fn update(
             broadcast(&st, id).await?;
         }
     }
-    // Moving raids may bring one within a week: post its card.
-    if let Some(series_id) = row.series_id {
-        post_due_cards(&st, Some(series_id)).await?;
-    }
+    // Moving raids (or posting earlier) may make a card due: post it.
+    post_due_cards(&st, None, Some(changed.as_slice())).await?;
     Ok(Json(broadcast(&st, event_id).await?))
 }
 
@@ -1166,6 +1418,8 @@ async fn dm_promoted(st: &AppState, row: &EventRow, user_id: i64, role: &str) ->
 
 const LOCKED: &str =
     "Sign-ups for this raid have closed. Ask the raid leader if you need a change.";
+const NOT_OPEN: &str =
+    "Sign-ups for this raid aren't open yet. They open when its sign-up post goes up in chat.";
 
 /// Signs up (or changes your sign-up). If your role is full you go on the
 /// bench and move up when a spot opens. Raid leaders can pass `user_id` to
@@ -1189,6 +1443,9 @@ pub async fn signup(
         member_ctx(&st.db, row.guild_id, target).await?;
     } else if access.ctx.timed_out {
         return Err(AppError::Forbidden);
+    }
+    if !manager && row.not_open() {
+        return Err(AppError::BadRequest(NOT_OPEN.into()));
     }
     if !manager && row.locked() {
         return Err(AppError::BadRequest(LOCKED.into()));
@@ -1286,6 +1543,9 @@ pub async fn withdraw(
     let manager = can_manage(&row, &access);
     if target != user.id && !manager {
         return Err(AppError::Forbidden);
+    }
+    if !manager && row.not_open() {
+        return Err(AppError::BadRequest(NOT_OPEN.into()));
     }
     if !manager && row.locked() {
         return Err(AppError::BadRequest(LOCKED.into()));

@@ -415,6 +415,35 @@ pub struct RaidEvent {
     /// The raid leader has marked who turned up.
     #[serde(default)]
     pub attendance_taken: bool,
+    /// When the sign-up card goes up in chat (null: straight away).
+    #[serde(default)]
+    pub post_rule: Option<PostRule>,
+    /// While the card isn't up yet: when it goes up (and sign-ups open).
+    #[serde(default)]
+    pub signups_open_at: Option<DateTime<Utc>>,
+    /// Which game it's for ("forever", "tbc", "era"; "" = any).
+    #[serde(default)]
+    pub game: String,
+}
+
+/// When a raid's sign-up card is posted in chat.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct PostRule {
+    /// "now" (straight away), "days" (`days` days before the raid, at the
+    /// raid's time of day) or "weekday" (the last `weekday` at `time`
+    /// before the raid, 1 to 7 days ahead).
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub days: Option<i32>,
+    /// 0 = Monday … 6 = Sunday.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weekday: Option<u8>,
+    /// "HH:MM" on the 24-hour clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time: Option<String>,
+    /// IANA time zone `time` is in (defaults to the series' zone, or UTC).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_zone: Option<String>,
 }
 
 /// How a repeating raid repeats.
@@ -662,6 +691,12 @@ pub struct CreateEventRequest {
     /// first matching day after it).
     #[serde(default)]
     pub repeat: Option<RepeatInfo>,
+    /// When to post the sign-up card (default: straight away).
+    #[serde(default)]
+    pub post_rule: Option<PostRule>,
+    /// Which game it's for ("forever", "tbc", "era"; empty: any).
+    #[serde(default)]
+    pub game: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -679,6 +714,11 @@ pub struct UpdateEventRequest {
     /// For a repeating raid: "one" (default) or "future" (this and later ones).
     #[serde(default)]
     pub scope: Option<String>,
+    /// New sign-up posting rule (only matters for raids not posted yet).
+    #[serde(default)]
+    pub post_rule: Option<PostRule>,
+    #[serde(default)]
+    pub game: Option<String>,
 }
 
 /// `PUT /api/events/{id}/attendance`
