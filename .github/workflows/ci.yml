@@ -36,9 +36,9 @@ jobs:
         with:
           node-version: 22
       - name: Build
-        run: cargo build --locked -p outhouse-server
+        run: cargo build -p outhouse-server
       - name: Unit tests
-        run: cargo test --locked --workspace
+        run: cargo test --workspace
       - name: Clippy (advice only)
         run: cargo clippy --workspace --all-targets
         continue-on-error: true
