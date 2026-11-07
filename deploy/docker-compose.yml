@@ -1,0 +1,93 @@
+# Outhouse on your own Linux server: website, API, voice and HTTPS.
+# Don't run this by hand the first time; use ./setup.sh, which writes the
+# .env and livekit.yaml this file needs.
+#   Update after copying new code:  docker compose up -d --build
+#   Logs:                           docker compose logs -f server
+name: outhouse
+
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: outhouse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: outhouse
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U outhouse"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  server:
+    build: ..
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://outhouse:${POSTGRES_PASSWORD}@db:5432/outhouse
+      BIND_ADDR: 0.0.0.0:8080
+      WEB_DIR: /app/web
+      UPLOAD_DIR: /data/uploads
+      RUST_LOG: outhouse_server=info,tower_http=warn
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      # Browsers reach voice through Caddy on the same address as the site.
+      LIVEKIT_URL: wss://${DOMAIN}
+      GIPHY_API_KEY: ${GIPHY_API_KEY:-}
+    volumes:
+      - uploads:/data/uploads
+
+  # Voice. Host networking lets LiveKit offer both the server's home-network
+  # address (for people at home) and your public address (for everyone else).
+  livekit:
+    image: livekit/livekit-server:latest
+    restart: unless-stopped
+    network_mode: host
+    command: --config /etc/livekit.yaml
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+
+  # Front door. setup.sh picks one of these two via COMPOSE_PROFILES in .env.
+  # "https": this server faces the internet itself and gets a free
+  # Let's Encrypt certificate (ports 80 and 443 must reach it).
+  caddy:
+    profiles: ["https"]
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  # "behind-proxy": another web server (e.g. Apache) handles HTTPS and passes
+  # traffic to plain HTTP on port 8080 here.
+  caddy-proxied:
+    profiles: ["behind-proxy"]
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./Caddyfile.behind-proxy:/etc/caddy/Caddyfile:ro
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  uploads:
+  caddy_data:
+  caddy_config:

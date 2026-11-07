@@ -1,0 +1,77 @@
+name: CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  server:
+    name: Server (build, tests, smoke test)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: outhouse
+          POSTGRES_PASSWORD: outhouse
+          POSTGRES_DB: outhouse
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U outhouse"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --locked -p outhouse-server
+      - name: Unit tests
+        run: cargo test --locked --workspace
+      - name: Clippy (advice only)
+        run: cargo clippy --workspace --all-targets
+        continue-on-error: true
+      - name: Website syntax check
+        run: node --check web/app.js
+      - name: Smoke test (real server + Postgres)
+        env:
+          DATABASE_URL: postgres://outhouse:outhouse@localhost:5432/outhouse
+          BIND_ADDR: 127.0.0.1:8080
+          WEB_DIR: web
+          UPLOAD_DIR: /tmp/outhouse-uploads
+          LIVEKIT_API_KEY: devkey
+          LIVEKIT_API_SECRET: secret-secret-secret-secret-secret
+          RUST_LOG: outhouse_server=info
+        run: bash ci/smoke.sh
+      - name: Server log
+        if: always()
+        run: cat /tmp/outhouse-server.log 2>/dev/null || true
+
+  desktop:
+    name: Desktop app (Windows installer)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build installer
+        working-directory: desktop
+        run: npx --yes @tauri-apps/cli@^2 build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Outhouse-Windows-installer
+          path: desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error

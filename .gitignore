@@ -1,0 +1,7 @@
+/target
+.env
+*.log
+/data
+/tools
+/desktop/src-tauri/target
+/desktop/src-tauri/gen

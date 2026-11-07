@@ -1,0 +1,19 @@
+# Used when another web server (e.g. Apache) handles HTTPS for the domain and
+# passes everything to http://<this server>:8080.
+{
+	auto_https off
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+:8080 {
+	encode zstd gzip
+	# Voice signalling goes to LiveKit (running on the host network).
+	handle /rtc* {
+		reverse_proxy host.docker.internal:7880
+	}
+	handle {
+		reverse_proxy server:8080
+	}
+}

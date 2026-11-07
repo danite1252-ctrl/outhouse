@@ -1,0 +1,230 @@
+//! Loading a member's roles and working out what they're allowed to do.
+
+use outhouse_common::models::Channel;
+use outhouse_common::permissions::{self as p, Overwrite, RolePerms};
+use sqlx::PgPool;
+
+use crate::error::{AppError, AppResult};
+
+/// Everything needed to check one member's permissions in one server.
+#[derive(Debug, Clone)]
+pub struct MemberCtx {
+    pub guild_id: i64,
+    pub user_id: i64,
+    pub owner_id: i64,
+    pub role_ids: Vec<i64>,
+    /// Server-wide permissions (before channel overwrites and timeouts).
+    pub base: u64,
+    /// Position of their most senior role (owner: `i32::MAX`).
+    pub top_position: i32,
+    pub timed_out: bool,
+}
+
+impl MemberCtx {
+    pub fn is_owner(&self) -> bool {
+        self.user_id == self.owner_id
+    }
+
+    /// Server-wide permissions right now.
+    pub fn guild_perms(&self) -> u64 {
+        p::apply_timeout(self.base, self.timed_out)
+    }
+
+    pub fn require(&self, perm: u64) -> AppResult<()> {
+        if self.guild_perms() & perm == perm {
+            Ok(())
+        } else {
+            Err(AppError::Forbidden)
+        }
+    }
+
+    /// Can this member act on someone/something at `position`?
+    /// (You can only manage roles and members below your top role.)
+    pub fn outranks(&self, position: i32) -> bool {
+        self.is_owner() || self.top_position > position
+    }
+
+    /// Rejects granting permissions you don't have yourself.
+    pub fn require_can_grant(&self, bits: u64) -> AppResult<()> {
+        let mine = self.guild_perms();
+        if mine & p::ADMINISTRATOR != 0 || bits & !mine == 0 {
+            Ok(())
+        } else {
+            Err(AppError::BadRequest(
+                "You can't hand out permissions you don't have.".into(),
+            ))
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct MembershipRow {
+    owner_id: i64,
+    timed_out: bool,
+}
+
+#[derive(sqlx::FromRow)]
+struct RoleRow {
+    id: i64,
+    permissions: i64,
+    deny_permissions: i64,
+    position: i32,
+}
+
+/// Loads a member's context. Not a member → NotFound.
+pub async fn member_ctx(db: &PgPool, guild_id: i64, user_id: i64) -> AppResult<MemberCtx> {
+    let membership = sqlx::query_as::<_, MembershipRow>(
+        "SELECT g.owner_id,
+                (m.timeout_until IS NOT NULL AND m.timeout_until > now()) AS timed_out
+         FROM guilds g
+         JOIN guild_members m ON m.guild_id = g.id AND m.user_id = $2
+         WHERE g.id = $1",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    let roles = sqlx::query_as::<_, RoleRow>(
+        "SELECT id, permissions, deny_permissions, position FROM roles
+         WHERE guild_id = $1
+           AND (id = $1 OR id IN (SELECT role_id FROM member_roles
+                                  WHERE guild_id = $1 AND user_id = $2))",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .fetch_all(db)
+    .await?;
+
+    let everyone = roles
+        .iter()
+        .find(|r| r.id == guild_id)
+        .map(|r| r.permissions as u64)
+        .unwrap_or(p::DEFAULT_EVERYONE);
+    let others: Vec<&RoleRow> = roles.iter().filter(|r| r.id != guild_id).collect();
+    let role_perms: Vec<RolePerms> = others
+        .iter()
+        .map(|r| RolePerms {
+            allow: r.permissions as u64,
+            deny: r.deny_permissions as u64,
+            position: r.position,
+        })
+        .collect();
+    let is_owner = membership.owner_id == user_id;
+
+    Ok(MemberCtx {
+        guild_id,
+        user_id,
+        owner_id: membership.owner_id,
+        role_ids: others.iter().map(|r| r.id).collect(),
+        base: p::base_permissions(is_owner, everyone, &role_perms),
+        top_position: if is_owner {
+            i32::MAX
+        } else {
+            others.iter().map(|r| r.position).max().unwrap_or(0)
+        },
+        timed_out: membership.timed_out,
+    })
+}
+
+#[derive(sqlx::FromRow)]
+struct OverwriteRow {
+    target_id: i64,
+    target_kind: i16,
+    allow_bits: i64,
+    deny_bits: i64,
+}
+
+pub async fn overwrites(db: &PgPool, channel_id: i64) -> AppResult<Vec<Overwrite>> {
+    let rows = sqlx::query_as::<_, OverwriteRow>(
+        "SELECT target_id, target_kind, allow_bits, deny_bits
+         FROM channel_overwrites WHERE channel_id = $1",
+    )
+    .bind(channel_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| Overwrite {
+            target_id: r.target_id,
+            is_member: r.target_kind == 1,
+            allow: r.allow_bits as u64,
+            deny: r.deny_bits as u64,
+        })
+        .collect())
+}
+
+/// A member's permissions in one channel, given its overwrites.
+pub fn channel_perms_with(ctx: &MemberCtx, overwrites: &[Overwrite]) -> u64 {
+    let perms = p::channel_permissions(
+        ctx.base,
+        ctx.guild_id,
+        ctx.user_id,
+        &ctx.role_ids,
+        overwrites,
+    );
+    p::apply_timeout(perms, ctx.timed_out)
+}
+
+pub async fn channel_perms(db: &PgPool, ctx: &MemberCtx, channel_id: i64) -> AppResult<u64> {
+    Ok(channel_perms_with(ctx, &overwrites(db, channel_id).await?))
+}
+
+pub async fn fetch_channel(db: &PgPool, channel_id: i64) -> AppResult<Channel> {
+    sqlx::query_as::<_, Channel>(
+        "SELECT id, guild_id, name, kind, position, last_message_id, NULL::BIGINT AS last_read_id
+         FROM channels WHERE id = $1",
+    )
+    .bind(channel_id)
+    .fetch_optional(db)
+    .await?
+    .ok_or(AppError::NotFound)
+}
+
+/// A channel the user can see, with their context and permissions in it.
+pub struct ChannelAccess {
+    pub channel: Channel,
+    pub ctx: MemberCtx,
+    pub perms: u64,
+}
+
+impl ChannelAccess {
+    pub fn require(&self, perm: u64) -> AppResult<()> {
+        if self.perms & perm == perm {
+            Ok(())
+        } else {
+            Err(AppError::Forbidden)
+        }
+    }
+}
+
+/// Loads a channel the user is allowed to see (otherwise NotFound).
+pub async fn channel_access(
+    db: &PgPool,
+    channel_id: i64,
+    user_id: i64,
+) -> AppResult<ChannelAccess> {
+    let channel = fetch_channel(db, channel_id).await?;
+    let ctx = member_ctx(db, channel.guild_id, user_id).await?;
+    let perms = channel_perms(db, &ctx, channel_id).await?;
+    if perms & p::VIEW_CHANNEL == 0 {
+        return Err(AppError::NotFound);
+    }
+    Ok(ChannelAccess {
+        channel,
+        ctx,
+        perms,
+    })
+}
+
+/// Used by the gateway to decide whether to forward a channel event.
+pub async fn can_view(db: &PgPool, guild_id: i64, channel_id: i64, user_id: i64) -> bool {
+    match member_ctx(db, guild_id, user_id).await {
+        Ok(ctx) => channel_perms(db, &ctx, channel_id)
+            .await
+            .map(|perms| perms & p::VIEW_CHANNEL != 0)
+            .unwrap_or(false),
+        Err(_) => false,
+    }
+}

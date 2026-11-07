@@ -1,0 +1,27 @@
+[package]
+name = "outhouse-server"
+version.workspace = true
+edition.workspace = true
+description = "The Outhouse chat server: REST API + WebSocket gateway"
+
+[dependencies]
+outhouse-common = { path = "../common", features = ["sqlx"] }
+anyhow = "1"
+argon2 = "0.5"
+base64 = "0.22"
+axum = { version = "0.8", features = ["ws", "macros", "multipart"] }
+chrono.workspace = true
+dotenvy = "0.15"
+feed-rs = "2"
+futures = "0.3"
+hmac = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+sqlx.workspace = true
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

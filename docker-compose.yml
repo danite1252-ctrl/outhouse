@@ -1,0 +1,69 @@
+# Development: `docker compose up -d db` starts Postgres only, then run the
+# server with `cargo run -p outhouse-server`.
+# Production-style: `docker compose --profile app up -d --build` runs both.
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: outhouse
+      POSTGRES_PASSWORD: outhouse
+      POSTGRES_DB: outhouse
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U outhouse"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  server:
+    profiles: ["app"]
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://outhouse:outhouse@db:5432/outhouse
+      BIND_ADDR: 0.0.0.0:8080
+      WEB_DIR: /app/web
+      RUST_LOG: outhouse_server=info,tower_http=info
+    ports:
+      - "8080:8080"
+
+  # Voice: LiveKit media server. `docker compose up -d db livekit`.
+  # --dev uses the API key "devkey" and secret "secret" (fine on your own PC;
+  # use real keys when hosting publicly). LIVEKIT_NODE_IP is the address
+  # browsers use to reach it: 127.0.0.1 for this PC only, or your PC's LAN IP
+  # (e.g. 192.168.1.20) so others at home can join voice.
+  livekit:
+    image: livekit/livekit-server:latest
+    restart: unless-stopped
+    command: --dev --bind 0.0.0.0 --node-ip ${LIVEKIT_NODE_IP:-127.0.0.1} --udp-port 7882
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+
+  # HTTPS front door for home-network testing: https://<your-PC-IP>:8443
+  # Forwards to Outhouse (running on this PC) and to LiveKit for voice.
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      LAN_IP: ${LIVEKIT_NODE_IP:-127.0.0.1}
+      LIVEKIT_UPSTREAM: ${LIVEKIT_UPSTREAM:-livekit:7880}
+    ports:
+      - "8443:8443"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+
+volumes:
+  pgdata:
+  caddy_data:

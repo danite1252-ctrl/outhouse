@@ -1,0 +1,21 @@
+# HTTPS for testing on your home network (so browsers allow the microphone).
+# Caddy makes its own certificate; each device shows a one-time warning.
+# Voice signalling (/rtc...) goes to LiveKit through the same address.
+{
+	local_certs
+	skip_install_trust
+	auto_https disable_redirects
+	# Connections by IP address don't say which site they want; use ours.
+	default_sni {$LAN_IP}
+}
+
+https://localhost:8443, https://{$LAN_IP}:8443 {
+	tls internal
+	handle /rtc* {
+		# livekit:7880 in Docker, or host.docker.internal:7880 with -NativeVoice
+		reverse_proxy {$LIVEKIT_UPSTREAM}
+	}
+	handle {
+		reverse_proxy host.docker.internal:8080
+	}
+}

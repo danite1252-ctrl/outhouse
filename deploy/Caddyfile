@@ -1,0 +1,14 @@
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+	# Voice signalling goes to LiveKit (running on the host network).
+	handle /rtc* {
+		reverse_proxy host.docker.internal:7880
+	}
+	handle {
+		reverse_proxy server:8080
+	}
+}

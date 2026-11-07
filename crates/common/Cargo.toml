@@ -1,0 +1,16 @@
+[package]
+name = "outhouse-common"
+version.workspace = true
+edition.workspace = true
+description = "Types shared by the Outhouse server, clients and bots"
+
+[features]
+sqlx = ["dep:sqlx"]
+
+[dependencies]
+serde.workspace = true
+chrono.workspace = true
+sqlx = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true

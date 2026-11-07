@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Outhouse</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; --night: #0f0f11; --panel: #18181b; --line: #2a2a2e; --text: #ededed; --muted: #a1a1aa; --ember: #ff6a2b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--night); color: var(--text);
+         font: 15px/1.5 "Segoe UI", system-ui, sans-serif; }
+  .card { width: min(420px, 92vw); background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 28px; text-align: center; }
+  img { width: 72px; height: 72px; }
+  h1 { margin: 10px 0 4px; font-size: 22px; }
+  p { margin: 0 0 18px; color: var(--muted); font-size: 14px; }
+  form { display: flex; flex-direction: column; gap: 10px; }
+  input { height: 42px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--night); color: var(--text); font: inherit; outline: none; }
+  input:focus { border-color: var(--ember); }
+  button { height: 42px; border: 0; border-radius: 10px; background: var(--ember); color: #1a0d05; font: inherit; font-weight: 700; cursor: pointer; }
+  .error { color: #f87171; font-size: 13px; min-height: 18px; margin: 0; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+  <div class="card hidden" id="card">
+    <img src="icon.svg" alt="">
+    <h1>Outhouse</h1>
+    <p>Which Outhouse server do you want to connect to?</p>
+    <form id="form">
+      <input id="address" placeholder="oh.hartspace.cc" value="oh.hartspace.cc" autofocus spellcheck="false" aria-label="Server address">
+      <button type="submit">Connect</button>
+      <p class="error" id="error"></p>
+    </form>
+  </div>
+<script>
+  const invoke = window.__TAURI__.core.invoke;
+  const changing = new URLSearchParams(location.search).has("change");
+  const card = document.getElementById("card");
+  const address = document.getElementById("address");
+
+  invoke("get_server").then((server) => {
+    if (server && !changing) return location.replace(server);
+    if (server) address.value = server.replace(/^https:\/\//, "");
+    card.classList.remove("hidden");
+    address.select();
+  });
+
+  document.getElementById("form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      const server = await invoke("set_server", { address: address.value });
+      location.replace(server);
+    } catch (err) {
+      document.getElementById("error").textContent = String(err);
+    }
+  });
+</script>
+</body>
+</html>

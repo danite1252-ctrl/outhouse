@@ -1,0 +1,8 @@
+target
+data
+tools
+.env
+*.log
+deploy/.env
+deploy/livekit.yaml
+desktop

@@ -1,0 +1,837 @@
+//! Messages: history, send (with uploads), edit, delete, reactions, typing.
+
+use std::collections::HashMap;
+
+use axum::extract::{Multipart, Path, Query, State};
+use axum::http::StatusCode;
+use axum::Json;
+use chrono::{DateTime, Utc};
+use outhouse_common::gateway::ServerEvent;
+use outhouse_common::models::{
+    Attachment, CreateMessageRequest, EditMessageRequest, Embed, EmbedField, Message, MessageRef,
+    Reaction, User,
+};
+use outhouse_common::permissions as p;
+use serde::Deserialize;
+use sqlx::types::Json as SqlJson;
+use sqlx::PgPool;
+
+use crate::auth::{self, AuthUser};
+use crate::embeds;
+use crate::error::{AppError, AppResult};
+use crate::perms::{channel_access, ChannelAccess};
+use crate::state::{AppState, Audience};
+
+const MAX_MESSAGE_CHARS: usize = 4000;
+pub const MAX_FILES: usize = 10;
+pub const MAX_FILE_BYTES: usize = 25 * 1024 * 1024;
+const KEY_ALPHABET: &[u8] = b"abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+// ---- Loading -----------------------------------------------------------
+
+#[derive(sqlx::FromRow)]
+struct MessageRow {
+    id: i64,
+    channel_id: i64,
+    author_id: i64,
+    author_username: String,
+    author_display_name: String,
+    author_avatar_url: Option<String>,
+    author_bot: bool,
+    content: String,
+    created_at: DateTime<Utc>,
+    edited_at: Option<DateTime<Utc>>,
+    reply_to_id: Option<i64>,
+}
+
+const MESSAGE_SELECT: &str = "
+    SELECT m.id, m.channel_id, m.author_id,
+           u.username AS author_username,
+           COALESCE(m.override_name, gm.nickname, u.display_name) AS author_display_name,
+           m.override_avatar AS author_avatar_url,
+           u.is_bot AS author_bot,
+           m.content, m.created_at, m.edited_at, m.reply_to_id
+    FROM messages m
+    JOIN users u ON u.id = m.author_id
+    JOIN channels ch ON ch.id = m.channel_id
+    LEFT JOIN guild_members gm ON gm.guild_id = ch.guild_id AND gm.user_id = m.author_id";
+
+#[derive(sqlx::FromRow)]
+struct AttachmentRow {
+    id: i64,
+    message_id: i64,
+    storage_key: String,
+    filename: String,
+    content_type: String,
+    size: i64,
+}
+
+#[derive(sqlx::FromRow)]
+struct EmbedRow {
+    message_id: i64,
+    url: String,
+    kind: String,
+    title: Option<String>,
+    description: Option<String>,
+    site_name: Option<String>,
+    image_url: Option<String>,
+    color: Option<i32>,
+    author_name: Option<String>,
+    author_url: Option<String>,
+    author_icon_url: Option<String>,
+    footer: Option<String>,
+    thumbnail_url: Option<String>,
+    timestamp: Option<String>,
+    fields: Option<SqlJson<Vec<EmbedField>>>,
+}
+
+#[derive(sqlx::FromRow)]
+struct ReactionRow {
+    message_id: i64,
+    emoji: String,
+    user_ids: Vec<i64>,
+}
+
+#[derive(sqlx::FromRow)]
+struct ReplyRow {
+    id: i64,
+    author_id: i64,
+    author_display_name: String,
+    content: String,
+}
+
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+pub fn attachment_url(storage_key: &str, filename: &str) -> String {
+    format!("/files/{storage_key}/{}", url_encode(filename))
+}
+
+/// Turns database rows into full messages (attachments, embeds, reactions,
+/// reply previews), loading each kind in one query.
+async fn hydrate(db: &PgPool, rows: Vec<MessageRow>) -> AppResult<Vec<Message>> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+    let reply_ids: Vec<i64> = rows.iter().filter_map(|r| r.reply_to_id).collect();
+
+    let attachments = sqlx::query_as::<_, AttachmentRow>(
+        "SELECT id, message_id, storage_key, filename, content_type, size
+         FROM attachments WHERE message_id = ANY($1) ORDER BY id",
+    )
+    .bind(&ids[..])
+    .fetch_all(db)
+    .await?;
+    let embeds = sqlx::query_as::<_, EmbedRow>(
+        "SELECT message_id, url, kind, title, description, site_name, image_url,
+                color, author_name, author_url, author_icon_url, footer, thumbnail_url,
+                timestamp, fields
+         FROM message_embeds WHERE message_id = ANY($1) ORDER BY message_id, position",
+    )
+    .bind(&ids[..])
+    .fetch_all(db)
+    .await?;
+    let reactions = sqlx::query_as::<_, ReactionRow>(
+        "SELECT message_id, emoji, array_agg(user_id ORDER BY created_at) AS user_ids
+         FROM reactions WHERE message_id = ANY($1)
+         GROUP BY message_id, emoji
+         ORDER BY min(created_at)",
+    )
+    .bind(&ids[..])
+    .fetch_all(db)
+    .await?;
+    let replies = if reply_ids.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_as::<_, ReplyRow>(
+            "SELECT m.id, m.author_id,
+                    COALESCE(m.override_name, gm.nickname, u.display_name) AS author_display_name,
+                    m.content
+             FROM messages m
+             JOIN users u ON u.id = m.author_id
+             JOIN channels ch ON ch.id = m.channel_id
+             LEFT JOIN guild_members gm ON gm.guild_id = ch.guild_id AND gm.user_id = m.author_id
+             WHERE m.id = ANY($1)",
+        )
+        .bind(&reply_ids[..])
+        .fetch_all(db)
+        .await?
+    };
+
+    let mut att_map: HashMap<i64, Vec<Attachment>> = HashMap::new();
+    for a in attachments {
+        att_map.entry(a.message_id).or_default().push(Attachment {
+            id: a.id,
+            url: attachment_url(&a.storage_key, &a.filename),
+            filename: a.filename,
+            content_type: a.content_type,
+            size: a.size,
+        });
+    }
+    let mut embed_map: HashMap<i64, Vec<Embed>> = HashMap::new();
+    for e in embeds {
+        embed_map.entry(e.message_id).or_default().push(Embed {
+            url: e.url,
+            kind: e.kind,
+            title: e.title,
+            description: e.description,
+            site_name: e.site_name,
+            image_url: e.image_url,
+            color: e.color,
+            author_name: e.author_name,
+            author_url: e.author_url,
+            author_icon_url: e.author_icon_url,
+            footer: e.footer,
+            thumbnail_url: e.thumbnail_url,
+            timestamp: e.timestamp,
+            fields: e.fields.map(|f| f.0).unwrap_or_default(),
+        });
+    }
+    let mut reaction_map: HashMap<i64, Vec<Reaction>> = HashMap::new();
+    for r in reactions {
+        reaction_map
+            .entry(r.message_id)
+            .or_default()
+            .push(Reaction {
+                emoji: r.emoji,
+                user_ids: r.user_ids,
+            });
+    }
+    let reply_map: HashMap<i64, MessageRef> = replies
+        .into_iter()
+        .map(|r| {
+            (
+                r.id,
+                MessageRef {
+                    id: r.id,
+                    author_id: r.author_id,
+                    author_display_name: r.author_display_name,
+                    content: r.content.chars().take(120).collect(),
+                },
+            )
+        })
+        .collect();
+
+    Ok(rows
+        .into_iter()
+        .map(|r| Message {
+            reply_to: r.reply_to_id.and_then(|id| reply_map.get(&id).cloned()),
+            attachments: att_map.remove(&r.id).unwrap_or_default(),
+            embeds: embed_map.remove(&r.id).unwrap_or_default(),
+            reactions: reaction_map.remove(&r.id).unwrap_or_default(),
+            id: r.id,
+            channel_id: r.channel_id,
+            author_id: r.author_id,
+            author_username: r.author_username,
+            author_display_name: r.author_display_name,
+            author_avatar_url: r.author_avatar_url,
+            author_bot: r.author_bot,
+            content: r.content,
+            created_at: r.created_at,
+            edited_at: r.edited_at,
+        })
+        .collect())
+}
+
+pub async fn fetch_message(db: &PgPool, message_id: i64) -> AppResult<Message> {
+    let sql = format!("{MESSAGE_SELECT} WHERE m.id = $1");
+    let row = sqlx::query_as::<_, MessageRow>(&sql)
+        .bind(message_id)
+        .fetch_optional(db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    hydrate(db, vec![row])
+        .await?
+        .pop()
+        .ok_or(AppError::NotFound)
+}
+
+/// Loads a message and checks it belongs to the channel.
+async fn message_in_channel(db: &PgPool, channel_id: i64, message_id: i64) -> AppResult<Message> {
+    let msg = fetch_message(db, message_id).await?;
+    if msg.channel_id != channel_id {
+        return Err(AppError::NotFound);
+    }
+    Ok(msg)
+}
+
+/// Saves embeds for a message (replacing nothing: positions continue after
+/// any existing ones).
+pub async fn insert_embeds(db: &PgPool, message_id: i64, embeds: &[Embed]) -> AppResult<()> {
+    let start: i32 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(position) + 1, 0) FROM message_embeds WHERE message_id = $1",
+    )
+    .bind(message_id)
+    .fetch_one(db)
+    .await?;
+    for (i, e) in embeds.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO message_embeds
+                 (message_id, position, url, kind, title, description, site_name, image_url,
+                  color, author_name, author_url, author_icon_url, footer, thumbnail_url,
+                  timestamp, fields)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+        )
+        .bind(message_id)
+        .bind(start + i as i32)
+        .bind(&e.url)
+        .bind(&e.kind)
+        .bind(&e.title)
+        .bind(&e.description)
+        .bind(&e.site_name)
+        .bind(&e.image_url)
+        .bind(e.color)
+        .bind(&e.author_name)
+        .bind(&e.author_url)
+        .bind(&e.author_icon_url)
+        .bind(&e.footer)
+        .bind(&e.thumbnail_url)
+        .bind(&e.timestamp)
+        .bind(if e.fields.is_empty() {
+            None
+        } else {
+            Some(SqlJson(e.fields.clone()))
+        })
+        .execute(db)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Posts a message as a bot user (webhooks and news feeds).
+#[allow(clippy::too_many_arguments)]
+pub async fn post_bot_message(
+    st: &AppState,
+    guild_id: i64,
+    channel_id: i64,
+    author_id: i64,
+    override_name: Option<String>,
+    override_avatar: Option<String>,
+    content: String,
+    embeds: Vec<Embed>,
+) -> AppResult<Message> {
+    let id = st.ids.next_id();
+    sqlx::query(
+        "INSERT INTO messages (id, channel_id, author_id, content, override_name, override_avatar)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(id)
+    .bind(channel_id)
+    .bind(author_id)
+    .bind(&content)
+    .bind(&override_name)
+    .bind(&override_avatar)
+    .execute(&st.db)
+    .await?;
+    insert_embeds(&st.db, id, &embeds).await?;
+    sqlx::query("UPDATE channels SET last_message_id = $2 WHERE id = $1")
+        .bind(channel_id)
+        .bind(id)
+        .execute(&st.db)
+        .await?;
+    let message = fetch_message(&st.db, id).await?;
+    st.dispatch(
+        Audience::Channel {
+            guild_id,
+            channel_id,
+        },
+        ServerEvent::MessageCreate(message.clone()),
+    );
+    if embeds.is_empty() {
+        embeds::spawn_previews(st.clone(), guild_id, channel_id, id, content);
+    }
+    Ok(message)
+}
+
+// ---- History -----------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct HistoryQuery {
+    /// Only messages older than this ID (for scrolling back).
+    before: Option<String>,
+    limit: Option<i64>,
+}
+
+pub async fn list(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(channel_id): Path<i64>,
+    Query(q): Query<HistoryQuery>,
+) -> AppResult<Json<Vec<Message>>> {
+    let access = channel_access(&st.db, channel_id, user.id).await?;
+    access.require(p::READ_HISTORY)?;
+    let before = match q.before.as_deref() {
+        Some(s) => Some(
+            s.parse::<i64>()
+                .map_err(|_| AppError::BadRequest("`before` must be a message ID.".into()))?,
+        ),
+        None => None,
+    };
+    let limit = q.limit.unwrap_or(50).clamp(1, 100);
+    let sql = format!(
+        "{MESSAGE_SELECT}
+         WHERE m.channel_id = $1 AND ($2::BIGINT IS NULL OR m.id < $2)
+         ORDER BY m.id DESC LIMIT $3"
+    );
+    let mut rows = sqlx::query_as::<_, MessageRow>(&sql)
+        .bind(channel_id)
+        .bind(before)
+        .bind(limit)
+        .fetch_all(&st.db)
+        .await?;
+    rows.reverse(); // oldest first, ready to display
+    Ok(Json(hydrate(&st.db, rows).await?))
+}
+
+// ---- Sending -----------------------------------------------------------
+
+struct PendingFile {
+    storage_key: String,
+    filename: String,
+    content_type: String,
+    data: axum::body::Bytes,
+}
+
+fn check_content(content: &str, allow_empty: bool) -> AppResult<()> {
+    if content.is_empty() && !allow_empty {
+        return Err(AppError::BadRequest("Messages can't be empty.".into()));
+    }
+    if content.chars().count() > MAX_MESSAGE_CHARS {
+        return Err(AppError::BadRequest(format!(
+            "Messages can be up to {MAX_MESSAGE_CHARS} characters."
+        )));
+    }
+    Ok(())
+}
+
+async fn create_message(
+    st: &AppState,
+    access: &ChannelAccess,
+    user: &User,
+    content: String,
+    reply_to_id: Option<i64>,
+    files: Vec<PendingFile>,
+) -> AppResult<Message> {
+    let channel_id = access.channel.id;
+    let guild_id = access.channel.guild_id;
+    let content = content.trim().to_string();
+    check_content(&content, !files.is_empty())?;
+
+    if let Some(reply_id) = reply_to_id {
+        let reply_channel: Option<i64> =
+            sqlx::query_scalar("SELECT channel_id FROM messages WHERE id = $1")
+                .bind(reply_id)
+                .fetch_optional(&st.db)
+                .await?;
+        if reply_channel != Some(channel_id) {
+            return Err(AppError::BadRequest(
+                "The message you're replying to is gone.".into(),
+            ));
+        }
+    }
+
+    // Files go to disk first, so a failed write never leaves a broken message.
+    if !files.is_empty() {
+        tokio::fs::create_dir_all(&st.config.upload_dir)
+            .await
+            .map_err(|e| anyhow::anyhow!("creating upload folder: {e}"))?;
+        for f in &files {
+            tokio::fs::write(st.config.upload_dir.join(&f.storage_key), &f.data)
+                .await
+                .map_err(|e| anyhow::anyhow!("saving upload: {e}"))?;
+        }
+    }
+
+    let id = st.ids.next_id();
+    let mut tx = st.db.begin().await?;
+    sqlx::query(
+        "INSERT INTO messages (id, channel_id, author_id, content, reply_to_id)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(id)
+    .bind(channel_id)
+    .bind(user.id)
+    .bind(&content)
+    .bind(reply_to_id)
+    .execute(&mut *tx)
+    .await?;
+    for f in &files {
+        sqlx::query(
+            "INSERT INTO attachments (id, message_id, storage_key, filename, content_type, size)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(st.ids.next_id())
+        .bind(id)
+        .bind(&f.storage_key)
+        .bind(&f.filename)
+        .bind(&f.content_type)
+        .bind(f.data.len() as i64)
+        .execute(&mut *tx)
+        .await?;
+    }
+    sqlx::query("UPDATE channels SET last_message_id = $2 WHERE id = $1")
+        .bind(channel_id)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    // Your own messages count as read.
+    sqlx::query(
+        "INSERT INTO read_states (user_id, channel_id, last_read_id) VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, channel_id) DO UPDATE SET last_read_id = EXCLUDED.last_read_id",
+    )
+    .bind(user.id)
+    .bind(channel_id)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    let message = fetch_message(&st.db, id).await?;
+    st.dispatch(
+        Audience::Channel {
+            guild_id,
+            channel_id,
+        },
+        ServerEvent::MessageCreate(message.clone()),
+    );
+    if access.perms & p::EMBED_LINKS != 0 {
+        embeds::spawn_previews(st.clone(), guild_id, channel_id, id, content);
+    }
+    Ok(message)
+}
+
+pub async fn send(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(channel_id): Path<i64>,
+    Json(req): Json<CreateMessageRequest>,
+) -> AppResult<Json<Message>> {
+    let access = channel_access(&st.db, channel_id, user.id).await?;
+    access.require(p::SEND_MESSAGES)?;
+    let msg = create_message(
+        &st,
+        &access,
+        &user,
+        req.content,
+        req.reply_to_id,
+        Vec::new(),
+    )
+    .await?;
+    Ok(Json(msg))
+}
+
+/// Keeps a safe, readable version of an uploaded file's name.
+fn clean_filename(raw: &str) -> String {
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or("");
+    let cleaned: String = base
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(100)
+        .collect();
+    let cleaned = cleaned.trim().trim_start_matches('.').to_string();
+    if cleaned.is_empty() {
+        "file".into()
+    } else {
+        cleaned
+    }
+}
+
+fn guess_content_type(filename: &str) -> &'static str {
+    let ext = filename
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "ogg" => "audio/ogg",
+        "wav" => "audio/wav",
+        "txt" | "log" => "text/plain",
+        "pdf" => "application/pdf",
+        _ => "application/octet-stream",
+    }
+}
+
+fn upload_error(e: impl std::fmt::Display) -> AppError {
+    AppError::BadRequest(format!("Upload failed: {e}"))
+}
+
+/// Multipart form: `content` (text), optional `reply_to_id`, and up to
+/// ten `files`.
+pub async fn upload(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(channel_id): Path<i64>,
+    mut form: Multipart,
+) -> AppResult<Json<Message>> {
+    let access = channel_access(&st.db, channel_id, user.id).await?;
+    access.require(p::SEND_MESSAGES | p::ATTACH_FILES)?;
+
+    let mut content = String::new();
+    let mut reply_to_id = None;
+    let mut files = Vec::new();
+    while let Some(field) = form.next_field().await.map_err(upload_error)? {
+        let name = field.name().unwrap_or_default().to_string();
+        match name.as_str() {
+            "content" => content = field.text().await.map_err(upload_error)?,
+            "reply_to_id" => {
+                let text = field.text().await.map_err(upload_error)?;
+                let text = text.trim();
+                if !text.is_empty() {
+                    reply_to_id = Some(
+                        text.parse::<i64>()
+                            .map_err(|_| AppError::BadRequest("Bad reply_to_id.".into()))?,
+                    );
+                }
+            }
+            "files" => {
+                if files.len() >= MAX_FILES {
+                    return Err(AppError::BadRequest(format!(
+                        "Up to {MAX_FILES} files per message."
+                    )));
+                }
+                let filename = clean_filename(field.file_name().unwrap_or("file"));
+                let content_type = guess_content_type(&filename).to_string();
+                let data = field.bytes().await.map_err(upload_error)?;
+                if data.len() > MAX_FILE_BYTES {
+                    return Err(AppError::BadRequest(format!(
+                        "{filename} is too big (25 MB max)."
+                    )));
+                }
+                files.push(PendingFile {
+                    storage_key: auth::random_code(24, KEY_ALPHABET),
+                    filename,
+                    content_type,
+                    data,
+                });
+            }
+            _ => {}
+        }
+    }
+    if files.is_empty() && content.trim().is_empty() {
+        return Err(AppError::BadRequest("Nothing to send.".into()));
+    }
+    let msg = create_message(&st, &access, &user, content, reply_to_id, files).await?;
+    Ok(Json(msg))
+}
+
+// ---- Editing and deleting ------------------------------------------------
+
+pub async fn edit(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((channel_id, message_id)): Path<(i64, i64)>,
+    Json(req): Json<EditMessageRequest>,
+) -> AppResult<Json<Message>> {
+    let access = channel_access(&st.db, channel_id, user.id).await?;
+    let original = message_in_channel(&st.db, channel_id, message_id).await?;
+    if original.author_id != user.id {
+        return Err(AppError::Forbidden);
+    }
+    let content = req.content.trim().to_string();
+    check_content(&content, !original.attachments.is_empty())?;
+
+    sqlx::query("UPDATE messages SET content = $2, edited_at = now() WHERE id = $1")
+        .bind(message_id)
+        .bind(&content)
+        .execute(&st.db)
+        .await?;
+    sqlx::query("DELETE FROM message_embeds WHERE message_id = $1")
+        .bind(message_id)
+        .execute(&st.db)
+        .await?;
+
+    let message = fetch_message(&st.db, message_id).await?;
+    let guild_id = access.channel.guild_id;
+    st.dispatch(
+        Audience::Channel {
+            guild_id,
+            channel_id,
+        },
+        ServerEvent::MessageUpdate(message.clone()),
+    );
+    if access.perms & p::EMBED_LINKS != 0 {
+        embeds::spawn_previews(st.clone(), guild_id, channel_id, message_id, content);
+    }
+    Ok(Json(message))
+}
+
+pub async fn delete(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((channel_id, message_id)): Path<(i64, i64)>,
+) -> AppResult<StatusCode> {
+    let access = channel_access(&st.db, channel_id, user.id).await?;
+    let msg = message_in_channel(&st.db, channel_id, message_id).await?;
+    if msg.author_id != user.id {
+        access.require(p::MANAGE_MESSAGES)?;
+    }
+    let keys: Vec<String> =
+        sqlx::query_scalar("SELECT storage_key FROM attachments WHERE message_id = $1")
+            .bind(message_id)
+            .fetch_all(&st.db)
+            .await?;
+    sqlx::query("DELETE FROM messages WHERE id = $1")
+        .bind(message_id)
+        .execute(&st.db)
+        .await?;
+    for key in keys {
+        let _ = tokio::fs::remove_file(st.config.upload_dir.join(key)).await;
+    }
+    st.dispatch(
+        Audience::Channel {
+            guild_id: access.channel.guild_id,
+            channel_id,
+        },
+        ServerEvent::MessageDelete {
+            id: message_id,
+            channel_id,
+        },
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---- Reactions and typing ----------------------------------------------
+
+fn check_emoji(emoji: &str) -> AppResult<()> {
+    if emoji.is_empty() || emoji.len() > 32 || emoji.chars().any(char::is_whitespace) {
+        return Err(AppError::BadRequest("That's not an emoji.".into()));
+    }
+    Ok(())
+}
+
+pub async fn add_reaction(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((channel_id, message_id, emoji)): Path<(i64, i64, String)>,
+) -> AppResult<StatusCode> {
+    check_emoji(&emoji)?;
+    let access = channel_access(&st.db, channel_id, user.id).await?;
+    access.require(p::ADD_REACTIONS)?;
+    message_in_channel(&st.db, channel_id, message_id).await?;
+    let added = sqlx::query(
+        "INSERT INTO reactions (message_id, user_id, emoji) VALUES ($1, $2, $3)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(message_id)
+    .bind(user.id)
+    .bind(&emoji)
+    .execute(&st.db)
+    .await?
+    .rows_affected()
+        == 1;
+    if added {
+        st.dispatch(
+            Audience::Channel {
+                guild_id: access.channel.guild_id,
+                channel_id,
+            },
+            ServerEvent::ReactionAdd {
+                channel_id,
+                message_id,
+                user_id: user.id,
+                emoji,
+            },
+        );
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn remove_reaction(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((channel_id, message_id, emoji)): Path<(i64, i64, String)>,
+) -> AppResult<StatusCode> {
+    let access = channel_access(&st.db, channel_id, user.id).await?;
+    let removed =
+        sqlx::query("DELETE FROM reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3")
+            .bind(message_id)
+            .bind(user.id)
+            .bind(&emoji)
+            .execute(&st.db)
+            .await?
+            .rows_affected()
+            == 1;
+    if removed {
+        st.dispatch(
+            Audience::Channel {
+                guild_id: access.channel.guild_id,
+                channel_id,
+            },
+            ServerEvent::ReactionRemove {
+                channel_id,
+                message_id,
+                user_id: user.id,
+                emoji,
+            },
+        );
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn typing(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(channel_id): Path<i64>,
+) -> AppResult<StatusCode> {
+    let access = channel_access(&st.db, channel_id, user.id).await?;
+    access.require(p::SEND_MESSAGES)?;
+    st.dispatch(
+        Audience::Channel {
+            guild_id: access.channel.guild_id,
+            channel_id,
+        },
+        ServerEvent::TypingStart {
+            channel_id,
+            user_id: user.id,
+            display_name: user.display_name,
+        },
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filenames_are_cleaned() {
+        assert_eq!(clean_filename("../../etc/passwd"), "passwd");
+        assert_eq!(
+            clean_filename("C:\\Users\\dan\\raid plan.png"),
+            "raid plan.png"
+        );
+        assert_eq!(clean_filename("<script>.html"), "_script_.html");
+        assert_eq!(clean_filename(".."), "file");
+    }
+
+    #[test]
+    fn urls_are_encoded() {
+        assert_eq!(
+            attachment_url("abc", "raid plan.png"),
+            "/files/abc/raid%20plan.png"
+        );
+    }
+}
