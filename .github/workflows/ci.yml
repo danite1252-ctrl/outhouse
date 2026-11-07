@@ -217,9 +217,15 @@ jobs:
           npm run tauri -- icon icons/icon.png
           RES=gen/android/app/src/main/res
           # Adaptive icon background: the logo's own dark tile colour instead of white.
-          for f in $(grep -rl "ic_launcher_background" "$RES/values" 2>/dev/null); do
-            sed -i 's#<color name="ic_launcher_background">[^<]*</color>#<color name="ic_launcher_background">#1C1C1F</color>#' "$f"
-            cat "$f"
+          FILES=$(grep -rl "ic_launcher_background" "$RES/values" 2>/dev/null || true)
+          if [ -z "$FILES" ]; then
+            mkdir -p "$RES/values"
+            printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n  <color name="ic_launcher_background">#1C1C1F</color>\n</resources>\n' > "$RES/values/ic_launcher_background.xml"
+            FILES="$RES/values/ic_launcher_background.xml"
+          fi
+          for f in $FILES; do
+            sed -i 's|<color name="ic_launcher_background">[^<]*</color>|<color name="ic_launcher_background">#1C1C1F</color>|' "$f"
+            echo "$f:"; cat "$f"
           done
           find "$RES" -path '*mipmap*' -type f | sort
           cat "$RES/mipmap-anydpi-v26/ic_launcher.xml" 2>/dev/null || true

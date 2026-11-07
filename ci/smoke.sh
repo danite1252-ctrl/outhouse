@@ -514,7 +514,7 @@ TICKID=$(jq -r .event.id <<<"$TICK")
 TOKEN=$TOKEN_B; fail_call PUT "/api/events/$TICKID/signup" '{"status":"yes","role":"dps","class":"Mage","spec":"Fire"}'; TOKEN=$TOKEN_A
 # A weekly Sunday raid in Sydney whose sign-ups go up the Monday before at 9am.
 SUN=$(python3 -c 'import datetime as d; t=d.date.today()+d.timedelta(days=1); t+=d.timedelta(days=(6-t.weekday())%7); print(t.isoformat())')
-SUNSTART=$(TZ=Australia/Sydney date -u -d "$SUN 20:00" +%Y-%m-%dT%H:%M:%SZ)
+SUNSTART=$(date -u -d "TZ=\"Australia/Sydney\" $SUN 20:00" +%Y-%m-%dT%H:%M:%SZ)
 WK=$(call POST "/api/channels/$PT/events" '{"title":"Weekly Sunday","starts_at":"'"$SUNSTART"'","game":"forever","repeat":{"weekdays":[6],"every_weeks":1,"count":4,"time_zone":"Australia/Sydney"},"post_rule":{"mode":"weekday","weekday":0,"time":"09:00"}}')
 WKS=$(jq -r .event.series_id <<<"$WK")
 WFROM=$(date -u +%Y-%m-%dT%H:%M:%SZ); WTO=$(date -u -d '+45 days' +%Y-%m-%dT%H:%M:%SZ)
