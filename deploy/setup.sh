@@ -41,7 +41,7 @@ if ! grep -q '^GITHUB_TOKEN=' .env; then
   echo "fetches new builds from your private GitHub repo. That needs a GitHub"
   echo "fine-grained token with read-only access to the repo's Contents"
   echo "(github.com/settings/personal-access-tokens). Press Enter to skip."
-  read -rsp "GitHub token: " GITHUB_TOKEN; echo
+  read -rp "GitHub token (paste once): " GITHUB_TOKEN
   read -rp "GitHub repo [danite1252-ctrl/outhouse]: " GITHUB_REPO
   echo "GITHUB_TOKEN=${GITHUB_TOKEN}" >> .env
   echo "GITHUB_REPO=${GITHUB_REPO:-danite1252-ctrl/outhouse}" >> .env

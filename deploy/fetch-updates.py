@@ -59,8 +59,18 @@ def main():
     if not token or not repo:
         print("GITHUB_TOKEN / GITHUB_REPO not set in .env; app updates are off.")
         return 0
-    with github(f"https://api.github.com/repos/{repo}/releases/tags/latest", token) as res:
-        release = json.load(res)
+    try:
+        with github(f"https://api.github.com/repos/{repo}/releases/tags/latest", token) as res:
+            release = json.load(res)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            print(f"GitHub refused the token ({e.code}). Check GITHUB_TOKEN in .env: it should be one "
+                  f"fine-grained token with Contents: Read-only on {repo}.")
+        elif e.code == 404:
+            print(f"No 'latest' release found in {repo} (or the token can't see that repo).")
+        else:
+            print(f"GitHub error {e.code}.")
+        return 1
     marker = f"{release['id']}:{release.get('published_at')}"
     stamp = OUT / ".release"
     if stamp.exists() and stamp.read_text() == marker:
