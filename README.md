@@ -30,6 +30,11 @@ A small, self-hosted Discord-style chat app for our WoW group and family, writte
 - **Right-click menus** on messages, channels, outhouses and members, plus hover buttons on messages
 - Shortcuts: Enter sends, Shift+Enter new line, ↑ edits your last message, Esc cancels, Shift-click 🗑 deletes without asking
 - **Raid planner:** the 📅 button plans a raid (time, length, tank/healer/DPS slots); people sign up from the card with class and spec, as late, tentative or "can't make it"; organisers can bench or remove people and copy the roster; everyone signed up gets an @mention 15 minutes before
+  - **Repeating raids:** weekly on chosen days or every 2–4 weeks, ending after N raids, on a date, or never. The server makes each raid four weeks ahead (each with its own sign-ups) and posts its card in chat a week before. Edit or cancel "this raid" or "this and future raids"
+  - **Calendar:** month view from the raid list (an agenda list on phones), in your own time zone; click a day to see its raids, sign up, or plan one
+  - **Sign-up deadline:** optionally lock sign-ups 1 hour to 2 days before the start; after that only the raid leader (or anyone with Manage Events) can change the roster
+  - **Bench:** when a role is full, new sign-ups go on the bench in sign-up order; when a spot opens the first one moves up automatically and gets a live notice plus a DM from the Outhouse Helper. Leaders can move people between roster and bench by clicking their name (people benched by hand aren't moved up automatically)
+  - **Attendance:** once a raid starts its leader marks present / late / absent / benched (with "mark all signed-up as present"); attendance % and recent raids show on profile cards, and the raid list has a sortable attendance table for the last 5–50 raids. Present, late and benched count as turning up
 - **Profiles:** profile picture, banner, "about me", accent colour and ten built-in backgrounds; click anyone's name or picture for their card
 - **Bots and slash commands:** Server settings → Bots makes a bot with a token; bots can use the API and offer commands like `/roll` (example in `web/bots/`)
 - **Desktop app (Windows):** push to talk that works in game, notifications, tray (`desktop/`)
@@ -166,5 +171,5 @@ headless Chrome), and builds the Windows installer and Android APK.
 
 ## Next up (see the project docs for the full plan)
 1. Battle.net character linking (pick your character when signing up for raids)
-2. Raid attendance history and loot notes
+2. Loot notes
 3. Mobile push notifications

@@ -722,6 +722,7 @@ dialog select { height: 40px; padding: 0 10px; border-radius: 8px; border: 1px s
 .rl-tool:hover { border-color: var(--ember); }
 .rl-tag { margin-left: 6px; font-size: 12px; }
 .raid-list { width: 360px; max-width: calc(100vw - 32px); }
+.rl-rows { display: grid; gap: 6px; max-height: min(46vh, 400px); overflow-y: auto; padding-right: 2px; }
 
 dialog.raid-host { padding: 16px; }
 dialog.raid-host .popover, dialog.raid-host .menu { z-index: 60; }

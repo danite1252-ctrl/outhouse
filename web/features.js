@@ -589,10 +589,16 @@ async function openRaidList(anchor) {
       el("div", { class: "rl-tools" },
         el("button", { type: "button", class: "rl-tool", onclick: () => { closePopover(); openCalendar(); } }, "📅 Calendar"),
         el("button", { type: "button", class: "rl-tool", onclick: () => { closePopover(); openAttendanceTable(); } }, "📊 Attendance"))),
-    ...(rows.length ? rows : [el("p", { class: "muted small" }, "Nothing planned yet.")]),
+    rows.length ? el("div", { class: "rl-rows" }, rows) : el("p", { class: "muted small" }, "Nothing planned yet."),
     events.length > rows.length ? el("button", { type: "button", class: "link", onclick: () => { closePopover(); openCalendar(); } }, `+${events.length - rows.length} more in the calendar`) : null,
     can("send_messages", state.channelId) ? el("button", { class: "primary", onclick: () => { closePopover(); openRaidDialog(); } }, "＋ Plan a raid") : null,
   );
+  // It grew: line it up above the button again.
+  const pop = box.closest(".popover");
+  if (!pop) return;
+  const r = anchor.getBoundingClientRect();
+  const pr = pop.getBoundingClientRect();
+  placeFixed(pop, Math.min(r.right - pr.width, window.innerWidth - pr.width - 8), r.top - pr.height - 8);
 }
 
 $("raid-btn").addEventListener("click", (e) => {
