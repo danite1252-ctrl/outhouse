@@ -114,6 +114,8 @@ function updateTitle() {
   for (const u of state.unread.values()) total += u.mentions;
   const title = total ? `(${countLabel(total)}) Outhouse` : "Outhouse";
   if (document.title !== title) document.title = title;
+  // On phones the outhouse list is tucked away, so the ☰ button gets a red dot.
+  $("nav-toggle")?.classList.toggle("has-mentions", total > 0);
 }
 
 function refreshUnreadUi() {

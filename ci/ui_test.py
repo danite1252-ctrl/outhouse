@@ -207,6 +207,7 @@ with sync_playwright() as p:
     phone.add_init_script(f"localStorage.setItem('outhouse_token', {json.dumps(TOKEN)}); localStorage.setItem('outhouse_guild', {json.dumps(guild['id'])}); localStorage.setItem('outhouse_channel_{guild['id']}', {json.dumps(chan['id'])});")
     phone.goto(BASE + "/")
     phone.wait_for_selector(".event-card", timeout=15000)
+    phone.wait_for_selector("#nav-toggle.has-mentions", timeout=10000)  # Family still has mentions
     phone.screenshot(path=f"{SHOTS}/08-phone-chat.png")
     phone.click("#nav-toggle")
     phone.wait_for_timeout(400)

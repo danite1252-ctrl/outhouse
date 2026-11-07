@@ -550,6 +550,8 @@ html.android-app { --safe-top: max(env(safe-area-inset-top, 0px), 32px); --safe-
 .detached-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px 6px 12px; margin-bottom: 6px; border-radius: 10px; background: var(--raised); border: 1px solid var(--line); font-size: 13px; color: var(--muted); }
 .detached-bar .ghost { height: 30px; padding: 0 10px; color: var(--glow); border-color: var(--ember); }
 
+#nav-toggle { position: relative; }
+#nav-toggle.has-mentions::after { content: ""; position: absolute; top: 4px; right: 4px; width: 9px; height: 9px; border-radius: 50%; background: #e5484d; border: 2px solid var(--night); }
 @media (max-width: 760px) {
   .chat-tools { margin-left: auto; gap: 2px; }
   .chat-head #members-toggle { margin-left: 0; }
