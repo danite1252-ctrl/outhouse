@@ -1148,3 +1148,15 @@ span.audit-target { cursor: default; }
 @media (prefers-reduced-motion: reduce) {
   .profile-card .pc-fx, .profile-card.anim .pc-banner::after, .theme-swatch.anim::after { animation: none !important; }
 }
+
+/* ---------- Screen share quality picker ---------- */
+.share-picker { display: grid; gap: 8px; width: 260px; padding: 4px; }
+.share-title { font-weight: 700; }
+.share-label { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.share-seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; padding: 3px; border-radius: 10px; background: var(--night); border: 1px solid var(--line); }
+.share-seg button { height: 30px; border: 0; border-radius: 7px; background: none; color: var(--muted); font-weight: 600; font-size: 13px; }
+.share-seg button:hover { color: var(--text); background: var(--raised); }
+.share-seg button.on { background: var(--ember); color: var(--night); }
+.share-hint { min-height: 2.6em; }
+.share-go { height: 38px; }
+.st-quality { flex: 0 0 auto; padding: 1px 5px; border-radius: 4px; background: rgba(255, 255, 255, .14); font-size: 11px; font-weight: 600; white-space: nowrap; }

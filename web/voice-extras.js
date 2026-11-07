@@ -220,32 +220,106 @@ function screenShareButton() {
     "aria-label": v.sharing ? "Stop sharing your screen" : "Share your screen",
     onclick: (e) => {
       if (state.voice.sharing) return stopScreenShare();
-      const r = e.currentTarget.getBoundingClientRect();
-      openMenu(r.left, r.top - 96, [
-        { label: "Share screen", onClick: () => startScreenShare(false) },
-        { label: "Share screen with sound", onClick: () => startScreenShare(true) },
-      ]);
+      openSharePicker(e.currentTarget);
     },
   });
   btn.innerHTML = VOICE_ICONS.screen;
   return btn;
 }
 
-async function startScreenShare(withSound) {
+// Screen share quality: resolution × frame rate, with bitrates to match.
+const SHARE_RESOLUTIONS = {
+  "480p": { width: 854, height: 480 },
+  "720p": { width: 1280, height: 720 },
+  "1080p": { width: 1920, height: 1080 },
+};
+// Max bitrate (bits/s) by resolution and frame rate.
+const SHARE_BITRATES = {
+  "480p": { 15: 800_000, 30: 1_200_000, 60: 1_800_000 },
+  "720p": { 15: 1_500_000, 30: 2_500_000, 60: 3_500_000 },
+  "1080p": { 15: 3_000_000, 30: 4_500_000, 60: 6_000_000 },
+};
+const SHARE_FPS = [15, 30, 60];
+
+function shareSettings() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem("outhouse_share_quality") || "null"); } catch { /* storage unavailable */ }
+  const res = SHARE_RESOLUTIONS[saved?.res] ? saved.res : "1080p";
+  const fps = SHARE_FPS.includes(saved?.fps) ? saved.fps : 15;
+  return { res, fps, sound: !!saved?.sound };
+}
+
+function saveShareSettings(q) {
+  try { localStorage.setItem("outhouse_share_quality", JSON.stringify(q)); } catch { /* storage unavailable */ }
+}
+
+const shareLabel = (q) => `${q.res} · ${q.fps} fps`;
+
+// The picker the 🖥 button opens: quality, frame rate, sound, Share.
+function openSharePicker(anchor) {
+  const q = shareSettings();
+  const box = el("div", { class: "share-picker" });
+  const seg = (options, current, onPick, label) => el("div", { class: "share-seg", role: "radiogroup", "aria-label": label },
+    options.map(([value, text]) => el("button", {
+      type: "button", role: "radio", "aria-checked": String(value === current),
+      class: value === current ? "on" : "", onclick: () => { onPick(value); draw(); },
+    }, text)));
+  const draw = () => {
+    const sound = el("input", { type: "checkbox", checked: q.sound });
+    sound.addEventListener("change", () => { q.sound = sound.checked; });
+    box.replaceChildren(
+      el("div", { class: "share-title" }, "Share your screen"),
+      el("div", { class: "share-label" }, "Quality"),
+      seg([["480p", "480p"], ["720p", "720p"], ["1080p", "1080p"]], q.res, (v) => { q.res = v; }, "Quality"),
+      el("div", { class: "share-label" }, "Frame rate"),
+      seg(SHARE_FPS.map((f) => [f, `${f} fps`]), q.fps, (v) => { q.fps = v; }, "Frame rate"),
+      el("div", { class: "share-hint muted small" }, q.fps >= 30
+        ? "Smooth motion: good for games and videos. Uses more upload."
+        : "Sharp detail: good for text, code and spreadsheets."),
+      el("label", { class: "check-row" }, sound, el("span", {}, "Share sound too")),
+      el("button", { class: "primary share-go", onclick: () => {
+        saveShareSettings(q);
+        closePopover();
+        startScreenShare(q.sound, { res: q.res, fps: q.fps });
+      } }, "Share"));
+  };
+  draw();
+  openPopover(anchor, box, "above");
+}
+
+async function startScreenShare(withSound, quality = shareSettings()) {
   const room = state.voice.room;
   if (!room) return;
+  const res = SHARE_RESOLUTIONS[quality.res] ?? SHARE_RESOLUTIONS["1080p"];
+  const fps = SHARE_FPS.includes(quality.fps) ? quality.fps : 15;
+  const maxBitrate = SHARE_BITRATES[quality.res]?.[fps] ?? 3_000_000;
+  state.voice.shareQuality = { res: quality.res, fps };
   try {
     await room.localParticipant.setScreenShareEnabled(true, {
       audio: withSound ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false } : false,
       systemAudio: withSound ? "include" : "exclude",
       selfBrowserSurface: "exclude",
       surfaceSwitching: "include",
+      resolution: { width: res.width, height: res.height, frameRate: fps },
+      contentHint: fps >= 30 ? "motion" : "detail",
+    }, {
+      // Viewers read the quality from the track's name (shown on the tile).
+      name: `screen ${quality.res} ${fps}fps`,
+      screenShareEncoding: { maxBitrate, maxFramerate: fps },
+      screenShareSimulcastLayers: [],
     });
   } catch (err) {
     // Cancelling the picker isn't worth a message.
     if (err?.name !== "NotAllowedError" && err?.name !== "AbortError") toast(`Couldn't share your screen: ${err.message}`);
   }
   onLocalTracksChanged();
+}
+
+// "1080p · 15 fps" for a share, from its track name ("screen 1080p 15fps").
+function shareQualityOf(pub, local) {
+  if (local && state.voice.shareQuality) return shareLabel(state.voice.shareQuality);
+  const m = /(\d{3,4}p) (\d+)fps/.exec(pub?.trackName ?? "");
+  return m ? `${m[1]} · ${m[2]} fps` : "";
 }
 
 async function stopScreenShare() {
@@ -275,10 +349,10 @@ function screenTracks() {
   const { Track } = LK();
   const out = [];
   const mine = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
-  if (mine?.track) out.push({ id: room.localParticipant.identity, track: mine.track, local: true });
+  if (mine?.track) out.push({ id: room.localParticipant.identity, track: mine.track, local: true, quality: shareQualityOf(mine, true) });
   for (const p of room.remoteParticipants.values()) {
     const pub = p.getTrackPublication(Track.Source.ScreenShare);
-    if (pub?.track) out.push({ id: p.identity, track: pub.track, local: false });
+    if (pub?.track) out.push({ id: p.identity, track: pub.track, local: false, quality: shareQualityOf(pub, false) });
   }
   return out;
 }
@@ -316,7 +390,7 @@ function renderScreens() {
       title: "Click to enlarge, double-click for full screen",
       onclick: () => focusScreen(s.id),
       ondblclick: () => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); else node.requestFullscreen?.().catch(() => {}); },
-    }, video, el("div", { class: "st-label" }, el("span", { class: "live-badge" }, "LIVE"), el("span", { class: "st-name" }, name)), tools);
+    }, video, el("div", { class: "st-label" }, el("span", { class: "live-badge" }, "LIVE"), el("span", { class: "st-name" }, name), s.quality ? el("span", { class: "st-quality" }, s.quality) : null), tools);
     screens.tiles.set(s.id, { node, video, track: s.track });
     stage.append(node);
   }

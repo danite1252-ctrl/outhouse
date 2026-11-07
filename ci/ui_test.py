@@ -831,9 +831,18 @@ with sync_playwright() as p:
 
     # Screen share: Carol shares, Dave sees a tile and a LIVE badge.
     carolv.click("#voice-panel .vp-btn.share")
-    carolv.click(".menu button:has-text('Share screen') >> nth=0")
+    carolv.wait_for_selector(".share-picker .share-seg button.on:has-text('1080p')")
+    carolv.click(".share-picker .share-seg button:has-text('720p')")
+    carolv.click(".share-picker .share-seg button:has-text('30 fps')")
+    carolv.wait_for_selector(".share-picker .share-hint:has-text('Smooth motion')")
+    carolv.screenshot(path=f"{SHOTS}/79-share-quality-picker.png")
+    carolv.click(".share-picker button.share-go")
     carolv.wait_for_selector("#screen-stage .screen-tile.mine", timeout=15000)
     carolv.wait_for_selector("#voice-panel .vp-btn.share.on")
+    saved = carolv.evaluate("JSON.parse(localStorage.getItem('outhouse_share_quality'))")
+    assert saved["res"] == "720p" and saved["fps"] == 30, saved
+    carolv.wait_for_selector("#screen-stage .screen-tile.mine .st-quality:has-text('720p · 30 fps')", timeout=10000)
+    davev.wait_for_selector("#screen-stage .screen-tile .st-quality:has-text('720p · 30 fps')", timeout=15000)
     davev.wait_for_selector(f"#voice-channels .voice-user[data-id='{CAROL}'] .live-badge", timeout=10000)
     davev.wait_for_selector(f"#screen-stage .screen-tile[data-id='{CAROL}']", timeout=15000)
     davev.wait_for_function(f"document.querySelector(\"#screen-stage .screen-tile[data-id='{CAROL}'] video\").videoWidth > 0", timeout=15000)
