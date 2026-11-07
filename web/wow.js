@@ -282,7 +282,7 @@ function openLfgDialog(activity = "") {
       el("label", { class: "field" }, "Lowest level", minL),
       el("label", { class: "field" }, "Highest level", maxL)),
     el("label", { class: "check-row" }, timed, "Set a start time (otherwise: now)"),
-    el("div", { class: "raid-row even" },
+    el("div", { class: "raid-row even stack" },
       el("label", { class: "field" }, "Starts (your time)", when),
       el("label", { class: "field" }, "Listing ends after", expiry)),
     el("label", { class: "field" }, "Note", note),
@@ -352,6 +352,8 @@ const WOW_SITE = (e) => {
 };
 
 function wowLink(text, url, cls, style = "") {
+  // Only web links (a bot could send any embed).
+  if (url && !/^https?:\/\//i.test(url)) url = null;
   return url ? el("a", { class: cls, href: url, target: "_blank", rel: "noopener noreferrer", style }, text) : el("span", { class: cls, style }, text);
 }
 
@@ -470,7 +472,8 @@ profileCard = function (p, opts) {
       : classChip(c))),
     chars.length > shown.length ? el("div", { class: "muted small" }, `+${chars.length - shown.length} more`) : null);
   const body = card.querySelector(".pc-body");
-  body?.insertBefore(section, body.querySelector(".pc-section:last-of-type") ?? body.querySelector(".pc-actions"));
+  const since = [...(body?.querySelectorAll(".pc-section") ?? [])].find((x) => x.querySelector("h4")?.textContent === "MEMBER SINCE");
+  body?.insertBefore(section, since ?? body.querySelector(".pc-actions"));
   return card;
 };
 

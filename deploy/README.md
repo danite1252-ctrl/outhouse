@@ -76,6 +76,48 @@ A backup on the same VM won't survive the VM's disk dying, so copy the
 folder somewhere else now and then, for example from Windows:
 `scp -r danite@192.168.1.122:outhouse-backups C:\Backups\Outhouse`.
 
+## WoW tools (optional settings)
+The group finder (🔎 / `/lfg`), `/item`, `/char`, characters on profiles and
+Wowhead / Warcraft Logs / Raider.IO link cards work out of the box. Item cards
+come from Wowhead's Classic data; lookups are cached in the database for a
+week, and if Wowhead can't be reached the card falls back to a Wowhead search
+link. Optional settings, added to `~/outhouse/deploy/.env` (then
+`docker compose up -d`):
+
+| Setting | Default | What it does |
+|---|---|---|
+| `WOWHEAD_URL` | `https://www.wowhead.com` | Where item links and name searches go |
+| `WOWHEAD_BRANCH` | `classic` | Wowhead's section (if Wowhead adds a WoW: Forever section, put its name here) |
+| `WOWHEAD_TOOLTIP_URL` | `https://nether.wowhead.com` | Wowhead's item-details service |
+| `WOWHEAD_DATA_ENV` | `4` | Wowhead's data set number (4 = Classic era) |
+| `LINK_PREVIEWS_OFFLINE` | off | `1` = never fetch pages for link previews (WoW links still get a basic card) |
+
+### Battle.net linking (optional)
+With these set, Settings → Profile & picture shows **Link Battle.net**, which
+imports the Classic characters Blizzard lists for that account (people can
+still add and edit characters by hand; if Blizzard's API doesn't list WoW:
+Forever characters, nothing is imported and nothing breaks). Without them the
+button is hidden.
+
+1. Sign in at https://develop.battle.net/access/clients and **Create Client**.
+2. Name it "Outhouse", and add the **Redirect URL**
+   `https://outhouse.chat/api/bnet/callback` (your domain). Tick nothing else.
+3. Copy the client ID and secret into `~/outhouse/deploy/.env`:
+   ```
+   BNET_CLIENT_ID=...
+   BNET_CLIENT_SECRET=...
+   BNET_REGION=us        # or eu, kr, tw
+   ```
+4. `docker compose up -d` in `~/outhouse/deploy`.
+
+The server sends people back to `https://<your DOMAIN>/api/bnet/callback`,
+so that's the redirect URL to register. (Running it on your PC instead? Set
+`PUBLIC_URL=http://localhost:8080` in `.env` and register
+`http://localhost:8080/api/bnet/callback`.) Advanced: `BNET_PROFILE_NAMESPACES` (default
+`profile-classic1x-{region},profile-classic-{region}`) picks which Blizzard
+character lists to try. The Battle.net sign-in token is only used once and
+isn't stored.
+
 ## If something's off
 - **Certificate errors / site won't load from outside:** port 80 or 443 isn't
   reaching the server, or DNS isn't pointing at your IP yet. `docker compose logs caddy`.

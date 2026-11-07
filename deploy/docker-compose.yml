@@ -38,6 +38,17 @@ services:
       # Browsers reach voice through Caddy on the same address as the site.
       LIVEKIT_URL: wss://${DOMAIN}
       GIPHY_API_KEY: ${GIPHY_API_KEY:-}
+      # WoW tools (all optional; see README "WoW tools").
+      PUBLIC_URL: https://${DOMAIN}
+      BNET_CLIENT_ID: ${BNET_CLIENT_ID:-}
+      BNET_CLIENT_SECRET: ${BNET_CLIENT_SECRET:-}
+      BNET_REGION: ${BNET_REGION:-us}
+      BNET_PROFILE_NAMESPACES: ${BNET_PROFILE_NAMESPACES:-}
+      WOWHEAD_URL: ${WOWHEAD_URL:-}
+      WOWHEAD_BRANCH: ${WOWHEAD_BRANCH:-}
+      WOWHEAD_TOOLTIP_URL: ${WOWHEAD_TOOLTIP_URL:-}
+      WOWHEAD_DATA_ENV: ${WOWHEAD_DATA_ENV:-}
+      LINK_PREVIEWS_OFFLINE: ${LINK_PREVIEWS_OFFLINE:-}
     volumes:
       - uploads:/data/uploads
       # App updates fetched from GitHub by fetch-updates.py, served at /updates/.

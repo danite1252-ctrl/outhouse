@@ -847,7 +847,7 @@ dialog.attendance-table-dialog[open] { display: flex; flex-direction: column; ga
 }
 
 /* ---------- WoW tools: group finder, item/link/character cards, characters ---------- */
-.lfg-card { margin-top: 6px; max-width: 640px; border: 1px solid var(--line); border-left: 4px solid #4fb3ff; border-radius: 12px; background: var(--panel); padding: 12px 14px; display: grid; gap: 10px; }
+.lfg-card { margin-top: 6px; width: min(100%, 640px); box-sizing: border-box; border: 1px solid var(--line); border-left: 4px solid #4fb3ff; border-radius: 12px; background: var(--panel); padding: 12px 14px; display: grid; gap: 10px; }
 .lfg-card.kind-raid { border-left-color: var(--ember); }
 .lfg-card.full { border-left-color: var(--vacant); }
 .lfg-card.closed, .lfg-card.expired { border-left-color: var(--muted); }
@@ -882,7 +882,7 @@ dialog.attendance-table-dialog[open] { display: flex; flex-direction: column; ga
 .lfg-quick-btn:hover { border-color: var(--ember); color: var(--text); }
 .lfg-dialog input:disabled, .lfg-dialog select:disabled { opacity: .5; }
 
-.wow-embed { margin-top: 6px; max-width: 480px; display: flex; gap: 12px; align-items: flex-start; background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--q, var(--ember)); border-radius: 0 10px 10px 0; padding: 10px 12px; }
+.wow-embed { margin-top: 6px; width: min(100%, 480px); box-sizing: border-box; display: flex; gap: 12px; align-items: flex-start; background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--q, var(--ember)); border-radius: 0 10px 10px 0; padding: 10px 12px; }
 .wow-main { display: grid; gap: 4px; min-width: 0; flex: 1; }
 .wow-title { font-weight: 700; text-decoration: none; color: var(--q, var(--glow)); overflow-wrap: anywhere; }
 a.wow-title:hover { text-decoration: underline; }
@@ -920,6 +920,8 @@ button.char-chip:hover { border-color: var(--cc); }
 .char-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--cc); border-radius: 10px; background: var(--night); }
 .char-row-main { display: grid; gap: 2px; min-width: 0; }
 .char-row-name { font-weight: 700; color: var(--cc); }
+.char-row-main a { color: var(--glow); text-decoration: none; justify-self: start; }
+.char-row-main a:hover { text-decoration: underline; }
 .char-src { margin-left: 8px; font-size: 10px; font-weight: 700; color: #8fb8ff; background: #1d2b4a; border-radius: 6px; padding: 1px 6px; vertical-align: 2px; }
 .char-row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .small-btn { height: 32px !important; padding: 0 10px !important; font-size: 13px; border: 1px solid var(--line); border-radius: 8px; background: none; }
@@ -931,9 +933,13 @@ dialog.char-dialog { width: min(480px, 94vw); }
 .pc-chars .char-chips { gap: 4px; }
 
 @media (max-width: 760px) {
-  .lfg-card, .wow-embed { max-width: none; }
+  .lfg-card, .wow-embed { width: 100%; }
+  .lfg-dialog .raid-row.even:not(.stack) { grid-template-columns: 1fr 1fr; }
   .lfg-cols { grid-template-columns: 1fr; }
   .lfg-actions .ev-btn { flex: 1 1 auto; }
   .lfg-title { font-size: 16px; }
   .char-row-actions { width: 100%; }
 }
+
+/* Reply and "used /command" lines must not get squashed when the chat overflows. */
+.reply-ref { flex-shrink: 0; }
