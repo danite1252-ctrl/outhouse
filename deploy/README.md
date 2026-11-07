@@ -61,8 +61,20 @@ docker compose logs -f server     # Outhouse's log
 docker compose logs -f caddy      # certificate / HTTPS problems
 docker compose restart            # restart everything
 ```
-Backups: `docker compose exec db pg_dump -U outhouse outhouse > backup.sql`.
-Uploaded files live in the `outhouse_uploads` Docker volume.
+## Backups
+Setup schedules a backup every night at 3:30 am into `~/outhouse-backups`
+(the newest 14 are kept). Each one holds the database, every uploaded file
+and the `.env` settings.
+
+```bash
+cd ~/outhouse/deploy
+./backup.sh                                              # back up right now
+./restore.sh ~/outhouse-backups/outhouse-2026-11-08_0330.tgz   # put one back (replaces everything)
+```
+
+A backup on the same VM won't survive the VM's disk dying, so copy the
+folder somewhere else now and then, for example from Windows:
+`scp -r danite@192.168.1.122:outhouse-backups C:\Backups\Outhouse`.
 
 ## If something's off
 - **Certificate errors / site won't load from outside:** port 80 or 443 isn't
