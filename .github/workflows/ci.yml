@@ -176,7 +176,7 @@ jobs:
           java-version: 17
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          targets: aarch64-linux-android,armv7-linux-androideabi
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
@@ -192,17 +192,38 @@ jobs:
           echo "Using NDK at $NDK"
           echo "NDK_HOME=$NDK" >> "$GITHUB_ENV"
       - name: Set the version
+        # Android only updates in place when versionCode goes up, so set it explicitly from the
+        # run number (well above the 2xxx codes Tauri derived from 0.2.N in earlier builds).
+        env:
+          VERSION_CODE: ${{ github.run_number }}
         run: |
+          echo "ANDROID_VERSION_CODE=$((100000 + VERSION_CODE))" >> "$GITHUB_ENV"
           node -e '
             const fs = require("fs"), f = "desktop/src-tauri/tauri.conf.json";
             const c = JSON.parse(fs.readFileSync(f));
             c.version = process.env.VERSION;
+            c.bundle.android = Object.assign({}, c.bundle.android, { versionCode: 100000 + Number(process.env.VERSION_CODE) });
             fs.writeFileSync(f, JSON.stringify(c, null, 2));'
+          grep -n -A3 '"android"' desktop/src-tauri/tauri.conf.json
       - name: Generate the Android project
         working-directory: desktop/src-tauri
         run: |
           npm install --no-audit --no-fund
           npm run tauri -- android init --ci
+      - name: App icon (Outhouse logo, incl. adaptive and round icons)
+        working-directory: desktop/src-tauri
+        run: |
+          # `tauri icon` writes the Android mipmaps into gen/android when it exists.
+          npm run tauri -- icon icons/icon.png
+          RES=gen/android/app/src/main/res
+          # Adaptive icon background: the logo's own dark tile colour instead of white.
+          for f in $(grep -rl "ic_launcher_background" "$RES/values" 2>/dev/null); do
+            sed -i 's#<color name="ic_launcher_background">[^<]*</color>#<color name="ic_launcher_background">#1C1C1F</color>#' "$f"
+            cat "$f"
+          done
+          find "$RES" -path '*mipmap*' -type f | sort
+          cat "$RES/mipmap-anydpi-v26/ic_launcher.xml" 2>/dev/null || true
+          git -C "$GITHUB_WORKSPACE" checkout -- desktop/src-tauri/icons 2>/dev/null || true
       - name: Allow microphone and notifications
         run: |
           MANIFEST=desktop/src-tauri/gen/android/app/src/main/AndroidManifest.xml
@@ -214,21 +235,43 @@ jobs:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          echo "Build tools: $BT"
           if [ -n "$KEYSTORE_B64" ]; then
             # Release build signed with the Outhouse key, so new versions install over old ones.
-            npm run tauri -- android build --apk --target aarch64
+            # 64-bit and 32-bit ARM so older/cheaper phones can install it too.
+            npm run tauri -- android build --apk --target aarch64 armv7
+            find gen/android/app/build/outputs/apk -name '*.apk' -print
             APK=$(find gen/android/app/build/outputs/apk -name '*release*.apk' | head -1)
-            BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
             echo "$KEYSTORE_B64" | base64 -d > /tmp/outhouse.jks
-            "$BT/zipalign" -f -p 4 "$APK" /tmp/aligned.apk
+            # Align first (16 KB pages for native libs where zipalign supports it), then sign (v1+v2+v3).
+            "$BT/zipalign" -f -P 16 4 "$APK" /tmp/aligned.apk 2>/dev/null || "$BT/zipalign" -f -p 4 "$APK" /tmp/aligned.apk
             "$BT/apksigner" sign --ks /tmp/outhouse.jks --ks-pass env:KS_PASS --key-pass env:KS_PASS \
-              --ks-key-alias outhouse --out "$GITHUB_WORKSPACE/Outhouse-Android.apk" /tmp/aligned.apk
+              --ks-key-alias outhouse --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+              --out "$GITHUB_WORKSPACE/Outhouse-Android.apk" /tmp/aligned.apk
             rm -f /tmp/outhouse.jks
           else
             echo "::warning::ANDROID_KEYSTORE_BASE64 isn't set, so this is a debug build that can't update in place."
-            npm run tauri -- android build --apk --debug --target aarch64
+            npm run tauri -- android build --apk --debug --target aarch64 armv7
             cp "$(find gen/android/app/build/outputs/apk -name '*.apk' | head -1)" "$GITHUB_WORKSPACE/Outhouse-Android.apk"
           fi
+      - name: Check the APK (version code, signature, ABIs, icon)
+        run: |
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          APK=Outhouse-Android.apk
+          "$BT/aapt2" dump badging "$APK" | grep -E "^(package|sdkVersion|targetSdkVersion|application-icon|application:|native-code|launchable)" || true
+          "$BT/apksigner" verify --verbose --print-certs "$APK" | grep -v "^WARNING: META-INF" || true
+          "$BT/zipalign" -c -P 16 -v 4 "$APK" 2>/dev/null | tail -1 || "$BT/zipalign" -c -p -v 4 "$APK" | tail -1
+          unzip -l "$APK" | grep -E "lib/|res/mipmap" || true
+          CODE=$("$BT/aapt2" dump badging "$APK" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p")
+          echo "versionCode=$CODE (expected $ANDROID_VERSION_CODE)"
+          [ "$CODE" = "$ANDROID_VERSION_CODE" ] || { echo "::error::versionCode $CODE isn't $ANDROID_VERSION_CODE"; exit 1; }
+          SHA=$("$BT/apksigner" verify --print-certs "$APK" | sed -n 's/.*certificate SHA-256 digest: //p' | head -1)
+          echo "Signing certificate SHA-256: $SHA"
+          # The Outhouse release key (CN=Outhouse, O=Hartspace) used since build 15. A different key means
+          # phones can't update in place, so shout about it.
+          [ "$SHA" = "d6314591e5fa44c082282792c52831883bfe0cfd85632b518be504fe830f8ae3" ] \
+            || echo "::warning::The APK isn't signed with the usual Outhouse key ($SHA). Phones with an older Outhouse will need to uninstall first."
       - uses: actions/upload-artifact@v4
         with:
           name: Outhouse-Android-APK
