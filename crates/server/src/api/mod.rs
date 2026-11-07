@@ -18,7 +18,7 @@ pub mod polls;
 mod profiles;
 mod roles;
 mod search;
-mod sounds;
+pub mod sounds;
 mod threads;
 pub mod voice;
 mod webhooks;
@@ -170,11 +170,30 @@ pub fn router(state: AppState) -> Router {
         .route("/api/voice/state", post(voice::update_state))
         .route("/api/guilds/{id}/voice", get(voice::list))
         .route(
+            "/api/guilds/{id}/voice/{user}",
+            patch(voice::moderate).delete(voice::disconnect),
+        )
+        .route(
             "/api/guilds/{id}/sounds",
-            get(sounds::list).post(sounds::create),
+            get(sounds::list)
+                .post(sounds::create)
+                .layer(DefaultBodyLimit::max(sounds::MAX_SOUND_BYTES + 64 * 1024)),
         )
         .route("/api/sounds/{id}", delete(sounds::delete))
         .route("/api/sounds/{id}/play", post(sounds::play))
+        .route(
+            "/api/sounds/{id}/favourite",
+            put(sounds::add_favourite).delete(sounds::remove_favourite),
+        )
+        .route(
+            "/api/users/@me/entrance-sound",
+            get(sounds::get_entrance)
+                .post(sounds::set_entrance)
+                .delete(sounds::delete_entrance)
+                .layer(DefaultBodyLimit::max(
+                    sounds::MAX_ENTRANCE_BYTES + 64 * 1024,
+                )),
+        )
         // Profiles
         .route("/api/profiles/{id}", get(profiles::get))
         .route(

@@ -33,6 +33,7 @@ pub const USE_SOUNDBOARD: u64 = 1 << 18;
 pub const MUTE_MEMBERS: u64 = 1 << 19;
 pub const DEAFEN_MEMBERS: u64 = 1 << 20;
 pub const MOVE_MEMBERS: u64 = 1 << 21;
+pub const STREAM: u64 = 1 << 22;
 
 pub const MANAGE_CHANNELS: u64 = 1 << 24;
 pub const MANAGE_ROLES: u64 = 1 << 25;
@@ -61,6 +62,7 @@ pub const DEFAULT_EVERYONE: u64 = VIEW_CHANNEL
     | CHANGE_NICKNAME
     | CONNECT
     | SPEAK
+    | STREAM
     | USE_SOUNDBOARD;
 
 /// What everyone in a direct message can do (nobody moderates a DM: you
@@ -152,7 +154,10 @@ pub fn all_permissions() -> Vec<PermissionInfo> {
         ),
         info!(
             "mute_members",
-            MUTE_MEMBERS, "Mute members", "Server-mute people in voice.", true
+            MUTE_MEMBERS,
+            "Mute members",
+            "Server-mute people in voice (they stay muted until unmuted).",
+            true
         ),
         info!(
             "deafen_members",
@@ -160,7 +165,14 @@ pub fn all_permissions() -> Vec<PermissionInfo> {
         ),
         info!(
             "move_members",
-            MOVE_MEMBERS, "Move members", "Move people between voice channels.", true
+            MOVE_MEMBERS,
+            "Move members",
+            "Move people between voice channels, or disconnect them.",
+            true
+        ),
+        info!(
+            "stream",
+            STREAM, "Share screen", "Share their screen in voice channels.", true
         ),
         info!(
             "manage_channels",
@@ -436,8 +448,10 @@ mod tests {
 
     #[test]
     fn default_matches_migration() {
-        // migrations/0002 hard-codes this number for existing servers.
-        assert_eq!(DEFAULT_EVERYONE, 459_583);
+        // migrations/0002 hard-codes the old number (459_583) for existing
+        // servers; 0011 adds Share screen (1 << 22) to their @everyone.
+        assert_eq!(DEFAULT_EVERYONE, 459_583 | STREAM);
+        assert_eq!(STREAM, 4_194_304);
     }
 
     #[test]

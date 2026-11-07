@@ -36,6 +36,9 @@ pub struct Config {
     pub livekit_api_secret: Option<String>,
     /// Public LiveKit address; None = work it out from the request.
     pub livekit_url: Option<String>,
+    /// Where Outhouse reaches LiveKit's API (server to server), e.g.
+    /// http://127.0.0.1:7880.
+    pub livekit_api_url: String,
     /// Where Wowhead lives (links and name searches), e.g. https://www.wowhead.com.
     pub wowhead_url: String,
     /// Wowhead's section for the game: "classic" for Classic era / WoW: Forever.
@@ -110,6 +113,7 @@ impl Config {
             livekit_api_key: env_opt("LIVEKIT_API_KEY"),
             livekit_api_secret: env_opt("LIVEKIT_API_SECRET"),
             livekit_url: env_opt("LIVEKIT_URL"),
+            livekit_api_url: url_env("LIVEKIT_API_URL", "http://127.0.0.1:7880"),
             wowhead_url: url_env("WOWHEAD_URL", "https://www.wowhead.com"),
             wowhead_branch: env_opt("WOWHEAD_BRANCH")
                 .unwrap_or_else(|| "classic".into())
@@ -162,6 +166,8 @@ pub struct AppState {
     pub voice: Arc<Mutex<HashMap<i64, VoiceState>>>,
     /// User ID → when they last played a soundboard clip.
     pub sound_cooldowns: Arc<Mutex<HashMap<i64, Instant>>>,
+    /// User ID → when their entrance sound last played.
+    pub entrance_cooldowns: Arc<Mutex<HashMap<i64, Instant>>>,
     /// Slash commands waiting for their bot to reply (kept 15 minutes).
     pub interactions: Arc<Mutex<HashMap<i64, PendingInteraction>>>,
 }
@@ -195,6 +201,7 @@ impl AppState {
             presence: Arc::new(Mutex::new(HashMap::new())),
             voice: Arc::new(Mutex::new(HashMap::new())),
             sound_cooldowns: Arc::new(Mutex::new(HashMap::new())),
+            entrance_cooldowns: Arc::new(Mutex::new(HashMap::new())),
             interactions: Arc::new(Mutex::new(HashMap::new())),
         }
     }

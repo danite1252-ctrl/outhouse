@@ -115,6 +115,38 @@ pub enum ServerEvent {
         channel_id: Option<i64>,
         muted: bool,
         deafened: bool,
+        #[serde(default)]
+        server_muted: bool,
+        #[serde(default)]
+        server_deafened: bool,
+        #[serde(default)]
+        streaming: bool,
+    },
+    /// A moderator moved you to another voice channel: switch to it
+    /// (sent to you only).
+    VoiceMove {
+        #[serde(with = "as_string")]
+        guild_id: i64,
+        #[serde(with = "as_string")]
+        channel_id: i64,
+    },
+    /// A moderator disconnected you from voice (sent to you only).
+    VoiceKicked {
+        #[serde(with = "as_string")]
+        guild_id: i64,
+        #[serde(with = "as_string")]
+        channel_id: i64,
+    },
+    /// Someone joined a voice channel and has an entrance sound: people in
+    /// that channel play it.
+    EntranceSound {
+        #[serde(with = "as_string")]
+        guild_id: i64,
+        #[serde(with = "as_string")]
+        channel_id: i64,
+        #[serde(with = "as_string")]
+        user_id: i64,
+        url: String,
     },
     /// Play a soundboard clip (clients in that voice channel play it).
     SoundboardPlay {

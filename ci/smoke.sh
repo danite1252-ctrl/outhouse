@@ -14,9 +14,14 @@ MOCK_PID=$!
 export WOWHEAD_URL=$MOCK WOWHEAD_TOOLTIP_URL=$MOCK WOWHEAD_ICON_URL=$MOCK/icons LINK_PREVIEWS_OFFLINE=1
 export BNET_CLIENT_ID=mock-id BNET_CLIENT_SECRET=mock-secret BNET_REGION=us
 export BNET_OAUTH_URL=$MOCK/oauth BNET_API_URL=$MOCK/api PUBLIC_URL=$BASE
+# LiveKit RoomService stand-in (checks the JWTs Outhouse signs).
+LK=http://127.0.0.1:8098
+python3 ci/livekit_mock.py 8098 "${LIVEKIT_API_SECRET:-secret}" >/tmp/livekit-mock.log 2>&1 &
+LK_PID=$!
+export LIVEKIT_API_URL=$LK
 ./target/debug/outhouse-server >"$LOG" 2>&1 &
 SERVER=$!
-trap 'kill $SERVER $MOCK_PID 2>/dev/null || true' EXIT
+trap 'kill $SERVER $MOCK_PID $LK_PID 2>/dev/null || true' EXIT
 
 for i in $(seq 1 60); do
   curl -fsS "$BASE/api/health" >/dev/null 2>&1 && break
@@ -610,6 +615,117 @@ call POST "/api/channels/$CHAN/lfg/$SM/close" | jq -e '.lfg.closed' >/dev/null
 TOKEN=$TOKEN_C; fail_call PUT "/api/channels/$CHAN/lfg/$SM/join" '{"role":"dps","class":"Rogue"}'; TOKEN=$TOKEN_A
 # Expires on its own (checked at the end).
 LX=$(call POST "/api/channels/$CHAN/lfg" '{"activity":"Quick Deadmines","expires_minutes":1}' | jq -r .id)
+
+step "voice moderation (mock LiveKit API)"
+jwt_claims() { python3 -c 'import sys,base64;p=sys.argv[1].split(".")[1];print(base64.urlsafe_b64decode(p+"="*(-len(p)%4)).decode())' "$1"; }
+lk_calls() { curl -fsS "$LK/__calls"; }
+VOICE2=$(call POST "/api/guilds/$GUILD/channels" '{"name":"Raid comms","kind":2}' | jq -r .id)
+curl -fsS -X POST "$LK/__reset" >/dev/null
+TOKEN=$TOKEN_B
+J=$(call POST "/api/channels/$VOICE/voice/join")
+jq -e '.can_speak and .can_stream and (.server_muted | not)' <<<"$J" >/dev/null
+jwt_claims "$(jq -r .token <<<"$J")" | jq -e '.video.canPublish and .video.canSubscribe and .video.canPublishSources == ["microphone","screen_share","screen_share_audio"]' >/dev/null
+call POST /api/voice/state '{"muted":false,"deafened":false,"streaming":true}' >/dev/null
+call GET "/api/guilds/$GUILD/voice" | jq -e --arg b "$BOB" '.[] | select(.user_id == $b) | .streaming' >/dev/null
+fail_call PATCH "/api/guilds/$GUILD/voice/$ALICE" '{"mute":true}'   # Bob can't mute the owner
+TOKEN=$TOKEN_C; fail_call PATCH "/api/guilds/$GUILD/voice/$BOB" '{"mute":true}'; fail_call DELETE "/api/guilds/$GUILD/voice/$BOB"; TOKEN=$TOKEN_A
+fail_call PATCH "/api/guilds/$GUILD/voice/$ALICE" '{"mute":true}'   # not yourself
+call PATCH "/api/guilds/$GUILD/voice/$BOB" '{"mute":true}' >/dev/null
+call GET "/api/guilds/$GUILD/voice" | jq -e --arg b "$BOB" '.[] | select(.user_id == $b) | .server_muted and (.server_deafened | not)' >/dev/null
+lk_calls | jq -e --arg room "voice-$VOICE" --arg b "$BOB" '
+  (length == 3) and all(.[]; .jwt_ok and .claims.video.roomAdmin and .claims.video.room == $room and .content_type == "application/json")
+  and .[0].method == "GetParticipant" and .[0].body == {room: $room, identity: $b}
+  and .[1].method == "MutePublishedTrack" and .[1].body == {room: $room, identity: $b, track_sid: "TR_mic", muted: true}
+  and .[2].method == "UpdateParticipant" and .[2].body.identity == $b
+  and .[2].body.permission == {can_subscribe: true, can_publish: true, can_publish_data: true, can_publish_sources: ["SCREEN_SHARE","SCREEN_SHARE_AUDIO"]}' >/dev/null \
+  || { echo "unexpected LiveKit calls:"; lk_calls | jq .; exit 1; }
+# The mute sticks when Bob leaves and comes back.
+TOKEN=$TOKEN_B; call POST /api/voice/leave >/dev/null
+J=$(call POST "/api/channels/$VOICE/voice/join")
+jq -e '.server_muted and .can_speak' <<<"$J" >/dev/null
+jwt_claims "$(jq -r .token <<<"$J")" | jq -e '.video.canPublishSources == ["screen_share","screen_share_audio"]' >/dev/null
+TOKEN=$TOKEN_A
+curl -fsS -X POST "$LK/__reset" >/dev/null
+call PATCH "/api/guilds/$GUILD/voice/$BOB" '{"mute":false,"deafen":true}' >/dev/null
+lk_calls | jq -e '[.[] | select(.method == "UpdateParticipant")][-1].body.permission | (.can_subscribe | not) and .can_publish_sources == ["SCREEN_SHARE","SCREEN_SHARE_AUDIO"]' >/dev/null
+call PATCH "/api/guilds/$GUILD/voice/$BOB" '{"deafen":false}' >/dev/null
+lk_calls | jq -e '.[-1].method == "UpdateParticipant" and .[-1].body.permission.can_subscribe and .[-1].body.permission.can_publish_sources == ["MICROPHONE","SCREEN_SHARE","SCREEN_SHARE_AUDIO"]' >/dev/null
+call GET "/api/guilds/$GUILD/voice" | jq -e --arg b "$BOB" '.[] | select(.user_id == $b) | (.server_muted | not) and (.server_deafened | not)' >/dev/null
+# Move: refused into a text channel, fine into another voice channel; the old room drops him a few seconds later.
+fail_call PATCH "/api/guilds/$GUILD/voice/$BOB" '{"channel_id":"'"$CHAN"'"}'
+curl -fsS -X POST "$LK/__reset" >/dev/null
+call PATCH "/api/guilds/$GUILD/voice/$BOB" '{"channel_id":"'"$VOICE2"'"}' >/dev/null
+call GET "/api/guilds/$GUILD/voice" | jq -e --arg b "$BOB" --arg c "$VOICE2" '.[] | select(.user_id == $b) | .channel_id == $c and (.streaming | not)' >/dev/null
+sleep 5
+lk_calls | jq -e --arg room "voice-$VOICE" --arg b "$BOB" '.[-1].method == "RemoveParticipant" and .[-1].body == {room: $room, identity: $b} and .[-1].jwt_ok' >/dev/null \
+  || { echo "no RemoveParticipant after the move:"; lk_calls | jq .; exit 1; }
+# Disconnect.
+call DELETE "/api/guilds/$GUILD/voice/$BOB" >/dev/null
+call GET "/api/guilds/$GUILD/voice" | jq -e --arg b "$BOB" '[.[] | select(.user_id == $b)] | length == 0' >/dev/null
+lk_calls | jq -e --arg room "voice-$VOICE2" '.[-1].method == "RemoveParticipant" and .[-1].body.room == $room' >/dev/null
+fail_call DELETE "/api/guilds/$GUILD/voice/$BOB"                      # not in voice any more
+fail_call PATCH "/api/guilds/$GUILD/voice/$BOB" '{"channel_id":"'"$VOICE"'"}'
+# Muting someone who isn't in voice is saved for when they join.
+call PATCH "/api/guilds/$GUILD/voice/$BOB" '{"mute":true}' >/dev/null
+TOKEN=$TOKEN_B; call POST "/api/channels/$VOICE2/voice/join" | jq -e '.server_muted' >/dev/null; call POST /api/voice/leave >/dev/null; TOKEN=$TOKEN_A
+call PATCH "/api/guilds/$GUILD/voice/$BOB" '{"mute":false}' >/dev/null
+call GET /api/permissions | jq -e '[.[] | select(.key == "stream")] | length == 1' >/dev/null
+
+step "entrance sounds and soundboard"
+python3 - <<'PY'
+import struct
+def wav(path, seconds, rate=8000, bits=8):
+    n = int(rate * seconds) * bits // 8
+    data = bytes([128]) * n if bits == 8 else bytes(n)
+    hdr = b"RIFF" + struct.pack("<I", 36 + n) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * bits // 8, bits // 8, bits) + b"data" + struct.pack("<I", n)
+    open(path, "wb").write(hdr + data)
+wav("/tmp/short.wav", 1)
+wav("/tmp/six.wav", 6)
+wav("/tmp/eleven.wav", 11)
+wav("/tmp/big.wav", 3, rate=44100, bits=16)   # 3 s but 264 KB
+open("/tmp/junk.mp3", "wb").write(b"this is not really an mp3 file" * 10)
+PY
+upload() { # upload PATH FILE [extra -F args...] -> body in /tmp/body, status in $code
+  local path=$1 file=$2; shift 2
+  code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $TOKEN" -F "file=@$file" "$@" "$BASE$path")
+}
+TOKEN=$TOKEN_B
+upload /api/users/@me/entrance-sound /tmp/short.wav
+[[ "$code" == 200 ]] || { echo "entrance upload -> $code"; cat /tmp/body; exit 1; }
+jq -e '.duration_ms == 1000 and (.url | startswith("/files/"))' /tmp/body >/dev/null
+ENTRANCE=$(call GET /api/users/@me/entrance-sound | jq -r .url)
+curl -fsS -D /tmp/headers "$BASE$ENTRANCE" -o /dev/null; grep -qi "content-type: audio/wav" /tmp/headers
+upload /api/users/@me/entrance-sound /tmp/six.wav; [[ "$code" == 400 ]] || { echo "6 s entrance sound -> $code"; exit 1; }
+upload /api/users/@me/entrance-sound /tmp/big.wav; [[ "$code" == 400 ]] || { echo "264 KB entrance sound -> $code"; exit 1; }
+upload /api/users/@me/entrance-sound /tmp/junk.mp3; [[ "$code" == 400 ]] || { echo "junk entrance sound -> $code"; exit 1; }
+upload /api/users/@me/entrance-sound /tmp/short.wav   # replacing removes the old file
+[[ "$code" == 200 ]] || { echo "entrance re-upload -> $code"; exit 1; }
+curl -sS -o /dev/null -w "%{http_code}" "$BASE$ENTRANCE" | grep -q 404
+call DELETE /api/users/@me/entrance-sound >/dev/null
+call GET /api/users/@me/entrance-sound | jq -e '. == null' >/dev/null
+# Soundboard: only Manage Sounds may add, clips up to 10 s.
+upload "/api/guilds/$GUILD/sounds" /tmp/short.wav -F name=Bonk; [[ "$code" == 403 ]] || { echo "bob added a sound -> $code"; exit 1; }
+TOKEN=$TOKEN_A
+upload "/api/guilds/$GUILD/sounds" /tmp/short.wav -F name=Bonk -F "emoji=🔨"
+[[ "$code" == 200 ]] || { echo "sound upload -> $code"; cat /tmp/body; exit 1; }
+SND=$(jq -r .id /tmp/body)
+upload "/api/guilds/$GUILD/sounds" /tmp/eleven.wav -F name=Long; [[ "$code" == 400 ]] || { echo "11 s clip -> $code"; exit 1; }
+grep -q "10 seconds" /tmp/body
+call PUT "/api/sounds/$SND/favourite" >/dev/null
+call GET "/api/guilds/$GUILD/sounds" | jq -e --arg s "$SND" '.[] | select(.id == $s) | .favourite and .emoji == "🔨"' >/dev/null
+TOKEN=$TOKEN_B; call GET "/api/guilds/$GUILD/sounds" | jq -e --arg s "$SND" '.[] | select(.id == $s) | .favourite | not' >/dev/null; TOKEN=$TOKEN_A
+TOKEN=$OUT; fail_call PUT "/api/sounds/$SND/favourite"; TOKEN=$TOKEN_A
+call DELETE "/api/sounds/$SND/favourite" >/dev/null
+call GET "/api/guilds/$GUILD/sounds" | jq -e --arg s "$SND" '.[] | select(.id == $s) | .favourite | not' >/dev/null
+# Playing needs voice; then a cooldown stops spam.
+fail_call POST "/api/sounds/$SND/play"
+call POST "/api/channels/$VOICE/voice/join" >/dev/null
+call POST "/api/sounds/$SND/play" >/dev/null
+fail_call POST "/api/sounds/$SND/play"
+grep -q "Easy on the soundboard" /tmp/body
+sleep 2.2
+call POST "/api/sounds/$SND/play" >/dev/null
+call POST /api/voice/leave >/dev/null
 
 step "raid reminder"
 for i in $(seq 1 75); do

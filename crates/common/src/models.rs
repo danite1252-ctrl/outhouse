@@ -581,6 +581,15 @@ pub struct VoiceState {
     pub user_id: i64,
     pub muted: bool,
     pub deafened: bool,
+    /// Muted by a moderator (kept when they leave and come back).
+    #[serde(default)]
+    pub server_muted: bool,
+    /// Deafened by a moderator.
+    #[serde(default)]
+    pub server_deafened: bool,
+    /// Sharing their screen.
+    #[serde(default)]
+    pub streaming: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -589,6 +598,33 @@ pub struct VoiceJoinResponse {
     pub url: String,
     pub token: String,
     pub can_speak: bool,
+    /// Allowed to share their screen here.
+    #[serde(default)]
+    pub can_stream: bool,
+    #[serde(default)]
+    pub server_muted: bool,
+    #[serde(default)]
+    pub server_deafened: bool,
+}
+
+/// A moderator's change to someone in voice: `PATCH /api/guilds/{id}/voice/{user}`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct VoiceModerateRequest {
+    /// Server mute (true) or unmute (false).
+    #[serde(default)]
+    pub mute: Option<bool>,
+    #[serde(default)]
+    pub deafen: Option<bool>,
+    /// Move them to this voice channel.
+    #[serde(default, with = "option_as_string")]
+    pub channel_id: Option<i64>,
+}
+
+/// Your own entrance sound.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EntranceSound {
+    pub url: String,
+    pub duration_ms: i32,
 }
 
 /// A soundboard clip.
@@ -602,6 +638,9 @@ pub struct Sound {
     pub emoji: String,
     pub url: String,
     pub volume: f32,
+    /// In your favourites.
+    #[serde(default)]
+    pub favourite: bool,
 }
 
 // ---- Requests and responses -------------------------------------------
@@ -708,6 +747,8 @@ pub struct InteractionReply {
 pub struct VoiceStateRequest {
     pub muted: bool,
     pub deafened: bool,
+    #[serde(default)]
+    pub streaming: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

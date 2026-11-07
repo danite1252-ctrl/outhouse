@@ -1,12 +1,14 @@
 //! Outhouse chat server.
 
 mod api;
+mod audio;
 mod auth;
 mod embeds;
 mod error;
 mod feeds;
 mod files;
 mod gateway;
+mod livekit;
 mod perms;
 mod state;
 mod wowhead;
