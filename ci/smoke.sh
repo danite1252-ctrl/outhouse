@@ -19,9 +19,20 @@ LK=http://127.0.0.1:8098
 python3 ci/livekit_mock.py 8098 "${LIVEKIT_API_SECRET:-secret}" >/tmp/livekit-mock.log 2>&1 &
 LK_PID=$!
 export LIVEKIT_API_URL=$LK
+# Web Push service + alert target stand-in (decrypts pushes with http_ece).
+python3 -m pip install --quiet cryptography http_ece >/dev/null 2>&1 \
+  || python3 -m pip install --quiet --break-system-packages cryptography http_ece >/dev/null 2>&1 \
+  || echo "(couldn't install http_ece; the push mock uses its own decoder)"
+PUSH=http://127.0.0.1:8097
+python3 ci/push_mock.py 8097 >/tmp/push-mock.log 2>&1 &
+PUSH_PID=$!
+export PUSH_EXTRA_ENDPOINTS=$PUSH/push/
+# Where backup.sh would leave its status (read by the server status page).
+STATUS_DIR=$(mktemp -d)
+export BACKUP_STATUS_FILE=$STATUS_DIR/backup.json OUTHOUSE_VERSION=smoke-test
 ./target/debug/outhouse-server >"$LOG" 2>&1 &
 SERVER=$!
-trap 'kill $SERVER $MOCK_PID $LK_PID 2>/dev/null || true' EXIT
+trap 'kill $SERVER $MOCK_PID $LK_PID $PUSH_PID 2>/dev/null || true' EXIT
 
 for i in $(seq 1 60); do
   curl -fsS "$BASE/api/health" >/dev/null 2>&1 && break
@@ -63,6 +74,23 @@ INV=$(call POST "/api/guilds/$GUILD/invites"); CODE=$(jq -r .code <<<"$INV")
 TOKEN=$TOKEN_B; call POST "/api/invites/$CODE" >/dev/null; TOKEN=$TOKEN_A
 call GET "/api/guilds/$GUILD/members" | jq -e 'length == 2' >/dev/null
 call PUT "/api/guilds/$GUILD/nickname" '{"nickname":"Ally"}' >/dev/null
+
+step "push notifications: subscribe"
+for i in $(seq 1 20); do curl -fsS "$PUSH/ok" >/dev/null 2>&1 && break; sleep 0.5; done
+TOKEN=$TOKEN_B
+call GET /api/users/@me/notifications | jq -e '(.vapid_public_key | length) == 87 and .devices == [] and .levels == []' >/dev/null
+SUB_B=$(curl -fsS "$PUSH/new/bob")
+call POST /api/push/subscriptions "$SUB_B" | jq -e --arg e "$PUSH/push/bob" '.endpoint == $e' >/dev/null
+call POST /api/push/subscriptions "$SUB_B" >/dev/null   # same browser again: still one device
+call GET /api/users/@me/notifications | jq -e '.devices | length == 1' >/dev/null
+# Only real push services (no SSRF), and the keys must be real P-256 keys.
+fail_call POST /api/push/subscriptions "$(jq -c '.endpoint = "https://evil.example.com/push"' <<<"$SUB_B")"
+fail_call POST /api/push/subscriptions "$(jq -c '.endpoint = "http://169.254.169.254/latest"' <<<"$SUB_B")"
+fail_call POST /api/push/subscriptions "$(jq -c '.keys.p256dh = "AAAA"' <<<"$SUB_B")"
+call POST /api/push/test | jq -e '.sent == 1 and .failed == 0' >/dev/null
+TOKEN=""; fail_call POST /api/push/test; TOKEN=$TOKEN_A
+SUB_A=$(curl -fsS "$PUSH/new/alice")
+call POST /api/push/subscriptions "$SUB_A" >/dev/null
 
 step "roles and permissions"
 R=$(call POST "/api/guilds/$GUILD/roles" '{"name":"Raider"}'); ROLE=$(jq -r .id <<<"$R")
@@ -239,7 +267,8 @@ step "direct messages"
 TOKEN=$OUT; OUTSIDER=$(call GET /api/users/@me | jq -r .id); TOKEN=$TOKEN_A
 C3=$(call POST /api/auth/register '{"username":"carl","password":"password123","display_name":"Carl"}')
 TOKEN_C=$(jq -r .token <<<"$C3"); CARL=$(jq -r .user.id <<<"$C3")
-TOKEN=$TOKEN_C; call POST "/api/invites/$CODE" >/dev/null; TOKEN=$TOKEN_A
+TOKEN=$TOKEN_C; call POST "/api/invites/$CODE" >/dev/null
+call POST /api/push/subscriptions "$(curl -fsS "$PUSH/new/carl")" >/dev/null; TOKEN=$TOKEN_A
 call GET /api/users/@me/contacts | jq -e --arg b "$BOB" --arg o "$OUTSIDER" '([.[] | select(.id == $b)] | length == 1) and ([.[] | select(.id == $o)] | length == 0)' >/dev/null
 DM=$(call POST /api/dms '{"user_ids":["'"$BOB"'"]}'); DMID=$(jq -r .id <<<"$DM")
 jq -e '.kind == 1 and (.recipients | length == 2)' <<<"$DM" >/dev/null
@@ -727,6 +756,115 @@ sleep 2.2
 call POST "/api/sounds/$SND/play" >/dev/null
 call POST /api/voice/leave >/dev/null
 
+step "audit log"
+TOKEN=$TOKEN_A
+AUD=$(call GET "/api/guilds/$GUILD/audit-log?limit=100")
+jq -e '(.entries | length) > 50 and (.actions | length) > 30 and .retention_days == 90' <<<"$AUD" >/dev/null
+for action in channel_create channel_permissions role_create member_role_add message_pin message_unpin emoji_create sound_create voice_moderate voice_move voice_disconnect bot_create webhook_create; do
+  call GET "/api/guilds/$GUILD/audit-log?action=$action&limit=1" | jq -e '.entries | length == 1' >/dev/null || { echo "no $action in the audit log"; exit 1; }
+done
+call GET "/api/guilds/$GUILD/audit-log?action=role_create" | jq -e --arg a "$ALICE" 'all(.entries[]; .actor_id == $a and .target_kind == "role" and (.target_name | startswith("@")))' >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?action=channel_permissions&limit=100" | jq -e 'any(.entries[]; .details | contains("Denied: +View channels"))' >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?action=message_pin" | jq -e '(.entries | length) >= 1 and all(.entries[]; .action == "message_pin")' >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?user=$BOB" | jq -e --arg b "$BOB" '(.entries | length) >= 1 and all(.entries[]; .actor_id == $b or .target_id == $b)' >/dev/null
+P1=$(call GET "/api/guilds/$GUILD/audit-log?limit=3")
+jq -e '(.entries | length) == 3 and .has_more' <<<"$P1" >/dev/null
+P2=$(call GET "/api/guilds/$GUILD/audit-log?limit=3&before=$(jq -r '.entries[-1].id' <<<"$P1")")
+jq -n --argjson a "$P1" --argjson b "$P2" '($a.entries | map(.id)) as $x | ($b.entries | map(.id)) as $y | ($y | length) == 3 and ([$x[], $y[]] | unique | length) == 6' >/dev/null
+fail_call GET "/api/guilds/$GUILD/audit-log?before=nope"
+# Moderation actions land in the log too.
+call PATCH "/api/guilds/$GUILD/roles/$ROLE" '{"name":"Core raider","color":16711680}' >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?action=role_update" | jq -e '.entries[0].details | contains("Name: Raider → Core raider") and contains("Colour")' >/dev/null
+call POST "/api/guilds/$GUILD/members/$CARL/timeout" '{"minutes":60}' >/dev/null
+call POST "/api/guilds/$GUILD/members/$CARL/timeout" '{"minutes":0}' >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?user=$CARL" | jq -e '[.entries[].action] | index("member_timeout") != null and index("member_timeout_remove") != null' >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?action=member_timeout" | jq -e '.entries[0].details == "For 1 hour"' >/dev/null
+DEL=$(call POST "/api/channels/$CHAN/messages" '{"content":"rude words"}' | jq -r .id)
+TOKEN=$TOKEN_B; DELB=$(call POST "/api/channels/$CHAN/messages" '{"content":"bob says rude words"}' | jq -r .id); TOKEN=$TOKEN_A
+call DELETE "/api/channels/$CHAN/messages/$DEL" >/dev/null    # your own: not logged
+call DELETE "/api/channels/$CHAN/messages/$DELB" >/dev/null   # someone else's: logged
+call GET "/api/guilds/$GUILD/audit-log?action=message_delete" | jq -e --arg b "$BOB" '.entries[0].target_id == $b and (.entries[0].details | contains("bob says rude words")) and all(.entries[]; .details | contains("“rude words”") | not)' >/dev/null
+KR=$(call POST /api/auth/register '{"username":"kickme","password":"password123"}')
+TOKEN=$(jq -r .token <<<"$KR"); call POST "/api/invites/$CODE" >/dev/null; TOKEN=$TOKEN_A
+KICKED=$(jq -r .user.id <<<"$KR")
+call DELETE "/api/guilds/$GUILD/members/$KICKED" >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?action=member_kick" | jq -e --arg k "$KICKED" '.entries[0].target_id == $k and .entries[0].target_name != ""' >/dev/null
+RD=$(call POST "/api/channels/$CHAN/events" '{"title":"Cancelled raid","starts_at":"'"$START"'"}' | jq -r .event.id)
+call DELETE "/api/events/$RD" >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?action=raid_delete" | jq -e '.entries[0].target_name == "Cancelled raid"' >/dev/null
+# Needs View Audit Log (or Manage Outhouse); strangers don't even see it exists.
+TOKEN=$TOKEN_B; fail_call GET "/api/guilds/$GUILD/audit-log"; TOKEN=$TOKEN_A
+TOKEN=$OUT; fail_call GET "/api/guilds/$GUILD/audit-log"; TOKEN=$TOKEN_A
+AUDR=$(call POST "/api/guilds/$GUILD/roles" '{"name":"Auditor","permissions":"8589934592"}' | jq -r .id)
+call PUT "/api/guilds/$GUILD/members/$BOB/roles/$AUDR" >/dev/null
+TOKEN=$TOKEN_B; call GET "/api/guilds/$GUILD/audit-log" | jq -e '.entries | length > 0' >/dev/null; TOKEN=$TOKEN_A
+call DELETE "/api/guilds/$GUILD/members/$BOB/roles/$AUDR" >/dev/null
+
+step "server status and health"
+call GET /api/health | jq -e '.status == "ok" and .db == true and .version == "smoke-test" and .uptime_seconds >= 0' >/dev/null
+call GET "/api/guilds/$GUILD/server-status" | jq -e '.version == "smoke-test" and .db_ok and .db_size_bytes > 0 and .push_enabled and .backup == null' >/dev/null
+printf '{"time":"%s","ok":true,"file":"outhouse-test.tgz","size":"1.2M","offsite":"ok: smb","message":""}\n' "$(date -Iseconds)" > "$BACKUP_STATUS_FILE"
+call GET "/api/guilds/$GUILD/server-status" | jq -e '.backup.ok and .backup.file == "outhouse-test.tgz" and .backup.offsite == "ok: smb"' >/dev/null
+TOKEN=$TOKEN_B; fail_call GET "/api/guilds/$GUILD/server-status"; TOKEN=$TOKEN_A
+
+step "badges"
+call GET "/api/guilds/$GUILD/badges" | jq -e --arg a "$ALICE" --arg b "$BOB" --arg bot "$BOT_ID" '
+  (.[] | select(.key == "owner") | .holders == [$a] and .auto)
+  and (.[] | select(.key == "founder") | (.holders | index($a)) != null and (.holders | index($b)) != null)
+  and (.[] | select(.key == "raid_leader") | (.holders | index($a)) != null)
+  and (.[] | select(.key == "bot") | (.holders | index($bot)) != null)
+  and (.[] | select(.key == "early") | (.holders | index($a)) != null)' >/dev/null
+TOKEN=$TOKEN_B; fail_call POST "/api/guilds/$GUILD/badges" '{"name":"Nope","emoji":"🚫"}'; TOKEN=$TOKEN_A
+fail_call POST "/api/guilds/$GUILD/badges" '{"name":"","emoji":"🏆"}'
+fail_call POST "/api/guilds/$GUILD/badges" '{"name":"Too long emoji","emoji":"not an emoji at all"}'
+BADGE=$(call POST "/api/guilds/$GUILD/badges" '{"name":"MVP","emoji":"🏆","color":16753920,"description":"Carried the raid"}' | jq -r .id)
+call PUT "/api/badges/$BADGE/members/$BOB" >/dev/null
+call PUT "/api/badges/$BADGE/members/$BOB" >/dev/null   # twice is fine
+fail_call PUT "/api/badges/$BADGE/members/$OUTSIDER"    # not a member
+TOKEN=$TOKEN_B; fail_call PUT "/api/badges/$BADGE/members/$BOB"; fail_call DELETE "/api/badges/$BADGE"; TOKEN=$TOKEN_A
+TOKEN=$TOKEN_B; call GET "/api/guilds/$GUILD/badges" | jq -e --arg id "$BADGE" --arg b "$BOB" '.[] | select(.id == $id) | .holders == [$b] and .emoji == "🏆" and .color == 16753920 and (.auto | not)' >/dev/null; TOKEN=$TOKEN_A
+TOKEN=$OUT; fail_call GET "/api/guilds/$GUILD/badges"; TOKEN=$TOKEN_A
+call PATCH "/api/badges/$BADGE" '{"name":"Raid MVP"}' >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?action=badge_update" | jq -e '.entries[0].details == "Name: MVP → Raid MVP"' >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?action=badge_award" | jq -e --arg b "$BOB" '(.entries | length) == 1 and .entries[0].target_id == $b' >/dev/null
+call DELETE "/api/badges/$BADGE/members/$BOB" >/dev/null
+call GET "/api/guilds/$GUILD/badges" | jq -e --arg id "$BADGE" '.[] | select(.id == $id) | .holders == []' >/dev/null
+call DELETE "/api/badges/$BADGE" >/dev/null
+call GET "/api/guilds/$GUILD/badges" | jq -e --arg id "$BADGE" '[.[] | select(.id == $id)] | length == 0' >/dev/null
+
+step "notification levels and channel mutes"
+TOKEN=$TOKEN_B
+fail_call PUT "/api/users/@me/notifications/guilds/$GUILD" '{"level":"loud"}'
+fail_call PUT "/api/users/@me/notifications/guilds/$OUTSIDER" '{"level":"all"}'   # not an outhouse of Bob's
+fail_call PUT "/api/users/@me/notifications/channels/$SECRET" '{"muted":true}'     # can't see it
+call PUT "/api/users/@me/notifications/guilds/$GUILD" '{"level":"all"}' | jq -e '.level == "all"' >/dev/null
+call PUT "/api/users/@me/notifications/channels/$PINS" '{"muted":true}' >/dev/null
+call GET /api/users/@me/notifications | jq -e --arg g "$GUILD" --arg p "$PINS" '(.levels[] | select(.guild_id == $g) | .level == "all") and .muted_channels == [$p]' >/dev/null
+TOKEN=$TOKEN_A
+call POST "/api/channels/$CHAN/messages" '{"content":"plain chatter for level all"}' >/dev/null
+call POST "/api/channels/$PINS/messages" '{"content":"<@'"$BOB"'> in a muted channel"}' >/dev/null
+call POST "/api/channels/$SECRET/messages" '{"content":"officers only, level all"}' >/dev/null
+sleep 1.5 # pushes go out in the background; let them read the settings first
+TOKEN=$TOKEN_B
+call PUT "/api/users/@me/notifications/guilds/$GUILD" '{"level":"nothing"}' >/dev/null
+call PUT "/api/users/@me/notifications/channels/$PINS" '{"muted":false}' >/dev/null
+TOKEN=$TOKEN_A
+call POST "/api/channels/$CHAN/messages" '{"content":"<@'"$BOB"'> you set nothing"}' >/dev/null
+TOKEN=$TOKEN_B
+call PUT "/api/users/@me/notifications/guilds/0" '{"level":"nothing"}' >/dev/null
+TOKEN=$TOKEN_A
+call POST "/api/channels/$DMID/messages" '{"content":"dm while dms are off"}' >/dev/null
+sleep 1.5
+TOKEN=$TOKEN_B
+call PUT "/api/users/@me/notifications/guilds/0" '{"level":"all"}' >/dev/null
+call PUT "/api/users/@me/notifications/guilds/$GUILD" '{"level":"mentions"}' >/dev/null
+TOKEN=$TOKEN_A
+call POST "/api/channels/$DMID/messages" '{"content":"last dm for bob"}' >/dev/null
+# A push service saying "gone" drops that device.
+call POST /api/push/subscriptions '{"endpoint":"'"$PUSH"'/push/gone","keys":'"$(jq -c .keys <<<"$SUB_A")"'}' >/dev/null
+call POST /api/push/test | jq -e '.sent == 1 and .removed == 1' >/dev/null
+call GET /api/users/@me/notifications | jq -e '.devices | length == 1' >/dev/null
+
 step "raid reminder"
 for i in $(seq 1 75); do
   call GET "/api/channels/$CHAN/messages" | jq -e '[.[] | select(.content | startswith("⏰"))] | length == 1' >/dev/null 2>&1 && break
@@ -749,5 +887,60 @@ for i in $(seq 1 60); do
 done
 call GET "/api/channels/$CHAN/messages?limit=100" | jq -e --arg id "$LX" '.[] | select(.id == $id) | .lfg.expired' >/dev/null || { echo "group post never expired"; exit 1; }
 fail_call PUT "/api/channels/$CHAN/lfg/$LX/join" '{"role":"dps"}'
+
+step "push notifications arrived (VAPID checked, payload decrypted)"
+for i in $(seq 1 20); do
+  curl -fsS "$PUSH/received/bob" | jq -e 'any(.[]; .payload.body == "last dm for bob")' >/dev/null 2>&1 && break
+  sleep 0.5
+done
+RB=$(curl -fsS "$PUSH/received/bob"); RA=$(curl -fsS "$PUSH/received/alice"); RC=$(curl -fsS "$PUSH/received/carl")
+jq -e 'all(.[]; .ok)' <<<"$RB" >/dev/null || { echo "bad pushes for bob:"; jq . <<<"$RB"; exit 1; }
+jq -e 'all(.[]; .ok)' <<<"$RA" >/dev/null || { echo "bad pushes for alice:"; jq . <<<"$RA"; exit 1; }
+jq -e 'all(.[]; .ok)' <<<"$RC" >/dev/null || { echo "bad pushes for carl:"; jq . <<<"$RC"; exit 1; }
+echo "push payloads decrypted by: $(jq -r '[.[].decrypted_by] | unique | join(", ")' <<<"$RB")"
+check_push() { # check_push JSON jq-filter description
+  jq -e "$2" <<<"$1" >/dev/null || { echo "missing push: $3"; jq -c '[.[].payload | {kind, title, body}]' <<<"$1"; exit 1; }
+}
+check_push "$RB" 'any(.[]; .payload.kind == "test")' "bob: test notification"
+check_push "$RB" 'any(.[]; .payload.kind == "mention" and .payload.body == "hello @Bob" and (.payload.title | contains("#general")))' "bob: mention"
+check_push "$RB" 'any(.[]; .payload.kind == "mention" and (.payload.body | contains("@Core raider") or contains("@Raider")))' "bob: role mention"
+check_push "$RB" 'any(.[]; .payload.kind == "dm" and .payload.body == "psst bob" and .payload.guild_id == "0")' "bob: DM"
+check_push "$RB" 'any(.[]; .payload.kind == "raid" and (.payload.title | contains("off the bench")))' "bob: bench promotion"
+check_push "$RB" 'any(.[]; .payload.kind == "message" and .payload.body == "plain chatter for level all")' "bob: level all"
+check_push "$RB" 'all(.[]; (.payload.body // "") | contains("muted channel") | not)' "bob: nothing from a muted channel"
+check_push "$RB" 'all(.[]; (.payload.body // "") | contains("officers only") | not)' "bob: nothing from a channel he can't see"
+check_push "$RB" 'all(.[]; (.payload.body // "") | contains("you set nothing") | not)' "bob: nothing when the level is nothing"
+check_push "$RB" 'all(.[]; (.payload.body // "") | contains("dms are off") | not)' "bob: no DMs when DMs are off"
+check_push "$RB" 'all(.[]; .payload.url | startswith("/"))' "bob: urls"
+check_push "$RC" 'any(.[]; .payload.kind == "dm")' "carl: DM"
+check_push "$RA" 'any(.[]; .payload.kind == "raid" and .payload.title == "⏰ Raid reminder" and (.payload.body | contains("Reminder test")))' "alice: raid reminder"
+
+step "uptime alerts (deploy/healthcheck.sh)"
+HC_DIR=$(mktemp -d)
+hc() { # hc SERVER_URL LIVEKIT_URL
+  HEALTH_URL=$1 LIVEKIT_HEALTH_URL=$2 STATUS_DIR=$HC_DIR BACKUP_STATUS_FILE=$BACKUP_STATUS_FILE \
+    ALERT_NAME="Smoke Outhouse" ALERT_NTFY_URL=$PUSH/alert/ntfy ALERT_WEBHOOK_URL=$PUSH/alert/hook \
+    bash deploy/healthcheck.sh
+}
+alert_count() { curl -fsS "$PUSH/alerts/$1" | jq length; }
+hc "$BASE/api/health" "$PUSH/ok"
+[ "$(alert_count ntfy)" = 0 ] || { echo "alerted on a healthy first run"; curl -fsS "$PUSH/alerts/ntfy"; exit 1; }
+grep -q '^server=up$' "$HC_DIR/health.state"
+hc "http://127.0.0.1:1/api/health" "$PUSH/ok"
+[ "$(alert_count ntfy)" = 1 ] && [ "$(alert_count hook)" = 1 ] || { echo "no 'down' alert"; exit 1; }
+curl -fsS "$PUSH/alerts/ntfy" | jq -e '.[0].title | contains("Smoke Outhouse") and contains("down")' >/dev/null
+curl -fsS "$PUSH/alerts/hook" | jq -e '.[0].content_type == "application/json" and (.[0].body | fromjson | .content | contains("isn'"'"'t answering"))' >/dev/null
+hc "http://127.0.0.1:1/api/health" "$PUSH/ok"   # still down: no repeat
+[ "$(alert_count ntfy)" = 1 ] || { echo "repeated a 'down' alert"; exit 1; }
+hc "$BASE/api/health" "http://127.0.0.1:1"      # server back, LiveKit down: two alerts
+[ "$(alert_count ntfy)" = 3 ] || { echo "expected back-up + LiveKit alerts"; curl -fsS "$PUSH/alerts/ntfy"; exit 1; }
+curl -fsS "$PUSH/alerts/ntfy" | jq -e 'any(.[]; .title | contains("back up")) and any(.[]; .body | contains("LiveKit"))' >/dev/null
+printf '{"time":"%s","ok":false,"file":"","size":"","offsite":"off","message":"pg_dump failed"}\n' "$(date -Iseconds)" > "$BACKUP_STATUS_FILE"
+hc "$BASE/api/health" "$PUSH/ok"
+curl -fsS "$PUSH/alerts/ntfy" | jq -e 'any(.[]; .body | contains("pg_dump failed"))' >/dev/null || { echo "no backup alert"; curl -fsS "$PUSH/alerts/ntfy"; exit 1; }
+printf '{"time":"%s","ok":true,"file":"x.tgz","size":"1M","offsite":"failed: //nas/backups isn'"'"'t mounted","message":""}\n' "$(date -Iseconds)" > "$BACKUP_STATUS_FILE"
+hc "$BASE/api/health" "$PUSH/ok"
+curl -fsS "$PUSH/alerts/ntfy" | jq -e 'any(.[]; .body | contains("mounted"))' >/dev/null || { echo "no off-site copy alert"; exit 1; }
+bash -n deploy/backup.sh deploy/setup.sh deploy/healthcheck.sh deploy/restore.sh
 
 echo "Smoke test passed."

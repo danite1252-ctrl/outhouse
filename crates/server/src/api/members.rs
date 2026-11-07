@@ -11,6 +11,7 @@ use sqlx::PgPool;
 
 use super::account::clean_name;
 use super::guilds::remove_member;
+use crate::audit;
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::perms::{member_ctx, MemberCtx};
@@ -97,7 +98,12 @@ pub async fn kick(
 ) -> AppResult<StatusCode> {
     let actor = member_ctx(&st.db, guild_id, user.id).await?;
     moderate(&st.db, &actor, target_id, p::KICK_MEMBERS).await?;
+    let name = audit::user_label(&st, guild_id, target_id).await;
     remove_member(&st, guild_id, target_id).await?;
+    audit::Entry::new(guild_id, user.id, "member_kick")
+        .target("member", target_id, name)
+        .save(&st)
+        .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -119,11 +125,17 @@ pub async fn ban(
     )
     .bind(guild_id)
     .bind(target_id)
-    .bind(reason)
+    .bind(&reason)
     .bind(user.id)
     .execute(&st.db)
     .await?;
+    let name = audit::user_label(&st, guild_id, target_id).await;
     remove_member(&st, guild_id, target_id).await?;
+    audit::Entry::new(guild_id, user.id, "member_ban")
+        .target("member", target_id, name)
+        .details(reason.map(|r| format!("Reason: {r}")).unwrap_or_default())
+        .save(&st)
+        .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -162,11 +174,19 @@ pub async fn unban(
     member_ctx(&st.db, guild_id, user.id)
         .await?
         .require(p::BAN_MEMBERS)?;
-    sqlx::query("DELETE FROM bans WHERE guild_id = $1 AND user_id = $2")
+    let removed = sqlx::query("DELETE FROM bans WHERE guild_id = $1 AND user_id = $2")
         .bind(guild_id)
         .bind(target_id)
         .execute(&st.db)
-        .await?;
+        .await?
+        .rows_affected();
+    if removed > 0 {
+        let name = audit::user_label(&st, guild_id, target_id).await;
+        audit::Entry::new(guild_id, user.id, "member_unban")
+            .target("member", target_id, name)
+            .save(&st)
+            .await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -195,7 +215,29 @@ pub async fn timeout(
     );
     let mut member = fetch_member(&st.db, guild_id, target_id).await?;
     member.online = st.is_online(member.id);
+    let entry = if minutes > 0 {
+        audit::Entry::new(guild_id, user.id, "member_timeout")
+            .details(format!("For {}", duration_label(minutes)))
+    } else {
+        audit::Entry::new(guild_id, user.id, "member_timeout_remove")
+    };
+    entry
+        .target("member", target_id, member.display_name.clone())
+        .save(&st)
+        .await;
     Ok(Json(member))
+}
+
+/// "10 minutes", "1 hour", "7 days".
+fn duration_label(minutes: i64) -> String {
+    let plural = |n: i64, unit: &str| format!("{n} {unit}{}", if n == 1 { "" } else { "s" });
+    if minutes % (24 * 60) == 0 {
+        plural(minutes / (24 * 60), "day")
+    } else if minutes % 60 == 0 {
+        plural(minutes / 60, "hour")
+    } else {
+        plural(minutes, "minute")
+    }
 }
 
 /// Shared checks for giving or taking a role.
@@ -235,7 +277,7 @@ pub async fn add_role(
     Path((guild_id, target_id, role_id)): Path<(i64, i64, i64)>,
 ) -> AppResult<StatusCode> {
     check_role_change(&st, user.id, guild_id, target_id, role_id).await?;
-    sqlx::query(
+    let added = sqlx::query(
         "INSERT INTO member_roles (guild_id, user_id, role_id) VALUES ($1, $2, $3)
          ON CONFLICT DO NOTHING",
     )
@@ -243,12 +285,46 @@ pub async fn add_role(
     .bind(target_id)
     .bind(role_id)
     .execute(&st.db)
-    .await?;
+    .await?
+    .rows_affected();
     st.dispatch(
         Audience::Guild(guild_id),
         ServerEvent::GuildRefresh { guild_id },
     );
+    if added > 0 {
+        log_role_change(
+            &st,
+            user.id,
+            guild_id,
+            target_id,
+            role_id,
+            "member_role_add",
+        )
+        .await;
+    }
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn log_role_change(
+    st: &AppState,
+    actor_id: i64,
+    guild_id: i64,
+    target_id: i64,
+    role_id: i64,
+    action: &'static str,
+) {
+    let role: Option<String> = sqlx::query_scalar("SELECT name FROM roles WHERE id = $1")
+        .bind(role_id)
+        .fetch_optional(&st.db)
+        .await
+        .ok()
+        .flatten();
+    let name = audit::user_label(st, guild_id, target_id).await;
+    audit::Entry::new(guild_id, actor_id, action)
+        .target("member", target_id, name)
+        .details(format!("@{}", role.unwrap_or_else(|| "a role".into())))
+        .save(st)
+        .await;
 }
 
 pub async fn remove_role(
@@ -257,16 +333,30 @@ pub async fn remove_role(
     Path((guild_id, target_id, role_id)): Path<(i64, i64, i64)>,
 ) -> AppResult<StatusCode> {
     check_role_change(&st, user.id, guild_id, target_id, role_id).await?;
-    sqlx::query("DELETE FROM member_roles WHERE guild_id = $1 AND user_id = $2 AND role_id = $3")
-        .bind(guild_id)
-        .bind(target_id)
-        .bind(role_id)
-        .execute(&st.db)
-        .await?;
+    let removed = sqlx::query(
+        "DELETE FROM member_roles WHERE guild_id = $1 AND user_id = $2 AND role_id = $3",
+    )
+    .bind(guild_id)
+    .bind(target_id)
+    .bind(role_id)
+    .execute(&st.db)
+    .await?
+    .rows_affected();
     st.dispatch(
         Audience::Guild(guild_id),
         ServerEvent::GuildRefresh { guild_id },
     );
+    if removed > 0 {
+        log_role_change(
+            &st,
+            user.id,
+            guild_id,
+            target_id,
+            role_id,
+            "member_role_remove",
+        )
+        .await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

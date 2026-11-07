@@ -183,6 +183,11 @@ pub async fn create(
         Audience::Guild(guild_id),
         ServerEvent::SoundsChanged { guild_id },
     );
+    crate::audit::Entry::new(guild_id, user.id, "sound_create")
+        .target("sound", id, format!("{emoji} {name}").trim().to_string())
+        .details(format!("{:.1} s", ms as f64 / 1000.0))
+        .save(&st)
+        .await;
     Ok(Json(fetch_sound(&st, id).await?.into()))
 }
 
@@ -200,6 +205,14 @@ pub async fn delete(
         .execute(&st.db)
         .await?;
     let _ = tokio::fs::remove_file(st.config.upload_dir.join(&sound.storage_key)).await;
+    crate::audit::Entry::new(sound.guild_id, user.id, "sound_delete")
+        .target(
+            "sound",
+            sound_id,
+            format!("{} {}", sound.emoji, sound.name).trim().to_string(),
+        )
+        .save(&st)
+        .await;
     st.dispatch(
         Audience::Guild(sound.guild_id),
         ServerEvent::SoundsChanged {

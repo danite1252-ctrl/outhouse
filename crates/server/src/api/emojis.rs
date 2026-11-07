@@ -11,6 +11,7 @@ use outhouse_common::permissions as p;
 use serde::Deserialize;
 use sqlx::PgPool;
 
+use crate::audit;
 use crate::auth::{self, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::perms::member_ctx;
@@ -314,6 +315,10 @@ pub async fn create(
         Audience::Guild(guild_id),
         ServerEvent::EmojisChanged { guild_id },
     );
+    audit::Entry::new(guild_id, user.id, "emoji_create")
+        .target("emoji", id, format!(":{name}:"))
+        .save(&st)
+        .await;
     Ok(Json(CustomEmoji {
         id,
         guild_id,
@@ -349,6 +354,10 @@ pub async fn rename(
         .require(p::MANAGE_GUILD)?;
     let name = clean_name(&req.name)?;
     check_name_free(&st.db, guild_id, &name).await?;
+    let old_name: String = sqlx::query_scalar("SELECT name FROM emojis WHERE id = $1")
+        .bind(emoji_id)
+        .fetch_one(&st.db)
+        .await?;
     let row = sqlx::query_as::<_, EmojiRow>(
         "UPDATE emojis SET name = $2 WHERE id = $1 RETURNING id, guild_id, name, animated",
     )
@@ -360,6 +369,11 @@ pub async fn rename(
         Audience::Guild(guild_id),
         ServerEvent::EmojisChanged { guild_id },
     );
+    audit::Entry::new(guild_id, user.id, "emoji_rename")
+        .target("emoji", emoji_id, format!(":{name}:"))
+        .details(format!(":{old_name}: → :{name}:"))
+        .save(&st)
+        .await;
     Ok(Json(row.into()))
 }
 
@@ -373,10 +387,19 @@ pub async fn delete(
     member_ctx(&st.db, guild_id, user.id)
         .await?
         .require(p::MANAGE_GUILD)?;
-    sqlx::query("DELETE FROM emojis WHERE id = $1")
-        .bind(emoji_id)
-        .execute(&st.db)
-        .await?;
+    let old_name: Option<String> =
+        sqlx::query_scalar("DELETE FROM emojis WHERE id = $1 RETURNING name")
+            .bind(emoji_id)
+            .fetch_optional(&st.db)
+            .await?;
+    audit::Entry::new(guild_id, user.id, "emoji_delete")
+        .target(
+            "emoji",
+            emoji_id,
+            format!(":{}:", old_name.unwrap_or_default()),
+        )
+        .save(&st)
+        .await;
     let _ = tokio::fs::remove_file(st.config.upload_dir.join(key)).await;
     st.dispatch(
         Audience::Guild(guild_id),

@@ -10,6 +10,7 @@ use outhouse_common::models::{
 };
 use outhouse_common::permissions as p;
 
+use crate::audit;
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::perms::{self, channel_access, member_ctx};
@@ -97,7 +98,45 @@ pub async fn create(
         },
         ServerEvent::ChannelCreate(channel.clone()),
     );
+    audit::Entry::new(guild_id, user.id, "channel_create")
+        .target("channel", channel.id, channel_label(&channel))
+        .details(if kind == channel_kind::VOICE {
+            "Voice channel"
+        } else {
+            "Text channel"
+        })
+        .save(&st)
+        .await;
     Ok(Json(channel))
+}
+
+fn channel_label(c: &Channel) -> String {
+    if c.kind == channel_kind::VOICE {
+        format!("🔈 {}", c.name)
+    } else {
+        format!("#{}", c.name)
+    }
+}
+
+/// "@everyone", "@Raider" or a member's name, for the audit log.
+async fn overwrite_target_name(st: &AppState, guild_id: i64, target_id: i64) -> String {
+    if target_id == guild_id {
+        return "@everyone".into();
+    }
+    let name: Option<String> = sqlx::query_scalar(
+        "SELECT '@' || name FROM roles WHERE id = $1 AND guild_id = $2
+         UNION ALL
+         SELECT COALESCE(m.nickname, u.display_name) FROM guild_members m
+         JOIN users u ON u.id = m.user_id WHERE m.guild_id = $2 AND m.user_id = $1
+         LIMIT 1",
+    )
+    .bind(target_id)
+    .bind(guild_id)
+    .fetch_optional(&st.db)
+    .await
+    .ok()
+    .flatten();
+    name.unwrap_or_else(|| target_id.to_string())
 }
 
 pub async fn delete(
@@ -112,6 +151,10 @@ pub async fn delete(
         .bind(channel_id)
         .execute(&st.db)
         .await?;
+    audit::Entry::new(guild_id, user.id, "channel_delete")
+        .target("channel", channel_id, channel_label(&access.channel))
+        .save(&st)
+        .await;
     st.dispatch(
         Audience::Guild(guild_id),
         ServerEvent::ChannelDelete {
@@ -221,6 +264,15 @@ pub async fn set_overwrite(
     let allow = (req.allow as u64) & p::ALL;
     let deny = (req.deny as u64) & p::ALL & !allow;
     access.ctx.require_can_grant(allow | deny)?;
+    let before: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT allow_bits, deny_bits FROM channel_overwrites
+         WHERE channel_id = $1 AND target_id = $2",
+    )
+    .bind(channel_id)
+    .bind(target_id)
+    .fetch_optional(&st.db)
+    .await?;
+    let (old_allow, old_deny) = before.map(|(a, d)| (a as u64, d as u64)).unwrap_or((0, 0));
 
     sqlx::query(
         "INSERT INTO channel_overwrites (channel_id, target_id, target_kind, allow_bits, deny_bits)
@@ -242,6 +294,19 @@ pub async fn set_overwrite(
         Audience::Guild(guild_id),
         ServerEvent::GuildRefresh { guild_id },
     );
+    let details = audit::join([
+        Some(format!(
+            "For {}",
+            overwrite_target_name(&st, guild_id, target_id).await
+        )),
+        audit::perm_diff("Allowed", old_allow, allow),
+        audit::perm_diff("Denied", old_deny, deny),
+    ]);
+    audit::Entry::new(guild_id, user.id, "channel_permissions")
+        .target("channel", channel_id, channel_label(&access.channel))
+        .details(details)
+        .save(&st)
+        .await;
     Ok(Json(PermissionOverwrite {
         target_id,
         kind: req.kind,
@@ -258,11 +323,23 @@ pub async fn delete_overwrite(
     let access = channel_access(&st.db, channel_id, user.id).await?;
     access.ctx.require(p::MANAGE_ROLES)?;
     let guild_id = access.channel.guild_id;
-    sqlx::query("DELETE FROM channel_overwrites WHERE channel_id = $1 AND target_id = $2")
-        .bind(channel_id)
-        .bind(target_id)
-        .execute(&st.db)
-        .await?;
+    let removed =
+        sqlx::query("DELETE FROM channel_overwrites WHERE channel_id = $1 AND target_id = $2")
+            .bind(channel_id)
+            .bind(target_id)
+            .execute(&st.db)
+            .await?
+            .rows_affected();
+    if removed > 0 {
+        audit::Entry::new(guild_id, user.id, "channel_permissions_reset")
+            .target("channel", channel_id, channel_label(&access.channel))
+            .details(format!(
+                "For {}",
+                overwrite_target_name(&st, guild_id, target_id).await
+            ))
+            .save(&st)
+            .await;
+    }
     st.dispatch(
         Audience::Guild(guild_id),
         ServerEvent::GuildRefresh { guild_id },

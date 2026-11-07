@@ -8,6 +8,7 @@ use outhouse_common::models::{CreateRoleRequest, Role, UpdateRoleRequest};
 use outhouse_common::permissions as p;
 use sqlx::PgPool;
 
+use crate::audit;
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::perms::member_ctx;
@@ -93,6 +94,14 @@ pub async fn create(
         Audience::Guild(guild_id),
         ServerEvent::GuildRefresh { guild_id },
     );
+    audit::Entry::new(guild_id, user.id, "role_create")
+        .target("role", role.id, format!("@{}", role.name))
+        .details(audit::join([
+            (perms != 0).then(|| format!("Allowed: {}", audit::perm_names(perms))),
+            (deny != 0).then(|| format!("Denied: {}", audit::perm_names(deny))),
+        ]))
+        .save(&st)
+        .await;
     Ok(Json(role))
 }
 
@@ -169,6 +178,37 @@ pub async fn update(
         Audience::Guild(guild_id),
         ServerEvent::GuildRefresh { guild_id },
     );
+    let details = audit::join([
+        audit::change("Name", role.name.as_str(), updated.name.as_str()),
+        audit::change(
+            "Colour",
+            format!("#{:06x}", role.color),
+            format!("#{:06x}", updated.color),
+        ),
+        audit::perm_diff(
+            "Allowed",
+            role.permissions as u64,
+            updated.permissions as u64,
+        ),
+        audit::perm_diff(
+            "Denied",
+            role.deny_permissions as u64,
+            updated.deny_permissions as u64,
+        ),
+        audit::change("Position", role.position, updated.position),
+        audit::change(
+            "Shown separately",
+            if role.hoist { "yes" } else { "no" },
+            if updated.hoist { "yes" } else { "no" },
+        ),
+    ]);
+    if !details.is_empty() {
+        audit::Entry::new(guild_id, user.id, "role_update")
+            .target("role", role_id, format!("@{}", updated.name))
+            .details(details)
+            .save(&st)
+            .await;
+    }
     Ok(Json(updated))
 }
 
@@ -202,5 +242,9 @@ pub async fn delete(
         Audience::Guild(guild_id),
         ServerEvent::GuildRefresh { guild_id },
     );
+    audit::Entry::new(guild_id, user.id, "role_delete")
+        .target("role", role_id, format!("@{}", role.name))
+        .save(&st)
+        .await;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -78,6 +78,11 @@ pub async fn create(
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
+    crate::audit::Entry::new(access.channel.guild_id, user.id, "webhook_create")
+        .target("webhook", hook.id, name.clone())
+        .details(format!("Posts in #{}", access.channel.name))
+        .save(&st)
+        .await;
     Ok(Json(hook))
 }
 
@@ -94,10 +99,15 @@ pub async fn delete(
     member_ctx(&st.db, guild_id, user.id)
         .await?
         .require(p::MANAGE_WEBHOOKS)?;
-    sqlx::query("DELETE FROM webhooks WHERE id = $1")
-        .bind(webhook_id)
-        .execute(&st.db)
-        .await?;
+    let name: Option<String> =
+        sqlx::query_scalar("DELETE FROM webhooks WHERE id = $1 RETURNING name")
+            .bind(webhook_id)
+            .fetch_optional(&st.db)
+            .await?;
+    crate::audit::Entry::new(guild_id, user.id, "webhook_delete")
+        .target("webhook", webhook_id, name.unwrap_or_default())
+        .save(&st)
+        .await;
     Ok(StatusCode::NO_CONTENT)
 }
 

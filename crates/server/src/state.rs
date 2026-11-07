@@ -57,6 +57,15 @@ pub struct Config {
     pub public_url: Option<String>,
     /// Battle.net sign-in, when its keys are set.
     pub bnet: Option<BnetConfig>,
+    /// Web Push: who the push services can contact about this server
+    /// (a mailto: or https: address).
+    pub vapid_subject: String,
+    /// Extra push service hosts to allow (besides Google, Mozilla,
+    /// Microsoft and Apple), comma-separated in `PUSH_ALLOWED_HOSTS`.
+    pub push_allowed_hosts: Vec<String>,
+    /// Endpoint prefixes allowed as-is, even over plain HTTP (tests only:
+    /// `PUSH_EXTRA_ENDPOINTS=http://127.0.0.1:8097/`).
+    pub push_extra_endpoints: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +140,11 @@ impl Config {
             ),
             public_url: env_opt("PUBLIC_URL").map(|u| u.trim_end_matches('/').to_string()),
             bnet: BnetConfig::from_env(),
+            vapid_subject: env_opt("VAPID_SUBJECT")
+                .or_else(|| env_opt("PUBLIC_URL").filter(|u| u.starts_with("https://")))
+                .unwrap_or_else(|| "mailto:admin@outhouse.invalid".into()),
+            push_allowed_hosts: list_env("PUSH_ALLOWED_HOSTS"),
+            push_extra_endpoints: list_env("PUSH_EXTRA_ENDPOINTS"),
         }
     }
 }
@@ -140,6 +154,17 @@ fn url_env(name: &str, default: &str) -> String {
         .unwrap_or_else(|| default.into())
         .trim_end_matches('/')
         .to_string()
+}
+
+fn list_env(name: &str) -> Vec<String> {
+    env_opt(name)
+        .map(|v| {
+            v.split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn env_opt(name: &str) -> Option<String> {
@@ -170,6 +195,13 @@ pub struct AppState {
     pub entrance_cooldowns: Arc<Mutex<HashMap<i64, Instant>>>,
     /// Slash commands waiting for their bot to reply (kept 15 minutes).
     pub interactions: Arc<Mutex<HashMap<i64, PendingInteraction>>>,
+    /// User ID → how many of their open connections say they're idle
+    /// (tab hidden or no input for a while). Push notifications go out when
+    /// someone is offline or every connection is idle.
+    pub idle: Arc<Mutex<HashMap<i64, usize>>>,
+    /// The Web Push signing key (None if it couldn't be loaded).
+    pub vapid: Option<Arc<crate::push::Vapid>>,
+    pub started_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Someone used a bot's slash command; the bot replies to this.
@@ -203,6 +235,9 @@ impl AppState {
             sound_cooldowns: Arc::new(Mutex::new(HashMap::new())),
             entrance_cooldowns: Arc::new(Mutex::new(HashMap::new())),
             interactions: Arc::new(Mutex::new(HashMap::new())),
+            idle: Arc::new(Mutex::new(HashMap::new())),
+            vapid: None,
+            started_at: chrono::Utc::now(),
         }
     }
 
@@ -235,6 +270,43 @@ impl AppState {
             .lock()
             .expect("presence lock")
             .contains_key(&user_id)
+    }
+
+    /// One of the user's connections became idle (true) or active again.
+    pub fn set_idle(&self, user_id: i64, idle: bool) {
+        let mut map = self.idle.lock().expect("idle lock");
+        if idle {
+            *map.entry(user_id).or_insert(0) += 1;
+        } else if let Some(count) = map.get_mut(&user_id) {
+            if *count > 1 {
+                *count -= 1;
+            } else {
+                map.remove(&user_id);
+            }
+        }
+    }
+
+    /// Not looking at Outhouse right now: offline, or every open connection
+    /// is idle.
+    pub fn is_away(&self, user_id: i64) -> bool {
+        let online = self
+            .presence
+            .lock()
+            .expect("presence lock")
+            .get(&user_id)
+            .copied()
+            .unwrap_or(0);
+        if online == 0 {
+            return true;
+        }
+        let idle = self
+            .idle
+            .lock()
+            .expect("idle lock")
+            .get(&user_id)
+            .copied()
+            .unwrap_or(0);
+        idle >= online
     }
 
     pub fn dispatch(&self, audience: Audience, event: ServerEvent) {

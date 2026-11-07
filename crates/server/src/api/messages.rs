@@ -482,6 +482,7 @@ pub async fn post_bot_message_full(
         },
         ServerEvent::MessageCreate(message.clone()),
     );
+    crate::push::spawn_message_push(st, guild_id, &message);
     if embeds.is_empty() {
         embeds::spawn_previews(st.clone(), guild_id, channel_id, id, content);
     }
@@ -705,6 +706,7 @@ async fn create_message(
         },
         ServerEvent::MessageCreate(message.clone()),
     );
+    crate::push::spawn_message_push(st, guild_id, &message);
     if let Some(thread_id) = thread_id {
         announce_thread(st, guild_id, channel_id, thread_id).await?;
     }
@@ -917,6 +919,17 @@ pub async fn delete(
         .await?;
     for key in keys {
         let _ = tokio::fs::remove_file(st.config.upload_dir.join(key)).await;
+    }
+    if msg.author_id != user.id {
+        crate::audit::Entry::new(access.channel.guild_id, user.id, "message_delete")
+            .target("member", msg.author_id, msg.author_display_name.clone())
+            .details(format!(
+                "In #{}: {}",
+                access.channel.name,
+                snippet(&msg.content, msg.attachments.len())
+            ))
+            .save(&st)
+            .await;
     }
     if let Some(thread_id) = msg.thread_id {
         sqlx::query(
@@ -1153,7 +1166,42 @@ async fn set_pinned(
         },
         ServerEvent::MessageUpdate(message.clone()),
     );
+    crate::audit::Entry::new(
+        access.channel.guild_id,
+        user.id,
+        if pinned {
+            "message_pin"
+        } else {
+            "message_unpin"
+        },
+    )
+    .target("message", message_id, format!("#{}", access.channel.name))
+    .details(format!(
+        "{}: {}",
+        message.author_display_name,
+        snippet(&message.content, message.attachments.len())
+    ))
+    .save(st)
+    .await;
     Ok(message)
+}
+
+/// A short quote of a message for the audit log.
+fn snippet(content: &str, attachments: usize) -> String {
+    let text: String = content.chars().take(120).collect();
+    let text = if content.chars().count() > 120 {
+        format!("“{text}…”")
+    } else if text.is_empty() {
+        String::new()
+    } else {
+        format!("“{text}”")
+    };
+    match (text.is_empty(), attachments) {
+        (true, 0) => "(empty)".into(),
+        (true, n) => format!("{n} attachment(s)"),
+        (false, 0) => text,
+        (false, n) => format!("{text} + {n} attachment(s)"),
+    }
 }
 
 /// `PUT /api/channels/{id}/pins/{message}` (needs Manage Messages).

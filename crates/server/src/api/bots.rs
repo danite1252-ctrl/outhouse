@@ -139,6 +139,10 @@ pub async fn create(
         Audience::Guild(guild_id),
         ServerEvent::MemberJoin { guild_id, member },
     );
+    crate::audit::Entry::new(guild_id, user.id, "bot_create")
+        .target("bot", bot_id, name.clone())
+        .save(&st)
+        .await;
     Ok(Json(BotTokenResponse {
         bot: auth::fetch_user(&st.db, bot_id).await?,
         token,
@@ -154,10 +158,12 @@ pub async fn reset_token(
     let row = bot_row(&st, bot_id).await?;
     require_manager(&st, row.guild_id, user.id).await?;
     let token = store_token(&st, bot_id).await?;
-    Ok(Json(BotTokenResponse {
-        bot: auth::fetch_user(&st.db, bot_id).await?,
-        token,
-    }))
+    let bot = auth::fetch_user(&st.db, bot_id).await?;
+    crate::audit::Entry::new(row.guild_id, user.id, "bot_token_reset")
+        .target("bot", bot_id, bot.display_name.clone())
+        .save(&st)
+        .await;
+    Ok(Json(BotTokenResponse { bot, token }))
 }
 
 /// Switches a bot off for good: its token stops working, its commands go,
@@ -169,6 +175,14 @@ pub async fn delete(
 ) -> AppResult<StatusCode> {
     let row = bot_row(&st, bot_id).await?;
     require_manager(&st, row.guild_id, user.id).await?;
+    let bot_name = auth::fetch_user(&st.db, bot_id)
+        .await
+        .map(|u| u.display_name)
+        .unwrap_or_default();
+    crate::audit::Entry::new(row.guild_id, user.id, "bot_delete")
+        .target("bot", bot_id, bot_name)
+        .save(&st)
+        .await;
     let guilds: Vec<i64> =
         sqlx::query_scalar("SELECT guild_id FROM guild_members WHERE user_id = $1")
             .bind(bot_id)

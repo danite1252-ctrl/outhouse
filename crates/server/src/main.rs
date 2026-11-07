@@ -2,6 +2,7 @@
 
 mod api;
 mod audio;
+mod audit;
 mod auth;
 mod embeds;
 mod error;
@@ -10,6 +11,7 @@ mod files;
 mod gateway;
 mod livekit;
 mod perms;
+mod push;
 mod state;
 mod wowhead;
 
@@ -57,11 +59,16 @@ async fn main() -> anyhow::Result<()> {
     if config.giphy_api_key.is_none() {
         tracing::info!("GIPHY_API_KEY not set: the GIF picker is switched off");
     }
-    let state = AppState::new(db, config);
+    let mut state = AppState::new(db, config);
+    match push::load_or_create(&state.db).await {
+        Ok(vapid) => state.vapid = Some(std::sync::Arc::new(vapid)),
+        Err(e) => tracing::warn!(error = %e, "Web Push is off: couldn't load the VAPID key"),
+    }
     feeds::spawn_poller(state.clone());
     api::events::spawn_reminders(state.clone());
     api::polls::spawn_closer(state.clone());
     api::lfg::spawn_expirer(state.clone());
+    audit::spawn_pruner(state.clone());
     let app = api::router(state)
         .fallback_service(ServeDir::new(&web_dir))
         .layer(axum::middleware::map_response(no_stale_files))

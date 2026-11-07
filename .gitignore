@@ -10,3 +10,5 @@
 /deploy/updates
 /github-secrets.txt
 __pycache__/
+/deploy/status
+/VERSION

@@ -12,8 +12,16 @@ use crate::models::{Channel, DmChannel, Guild, Member, Message, RaidEvent, Threa
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", content = "d", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ClientEvent {
-    Identify { token: String },
+    Identify {
+        token: String,
+    },
     Heartbeat,
+    /// The tab is hidden or nobody has touched it for a while (`idle: true`),
+    /// or someone's back (`false`). Push notifications go to people whose
+    /// connections are all idle.
+    Idle {
+        idle: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -225,6 +233,12 @@ pub enum ServerEvent {
         title: String,
         role: String,
     },
+    /// Badges in this outhouse changed (made, edited, given or taken away):
+    /// re-fetch them.
+    BadgesChanged {
+        #[serde(with = "as_string")]
+        guild_id: i64,
+    },
     /// Identify failed or the session expired; sign in again.
     InvalidSession {
         reason: String,
@@ -239,6 +253,8 @@ mod tests {
     fn client_events_parse() {
         let e: ClientEvent = serde_json::from_str(r#"{"op":"HEARTBEAT"}"#).unwrap();
         assert_eq!(e, ClientEvent::Heartbeat);
+        let e: ClientEvent = serde_json::from_str(r#"{"op":"IDLE","d":{"idle":true}}"#).unwrap();
+        assert_eq!(e, ClientEvent::Idle { idle: true });
         let e: ClientEvent =
             serde_json::from_str(r#"{"op":"IDENTIFY","d":{"token":"abc"}}"#).unwrap();
         assert_eq!(

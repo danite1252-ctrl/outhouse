@@ -6,6 +6,7 @@
 //!    ~30 s. No heartbeat for 90 s and the connection is closed.
 
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
@@ -98,6 +99,9 @@ async fn run(socket: WebSocket, st: AppState) -> anyhow::Result<()> {
         announce_presence(&st, &guild_ids, user.id, true);
     }
 
+    // Whether this connection said it's idle (an atomic so the loop below
+    // can update it and we can still read it however the loop ends).
+    let idle = std::sync::atomic::AtomicBool::new(false);
     let outcome: anyhow::Result<()> = async {
         let mut last_heartbeat = Instant::now();
         let mut watchdog = tokio::time::interval(Duration::from_secs(15));
@@ -106,9 +110,18 @@ async fn run(socket: WebSocket, st: AppState) -> anyhow::Result<()> {
             tokio::select! {
                 incoming = stream.next() => match incoming {
                     Some(Ok(WsMessage::Text(text))) => {
-                        if let Ok(ClientEvent::Heartbeat) = serde_json::from_str(text.as_str()) {
-                            last_heartbeat = Instant::now();
-                            send(&mut sink, &ServerEvent::HeartbeatAck).await?;
+                        match serde_json::from_str::<ClientEvent>(text.as_str()) {
+                            Ok(ClientEvent::Heartbeat) => {
+                                last_heartbeat = Instant::now();
+                                send(&mut sink, &ServerEvent::HeartbeatAck).await?;
+                            }
+                            Ok(ClientEvent::Idle { idle: now_idle })
+                                if now_idle != idle.load(Ordering::Relaxed) =>
+                            {
+                                idle.store(now_idle, Ordering::Relaxed);
+                                st.set_idle(user.id, now_idle);
+                            }
+                            _ => {}
                         }
                     }
                     Some(Ok(WsMessage::Close(_))) | Some(Err(_)) | None => break,
@@ -153,6 +166,10 @@ async fn run(socket: WebSocket, st: AppState) -> anyhow::Result<()> {
         Ok::<(), anyhow::Error>(())
     }
     .await;
+    // This connection no longer counts towards "every connection is idle".
+    if idle.load(Ordering::Relaxed) {
+        st.set_idle(user.id, false);
+    }
 
     if st.presence_disconnect(user.id) {
         crate::api::voice::clear_voice(&st, user.id, None);

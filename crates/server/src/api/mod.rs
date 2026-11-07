@@ -2,6 +2,8 @@
 
 mod account;
 mod attendance;
+mod audit;
+mod badges;
 mod bnet;
 mod bots;
 mod channels;
@@ -14,6 +16,7 @@ pub mod guilds;
 pub mod lfg;
 pub mod members;
 pub mod messages;
+mod notifications;
 pub mod polls;
 mod profiles;
 mod roles;
@@ -39,7 +42,7 @@ async fn permission_list() -> Json<Vec<PermissionInfo>> {
 pub fn router(state: AppState) -> Router {
     let upload_limit = messages::MAX_FILES * messages::MAX_FILE_BYTES + 1024 * 1024;
     Router::new()
-        .route("/api/health", get(|| async { "ok" }))
+        .route("/api/health", get(audit::health))
         .route("/api/permissions", get(permission_list))
         // Accounts
         .route("/api/auth/register", post(account::register))
@@ -265,6 +268,36 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/channels/{id}/interactions", post(bots::interact))
         .route("/api/interactions/{id}/reply", post(bots::reply))
+        // Audit log, server status, badges
+        .route("/api/guilds/{id}/audit-log", get(audit::list))
+        .route("/api/guilds/{id}/server-status", get(audit::server_status))
+        .route(
+            "/api/guilds/{id}/badges",
+            get(badges::list).post(badges::create),
+        )
+        .route(
+            "/api/badges/{id}",
+            patch(badges::update).delete(badges::delete),
+        )
+        .route(
+            "/api/badges/{id}/members/{user}",
+            put(badges::award).delete(badges::revoke),
+        )
+        // Notifications and Web Push
+        .route("/api/users/@me/notifications", get(notifications::get))
+        .route(
+            "/api/users/@me/notifications/guilds/{id}",
+            put(notifications::set_level),
+        )
+        .route(
+            "/api/users/@me/notifications/channels/{id}",
+            put(notifications::set_mute),
+        )
+        .route(
+            "/api/push/subscriptions",
+            post(notifications::subscribe).delete(notifications::unsubscribe),
+        )
+        .route("/api/push/test", post(notifications::test))
         // GIFs, files, gateway
         .route("/api/gifs", get(gifs::search))
         .route("/files/{key}/{name}", get(files::serve))

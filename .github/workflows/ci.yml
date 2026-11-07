@@ -54,6 +54,10 @@ jobs:
           node --check web/voice-extras.js
           node --check web/sw.js
           node --check web/bots/dice-bot.mjs
+      - name: Deploy scripts check (bash -n + shellcheck)
+        run: |
+          for f in deploy/*.sh ci/smoke.sh; do bash -n "$f"; done
+          shellcheck -S warning deploy/backup.sh deploy/healthcheck.sh deploy/setup.sh deploy/restore.sh
       - name: Smoke test (real server + Postgres)
         env:
           DATABASE_URL: postgres://outhouse:outhouse@localhost:5432/outhouse

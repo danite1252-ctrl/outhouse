@@ -82,6 +82,11 @@ pub async fn create(
     tx.commit().await?;
 
     let feed = fetch(&st, id).await?;
+    crate::audit::Entry::new(access.channel.guild_id, user.id, "feed_create")
+        .target("feed", id, title.clone())
+        .details(format!("{url} → #{}", access.channel.name))
+        .save(&st)
+        .await;
     // Post the newest item so you can see it working.
     feeds::check_and_record(&st, &feed, true).await;
     Ok(Json(fetch(&st, id).await?))
@@ -113,5 +118,10 @@ pub async fn delete(
         .bind(feed_id)
         .execute(&st.db)
         .await?;
+    crate::audit::Entry::new(feed.guild_id, user.id, "feed_delete")
+        .target("feed", feed_id, feed.title.clone())
+        .details(feed.url.clone())
+        .save(&st)
+        .await;
     Ok(StatusCode::NO_CONTENT)
 }

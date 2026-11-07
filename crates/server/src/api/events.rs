@@ -1011,6 +1011,11 @@ pub async fn delete(
         guild_id: row.guild_id,
         channel_id: row.channel_id,
     };
+    crate::audit::Entry::new(row.guild_id, user.id, "raid_delete")
+        .target("raid", event_id, row.title.clone())
+        .details(audit_raid_details(&row, gone.len()))
+        .save(&st)
+        .await;
     for (id, message_id) in gone {
         if let Some(message_id) = message_id {
             sqlx::query("DELETE FROM messages WHERE id = $1")
@@ -1034,6 +1039,18 @@ pub async fn delete(
         );
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn audit_raid_details(row: &EventRow, count: usize) -> String {
+    let when = row.starts_at.format("%a %-d %b %Y, %H:%M UTC");
+    if count > 1 {
+        format!(
+            "This and {} later raids in the series (from {when})",
+            count - 1
+        )
+    } else {
+        format!("Was on {when}")
+    }
 }
 
 /// Locks the raid's row for the rest of the transaction (so two people

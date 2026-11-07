@@ -11,10 +11,19 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $archive = Join-Path $env:TEMP "outhouse-upload.tgz"
 
+# A version label for Outhouse settings > Server status: the date, plus the
+# git commit when git is installed.
+$version = Get-Date -Format "yyyy.MM.dd-HHmm"
+try {
+    $commit = (& git -C $root rev-parse --short HEAD 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $commit) { $version = "$version ($commit)" }
+} catch { }
+Set-Content -Path (Join-Path $root "VERSION") -Value $version -NoNewline
+
 Write-Host "Packing the code (skipping build output and local data)..."
 tar -czf $archive -C $root `
     --exclude=./target --exclude=./data --exclude=./tools --exclude=./.env `
-    --exclude=./deploy/.env --exclude=./deploy/livekit.yaml --exclude=./.git --exclude=./desktop --exclude=./deploy/updates --exclude=./github-secrets.txt .
+    --exclude=./deploy/.env --exclude=./deploy/livekit.yaml --exclude=./.git --exclude=./desktop --exclude=./deploy/updates --exclude=./deploy/status --exclude=./github-secrets.txt .
 if ($LASTEXITCODE -ne 0) { throw "Packing failed." }
 
 Write-Host "Uploading to $Server..."

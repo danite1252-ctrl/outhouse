@@ -424,6 +424,18 @@ pub async fn moderate(
                 enforce(&st, &target, v).await?;
             }
         }
+        if muted != was_muted || deafened != was_deafened {
+            let yes_no = |b: bool| if b { "on" } else { "off" };
+            let name = crate::audit::user_label(&st, guild_id, target_id).await;
+            crate::audit::Entry::new(guild_id, user.id, "voice_moderate")
+                .target("member", target_id, name)
+                .details(crate::audit::join([
+                    crate::audit::change("Server mute", yes_no(was_muted), yes_no(muted)),
+                    crate::audit::change("Server deafen", yes_no(was_deafened), yes_no(deafened)),
+                ]))
+                .save(&st)
+                .await;
+        }
     }
 
     if let Some(dest) = req.channel_id {
@@ -456,6 +468,21 @@ pub async fn moderate(
             if let Some(v) = moved {
                 announce(&st, guild_id, target_id, Some(&v));
             }
+            let from_name: Option<String> =
+                sqlx::query_scalar("SELECT name FROM channels WHERE id = $1")
+                    .bind(from.channel_id)
+                    .fetch_optional(&st.db)
+                    .await?;
+            let name = crate::audit::user_label(&st, guild_id, target_id).await;
+            crate::audit::Entry::new(guild_id, user.id, "voice_move")
+                .target("member", target_id, name)
+                .details(format!(
+                    "🔈 {} → 🔈 {}",
+                    from_name.unwrap_or_default(),
+                    channel.name
+                ))
+                .save(&st)
+                .await;
             st.dispatch(
                 Audience::User(target_id),
                 ServerEvent::VoiceMove {
@@ -499,6 +526,16 @@ pub async fn disconnect(
         },
     );
     livekit::remove(&st, &room_name(v.channel_id), &target_id.to_string()).await;
+    let from_name: Option<String> = sqlx::query_scalar("SELECT name FROM channels WHERE id = $1")
+        .bind(v.channel_id)
+        .fetch_optional(&st.db)
+        .await?;
+    let name = crate::audit::user_label(&st, guild_id, target_id).await;
+    crate::audit::Entry::new(guild_id, user.id, "voice_disconnect")
+        .target("member", target_id, name)
+        .details(format!("From 🔈 {}", from_name.unwrap_or_default()))
+        .save(&st)
+        .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
