@@ -72,9 +72,104 @@ cd ~/outhouse/deploy
 ./restore.sh ~/outhouse-backups/outhouse-2026-11-08_0330.tgz   # put one back (replaces everything)
 ```
 
-A backup on the same VM won't survive the VM's disk dying, so copy the
-folder somewhere else now and then, for example from Windows:
+A backup on the same VM won't survive the VM's disk dying, so let
+`backup.sh` copy each one somewhere else (below), or copy the folder by hand
+now and then, for example from Windows:
 `scp -r danite@192.168.1.122:outhouse-backups C:\Backups\Outhouse`.
+
+### Off-site copies (a Windows share and/or rclone)
+`backup.sh` can copy each night's backup somewhere else and keep the newest
+14 there too. `setup.sh` asks about it once (run `./setup.sh --offsite` to
+change your answers later):
+
+- **A shared folder on your Windows PC.** In Windows, make a folder (e.g.
+  `C:\Backups\Outhouse`), right-click it → Properties → Sharing → Share…,
+  and give your Windows user access. Then answer the question with
+  `//<PC's IP>/<share name>` (e.g. `//192.168.1.10/Outhouse`), the Windows
+  user name and password. Setup installs `cifs-utils`, keeps the password in
+  `/etc/outhouse-backups.cred` (only root can read it), and mounts the share
+  at `/mnt/outhouse-backups` whenever it's used (an `/etc/fstab` line with
+  `nofail` and automount, so a sleeping PC never stops the VM booting).
+  If the PC is off at 3:30 am, that night's copy fails and you get an alert
+  (see below); the backup on the VM is still made.
+- **An rclone remote** (Google Drive, OneDrive, Backblaze B2, another SSH
+  box…): `sudo apt install rclone`, `rclone config` to add the remote, then
+  give its name and folder, e.g. `gdrive:outhouse-backups`.
+
+The settings live in `~/outhouse/deploy/.env`:
+
+| Setting | What it does |
+|---|---|
+| `OFFSITE_DIR` | A mounted folder to copy backups to (`/mnt/outhouse-backups`). It must really be mounted, so a missing share never fills the VM's own disk (`OFFSITE_REQUIRE_MOUNT=no` turns that check off for a plain folder). |
+| `OFFSITE_KEEP` | How many backups to keep there (14) |
+| `RCLONE_REMOTE` | An rclone remote and folder (`gdrive:outhouse-backups`) |
+| `RCLONE_KEEP` | How many backups to keep there (14) |
+
+Each run writes `deploy/status/backup.json`; Outhouse settings → **Server
+status** shows the last backup and whether the off-site copy worked, and the
+uptime check below alerts you if a backup or its copy fails, or if no backup
+has happened for 36 hours. Check by hand any time: `./backup.sh` (it says
+"Copied to …" or why it couldn't) and `ls /mnt/outhouse-backups`.
+
+## Uptime alerts
+`deploy/healthcheck.sh` checks every 5 minutes that Outhouse answers (its
+`/api/health` also checks the database), that voice (LiveKit) answers, and
+that last night's backup worked. When something **changes** (goes down,
+comes back, a backup fails) it sends one alert, so you're not pinged every
+5 minutes. `setup.sh` asks for where to send them once (`./setup.sh --alerts`
+to change):
+
+- **ntfy** (easiest, free): install the ntfy app on your phone, subscribe to
+  a topic with a long random name (e.g. `outhouse-3f9c1a2b`), and use
+  `https://ntfy.sh/outhouse-3f9c1a2b` as `ALERT_NTFY_URL`. Anyone who knows
+  the topic name can read it, so keep it random.
+- **A webhook** (`ALERT_WEBHOOK_URL`): any Discord-compatible webhook, e.g. a
+  Discord channel's webhook, or an Outhouse channel's webhook (Outhouse
+  settings → Webhooks) if you'd like alerts in a channel (though if
+  Outhouse itself is down, that one can't arrive: use ntfy as well).
+
+The cron job is only installed when at least one of them is set. Other
+settings (in `.env`): `HEALTH_URL` (default `http://127.0.0.1:8080/api/health`
+behind Apache, else `https://<DOMAIN>/api/health`), `LIVEKIT_HEALTH_URL`
+(default `http://127.0.0.1:7880`, `off` to skip) and `BACKUP_MAX_AGE_HOURS`
+(36). Run `./healthcheck.sh` to check now; it logs changes to
+`~/outhouse-backups/health.log` and remembers the last state in
+`deploy/status/health.state` (delete that file to get a fresh "all good"
+baseline).
+
+Outhouse settings → **Server status** (people with Manage Outhouse) shows
+the version, uptime, database size and the last backup.
+
+## Push notifications (phones and desktops)
+Nothing to set up: on first start the server makes its own Web Push key
+(kept in the database, so it's in every backup) and Settings →
+**Notifications** has a **Turn on push notifications** button. Pushes go to
+a device when you're away (no Outhouse tab or app open, or it's been hidden
+or idle for a while): DMs, @mentions and replies, raid reminders and bench
+promotions, following each person's per-outhouse level (all / mentions /
+nothing) and muted channels.
+
+- **Android phones:** open the site in Chrome, ⋮ → **Install app**, open it,
+  sign in, Settings → Notifications → Turn on. (The Android APK can't get
+  push while it's closed: Android's web view has no Web Push. It still shows
+  notifications while it's open.)
+- **iPhone/iPad:** Share → **Add to Home Screen**, open it from there, then
+  turn push on (iOS 16.4+).
+- **Windows:** Chrome or Edge can do it too; the Windows app shows its own
+  notifications while it's running.
+
+Optional: `VAPID_SUBJECT=mailto:you@example.com` in `.env` (push services
+use it to contact the server's owner; it defaults to the site's address).
+The server only sends pushes to the big push services (Google, Mozilla,
+Microsoft, Apple); `PUSH_ALLOWED_HOSTS` adds others.
+
+## Audit log
+Outhouse settings → **Audit log** (people with View audit log or Manage
+Outhouse) lists who changed what: channels and their permissions, roles,
+kicks, bans, timeouts, deleted messages (by moderators), pins, emoji,
+sounds, voice mutes/moves/disconnects, bots, webhooks, feeds, cancelled
+raids and badges. Entries are kept for 90 days (`AUDIT_RETENTION_DAYS` in
+`.env` changes that).
 
 ## WoW tools (optional settings)
 The group finder (🔎 / `/lfg`), `/item`, `/char`, characters on profiles and

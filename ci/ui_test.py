@@ -949,6 +949,157 @@ with sync_playwright() as p:
     for pg in (carolv, davev, erinv, frankv):
         pg.evaluate("leaveVoice(true)")
     carolv.wait_for_timeout(500)
+    for pg in (carolv, davev, erinv, frankv):
+        pg.close()
+
+    # ---- Batch 6: audit log, badges, server status, notifications, animated profiles ----
+    G = guild["id"]
+    officer = api("POST", f"/api/guilds/{G}/roles", {"name": "Officer", "color": 0x3FC7EB}, TOKEN)
+    api("PUT", f"/api/guilds/{G}/members/{DAVE}/roles/{officer['id']}", None, TOKEN)
+    api("PATCH", f"/api/guilds/{G}/roles/{officer['id']}", {"name": "Raid officer"}, TOKEN)
+    api("POST", f"/api/guilds/{G}/members/{ERIN}/timeout", {"minutes": 10}, TOKEN)
+    api("POST", f"/api/guilds/{G}/members/{ERIN}/timeout", {"minutes": 0}, TOKEN)
+    mvp = api("POST", f"/api/guilds/{G}/badges", {"name": "Raid MVP", "emoji": "🏆", "color": 0xFFB347, "description": "Carried the Rag kill"}, TOKEN)
+    api("PUT", f"/api/badges/{mvp['id']}/members/{DAVE}", None, TOKEN)
+    api("POST", f"/api/guilds/{G}/badges", {"name": "Bard", "emoji": "🎻", "color": 0x8B7CF6, "description": "Sings in voice"}, TOKEN)
+    api("PATCH", "/api/users/@me", {"profile_theme": "emberdrift"}, TOKEN)
+    api("PATCH", "/api/users/@me", {"profile_theme": "aurora", "about_me": "Tanks for gold."}, dave["token"])
+    # A push device for Carol, as if her phone's Chrome had subscribed.
+    req = urllib.request.Request(BASE + "/api/push/subscriptions", method="POST", data=json.dumps({
+        "endpoint": "https://fcm.googleapis.com/fcm/send/ui-test-device",
+        "keys": {"p256dh": "BDrOP4Oow2mdZi3HAPe3hBnzB-hAZb_blV8BZe_vu5eL6i4bYjuyRWOzQIbOobvaIg9vGTBrrkhelt3K2KaB5OU", "auth": "Hu5qIhT2Wlcci3eHdsOA_g"},
+    }).encode())
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Bearer {TOKEN}")
+    req.add_header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36")
+    urllib.request.urlopen(req).read()
+
+    def fresh(token, label, **kw):
+        pg = browser.new_page(**kw)
+        watch(pg, label)
+        extra = "window.__OUTHOUSE_DESKTOP__ = true; window.__OUTHOUSE_PLATFORM__ = 'android'; window.__OUTHOUSE_APP_VERSION__ = '0.2.1';" if label.startswith("android") else ""
+        pg.add_init_script(extra + f"localStorage.setItem('outhouse_token', {json.dumps(token)}); localStorage.setItem('outhouse_guild', {json.dumps(G)}); localStorage.setItem('outhouse_channel_{G}', {json.dumps(chan['id'])});")
+        pg.goto(BASE + "/")
+        pg.wait_for_selector(".event-card", timeout=15000)
+        return pg
+
+    b6 = fresh(TOKEN, "batch6-desktop", viewport={"width": 1280, "height": 800})
+    # Badges next to names in the member list (Dave has Raid MVP).
+    b6.wait_for_selector(f"#member-list .member[data-id='{DAVE}'] .name-badges", timeout=10000)
+    # Audit log.
+    b6.evaluate("openSettings('audit')")
+    b6.wait_for_selector(".audit-row", timeout=10000)
+    b6.wait_for_selector(".audit-row:has-text('Raid officer')")
+    b6.wait_for_selector(".audit-row:has-text('Name: Officer → Raid officer')")
+    b6.screenshot(path=f"{SHOTS}/91-audit-log.png")
+    b6.select_option(".audit-filters select[aria-label='Filter by action']", "member_timeout")
+    b6.wait_for_function("document.querySelectorAll('.audit-row').length === 1")
+    b6.wait_for_selector(".audit-row:has-text('Erin'):has-text('For 10 minutes')")
+    b6.select_option(".audit-filters select[aria-label='Filter by action']", "")
+    b6.select_option(".audit-filters select[aria-label='Filter by person']", DAVE)
+    b6.wait_for_selector(".audit-row:has-text('Raid MVP')", timeout=10000)
+    b6.screenshot(path=f"{SHOTS}/92-audit-filtered.png")
+    # Badges: give Bard to Erin from the settings page.
+    b6.click(".settings-nav button:has-text('Badges')")
+    b6.wait_for_selector(".badge-item:has-text('Bard')", timeout=10000)
+    b6.select_option(".badge-item:has-text('Bard') select.give-select", ERIN)
+    b6.wait_for_selector(".badge-item:has-text('Bard') .holder-chip:has-text('Erin')", timeout=10000)
+    b6.screenshot(path=f"{SHOTS}/93-badge-settings.png")
+    b6.click(".settings-nav button:has-text('Server status')")
+    b6.wait_for_selector(".status-grid .status-item", timeout=10000)
+    b6.screenshot(path=f"{SHOTS}/94-server-status.png")
+    b6.keyboard.press("Escape")
+    b6.wait_for_selector("dialog.settings", state="detached")
+    # Profile cards: animated backgrounds and badges.
+    b6.click(f"#member-list .member[data-id='{DAVE}'] .avatar-wrap")
+    b6.wait_for_selector(".profile-card.anim-aurora .pc-badges .badge-chip:has-text('Raid MVP')", timeout=10000)
+    b6.wait_for_timeout(400)
+    b6.screenshot(path=f"{SHOTS}/95-profile-badges-aurora.png")
+    b6.keyboard.press("Escape")
+    b6.click("#messages .msg-author:has-text('Carol') >> nth=0")
+    b6.wait_for_selector(".profile-card.anim-emberdrift .pc-badges .badge-chip:has-text('owner')", timeout=10000)
+    b6.wait_for_timeout(400)
+    b6.screenshot(path=f"{SHOTS}/96-profile-emberdrift.png")
+    b6.keyboard.press("Escape")
+    # Mute a channel and set the outhouse's level from right-click menus.
+    b6.click("#text-channels .channel:has-text('general')", button="right")
+    b6.click(".menu button:has-text('Mute channel')")
+    b6.wait_for_selector("#text-channels .channel.muted-channel:has-text('general')", timeout=10000)
+    b6.click(f".guild[title='UI Test Guild']", button="right")
+    b6.hover(".menu button:has-text('Notifications')")
+    b6.wait_for_selector(".menu button:has-text('Only @mentions and replies')")
+    b6.screenshot(path=f"{SHOTS}/97-guild-notify-menu.png")
+    b6.click(".menu button:has-text('All messages')")
+    b6.wait_for_timeout(500)
+    st6 = api("GET", "/api/users/@me/notifications", None, TOKEN)
+    assert any(l["guild_id"] == G and l["level"] == "all" for l in st6["levels"]), st6
+    assert general["id"] in st6["muted_channels"], st6
+    # Settings → Notifications.
+    b6.evaluate("openUserSettings('notifications')")
+    b6.wait_for_selector(".notify-box .device-row:has-text('Chrome on Android')", timeout=10000)
+    b6.wait_for_selector(".notify-box .device-row:has-text('#general')")
+    b6.wait_for_selector(".notify-box button:has-text('Turn on push notifications')")
+    b6.screenshot(path=f"{SHOTS}/98-notifications-settings.png")
+    b6.select_option(".level-row:has-text('Family') select", "nothing")
+    b6.wait_for_timeout(400)
+    assert any(l["guild_id"] == family["id"] and l["level"] == "nothing" for l in api("GET", "/api/users/@me/notifications", None, TOKEN)["levels"])
+    b6.click(".device-row:has-text('#general') button:has-text('Unmute')")
+    b6.wait_for_function("![...document.querySelectorAll('.notify-box')].some((b) => b.textContent.includes('#general'))", timeout=10000)
+    # Animated backgrounds in the profile settings.
+    b6.click(".settings-nav button:has-text('Profile & picture')")
+    b6.wait_for_selector(".theme-swatch.anim-starfield")
+    b6.click(".theme-swatch[title='Starfield']")
+    b6.wait_for_selector(".pl-preview .profile-card.anim-starfield")
+    b6.wait_for_selector(".check-row:has-text('badges next to')")
+    b6.wait_for_timeout(300)
+    b6.screenshot(path=f"{SHOTS}/99-animated-themes.png")
+    b6.keyboard.press("Escape")
+    # Reduced motion: no animation.
+    b6.emulate_media(reduced_motion="reduce")
+    b6.click("#messages .msg-author:has-text('Carol') >> nth=0")
+    b6.wait_for_selector(".profile-card.anim-emberdrift")
+    anim = b6.evaluate("getComputedStyle(document.querySelector('.profile-card .pc-fx')).animationName")
+    assert anim == "none", f"animation still on with reduced motion: {anim}"
+    b6.keyboard.press("Escape")
+    b6.close()
+
+    # Phone.
+    ph6 = fresh(TOKEN, "batch6-phone", viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
+    ph6.evaluate("openSettings('audit')")
+    ph6.wait_for_selector(".audit-row", timeout=10000)
+    ph6.wait_for_timeout(300)
+    ph6.screenshot(path=f"{SHOTS}/100-phone-audit-log.png")
+    ph6.evaluate("document.querySelector('.settings-nav button.active') && [...document.querySelectorAll('.settings-nav button')].find((b) => b.textContent === 'Badges').click()")
+    ph6.wait_for_selector(".badge-item", timeout=10000)
+    ph6.wait_for_timeout(300)
+    ph6.screenshot(path=f"{SHOTS}/101-phone-badges.png")
+    ph6.keyboard.press("Escape")
+    ph6.wait_for_selector("dialog.settings", state="detached")
+    ph6.evaluate("openUserSettings('notifications')")
+    ph6.wait_for_selector(".notify-box .level-row", timeout=10000)
+    ph6.wait_for_timeout(300)
+    ph6.screenshot(path=f"{SHOTS}/102-phone-notifications.png")
+    ph6.keyboard.press("Escape")
+    ph6.wait_for_selector("dialog.settings", state="detached")
+    ph6.click("#messages .msg-author:has-text('Carol') >> nth=0")
+    ph6.wait_for_selector(".profile-card .pc-badges", timeout=10000)
+    ph6.wait_for_timeout(300)
+    ph6.screenshot(path=f"{SHOTS}/103-phone-profile.png")
+    ph6.close()
+
+    # Android app.
+    dr6 = fresh(TOKEN, "android-batch6", viewport={"width": 393, "height": 852}, is_mobile=True, has_touch=True)
+    dr6.evaluate("openUserSettings('notifications')")
+    dr6.wait_for_selector(".notify-box:has-text('Android app')", timeout=10000)
+    dr6.wait_for_timeout(300)
+    dr6.screenshot(path=f"{SHOTS}/104-android-notifications.png")
+    dr6.keyboard.press("Escape")
+    dr6.wait_for_selector("dialog.settings", state="detached")
+    dr6.evaluate("openSettings('status')")
+    dr6.wait_for_selector(".status-grid .status-item", timeout=10000)
+    dr6.wait_for_timeout(300)
+    dr6.screenshot(path=f"{SHOTS}/105-android-server-status.png")
+    dr6.close()
 
     browser.close()
 

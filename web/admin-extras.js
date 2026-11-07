@@ -37,7 +37,7 @@ async function drawAuditLog(main) {
         el("div", { class: "audit-line" },
           e.actor_id ? el("button", { class: "audit-who", onclick: (ev) => openProfile(e.actor_id, ev.currentTarget) }, who) : el("strong", {}, who),
           el("span", { class: "audit-action" }, ` ${labelFor(e.action).replace(/^./, (c) => c.toLowerCase())}`),
-          e.target_name ? [" ", e.target_kind === "member" && e.target_id
+          e.target_name ? [el("span", { class: "audit-action" }, ": "), e.target_kind === "member" && e.target_id
             ? el("button", { class: "audit-target", onclick: (ev) => openProfile(e.target_id, ev.currentTarget) }, e.target_name)
             : el("span", { class: "audit-target" }, e.target_name)] : null),
         e.details ? el("div", { class: "audit-details" }, e.details) : null),

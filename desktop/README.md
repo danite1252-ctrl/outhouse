@@ -52,3 +52,10 @@ There are two ways to have Outhouse on an Android phone:
    the tray or in-game push to talk. Voice in this version depends on
    Android's built-in web view allowing the microphone; if voice doesn't work
    in it, use option 1.
+
+**Notifications on the phone:** the web app (option 1) gets proper push
+notifications, even when it's closed: Settings → Notifications → **Turn on
+push notifications**. The APK only notifies you while it's open or recently
+in the background, because Android's built-in web view can't receive Web Push
+(that would need Google's Firebase inside the app). If you want both, use the
+web app for notifications.

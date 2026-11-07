@@ -808,12 +808,14 @@ call GET "/api/guilds/$GUILD/server-status" | jq -e '.backup.ok and .backup.file
 TOKEN=$TOKEN_B; fail_call GET "/api/guilds/$GUILD/server-status"; TOKEN=$TOKEN_A
 
 step "badges"
-call GET "/api/guilds/$GUILD/badges" | jq -e --arg a "$ALICE" --arg b "$BOB" --arg bot "$BOT_ID" '
+BOT_ID=$(call POST "/api/guilds/$GUILD/bots" '{"name":"Badger"}' | jq -r .bot.id)
+BL=$(call GET "/api/guilds/$GUILD/badges")
+jq -e --arg a "$ALICE" --arg b "$BOB" --arg bot "$BOT_ID" '
   (.[] | select(.key == "owner") | .holders == [$a] and .auto)
   and (.[] | select(.key == "founder") | (.holders | index($a)) != null and (.holders | index($b)) != null)
   and (.[] | select(.key == "raid_leader") | (.holders | index($a)) != null)
   and (.[] | select(.key == "bot") | (.holders | index($bot)) != null)
-  and (.[] | select(.key == "early") | (.holders | index($a)) != null)' >/dev/null
+  and (.[] | select(.key == "early") | (.holders | index($a)) != null)' <<<"$BL" >/dev/null || { echo "unexpected badges:"; jq -c '.[] | {key, holders}' <<<"$BL"; exit 1; }
 TOKEN=$TOKEN_B; fail_call POST "/api/guilds/$GUILD/badges" '{"name":"Nope","emoji":"🚫"}'; TOKEN=$TOKEN_A
 fail_call POST "/api/guilds/$GUILD/badges" '{"name":"","emoji":"🏆"}'
 fail_call POST "/api/guilds/$GUILD/badges" '{"name":"Too long emoji","emoji":"not an emoji at all"}'

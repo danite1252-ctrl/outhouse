@@ -47,7 +47,12 @@ A small, self-hosted Discord-style chat app for our WoW group and family, writte
 - **Bots and slash commands:** Server settings → Bots makes a bot with a token; bots can use the API and offer commands like `/roll` (example in `web/bots/`)
 - **Desktop app (Windows):** push to talk that works in game, notifications, tray (`desktop/`)
 - **Phones:** the site works on phones (slide-out channel and member lists, hold-to-talk button) and installs as an app from Chrome; an experimental Android app builds in CI
-- **Backups:** nightly database + uploads backup on the server, with a one-command restore (`deploy/backup.sh`, `deploy/restore.sh`)
+- **Backups:** nightly database + uploads backup on the server, with a one-command restore (`deploy/backup.sh`, `deploy/restore.sh`), optionally copied to a Windows share and/or an rclone remote
+- **Push notifications:** Settings → Notifications turns on Web Push per device (phones via Chrome's "Install app", desktops, iPhone from the Home Screen) for DMs, @mentions, replies, raid reminders and bench promotions while you're away; each outhouse can notify about all messages, only mentions or nothing, and channels can be muted (right-click)
+- **Audit log:** Outhouse settings → Audit log shows who changed what (roles, channels, permissions, kicks, bans, timeouts, deleted messages, pins, emoji, sounds, voice moderation, bots, webhooks, cancelled raids, badges), filterable by action and person, kept 90 days. Needs View audit log or Manage Outhouse
+- **Badges:** automatic (Outhouse owner, Admin, Raid leader, Perfect attendance, Founder, Early member, Bot) plus custom badges admins make and hand out (Outhouse settings → Badges); shown on profile cards and next to names
+- **Animated profile backgrounds:** Ember drift, Starfield and Aurora (still for people who prefer less motion)
+- **Server status and uptime alerts:** Outhouse settings → Server status (version, uptime, database size, last backup); `deploy/healthcheck.sh` sends ntfy / webhook alerts when the server, voice or backups go wrong (see `deploy/README.md`)
 
 ## Run it on Windows
 
@@ -132,6 +137,12 @@ All endpoints except register/login need `Authorization: Bearer <token>`.
 | GET/POST | `/api/guilds/{id}/emojis` | Custom emoji (multipart `name` + `file`); `PATCH/DELETE /api/emojis/{id}`; pictures at `/emojis/{id}` |
 | PATCH/DELETE | `/api/guilds/{id}/voice/{user}` | Voice moderation: `{mute?, deafen?, channel_id?}` server-mutes/deafens or moves someone; DELETE disconnects them |
 | GET/POST/DELETE | `/api/users/@me/entrance-sound` | Your entrance sound (multipart `file`) |
+| GET | `/api/guilds/{id}/audit-log` | Audit log (`?action=&user=&before=&limit=`); needs View audit log or Manage Outhouse |
+| GET | `/api/guilds/{id}/server-status` | Version, uptime, DB size, last backup (Manage Outhouse) |
+| GET/POST | `/api/guilds/{id}/badges` | Badges and who has them / make one `{name, emoji, color?, description?}`; `PATCH/DELETE /api/badges/{id}`, `PUT/DELETE /api/badges/{id}/members/{user}` |
+| GET | `/api/users/@me/notifications` | VAPID key, levels, muted channels, push devices; `PUT …/notifications/guilds/{id} {level}` (0 = DMs), `PUT …/notifications/channels/{id} {muted}` |
+| POST/DELETE | `/api/push/subscriptions` | Save / remove a browser's push subscription; `POST /api/push/test` sends a test |
+| GET | `/api/health` | `{status, db, version, uptime_seconds}` (503 if the database is down) |
 | PUT/DELETE | `/api/sounds/{id}/favourite` | Add/remove a soundboard favourite |
 | … | | Roles, members, bans, channel permissions, uploads, reactions: see `crates/server/src/api/mod.rs` |
 | GET | `/api/gateway` | WebSocket: send `{"op":"IDENTIFY","d":{"token":"…"}}`, then `{"op":"HEARTBEAT"}` every 30 s |
