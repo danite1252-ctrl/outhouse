@@ -35,7 +35,19 @@ ENV
   chmod 600 .env
   echo "Saved deploy/.env (keep it private; it holds your passwords)."
 fi
+if ! grep -q '^GITHUB_TOKEN=' .env; then
+  say "App auto-updates (optional)"
+  echo "The Windows and Android apps update themselves from this server, which"
+  echo "fetches new builds from your private GitHub repo. That needs a GitHub"
+  echo "fine-grained token with read-only access to the repo's Contents"
+  echo "(github.com/settings/personal-access-tokens). Press Enter to skip."
+  read -rsp "GitHub token: " GITHUB_TOKEN; echo
+  read -rp "GitHub repo [danite1252-ctrl/outhouse]: " GITHUB_REPO
+  echo "GITHUB_TOKEN=${GITHUB_TOKEN}" >> .env
+  echo "GITHUB_REPO=${GITHUB_REPO:-danite1252-ctrl/outhouse}" >> .env
+fi
 set -a; . ./.env; set +a
+mkdir -p updates
 
 LAN_IP=$(hostname -I | awk '{print $1}')
 
@@ -84,12 +96,19 @@ $DOCKER compose up -d --build
 # LiveKit only reads its settings at start-up.
 $DOCKER compose restart livekit >/dev/null
 
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  say "Fetching the latest app builds (then every 10 minutes)..."
+  sed -i 's/\r$//' fetch-updates.py 2>/dev/null || true
+  python3 fetch-updates.py || echo "Couldn't fetch app builds yet (is the token right?)."
+fi
+
 say "Scheduling a nightly backup (3:30 am, keeps 14)..."
 mkdir -p "$HOME/outhouse-backups"
 chmod +x backup.sh restore.sh 2>/dev/null || true
 sed -i 's/\r$//' backup.sh restore.sh 2>/dev/null || true
-( crontab -l 2>/dev/null | grep -v 'deploy/backup.sh' || true
-  echo "30 3 * * * cd $(pwd) && ./backup.sh >> $HOME/outhouse-backups/backup.log 2>&1" ) | crontab -
+( crontab -l 2>/dev/null | grep -v 'backup.sh\|fetch-updates.py' || true
+  echo "30 3 * * * cd $(pwd) && ./backup.sh >> $HOME/outhouse-backups/backup.log 2>&1"
+  echo "*/10 * * * * cd $(pwd) && python3 fetch-updates.py >> $HOME/outhouse-backups/updates.log 2>&1" ) | crontab -
 
 PUBLIC_IP=$(curl -fsS https://api.ipify.org || echo "unknown")
 say "Done!"

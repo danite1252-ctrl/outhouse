@@ -94,6 +94,9 @@ jobs:
   desktop:
     name: Desktop app (Windows installer)
     runs-on: windows-latest
+    env:
+      VERSION: 0.2.${{ github.run_number }}
+      HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' && 'yes' || 'no' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -103,18 +106,36 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Set the version (and updater files when the signing key is set)
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("fs"), f = "desktop/src-tauri/tauri.conf.json";
+            const c = JSON.parse(fs.readFileSync(f));
+            c.version = process.env.VERSION;
+            if (process.env.HAS_SIGNING_KEY === "yes") c.bundle.createUpdaterArtifacts = true;
+            fs.writeFileSync(f, JSON.stringify(c, null, 2));'
+          [ "$HAS_SIGNING_KEY" = yes ] || echo "::warning::TAURI_SIGNING_PRIVATE_KEY isn't set, so this build can't auto-update."
       - name: Build installer
         working-directory: desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          OUTHOUSE_UPDATER_PUBKEY: ${{ secrets.OUTHOUSE_UPDATER_PUBKEY }}
         run: npx --yes @tauri-apps/cli@^2 build
       - uses: actions/upload-artifact@v4
         with:
           name: Outhouse-Windows-installer
-          path: desktop/src-tauri/target/release/bundle/nsis/*.exe
+          path: |
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/nsis/*.sig
           if-no-files-found: error
 
   android:
     name: Android app (APK)
     runs-on: ubuntu-latest
+    env:
+      VERSION: 0.2.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -138,6 +159,13 @@ jobs:
           fi
           echo "Using NDK at $NDK"
           echo "NDK_HOME=$NDK" >> "$GITHUB_ENV"
+      - name: Set the version
+        run: |
+          node -e '
+            const fs = require("fs"), f = "desktop/src-tauri/tauri.conf.json";
+            const c = JSON.parse(fs.readFileSync(f));
+            c.version = process.env.VERSION;
+            fs.writeFileSync(f, JSON.stringify(c, null, 2));'
       - name: Generate the Android project
         working-directory: desktop/src-tauri
         run: |
@@ -150,11 +178,29 @@ jobs:
           grep -n "permission" "$MANIFEST"
       - name: Build APK
         working-directory: desktop/src-tauri
-        run: npm run tauri -- android build --apk --debug --target aarch64
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            # Release build signed with the Outhouse key, so new versions install over old ones.
+            npm run tauri -- android build --apk --target aarch64
+            APK=$(find gen/android/app/build/outputs/apk -name '*release*.apk' | head -1)
+            BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+            echo "$KEYSTORE_B64" | base64 -d > /tmp/outhouse.jks
+            "$BT/zipalign" -f -p 4 "$APK" /tmp/aligned.apk
+            "$BT/apksigner" sign --ks /tmp/outhouse.jks --ks-pass env:KS_PASS --key-pass env:KS_PASS \
+              --ks-key-alias outhouse --out "$GITHUB_WORKSPACE/Outhouse-Android.apk" /tmp/aligned.apk
+            rm -f /tmp/outhouse.jks
+          else
+            echo "::warning::ANDROID_KEYSTORE_BASE64 isn't set, so this is a debug build that can't update in place."
+            npm run tauri -- android build --apk --debug --target aarch64
+            cp "$(find gen/android/app/build/outputs/apk -name '*.apk' | head -1)" "$GITHUB_WORKSPACE/Outhouse-Android.apk"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: Outhouse-Android-APK
-          path: desktop/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          path: Outhouse-Android.apk
           if-no-files-found: error
 
   release:
@@ -164,18 +210,43 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      VERSION: 0.2.${{ github.run_number }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dl
+      - name: Collect files and update manifests
+        run: |
+          mkdir out
+          cp dl/Outhouse-Android-APK/Outhouse-Android.apk out/
+          cp "$(find dl/Outhouse-Windows-installer -name '*.exe' | head -1)" out/Outhouse-Windows-Setup.exe
+          SIG=$(find dl/Outhouse-Windows-installer -name '*.exe.sig' | head -1)
+          # __BASE__ is swapped for https://<your server>/updates by deploy/fetch-updates.py.
+          python3 - "$SIG" <<'PY'
+          import json, sys, datetime, os
+          version = os.environ["VERSION"]
+          now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+          json.dump({"version": version, "url": "__BASE__/Outhouse-Android.apk", "pub_date": now},
+                    open("out/android.json", "w"), indent=2)
+          sig = sys.argv[1]
+          if sig:
+              json.dump({
+                  "version": version,
+                  "notes": "Outhouse " + version,
+                  "pub_date": now,
+                  "platforms": {"windows-x86_64": {
+                      "signature": open(sig).read().strip(),
+                      "url": "__BASE__/Outhouse-Windows-Setup.exe",
+                  }},
+              }, open("out/latest.json", "w"), indent=2)
+          PY
+          ls -la out
       - name: Replace the "latest" release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          mkdir out
-          cp "$(find dl/Outhouse-Android-APK -name '*.apk' | head -1)" out/Outhouse-Android.apk
-          cp "$(find dl/Outhouse-Windows-installer -name '*.exe' | head -1)" out/Outhouse-Windows-Setup.exe
           gh release delete latest --yes --cleanup-tag 2>/dev/null || true
-          gh release create latest out/* --target "$GITHUB_SHA" --title "Outhouse (latest build)" \
-            --notes "Built from $(echo $GITHUB_SHA | cut -c1-7). On Android, tap Outhouse-Android.apk to download and install it. On Windows, run Outhouse-Windows-Setup.exe."
+          gh release create latest out/* --target "$GITHUB_SHA" --title "Outhouse $VERSION" \
+            --notes "Built from $(echo $GITHUB_SHA | cut -c1-7). Your Outhouse server picks this up within 10 minutes and the apps update from there. To install by hand: Outhouse-Android.apk on Android, Outhouse-Windows-Setup.exe on Windows."

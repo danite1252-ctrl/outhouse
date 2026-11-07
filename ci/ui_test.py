@@ -140,6 +140,17 @@ with sync_playwright() as p:
     phone.wait_for_timeout(400)
     phone.screenshot(path=f"{SHOTS}/10-phone-members.png")
 
+    # ---- Android app (draws under the status bar and navigation buttons) ----
+    droid = browser.new_page(viewport={"width": 393, "height": 852}, is_mobile=True, has_touch=True)
+    watch(droid, "android")
+    droid.add_init_script(f"window.__OUTHOUSE_DESKTOP__ = true; window.__OUTHOUSE_PLATFORM__ = 'android'; window.__OUTHOUSE_APP_VERSION__ = '0.2.1'; localStorage.setItem('outhouse_token', {json.dumps(TOKEN)}); localStorage.setItem('outhouse_guild', {json.dumps(guild['id'])}); localStorage.setItem('outhouse_channel_{guild['id']}', {json.dumps(chan['id'])});")
+    droid.goto(BASE + "/")
+    droid.wait_for_selector(".event-card", timeout=15000)
+    droid.screenshot(path=f"{SHOTS}/11-android-chat.png")
+    droid.evaluate("openUserSettings('voice')")
+    droid.wait_for_timeout(600)
+    droid.screenshot(path=f"{SHOTS}/12-android-settings.png")
+
     browser.close()
 
 if errors:

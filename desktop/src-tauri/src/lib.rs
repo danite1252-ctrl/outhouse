@@ -7,6 +7,8 @@
 
 #[cfg(desktop)]
 mod ptt;
+#[cfg(desktop)]
+mod updates;
 
 use std::collections::HashMap;
 use std::fs;
@@ -34,12 +36,12 @@ struct Settings {
     tray_tip_shown: bool,
 }
 
-struct AppState {
+pub(crate) struct AppState {
     settings: Mutex<Settings>,
     path: PathBuf,
     /// Origin of the chosen server (e.g. https://oh.hartspace.cc). The window
     /// only shows pages from here; any other link opens in your browser.
-    origin: Arc<Mutex<Option<String>>>,
+    pub(crate) origin: Arc<Mutex<Option<String>>>,
 }
 
 impl AppState {
@@ -181,13 +183,14 @@ fn bridge(
     }
 }
 
-/// Tells the website it's inside the app (and which kind).
-#[cfg(desktop)]
-const INIT_SCRIPT: &str =
-    "window.__OUTHOUSE_DESKTOP__ = true; window.__OUTHOUSE_PLATFORM__ = 'desktop';";
-#[cfg(mobile)]
-const INIT_SCRIPT: &str =
-    "window.__OUTHOUSE_DESKTOP__ = true; window.__OUTHOUSE_PLATFORM__ = 'android';";
+/// Tells the website it's inside the app, which kind, and which version.
+fn init_script(version: &str) -> String {
+    let platform = if cfg!(mobile) { "android" } else { "desktop" };
+    format!(
+        "window.__OUTHOUSE_DESKTOP__ = true; window.__OUTHOUSE_PLATFORM__ = '{platform}'; \
+         window.__OUTHOUSE_APP_VERSION__ = '{version}';"
+    )
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -229,6 +232,11 @@ pub fn run() {
             });
     }
 
+    #[cfg(desktop)]
+    if updates::enabled() {
+        builder = builder.plugin(updates::plugin());
+    }
+
     builder
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
@@ -257,9 +265,10 @@ pub fn run() {
 
             // The window. Links to anywhere but your server open in your browser.
             let handle = app.handle().clone();
+            let version = app.package_info().version.to_string();
             let window =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                    .initialization_script(INIT_SCRIPT)
+                    .initialization_script(init_script(&version))
                     .on_navigation(move |url| {
                         let local = url.scheme() == "tauri"
                             || url.host_str() == Some("tauri.localhost")
@@ -288,6 +297,7 @@ pub fn run() {
             {
                 setup_tray(app)?;
                 ptt::start(app.handle().clone());
+                updates::start(app.handle().clone());
             }
             Ok(())
         })

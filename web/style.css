@@ -475,3 +475,26 @@ dialog.raid-dialog { width: min(560px, 94vw); }
   .profile-card { width: min(320px, calc(100vw - 16px)); }
   .signup-pop { width: min(340px, calc(100vw - 32px)); }
 }
+
+/* ---------- Safe areas (phone notches, status bar, navigation buttons) ---------- */
+:root { --safe-top: env(safe-area-inset-top, 0px); --safe-bottom: env(safe-area-inset-bottom, 0px); }
+/* The Android app draws under the status bar and navigation buttons. */
+html.android-app { --safe-top: max(env(safe-area-inset-top, 0px), 32px); --safe-bottom: max(env(safe-area-inset-bottom, 0px), 48px); }
+.app, .auth { padding-top: var(--safe-top); padding-bottom: var(--safe-bottom); }
+.app { box-sizing: border-box; }
+@media (max-width: 760px) {
+  .app { height: 100dvh; }
+  .rail, .sidebar, .members { top: var(--safe-top); bottom: var(--safe-bottom); }
+  /* Fully off screen when closed. */
+  .sidebar { transform: translateX(calc(-100% - 80px)); }
+  .rail { transform: translateX(calc(-100% - 8px)); }
+  .members { transform: translateX(calc(100% + 8px)); }
+  dialog.settings { padding-top: var(--safe-top); padding-bottom: var(--safe-bottom); }
+  dialog.settings .settings-main { flex: 1; min-height: 0; overflow-y: auto; }
+  dialog.settings .close-x { top: calc(var(--safe-top) + 8px); }
+  dialog:not(.settings) { max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 16px); overflow-y: auto; }
+  .popover { max-width: calc(100vw - 16px); max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 16px); overflow-y: auto; }
+}
+.update-bar { position: fixed; left: 8px; right: 8px; bottom: calc(var(--safe-bottom) + 76px); z-index: 50; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 12px; background: var(--raised); border: 1px solid var(--ember); box-shadow: 0 8px 24px #0008; }
+.update-bar span { flex: 1; font-size: 14px; }
+.update-bar .primary { height: 36px; padding: 0 14px; }

@@ -3,13 +3,15 @@
 <head>
 <meta charset="utf-8">
 <title>Outhouse</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <style>
   :root { color-scheme: dark; --night: #0f0f11; --panel: #18181b; --line: #2a2a2e; --text: #ededed; --muted: #a1a1aa; --ember: #ff6a2b; }
   * { box-sizing: border-box; }
-  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--night); color: var(--text);
-         font: 15px/1.5 "Segoe UI", system-ui, sans-serif; }
-  .card { width: min(420px, 92vw); background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 28px; text-align: center; }
+  body { margin: 0; min-height: 100dvh; display: flex; flex-direction: column; background: var(--night); color: var(--text);
+         font: 15px/1.5 "Segoe UI", system-ui, sans-serif; box-sizing: border-box;
+         padding: max(env(safe-area-inset-top, 0px), 16px) 16px max(env(safe-area-inset-bottom, 0px), 16px); }
+  html.android-app body { padding-top: max(env(safe-area-inset-top, 0px), 40px); padding-bottom: max(env(safe-area-inset-bottom, 0px), 56px); }
+  .card { margin: auto; width: min(420px, 100%); box-sizing: border-box; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 28px; text-align: center; }
   img { width: 72px; height: 72px; }
   h1 { margin: 10px 0 4px; font-size: 22px; }
   p { margin: 0 0 18px; color: var(--muted); font-size: 14px; }
@@ -33,6 +35,7 @@
     </form>
   </div>
 <script>
+  if (window.__OUTHOUSE_PLATFORM__ === "android") document.documentElement.classList.add("android-app");
   const invoke = window.__TAURI__.core.invoke;
   const changing = new URLSearchParams(location.search).has("change");
   const card = document.getElementById("card");

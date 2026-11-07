@@ -40,6 +40,8 @@ services:
       GIPHY_API_KEY: ${GIPHY_API_KEY:-}
     volumes:
       - uploads:/data/uploads
+      # App updates fetched from GitHub by fetch-updates.py, served at /updates/.
+      - ./updates:/app/web/updates:ro
 
   # Voice. Host networking lets LiveKit offer both the server's home-network
   # address (for people at home) and your public address (for everyone else).

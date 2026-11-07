@@ -14,7 +14,7 @@ $archive = Join-Path $env:TEMP "outhouse-upload.tgz"
 Write-Host "Packing the code (skipping build output and local data)..."
 tar -czf $archive -C $root `
     --exclude=./target --exclude=./data --exclude=./tools --exclude=./.env `
-    --exclude=./deploy/.env --exclude=./deploy/livekit.yaml --exclude=./.git --exclude=./desktop .
+    --exclude=./deploy/.env --exclude=./deploy/livekit.yaml --exclude=./.git --exclude=./desktop --exclude=./deploy/updates --exclude=./github-secrets.txt .
 if ($LASTEXITCODE -ne 0) { throw "Packing failed." }
 
 Write-Host "Uploading to $Server..."
