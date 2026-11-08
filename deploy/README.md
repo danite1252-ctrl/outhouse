@@ -163,6 +163,38 @@ use it to contact the server's owner; it defaults to the site's address).
 The server only sends pushes to the big push services (Google, Mozilla,
 Microsoft, Apple); `PUSH_ALLOWED_HOSTS` adds others.
 
+## Invite links
+**Invite people** (the person-plus icon next to the outhouse name, or the
+outhouse menu) gives a link like `https://oh.hartspace.cc/invite/AbC12345`
+with a **Copy link** button, a choice of how long it lasts (30 minutes to 7
+days, or never) and how many people can use it. Outhouse settings → **Invites**
+(Manage Outhouse) lists every working invite with who made it and how often it's
+been used, and revokes them.
+
+The link opens a page on your server (with a preview card when pasted into
+Discord, Messenger or WhatsApp). From there people sign up or sign in and land
+straight in the outhouse, or open it in the apps:
+- **Android:** the app claims `https://<your domain>/invite/…` links (Android
+  App Links), so tapping one opens the app if it's installed and the web page
+  if not. Android checks `https://<your domain>/.well-known/assetlinks.json`,
+  which Outhouse serves itself with the app's package name and the release
+  signing certificate's SHA-256 (the public one CI prints as "Signing
+  certificate SHA-256"; it's in `crates/server/src/state.rs`). If you ever sign
+  the APK with a different key, set `ANDROID_CERT_SHA256=AB:CD:…` (comma-separate
+  several) in `.env`; `ANDROID_CERT_SHA256=off` switches App Links off. The
+  app's link host comes from `OUTHOUSE_SERVER_URL` in CI. Phones verify the
+  link when the app is installed or updated, so after the first build with
+  invite links, update the app once (or reinstall) for links to open it.
+- **Windows:** the installer registers `outhouse://` links; the invite page's
+  **Open in the Outhouse app** button uses `outhouse://invite/<code>`, and if
+  nothing answers it suggests downloading the app.
+
+Behind Apache, `assetlinks.json` is just proxied through like everything else
+on 443 (only `/.well-known/acme-challenge/` on port 80 is answered by Apache
+for certbot), so no Apache change is needed. To check from anywhere:
+`curl -i https://oh.hartspace.cc/.well-known/assetlinks.json` should give
+`200`, `application/json` and no redirect.
+
 ## Audit log
 Outhouse settings → **Audit log** (people with View audit log or Manage
 Outhouse) lists who changed what: channels and their permissions, roles,

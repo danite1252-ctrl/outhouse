@@ -38,6 +38,25 @@
       "windows": {
         "installMode": "passive"
       }
+    },
+    "deep-link": {
+      "mobile": [
+        {
+          "scheme": [
+            "https"
+          ],
+          "host": "oh.hartspace.cc",
+          "pathPrefix": [
+            "/invite"
+          ],
+          "appLink": true
+        }
+      ],
+      "desktop": {
+        "schemes": [
+          "outhouse"
+        ]
+      }
     }
   }
 }

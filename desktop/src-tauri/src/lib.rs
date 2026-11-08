@@ -3,7 +3,9 @@
 //! A window showing your Outhouse server, plus the things a web page can't do.
 //! On Windows: push to talk that works while another app (WoW) is focused,
 //! notifications, a tray icon, and starting with Windows. On Android: an app
-//! icon and notifications.
+//! icon and notifications. On both, invite links open in the app:
+//! `outhouse://invite/<code>` on Windows, and `https://<server>/invite/<code>`
+//! (a verified Android App Link) on Android.
 
 #[cfg(desktop)]
 mod ptt;
@@ -25,6 +27,7 @@ use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri::{UserAttentionType, WindowEvent};
 #[cfg(desktop)]
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 
@@ -81,6 +84,52 @@ fn show_main(app: &AppHandle) {
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
+}
+
+// ---------- invite links ----------
+
+/// The page an invite link should open in the app, e.g. `/invite/AbC123`,
+/// from `outhouse://invite/AbC123` (Windows) or
+/// `https://<server>/invite/AbC123` (Android App Link). Anything else: None.
+fn deep_link_path(link: &str) -> Option<String> {
+    let url = url::Url::parse(link.trim().trim_matches('"')).ok()?;
+    let code = match url.scheme() {
+        // outhouse://invite/CODE (host "invite"), or outhouse:invite/CODE.
+        "outhouse" => match url.host_str() {
+            Some("invite") => url.path().trim_matches('/').to_string(),
+            _ => url
+                .path()
+                .trim_start_matches('/')
+                .strip_prefix("invite/")?
+                .trim_end_matches('/')
+                .to_string(),
+        },
+        "https" | "http" if url.origin().ascii_serialization() == server_origin() => url
+            .path()
+            .strip_prefix("/invite/")?
+            .trim_end_matches('/')
+            .to_string(),
+        _ => return None,
+    };
+    let ok =
+        !code.is_empty() && code.len() <= 32 && code.chars().all(|c| c.is_ascii_alphanumeric());
+    ok.then(|| format!("/invite/{code}"))
+}
+
+/// Shows an invite link's page in the main window (and brings it forward).
+fn open_deep_link(app: &AppHandle, link: &str) -> bool {
+    let Some(path) = deep_link_path(link) else {
+        return false;
+    };
+    let Some(window) = app.get_webview_window("main") else {
+        return false;
+    };
+    if let Ok(url) = url::Url::parse(&format!("{}{path}", server_origin())) {
+        let _ = window.navigate(url);
+    }
+    #[cfg(desktop)]
+    show_main(app);
+    true
 }
 
 // ---------- commands the pages can call ----------
@@ -173,13 +222,16 @@ fn bridge(
 }
 
 /// Tells the website it's inside the app, which kind, which version, and
-/// (for the built-in "Connecting…" page) which server to open.
-fn init_script(version: &str) -> String {
+/// (for the built-in "Connecting…" page) which server and page to open:
+/// `start` is an invite link's page when an invite link launched the app.
+fn init_script(version: &str, start: Option<&str>) -> String {
     let platform = if cfg!(mobile) { "android" } else { "desktop" };
     let server = serde_json::to_string(&server_origin()).unwrap_or_else(|_| "\"\"".into());
+    let start = serde_json::to_string(start.unwrap_or("/")).unwrap_or_else(|_| "\"/\"".into());
     format!(
         "window.__OUTHOUSE_DESKTOP__ = true; window.__OUTHOUSE_PLATFORM__ = '{platform}'; \
-         window.__OUTHOUSE_APP_VERSION__ = '{version}'; window.__OUTHOUSE_SERVER__ = {server};"
+         window.__OUTHOUSE_APP_VERSION__ = '{version}'; window.__OUTHOUSE_SERVER__ = {server}; \
+         window.__OUTHOUSE_START__ = {start};"
     )
 }
 
@@ -193,8 +245,14 @@ pub fn run() {
     #[cfg(desktop)]
     {
         builder = builder
-            // A second launch just brings the existing window forward.
-            .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
+            // A second launch just brings the existing window forward; one
+            // started by an invite link (outhouse://invite/…) opens the invite.
+            .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+                let opened = args.iter().skip(1).any(|a| open_deep_link(app, a));
+                if !opened {
+                    show_main(app);
+                }
+            }))
             .plugin(tauri_plugin_autostart::init(
                 MacosLauncher::LaunchAgent,
                 Some(vec!["--minimized"]),
@@ -229,6 +287,7 @@ pub fn run() {
     }
 
     builder
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .register_uri_scheme_protocol("outhouse", |ctx, request| {
@@ -252,13 +311,43 @@ pub fn run() {
             });
             let origin = server_origin();
 
+            // Started by an invite link? Open that invite once connected.
+            #[cfg(desktop)]
+            let launch_link = std::env::args().skip(1).find_map(|a| deep_link_path(&a));
+            #[cfg(mobile)]
+            let launch_link: Option<String> = None;
+            let start = launch_link.or_else(|| {
+                app.deep_link()
+                    .get_current()
+                    .ok()
+                    .flatten()
+                    .and_then(|urls| urls.iter().find_map(|u| deep_link_path(u.as_str())))
+            });
+            // Invite links while the app is running (Android hands them over
+            // here; on Windows a second launch does, see single-instance).
+            #[cfg(mobile)]
+            {
+                let handle = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        if open_deep_link(&handle, url.as_str()) {
+                            break;
+                        }
+                    }
+                });
+            }
+            // Make sure outhouse:// links reach this copy of the app (the
+            // installer registers it too; this also covers older installs).
+            #[cfg(windows)]
+            let _ = app.deep_link().register("outhouse");
+
             // The window starts on the built-in "Connecting…" page, which moves
             // on to the server. Links anywhere else open in your browser.
             let handle = app.handle().clone();
             let version = app.package_info().version.to_string();
             let window =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                    .initialization_script(init_script(&version))
+                    .initialization_script(init_script(&version, start.as_deref()))
                     .on_navigation(move |url| {
                         let local = url.scheme() == "tauri"
                             || url.host_str() == Some("tauri.localhost")

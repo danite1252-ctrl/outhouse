@@ -58,6 +58,8 @@ jobs:
           node --check web/admin-extras.js
           node --check web/raid-admin.js
           node --check web/channel-settings.js
+          node --check web/invites.js
+          node --check web/invite-page.js
           node --check web/sw.js
           node --check web/landing.js
           node --check web/entry.js
@@ -108,6 +110,7 @@ jobs:
           ./target/debug/outhouse-server > /tmp/ui-server.log 2>&1 &
           python ci/landing_test.py
           python ci/ui_test.py
+          python ci/invite_test.py
       - name: Screenshots (base64, for review)
         if: always()
         run: |
@@ -164,6 +167,15 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           OUTHOUSE_UPDATER_PUBKEY: ${{ secrets.OUTHOUSE_UPDATER_PUBKEY }}
         run: npx --yes @tauri-apps/cli@^2 build
+      - name: Check invite links (outhouse:// deep links) are in the build
+        shell: bash
+        working-directory: desktop/src-tauri
+        run: |
+          grep -q 'name = "tauri-plugin-deep-link"' Cargo.lock || { echo "::error::tauri-plugin-deep-link isn't in the Windows build"; exit 1; }
+          NSI=$(find target/release/nsis -name 'installer.nsi' | head -1)
+          echo "NSIS script: $NSI"
+          grep -n -i 'URL Protocol\|outhouse' "$NSI" | grep -i -B2 -A2 'protocol' | head -20 || true
+          grep -q 'Software\\Classes\\outhouse' "$NSI" || grep -qi 'deep_link\|URL Protocol' "$NSI" || { echo "::error::The installer doesn't register outhouse:// links"; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
           name: Outhouse-Windows-installer
@@ -212,8 +224,11 @@ jobs:
             const c = JSON.parse(fs.readFileSync(f));
             c.version = process.env.VERSION;
             c.bundle.android = Object.assign({}, c.bundle.android, { versionCode: 100000 + Number(process.env.VERSION_CODE) });
+            // Invite links (Android App Links) for the server this build opens.
+            for (const m of c.plugins["deep-link"].mobile) m.host = new URL(process.env.OUTHOUSE_SERVER_URL).host;
             fs.writeFileSync(f, JSON.stringify(c, null, 2));'
           grep -n -A3 '"android"' desktop/src-tauri/tauri.conf.json
+          grep -n -A8 '"deep-link"' desktop/src-tauri/tauri.conf.json
       - name: Generate the Android project
         working-directory: desktop/src-tauri
         run: |
@@ -270,6 +285,17 @@ jobs:
             npm run tauri -- android build --apk --debug --target aarch64 armv7
             cp "$(find gen/android/app/build/outputs/apk -name '*.apk' | head -1)" "$GITHUB_WORKSPACE/Outhouse-Android.apk"
           fi
+      - name: Check invite links open the app (Android App Links intent filter)
+        run: |
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          MANIFEST=desktop/src-tauri/gen/android/app/src/main/AndroidManifest.xml
+          HOST=$(node -e 'console.log(new URL(process.env.OUTHOUSE_SERVER_URL).host)')
+          sed -n '/<intent-filter/,/<\/intent-filter>/p' "$MANIFEST"
+          "$BT/aapt2" dump xmltree --file AndroidManifest.xml Outhouse-Android.apk > /tmp/apk-manifest.txt
+          grep -n -A14 'intent-filter' /tmp/apk-manifest.txt | grep -E 'autoVerify|scheme|host|pathPrefix|action|category|launchMode' || true
+          grep -q 'autoVerify' /tmp/apk-manifest.txt || { echo "::error::The APK has no autoVerify intent filter"; exit 1; }
+          grep -q "\"$HOST\"" /tmp/apk-manifest.txt || { echo "::error::The APK doesn't handle links to $HOST"; exit 1; }
+          grep -q '"/invite"' /tmp/apk-manifest.txt || { echo "::error::The APK doesn't handle /invite links"; exit 1; }
       - name: Check the APK (version code, signature, ABIs, icon)
         run: |
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)

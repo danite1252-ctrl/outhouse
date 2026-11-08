@@ -70,7 +70,9 @@
     $("connecting").classList.remove("hidden");
     const server = await serverUrl();
     $("where").textContent = server.replace(/^https?:\/\//, "");
-    if (await reachable(server)) return location.replace(`${server}/`);
+    // An invite link that launched the app opens that invite (e.g. /invite/AbC123).
+    const start = /^\/invite\/[A-Za-z0-9]{1,32}$/.test(window.__OUTHOUSE_START__ || "") ? window.__OUTHOUSE_START__ : "/";
+    if (await reachable(server)) return location.replace(`${server}${start}`);
     $("connecting").classList.add("hidden");
     $("offline").classList.remove("hidden");
     timer = setTimeout(connect, 15000);
