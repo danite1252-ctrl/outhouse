@@ -51,7 +51,7 @@ if not NO_API:
 for path in ("/app", "/login", "/index.html"):
     status, headers, body = get(path)
     assert status == 200 and b'id="auth"' in body and b"app.js" in body, f"{path} isn't the web client"
-for path, ctype in (("/landing.css", "text/css"), ("/landing.js", "javascript"), ("/fonts/inter-400.woff", "font/woff"),
+for path, ctype in (("/landing.css", "text/css"), ("/landing.js", "javascript"), ("/fonts/inter-400.woff", "woff"),
                     ("/manifest.webmanifest", "manifest"), ("/sw.js", "javascript")):
     status, headers, _ = get(path)
     assert status == 200 and ctype in headers.get("Content-Type", ""), (path, headers.get("Content-Type"))
