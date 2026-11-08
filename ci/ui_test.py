@@ -1151,7 +1151,7 @@ with sync_playwright() as p:
         assert 0.3 < secs <= 10 and 0.3 < peak <= 1.0 and rms > 0.03, (k, secs, peak, rms)
     # Soundboard: Discord-style popover above the voice panel.
     # Erin (on her phone, in Raid comms) listens; count the clips her client is told to play.
-    erinv.evaluate("window.__plays = []; playSound = (url) => window.__plays.push(url);")
+    erinv.evaluate("window.__plays = []; playSound = (url, volume) => window.__plays.push(String(url));")
     carolv.click("#voice-panel .vp-btn.sb-open")
     carolv.wait_for_selector(".sb-board .sb-sec[data-sec='classics'] .sb-tile[data-id='builtin:flush']", timeout=10000)
     carolv.wait_for_selector(".sb-board .sb-sec[data-sec='fav'] .sb-tile[data-id='builtin:plop']")
@@ -1200,7 +1200,11 @@ with sync_playwright() as p:
     carolv.wait_for_timeout(2100)
     carolv.focus(".sb-board .sb-tile:has-text('Dinner bell') .sb-play")
     carolv.keyboard.press("Enter")
-    erinv.wait_for_function("window.__plays.some((u) => u.startsWith('/files/'))", timeout=10000)
+    try:
+        erinv.wait_for_function("window.__plays.some((u) => u.startsWith('/files/'))", timeout=10000)
+    except Exception:
+        print("Erin's plays:", erinv.evaluate("JSON.stringify(window.__plays)"))
+        raise
     # Volume button.
     carolv.fill(".sb-search", "")
     carolv.click(".sb-board .sb-vol-btn")
