@@ -1356,3 +1356,4 @@ dialog.edit-channel .ec-perm-targets h3:first-child { display: none; }
   dialog.edit-channel .ec-wide { display: none; }
   .ec-ticks span:nth-child(13) { display: none; }
 }
+dialog.edit-channel .settings-nav .ec-delete-tab { gap: 0; white-space: pre; }
