@@ -174,8 +174,8 @@ jobs:
           grep -q 'name = "tauri-plugin-deep-link"' Cargo.lock || { echo "::error::tauri-plugin-deep-link isn't in the Windows build"; exit 1; }
           NSI=$(find target/release/nsis -name 'installer.nsi' | head -1)
           echo "NSIS script: $NSI"
-          grep -n -i 'URL Protocol\|outhouse' "$NSI" | grep -i -B2 -A2 'protocol' | head -20 || true
-          grep -q 'Software\\Classes\\outhouse' "$NSI" || grep -qi 'deep_link\|URL Protocol' "$NSI" || { echo "::error::The installer doesn't register outhouse:// links"; exit 1; }
+          grep -n 'Software\\Classes\\outhouse' "$NSI" || true
+          grep -q 'Software\\Classes\\outhouse" "URL Protocol"' "$NSI" || { echo "::error::The installer doesn't register outhouse:// links"; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
           name: Outhouse-Windows-installer

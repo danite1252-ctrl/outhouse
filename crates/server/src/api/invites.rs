@@ -683,7 +683,7 @@ mod tests {
             expires_at: None,
         };
         let html = render_invite_page(
-            "<title>{{TITLE}}</title><i>{{INVITER}}</i><script>{{DATA}}</script>",
+            "<title>{{TITLE}}</title><i>{{INVITER}}</i><p>{{MEMBERS}}</p><script>{{DATA}}</script>",
             "https://x",
             Some(&p),
             "abc",
