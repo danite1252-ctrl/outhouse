@@ -431,7 +431,7 @@ def door():
     return finish(out, fade_out=0.12)
 
 
-def blowie():
+def fly():
     """🪰 A blowfly doing laps of the dunny: a buzzy sawtooth with wingbeat
     wobble, getting near and far (pitch shifts like a Doppler fly-by)."""
     rng = np.random.default_rng(5)
@@ -462,7 +462,7 @@ SOUNDS = {
     "strain": strain,
     "plop": plop,
     "door": door,
-    "blowie": blowie,
+    "fly": fly,
 }
 
 

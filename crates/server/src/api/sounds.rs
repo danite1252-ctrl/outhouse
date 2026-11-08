@@ -74,8 +74,8 @@ pub const BUILTINS: &[Builtin] = &[
         duration_ms: 2_328,
     },
     Builtin {
-        key: "blowie",
-        name: "Blowie",
+        key: "fly",
+        name: "Blowfly",
         emoji: "🪰",
         duration_ms: 2_640,
     },

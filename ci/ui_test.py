@@ -1137,7 +1137,7 @@ with sync_playwright() as p:
     decoded = carolv.evaluate("""async () => {
       const ctx = new OfflineAudioContext(1, 1, 48000);
       const out = {};
-      for (const k of ['flush', 'strain', 'plop', 'door', 'blowie']) {
+      for (const k of ['flush', 'strain', 'plop', 'door', 'fly']) {
         const a = await ctx.decodeAudioData(await (await fetch(`/sounds/builtin/${k}.mp3`)).arrayBuffer());
         const d = a.getChannelData(0);
         let peak = 0, sum = 0;
@@ -1242,7 +1242,7 @@ with sync_playwright() as p:
             pg.click("#nav-toggle")
             pg.wait_for_timeout(400)
         pg.click("#voice-panel .vp-btn.sb-open")
-        pg.wait_for_selector(".sb-board .sb-sec[data-sec='classics'] .sb-tile[data-id='builtin:blowie']", timeout=10000)
+        pg.wait_for_selector(".sb-board .sb-sec[data-sec='classics'] .sb-tile[data-id='builtin:fly']", timeout=10000)
         sheet = pg.eval_on_selector(".popover.sb-pop", "e => { const r = e.getBoundingClientRect(); return [r.left, r.width, Math.round(innerHeight - r.bottom)]; }")
         assert sheet[0] == 0 and sheet[1] >= 380 and sheet[2] <= 1, sheet
         pg.wait_for_timeout(300)

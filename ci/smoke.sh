@@ -939,7 +939,7 @@ call POST /api/voice/leave >/dev/null
 
 step "built-in soundboard classics"
 TOKEN=$TOKEN_A
-call GET /api/builtin-sounds | jq -e '[.[].id] == ["builtin:flush","builtin:strain","builtin:plop","builtin:door","builtin:blowie"]' >/dev/null
+call GET /api/builtin-sounds | jq -e '[.[].id] == ["builtin:flush","builtin:strain","builtin:plop","builtin:door","builtin:fly"]' >/dev/null
 # Every outhouse has them (new ones too), listed first.
 G2=$(call POST /api/guilds '{"name":"Second Outhouse"}' | jq -r .id)
 for g in "$GUILD" "$G2"; do
@@ -948,7 +948,7 @@ for g in "$GUILD" "$G2"; do
     || { echo "built-ins missing in $g"; cat /tmp/body; exit 1; }
 done
 # The files are served as MP3 and decode to the right sort of length.
-for k in flush strain plop door blowie; do
+for k in flush strain plop door fly; do
   curl -fsS -D /tmp/headers "$BASE/sounds/builtin/$k.mp3" -o "/tmp/builtin-$k.mp3"
   grep -qi "content-type: audio/mpeg" /tmp/headers || { echo "$k.mp3 content type"; cat /tmp/headers; exit 1; }
   if command -v ffmpeg >/dev/null; then
