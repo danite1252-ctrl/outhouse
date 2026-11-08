@@ -1560,4 +1560,5 @@ dialog.nick-dialog .nick-reset:disabled { opacity: .45; cursor: default; }
 @media (max-width: 760px) {
   .wow-portrait { width: 48px; height: 48px; }
   .armory-box-row .armory-region { flex-basis: 84px; }
+  .armory-box-row .armory-lookup { flex-basis: 0; white-space: nowrap; font-size: 14px; padding-inline: 8px; }
 }

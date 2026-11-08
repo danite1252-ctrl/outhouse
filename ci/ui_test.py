@@ -823,8 +823,11 @@ with sync_playwright() as p:
     page.click(".channel:has-text('lfg')")
     page.wait_for_selector("#messages .wow-char.has-portrait:has-text('Lightwell') .wow-portrait", timeout=10000)
     page.wait_for_selector("#messages .wow-char:has-text('Lightwell') .armory-links a:has-text('AoTC.gg')")
-    page.evaluate("[...document.querySelectorAll('#messages .wow-char')].pop().scrollIntoView({block: 'center'})")
-    page.wait_for_timeout(300)
+    page.wait_for_timeout(800)  # the channel settles (images, scroll to the end) first
+    page.evaluate("[...document.querySelectorAll('#messages .wow-char.has-portrait')].pop().scrollIntoView({block: 'center'})")
+    page.wait_for_timeout(400)
+    page.evaluate("[...document.querySelectorAll('#messages .wow-char.has-portrait')].pop().scrollIntoView({block: 'center'})")
+    page.wait_for_timeout(200)
     page.screenshot(path=f"{SHOTS}/133-char-card-armory.png")
     # Without Battle.net keys: a note on where an admin switches it on, no look-up box.
     nokeys = browser.new_page(viewport={"width": 1280, "height": 800})
