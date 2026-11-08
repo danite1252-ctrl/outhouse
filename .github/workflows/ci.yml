@@ -337,6 +337,31 @@ jobs:
           path: Outhouse-Android.apk
           if-no-files-found: error
 
+  security:
+    name: Security (cargo audit, vendored scripts)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: cargo audit (RustSec advisories; fails on vulnerabilities, warnings are listed)
+        run: |
+          cargo audit --file Cargo.lock 2>&1 | tee /tmp/audit-server.txt || AUDIT_FAIL=1
+          echo "---- desktop app ----"
+          cargo audit --file desktop/src-tauri/Cargo.lock 2>&1 | tee /tmp/audit-desktop.txt || echo "::warning::cargo audit found problems in the desktop app's dependencies (see above)"
+          if [ -n "$AUDIT_FAIL" ]; then echo "::error::cargo audit found vulnerable server dependencies"; exit 1; fi
+      - name: Vendored LiveKit client matches the npm release it says it is
+        run: |
+          V=$(cat web/vendor/livekit-client.version 2>/dev/null || npm view livekit-client version)
+          echo "LiveKit client $V"
+          curl -fsSL --retry 3 "https://cdn.jsdelivr.net/npm/livekit-client@$V/dist/livekit-client.umd.min.js" -o /tmp/lk.js
+          if ! cmp -s /tmp/lk.js web/vendor/livekit-client.umd.min.js; then
+            echo "::error::web/vendor/livekit-client.umd.min.js isn't livekit-client $V from npm"
+            echo "=====LIVEKIT $V"; base64 -w0 /tmp/lk.js; echo
+            exit 1
+          fi
+
   release:
     name: Publish downloads (Releases → "latest")
     needs: [server, desktop, android]
