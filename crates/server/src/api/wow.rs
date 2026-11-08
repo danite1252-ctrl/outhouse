@@ -9,8 +9,9 @@ use axum::Json;
 use outhouse_common::models::{channel_kind, Embed, EmbedField, Message, MessageInteraction};
 use outhouse_common::permissions as p;
 use outhouse_common::wow::{
-    activities, class_name, game_id, game_label, games, max_level_for, professions_for, races_for,
-    CharacterRequest, WowCharacter, WowInfo, WowLookupRequest, CLASSES, PROFESSIONS, RULESETS,
+    activities, class_name, fill_armory_template, game_id, game_label, games, max_level_for,
+    professions_for, races_for, ruleset_name, CharacterRequest, WowCharacter, WowInfo,
+    WowLookupRequest, CLASSES, PROFESSIONS, REGIONS,
 };
 use reqwest::Url;
 use sqlx::PgPool;
@@ -28,6 +29,10 @@ const MAX_QUERY_CHARS: usize = 100;
 
 pub const CHARACTER_SELECT: &str = "SELECT id, user_id, name, realm, class, level, is_main,
     professions, armory_url, source, game, last_name, ruleset, race,
+    region, blizzard_id, guild_name, item_level, last_synced_at, armory_status,
+    CASE WHEN avatar_key <> '' THEN '/api/wow/avatars/' || avatar_key || '?v='
+              || COALESCE(floor(extract(epoch FROM last_synced_at))::BIGINT, 0)
+         ELSE '' END AS avatar,
     CASE WHEN last_name <> '' THEN name || ' ' || last_name ELSE name END AS full_name,
     CASE WHEN race IN ('Human', 'Dwarf', 'Night Elf', 'Gnome', 'Draenei', 'Skyborne (Alliance)')
               THEN 'Alliance'
@@ -76,13 +81,17 @@ pub async fn info(State(st): State<AppState>, AuthUser(_user): AuthUser) -> Json
         } else {
             format!("{}/{}", cfg.wowhead_url, cfg.wowhead_branch)
         },
+        armory_enabled: cfg.bnet.is_some(),
+        armory_region: cfg.armory_region.clone(),
+        regions: REGIONS.iter().map(|r| r.to_string()).collect(),
+        armory_links: cfg.armory_links.clone(),
     })
 }
 
 // ---- Characters ----------------------------------------------------------------
 
 /// "tHRALL" → "Thrall". WoW names are 2 to 12 letters.
-fn clean_name(raw: &str, what: &str) -> AppResult<String> {
+pub fn clean_name(raw: &str, what: &str) -> AppResult<String> {
     let name = raw.trim();
     let count = name.chars().count();
     if !(2..=12).contains(&count) || !name.chars().all(char::is_alphabetic) {
@@ -109,6 +118,20 @@ pub struct CleanCharacter {
     pub level: i32,
     pub professions: Vec<String>,
     pub armory_url: String,
+    /// "" or one of [`REGIONS`].
+    pub region: String,
+}
+
+/// "US " → "us"; "" stays ""; anything else isn't a region.
+pub fn clean_region(raw: &str) -> AppResult<String> {
+    let r = raw.trim().to_ascii_lowercase();
+    if r.is_empty() || REGIONS.contains(&r.as_str()) {
+        Ok(r)
+    } else {
+        Err(AppError::BadRequest(
+            "The region is US, EU, KR or TW.".into(),
+        ))
+    }
 }
 
 /// Checks a character for its game. `keep_empty_last_name`: a WoW: Forever
@@ -142,13 +165,9 @@ pub fn clean_character(
         let ruleset = if req.ruleset.trim().is_empty() {
             "Normal"
         } else {
-            RULESETS
-                .iter()
-                .find(|r| r.eq_ignore_ascii_case(req.ruleset.trim()))
-                .copied()
-                .ok_or_else(|| {
-                    AppError::BadRequest("The ruleset is Normal, PvP, Roleplay or Hardcore.".into())
-                })?
+            ruleset_name(&req.ruleset).ok_or_else(|| {
+                AppError::BadRequest("The ruleset is Normal, PvP, Roleplay or Roleplay PvP.".into())
+            })?
         };
         (last, String::new(), ruleset.to_string())
     } else {
@@ -216,6 +235,7 @@ pub fn clean_character(
             ));
         }
     }
+    let region = clean_region(&req.region)?;
     Ok(CleanCharacter {
         game,
         name,
@@ -227,10 +247,11 @@ pub fn clean_character(
         level,
         professions,
         armory_url,
+        region,
     })
 }
 
-async fn fetch_character(db: &PgPool, id: i64) -> AppResult<WowCharacter> {
+pub async fn fetch_character(db: &PgPool, id: i64) -> AppResult<WowCharacter> {
     let sql = format!("{CHARACTER_SELECT} WHERE id = $1");
     sqlx::query_as::<_, WowCharacter>(&sql)
         .bind(id)
@@ -302,8 +323,8 @@ pub async fn create_character(
     let id = st.ids.next_id();
     sqlx::query(
         "INSERT INTO wow_characters (id, user_id, name, realm, class, level, professions, armory_url,
-             game, last_name, ruleset, race)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+             game, last_name, ruleset, race, region)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
     )
     .bind(id)
     .bind(user.id)
@@ -317,10 +338,16 @@ pub async fn create_character(
     .bind(&c.last_name)
     .bind(&c.ruleset)
     .bind(&c.race)
+    .bind(&c.region)
     .execute(&st.db)
     .await
     .map_err(duplicate)?;
     fix_main(&st.db, user.id, req.is_main.then_some(id)).await?;
+    // Looked up on the Armory: bring in the portrait, guild and item level
+    // too (if the Armory can't be reached, the character is saved anyway).
+    if c.game == "forever" && !c.region.is_empty() && !c.last_name.is_empty() {
+        crate::armory::sync_quietly(&st, id, false).await;
+    }
     Ok((
         StatusCode::CREATED,
         Json(fetch_character(&st.db, id).await?),
@@ -342,10 +369,15 @@ pub async fn update_character(
     // be saved as it is until its player adds one.
     let keep_empty = existing.game == "forever" && existing.last_name.is_empty();
     let c = clean_character(&req, keep_empty)?;
+    // A new name (or game) is a different character as far as the Armory
+    // knows: forget what it said about the old one.
+    let renamed = !existing.name.eq_ignore_ascii_case(&c.name)
+        || !existing.last_name.eq_ignore_ascii_case(&c.last_name)
+        || existing.game != c.game;
     sqlx::query(
         "UPDATE wow_characters SET name = $2, realm = $3, class = $4, level = $5,
              professions = $6, armory_url = $7, game = $8, last_name = $9, ruleset = $10,
-             race = $11
+             race = $11, region = CASE WHEN $12 = '' THEN region ELSE $12 END
          WHERE id = $1",
     )
     .bind(id)
@@ -359,9 +391,25 @@ pub async fn update_character(
     .bind(&c.last_name)
     .bind(&c.ruleset)
     .bind(&c.race)
+    .bind(&c.region)
     .execute(&st.db)
     .await
     .map_err(duplicate)?;
+    if renamed {
+        sqlx::query(
+            "UPDATE wow_characters SET blizzard_id = NULL, guild_name = '', item_level = NULL,
+                 avatar_url = '', avatar_key = '', last_synced_at = NULL, armory_status = ''
+             WHERE id = $1",
+        )
+        .bind(id)
+        .execute(&st.db)
+        .await?;
+        // Renamed to a character the Armory may know: read it for that one.
+        let has_region = !c.region.is_empty() || !existing.region.is_empty();
+        if c.game == "forever" && !c.last_name.is_empty() && has_region {
+            crate::armory::sync_quietly(&st, id, false).await;
+        }
+    }
     if req.is_main {
         fix_main(&st.db, user.id, Some(id)).await?;
     } else if existing.is_main {
@@ -468,28 +516,41 @@ pub async fn item_command(
     let access = writable_text_channel(&st, channel_id, user.id).await?;
     let query = lookup_query(&req)?;
     let cfg = &st.config;
-    let embed =
+    let mut embed =
         match tokio::time::timeout(Duration::from_secs(9), wowhead::lookup(&st, &query)).await {
-            Ok(Ok(Some(item))) => wowhead::item_embed(cfg, &item, None),
-            Ok(Ok(None)) => wowhead::search_embed(
+            Ok(Ok(Some(item))) => Ok(wowhead::item_embed(cfg, &item, None)),
+            Ok(Ok(None)) => Err(wowhead::search_embed(
                 cfg,
                 &query,
                 "Nothing on Wowhead matched that exactly, so here's a search instead.",
-            ),
+            )),
             Ok(Err(e)) => {
                 tracing::info!(error = %e, "item lookup failed");
-                wowhead::search_embed(
+                Err(wowhead::search_embed(
                     cfg,
                     &query,
                     "Couldn't reach Wowhead just now, so here's a search link instead.",
-                )
+                ))
             }
-            Err(_) => wowhead::search_embed(
+            Err(_) => Err(wowhead::search_embed(
                 cfg,
                 &query,
                 "Wowhead took too long to answer, so here's a search link instead.",
-            ),
+            )),
         };
+    // Wowhead didn't have it: WoW: Forever's own item data on Battle.net
+    // (when the keys are set) may.
+    if embed.is_err() && cfg.bnet.is_some() {
+        if let Ok(Some(found)) = tokio::time::timeout(
+            Duration::from_secs(6),
+            crate::armory::item_embed(&st, &query),
+        )
+        .await
+        {
+            embed = Ok(found);
+        }
+    }
+    let embed = embed.unwrap_or_else(|e| e);
     let name = display_name(&st, &access, user.id, &user.display_name).await?;
     Ok(Json(
         post_card(&st, &access, user.id, name, "item", embed).await?,
@@ -581,19 +642,59 @@ pub async fn char_command(
         .into_iter()
         .filter(|c| c.id != character.id)
         .collect();
-    let embed = character_embed(&character, &found.owner_name, &others);
+    let embed = character_embed(&st.config, &character, &found.owner_name, &others);
     let me = display_name(&st, &access, user.id, &user.display_name).await?;
     Ok(Json(
         post_card(&st, &access, user.id, me, "char", embed).await?,
     ))
 }
 
-pub fn character_embed(c: &WowCharacter, owner: &str, others: &[WowCharacter]) -> Embed {
+/// "View on Armory" links for a WoW: Forever character: (label, address).
+pub fn armory_links(cfg: &crate::state::Config, c: &WowCharacter) -> Vec<(String, String)> {
+    if c.game != "forever" || c.last_name.is_empty() {
+        return Vec::new();
+    }
+    let region = if c.region.is_empty() {
+        cfg.armory_region.as_str()
+    } else {
+        c.region.as_str()
+    };
+    cfg.armory_links
+        .iter()
+        .map(|t| {
+            (
+                t.label.clone(),
+                fill_armory_template(&t.template, region, &c.name, &c.last_name),
+            )
+        })
+        .collect()
+}
+
+pub fn character_embed(
+    cfg: &crate::state::Config,
+    c: &WowCharacter,
+    owner: &str,
+    others: &[WowCharacter],
+) -> Embed {
     let mut fields = vec![EmbedField {
         name: "Played by".into(),
         value: format!("{owner}{}", if c.is_main { " (main)" } else { " (alt)" }),
         inline: true,
     }];
+    if !c.guild_name.is_empty() {
+        fields.push(EmbedField {
+            name: "Guild".into(),
+            value: format!("<{}>", c.guild_name),
+            inline: true,
+        });
+    }
+    if let Some(ilvl) = c.item_level {
+        fields.push(EmbedField {
+            name: "Item level".into(),
+            value: ilvl.to_string(),
+            inline: true,
+        });
+    }
     if !c.professions.is_empty() {
         fields.push(EmbedField {
             name: "Professions".into(),
@@ -627,18 +728,36 @@ pub fn character_embed(c: &WowCharacter, owner: &str, others: &[WowCharacter]) -
         about.push(c.realm.clone());
     }
     about.retain(|a| !a.is_empty());
+    let links = armory_links(cfg, c);
+    if !links.is_empty() {
+        fields.push(EmbedField {
+            name: "Armory".into(),
+            value: links
+                .iter()
+                .map(|(label, url)| format!("{label}: {url}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            inline: false,
+        });
+    }
+    let url = if c.armory_url.is_empty() {
+        links.first().map(|(_, u)| u.clone()).unwrap_or_default()
+    } else {
+        c.armory_url.clone()
+    };
     Embed {
-        url: c.armory_url.clone(),
+        url,
+        thumbnail_url: (!c.avatar.is_empty()).then(|| c.avatar.clone()),
         kind: "wow-char".into(),
         title: Some(c.full_name.clone()),
         description: Some(about.join(" · ")),
         site_name: Some("Character".into()),
         color: class_colour(&c.class),
         author_name: Some(owner.to_string()),
-        footer: Some(if c.source == "bnet" {
-            "Imported from Battle.net".into()
-        } else {
-            "Added on Outhouse".into()
+        footer: Some(match (c.source.as_str(), c.last_synced_at) {
+            (_, Some(at)) => format!("From the Armory, {}", at.format("%-d %b %Y")),
+            ("bnet", None) => "Imported from Battle.net".into(),
+            _ => "Added on Outhouse".into(),
         }),
         fields,
         ..Default::default()

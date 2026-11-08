@@ -562,6 +562,15 @@ pub struct SignupCharacter {
     pub class: String,
     #[serde(default)]
     pub game: String,
+    /// From the character as it is now (Armory data, when there is some).
+    #[serde(default)]
+    pub level: Option<i32>,
+    #[serde(default)]
+    pub item_level: Option<i32>,
+    #[serde(default)]
+    pub guild_name: String,
+    #[serde(default)]
+    pub avatar: String,
 }
 
 /// `GET` / `PUT /api/guilds/{id}/raid-settings`

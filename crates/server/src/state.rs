@@ -57,6 +57,15 @@ pub struct Config {
     pub public_url: Option<String>,
     /// Battle.net sign-in, when its keys are set.
     pub bnet: Option<BnetConfig>,
+    /// The region Armory links and look-ups use by default (`BNET_REGION`,
+    /// else "us").
+    pub armory_region: String,
+    /// "View on Armory" links for WoW: Forever characters
+    /// (`ARMORY_URL_TEMPLATE`, `ARMORY_COMMUNITY_URL_TEMPLATE`; "off" drops one).
+    pub armory_links: Vec<outhouse_common::wow::ArmoryLinkTemplate>,
+    /// How often characters going to upcoming raids are read from the
+    /// Armory again (`ARMORY_REFRESH_HOURS`, default 6; 0 = never).
+    pub armory_refresh_hours: u64,
     /// Web Push: who the push services can contact about this server
     /// (a mailto: or https: address).
     pub vapid_subject: String,
@@ -113,11 +122,28 @@ pub struct BnetConfig {
     /// Which game each namespace's characters are from
     /// (`BNET_NAMESPACE_GAMES=profile-classic1x-{region}=era,…`).
     pub namespace_games: Vec<(String, String)>,
+    /// WoW: Forever's namespaces, with `{region}` left in
+    /// (`BNET_FOREVER_PROFILE_NAMESPACE`, `…_STATIC_…`, `…_DYNAMIC_…`).
+    pub forever_profile_namespace: String,
+    pub forever_static_namespace: String,
+    pub forever_dynamic_namespace: String,
+    /// Extra hosts the Armory's portraits may come from (besides
+    /// Blizzard's own and the API's host), `ARMORY_RENDER_HOSTS`.
+    pub render_hosts: Vec<String>,
 }
 
+/// Where Blizzard's portraits normally live.
+pub const BLIZZARD_RENDER_HOSTS: [&str; 3] = [
+    "render.worldofwarcraft.com",
+    "worldofwarcraft.blizzard.com",
+    "blizzard.com",
+];
+
 impl BnetConfig {
-    /// The game a namespace's characters belong to: as configured, else TBC
-    /// for namespaces that say so, else WoW: Forever.
+    /// The game a namespace's characters belong to: as configured, else
+    /// WoW: Forever for Forever's namespace, Classic Era for `classic1x`,
+    /// TBC for the progression (`classic-`) namespace and ones that say TBC,
+    /// else WoW: Forever.
     pub fn game_for(&self, namespace: &str) -> &'static str {
         if let Some((_, g)) = self.namespace_games.iter().find(|(n, _)| n == namespace) {
             if let Some(id) = outhouse_common::wow::game_id(g) {
@@ -125,11 +151,35 @@ impl BnetConfig {
             }
         }
         let ns = namespace.to_ascii_lowercase();
-        if ns.contains("tbc") || ns.contains("anniversary") || ns.contains("-bc-") {
+        if ns.contains("forever") {
+            "forever"
+        } else if ns.contains("classic1x") || ns.contains("-era-") {
+            "era"
+        } else if ns.contains("tbc")
+            || ns.contains("anniversary")
+            || ns.contains("-bc-")
+            || ns.starts_with("profile-classic-")
+        {
             "tbc"
         } else {
             outhouse_common::wow::DEFAULT_GAME
         }
+    }
+
+    /// The API for a region: `https://{region}.api.blizzard.com`, unless
+    /// `BNET_API_URL` points somewhere else (then that, for every region).
+    pub fn api_for(&self, region: &str) -> String {
+        let own = format!("https://{}.api.blizzard.com", self.region);
+        if self.api_url == own && !region.is_empty() {
+            format!("https://{region}.api.blizzard.com")
+        } else {
+            self.api_url.clone()
+        }
+    }
+
+    /// A Forever namespace for a region.
+    pub fn namespace(&self, template: &str, region: &str) -> String {
+        template.replace("{region}", region)
     }
 }
 
@@ -141,7 +191,10 @@ impl BnetConfig {
             .unwrap_or_else(|| "us".into())
             .to_ascii_lowercase();
         let namespaces = env_opt("BNET_PROFILE_NAMESPACES")
-            .unwrap_or_else(|| "profile-classic1x-{region},profile-classic-{region}".into())
+            .unwrap_or_else(|| {
+                "profile-forever-{region},profile-classic1x-{region},profile-classic-{region}"
+                    .into()
+            })
             .split(',')
             .map(|n| n.trim().replace("{region}", &region))
             .filter(|n| !n.is_empty())
@@ -161,6 +214,13 @@ impl BnetConfig {
                 .unwrap_or_else(|| "https://oauth.battle.net".into())
                 .trim_end_matches('/')
                 .to_string(),
+            forever_profile_namespace: env_opt("BNET_FOREVER_PROFILE_NAMESPACE")
+                .unwrap_or_else(|| "profile-forever-{region}".into()),
+            forever_static_namespace: env_opt("BNET_FOREVER_STATIC_NAMESPACE")
+                .unwrap_or_else(|| "static-forever-{region}".into()),
+            forever_dynamic_namespace: env_opt("BNET_FOREVER_DYNAMIC_NAMESPACE")
+                .unwrap_or_else(|| "dynamic-forever-{region}".into()),
+            render_hosts: list_env("ARMORY_RENDER_HOSTS"),
             client_id,
             client_secret,
             region,
@@ -198,6 +258,14 @@ impl Config {
             ),
             public_url: env_opt("PUBLIC_URL").map(|u| u.trim_end_matches('/').to_string()),
             bnet: BnetConfig::from_env(),
+            armory_region: env_opt("BNET_REGION")
+                .map(|r| r.to_ascii_lowercase())
+                .filter(|r| outhouse_common::wow::REGIONS.contains(&r.as_str()))
+                .unwrap_or_else(|| "us".into()),
+            armory_links: armory_links_from_env(),
+            armory_refresh_hours: env_opt("ARMORY_REFRESH_HOURS")
+                .and_then(|h| h.parse().ok())
+                .unwrap_or(6),
             vapid_subject: env_opt("VAPID_SUBJECT")
                 .or_else(|| env_opt("PUBLIC_URL").filter(|u| u.starts_with("https://")))
                 .unwrap_or_else(|| "mailto:admin@outhouse.invalid".into()),
@@ -215,6 +283,44 @@ impl Config {
             },
         }
     }
+}
+
+/// Blizzard's character page for WoW: Forever (the address isn't confirmed
+/// yet, so it can be changed with `ARMORY_URL_TEMPLATE`).
+pub const DEFAULT_ARMORY_URL_TEMPLATE: &str =
+    "https://worldofwarcraft.blizzard.com/en-us/character/forever-{region}/{slug}";
+/// A community armory that lists WoW: Forever characters.
+pub const DEFAULT_COMMUNITY_ARMORY_URL_TEMPLATE: &str =
+    "https://www.aotc.gg/forever/character/{region}/{slug}";
+
+fn armory_links_from_env() -> Vec<outhouse_common::wow::ArmoryLinkTemplate> {
+    let mut out = Vec::new();
+    for (env, label_env, default, label) in [
+        (
+            "ARMORY_URL_TEMPLATE",
+            "ARMORY_LABEL",
+            DEFAULT_ARMORY_URL_TEMPLATE,
+            "Armory",
+        ),
+        (
+            "ARMORY_COMMUNITY_URL_TEMPLATE",
+            "ARMORY_COMMUNITY_LABEL",
+            DEFAULT_COMMUNITY_ARMORY_URL_TEMPLATE,
+            "AoTC.gg",
+        ),
+    ] {
+        let template = env_opt(env).unwrap_or_else(|| default.into());
+        if matches!(template.as_str(), "off" | "none" | "0")
+            || !(template.starts_with("https://") || template.starts_with("http://"))
+        {
+            continue;
+        }
+        out.push(outhouse_common::wow::ArmoryLinkTemplate {
+            label: env_opt(label_env).unwrap_or_else(|| label.into()),
+            template,
+        });
+    }
+    out
 }
 
 fn url_env(name: &str, default: &str) -> String {
@@ -269,6 +375,8 @@ pub struct AppState {
     pub idle: Arc<Mutex<HashMap<i64, usize>>>,
     /// The Web Push signing key (None if it couldn't be loaded).
     pub vapid: Option<Arc<crate::push::Vapid>>,
+    /// Battle.net app token, Armory answers and rate limits.
+    pub armory: Arc<crate::armory::ArmoryState>,
     pub started_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -305,6 +413,7 @@ impl AppState {
             interactions: Arc::new(Mutex::new(HashMap::new())),
             idle: Arc::new(Mutex::new(HashMap::new())),
             vapid: None,
+            armory: Arc::new(crate::armory::ArmoryState::default()),
             started_at: chrono::Utc::now(),
         }
     }

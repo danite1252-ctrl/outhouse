@@ -613,7 +613,7 @@ call GET "/api/guilds/$GUILD/attendance/$BOB" | jq -e '.total == 1 and .percent 
 step "wow: info and characters"
 call GET /api/wow/info | jq -e '(.classes | length == 9) and (.classes | index("Monk") | not) and (.activities | map(.name) | index("Molten Core")) and .bnet_enabled and (.wowhead_url | endswith("/classic"))
   and (.games | map(.id) == ["forever","tbc","era"])
-  and (.games[0] | .two_names and .max_level == 60 and .rulesets == ["Normal","PvP","Roleplay","Hardcore"] and (.professions | index("Jewelcrafting") | not))
+  and (.games[0] | .two_names and .max_level == 60 and .rulesets == ["Normal","PvP","Roleplay","Roleplay PvP"] and (.professions | index("Jewelcrafting") | not))
   and (.games[1] | (.two_names | not) and .max_level == 70 and (.professions | index("Jewelcrafting")) and (.races | index("Blood Elf")) and (.races | index("Draenei")))
   and (.games[2] | .max_level == 60 and (.races | index("Draenei") | not))' >/dev/null
 # WoW: Forever (the default): first and last name, a ruleset, no realm.
@@ -867,22 +867,133 @@ call GET "/api/channels/$CHAN/messages?limit=20" | jq -e --arg id "$LK2" '.[] | 
   | (.[0] | .kind == "wow-link" and .title == "Mystery Blade" and .site_name == "Wowhead Classic" and (.description | contains("Preview not available")))
   and (.[1] | .kind == "wow-link" and .site_name == "Raider.IO" and .title == "Tankadin – Forever (US)")' >/dev/null
 
-step "wow: Battle.net linking (mock)"
+step "wow: Battle.net linking (mock): WoW: Forever first, re-import updates"
 call GET /api/bnet/status | jq -e '.enabled and (.linked | not)' >/dev/null
+call GET /api/wow/info | jq -e '.armory_enabled and .armory_region == "us" and .regions == ["us","eu","kr","tw"]
+  and (.armory_links | map(.label) == ["Armory","AoTC.gg"]) and (.armory_links[1].template == "https://www.aotc.gg/forever/character/{region}/{slug}")' >/dev/null
+# Mockadin Lightforge was added by hand before linking: the import finds him instead of adding him twice.
+MOCKID=$(call POST /api/users/@me/characters '{"name":"Mockadin","last_name":"Lightforge","class":"Paladin","level":58}' | jq -r 'select(.last_synced_at == null and .blizzard_id == null) | .id')
+BEFORE=$(call GET /api/users/@me/characters | jq length)
 AUTH_URL=$(call POST /api/bnet/authorize | jq -r .url)
 [[ "$AUTH_URL" == "$MOCK/oauth/authorize?client_id=mock-id&redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2Fapi%2Fbnet%2Fcallback"* ]] || { echo "odd authorize url: $AUTH_URL"; exit 1; }
 STATE=$(sed -E 's/.*[?&]state=([^&]+).*/\1/' <<<"$AUTH_URL")
 curl -fsS "$BASE/api/bnet/callback?code=bad-code&state=$STATE" | grep -q "Couldn't" || { echo "bad code should fail"; exit 1; }
 STATE=$(call POST /api/bnet/authorize | jq -r .url | sed -E 's/.*[?&]state=([^&]+).*/\1/')
-curl -fsS "$BASE/api/bnet/callback?code=good-code&state=$STATE" | grep -q "Imported 2 characters" || { echo "Battle.net import failed"; curl -sS "$BASE/api/bnet/callback?code=good-code&state=$STATE"; exit 1; }
+# Forever: Mockadin + Breezy (Deathy the Death Knight is turned away); Classic Era: Twinky (Deathy again, no).
+curl -fsS "$BASE/api/bnet/callback?code=good-code&state=$STATE" | grep -q "Imported 3 characters" || { echo "Battle.net import failed"; curl -sS "$BASE/api/bnet/callback?code=good-code&state=$STATE"; exit 1; }
 curl -fsS "$BASE/api/bnet/callback?code=good-code&state=$STATE" | grep -q "expired" || { echo "state reused"; exit 1; }
 call GET /api/bnet/status | jq -e '.linked and .battletag == "Mockadin#1234"' >/dev/null
-call GET /api/users/@me/characters | jq -e 'length == 4 and ([.[] | select(.source == "bnet") | .name] | sort == ["Mockadin","Twinky"]) and ([.[] | select(.name == "Deathy")] | length == 0)' >/dev/null
+call GET /api/users/@me/characters | jq -e --argjson n "$((BEFORE + 2))" --arg m "$MOCKID" 'length == $n
+  and ([.[] | select(.name == "Deathy")] | length == 0)
+  and (.[] | select(.name == "Mockadin") | .id == $m and .game == "forever" and .last_name == "Lightforge" and .blizzard_id == "1001" and .level == 60
+       and .race == "Human" and .faction == "Alliance" and .region == "us" and .source == "manual")
+  and (.[] | select(.name == "Breezy") | .game == "forever" and .last_name == "Cloudsong" and .full_name == "Breezy Cloudsong" and .realm == ""
+       and .race == "Skyborne (Horde)" and .faction == "Horde" and .class == "Shaman" and .ruleset == "Roleplay PvP" and .blizzard_id == "1002"
+       and .source == "bnet" and .level == 37)
+  and (.[] | select(.name == "Twinky") | .game == "era" and .realm == "Nightslayer" and .last_name == "")' >/dev/null \
+  || { echo "import mapping:"; call GET /api/users/@me/characters | jq -c '.[] | {name,last_name,game,realm,race,faction,class,level,ruleset,blizzard_id,source}'; exit 1; }
+# The Armory is read for WoW: Forever characters in the background: portrait, guild, item level.
+wait_chars() { # JQ_FILTER WHAT
+  for i in $(seq 1 30); do call GET /api/users/@me/characters | jq -e "$1" >/dev/null 2>&1 && return 0; sleep 0.5; done
+  echo "never got: $2"; call GET /api/users/@me/characters | jq -c '.[] | {name,level,guild_name,item_level,avatar,last_synced_at}'; exit 1
+}
+wait_chars '(.[] | select(.name == "Breezy") | .guild_name == "Throne Room" and .item_level == 42 and (.avatar | startswith("/api/wow/avatars/us-breezy-cloudsong?v=")) and .last_synced_at != null)
+  and (.[] | select(.name == "Mockadin") | .guild_name == "Forever Flush" and .item_level == 63 and (.avatar | startswith("/api/wow/avatars/us-mockadin-lightforge")))' "Armory data after import"
+BREEZY=$(call GET /api/users/@me/characters | jq -r '.[] | select(.name == "Breezy") | .id')
+AV=$(call GET /api/users/@me/characters | jq -r '.[] | select(.name == "Breezy") | .avatar')
+curl -fsS -D /tmp/av-headers -o /tmp/av.png "$BASE$AV"
+grep -qi "^content-type: image/png" /tmp/av-headers && grep -qi "^x-content-type-options: nosniff" /tmp/av-headers
+head -c 8 /tmp/av.png | od -An -c | grep -q "P   N   G" || { echo "avatar isn't a PNG"; exit 1; }
+code=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE/api/wow/avatars/..%2Fetc%2Fpasswd"); [ "$code" = 404 ] || { echo "bad avatar key -> $code"; exit 1; }
+code=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE/api/wow/avatars/us-nobody-here"); [ "$code" = 404 ]
+# Linking again updates (Breezy levelled) instead of adding them again.
+STATE=$(call POST /api/bnet/authorize | jq -r .url | sed -E 's/.*[?&]state=([^&]+).*/\1/')
+curl -fsS "$BASE/api/bnet/callback?code=good-code&state=$STATE" | grep -q "Imported 3 characters"
+call GET /api/users/@me/characters | jq -e --argjson n "$((BEFORE + 2))" --arg b "$BREEZY" 'length == $n and ([.[] | select(.name == "Breezy")] | length == 1) and (.[] | select(.name == "Breezy") | .id == $b)' >/dev/null
+wait_chars '.[] | select(.name == "Breezy") | .level == 38' "Breezy's new level after re-import"
 call DELETE /api/bnet/link >/dev/null
 call GET /api/bnet/status | jq -e '.linked | not' >/dev/null
 call DELETE "/api/characters/$(call GET /api/users/@me/characters | jq -r '.[] | select(.name == "Twinky") | .id')" >/dev/null
-call GET /api/users/@me/characters | jq -e 'length == 3 and ([.[] | select(.is_main)] | length == 1)' >/dev/null
+call GET /api/users/@me/characters | jq -e --argjson n "$((BEFORE + 1))" 'length == $n and ([.[] | select(.is_main)] | length == 1)' >/dev/null
 TOKEN=""; fail_call POST /api/bnet/authorize; TOKEN=$TOKEN_A
+
+step "wow: Armory look-ups, refresh, links (mock)"
+TOKEN=$TOKEN_B
+L=$(call POST /api/wow/armory/lookup '{"region":"US","name":"sunny","last_name":"SKYWARD"}')
+jq -e '.found and .region == "us" and .blizzard_id == "1005" and .name == "Sunny" and .last_name == "Skyward" and .class == "Mage"
+  and .race == "Skyborne (Alliance)" and .faction == "Alliance" and .level == 52 and .ruleset == "Roleplay" and .guild_name == "Cloud Nine"
+  and .item_level == 48 and (.avatar | startswith("/api/wow/avatars/us-sunny-skyward?v="))' <<<"$L" >/dev/null || { echo "lookup: $L"; exit 1; }
+curl -fsS -o /dev/null "$BASE$(jq -r .avatar <<<"$L")"
+# Saving what the look-up found keeps the Armory data (portrait, guild, item level, Blizzard's id).
+SUNNY=$(call POST /api/users/@me/characters "$(jq -c '{name, last_name, class, race, level, ruleset, region, game: "forever"}' <<<"$L")")
+jq -e '.blizzard_id == "1005" and .guild_name == "Cloud Nine" and .item_level == 48 and .region == "us" and .faction == "Alliance"
+  and (.avatar | startswith("/api/wow/avatars/us-sunny-skyward")) and .last_synced_at != null and .armory_status == ""' <<<"$SUNNY" >/dev/null || { echo "saved: $SUNNY"; exit 1; }
+SUNNYID=$(jq -r .id <<<"$SUNNY")
+# Not on the Armory (yet): a friendly answer, not an error. EU doesn't know Mockadin.
+call POST /api/wow/armory/lookup '{"region":"us","name":"Ghosty","last_name":"Nobody"}' | jq -e '(.found | not) and .reason == "not_found" and (.message | contains("doesn'"'"'t know Ghosty Nobody on US"))' >/dev/null
+call POST /api/wow/armory/lookup '{"region":"eu","name":"Mockadin","last_name":"Lightforge"}' | jq -e '(.found | not) and .reason == "not_found" and .region == "eu"' >/dev/null
+fail_call POST /api/wow/armory/lookup '{"region":"xx","name":"Sunny","last_name":"Skyward"}'
+fail_call POST /api/wow/armory/lookup '{"region":"us","name":"Sunny"}'
+fail_call POST /api/wow/armory/lookup '{"region":"us","name":"Su nny","last_name":"Skyward"}'
+fail_call POST /api/users/@me/characters '{"name":"Region","last_name":"Smith","class":"Mage","region":"mars"}'
+TOKEN=""; fail_call POST /api/wow/armory/lookup '{"region":"us","name":"Sunny","last_name":"Skyward"}'; TOKEN=$TOKEN_B
+# Battle.net says slow down (429): we wait as long as it asks, and say so.
+call POST /api/wow/armory/lookup '{"region":"us","name":"Busy","last_name":"Bee"}' | jq -e '(.found | not) and .reason == "busy" and (.message | contains("busy"))' >/dev/null
+call POST /api/wow/armory/lookup '{"region":"us","name":"Ghosty","last_name":"Nobody"}' | jq -e '.reason == "busy"' >/dev/null
+sleep 2.5
+call POST /api/wow/armory/lookup '{"region":"us","name":"Ghosty","last_name":"Nobody"}' | jq -e '.reason == "not_found"' >/dev/null
+# Refresh: Bob can't refresh Alice's characters; TBC ones aren't on the Armory.
+fail_call POST "/api/characters/$BREEZY/refresh"
+TOKEN=$TOKEN_A
+R=$(call POST "/api/characters/$BREEZY/refresh")
+jq -e '.found and .message == "" and .character.level == 39 and .character.guild_name == "Throne Room"' <<<"$R" >/dev/null || { echo "refresh: $R"; exit 1; }
+call POST "/api/characters/$BREEZY/refresh" | jq -e '.found and (.message | contains("moment ago")) and .character.level == 39' >/dev/null
+TBCX=$(call POST /api/users/@me/characters '{"game":"tbc","name":"Refreshme","realm":"Spineshatter","class":"Mage","level":70}' | jq -r .id)
+fail_call POST "/api/characters/$TBCX/refresh"
+call DELETE "/api/characters/$TBCX" >/dev/null
+# The app token was fetched once and reused.
+curl -fsS "$MOCK/__hits" | jq -e '."app-token" == 1' >/dev/null || { echo "app token not cached:"; curl -sS "$MOCK/__hits"; exit 1; }
+# A new name is a different character to the Armory: the old data goes; not found → noted, nothing breaks.
+TOKEN=$TOKEN_B
+call PATCH "/api/characters/$SUNNYID" "$(jq -c '.last_name = "Elsewhere"' <<<"$SUNNY")" | jq -e '.blizzard_id == null and .avatar == "" and .guild_name == "" and .item_level == null and .armory_status == "not_found" and .region == "us"' >/dev/null
+call POST "/api/characters/$SUNNYID/refresh" | jq -e '(.found | not) and (.message | contains("doesn'"'"'t know Sunny Elsewhere")) and .character.armory_status == "not_found" and .character.level == 52' >/dev/null
+call PATCH "/api/characters/$SUNNYID" "$(jq -c '.last_name = "Skyward"' <<<"$SUNNY")" | jq -e '.armory_status == "" and .guild_name == "Cloud Nine" and .blizzard_id == "1005"' >/dev/null
+TOKEN=$TOKEN_A
+# /char shows the portrait, guild, item level and Armory links; the profile has them too.
+call POST "/api/channels/$CHAN/wow/char" '{"query":"Mockadin"}' | jq -e '.embeds[0] | .title == "Mockadin Lightforge"
+  and (.thumbnail_url | startswith("/api/wow/avatars/us-mockadin-lightforge"))
+  and (.fields[] | select(.name == "Guild") | .value == "<Forever Flush>") and (.fields[] | select(.name == "Item level") | .value == "63")
+  and (.fields[] | select(.name == "Armory") | .value | contains("Armory: https://worldofwarcraft.blizzard.com/en-us/character/forever-us/mockadin-lightforge") and contains("AoTC.gg: https://www.aotc.gg/forever/character/us/mockadin-lightforge"))
+  and .url == "https://worldofwarcraft.blizzard.com/en-us/character/forever-us/mockadin-lightforge" and (.footer | startswith("From the Armory"))' >/dev/null
+call GET "/api/profiles/$ALICE" | jq -e '.characters[] | select(.name == "Breezy") | .item_level == 42 and .guild_name == "Throne Room" and (.avatar | length > 0)' >/dev/null
+# Raid rosters show what the Armory says about the character someone brings.
+AR=$(call POST "/api/channels/$CHAN/events" '{"title":"Armory raid","starts_at":"'"$START"'","game":"forever"}' | jq -r .event.id)
+call PUT "/api/events/$AR/signup" '{"status":"yes","role":"healer","spec":"Restoration","character_id":"'"$BREEZY"'"}' \
+  | jq -e '.event.signups[0].character | .full_name == "Breezy Cloudsong" and .level == 39 and .item_level == 42 and .guild_name == "Throne Room" and (.avatar | startswith("/api/wow/avatars/"))' >/dev/null
+call DELETE "/api/events/$AR?scope=one" >/dev/null
+# Item cards from WoW: Forever's own item data when Wowhead doesn't have the item.
+call POST "/api/channels/$CHAN/wow/item" '{"query":"990001"}' | jq -e '.embeds[0] | .kind == "wow-item" and .title == "Skyborne Sash" and .color == 10696174
+  and (.description | contains("Item Level 62")) and (.footer | contains("Battle.net")) and (.thumbnail_url | endswith("/icons/inv_belt_13.jpg"))' >/dev/null
+call POST "/api/channels/$CHAN/wow/item" '{"query":"Skyborne Sash"}' | jq -e '.embeds[0].title == "Skyborne Sash"' >/dev/null
+
+step "wow: without Battle.net keys"
+BIND_ADDR=127.0.0.1:8081 BNET_CLIENT_ID= BNET_CLIENT_SECRET= ./target/debug/outhouse-server >/tmp/outhouse-nokeys.log 2>&1 &
+NOKEYS=$!
+for i in $(seq 1 60); do curl -fsS "http://127.0.0.1:8081/api/health" >/dev/null 2>&1 && break; sleep 0.5; done
+B8081() { curl -sS -o /tmp/nk -w "%{http_code}" -H "Authorization: Bearer $TOKEN_A" -H "Content-Type: application/json" "$@"; }
+[ "$(B8081 http://127.0.0.1:8081/api/wow/info)" = 200 ]
+jq -e '(.bnet_enabled | not) and (.armory_enabled | not) and (.armory_links | length == 2)' /tmp/nk >/dev/null || { cat /tmp/nk; exit 1; }
+[ "$(B8081 -X POST -d '{"region":"us","name":"Sunny","last_name":"Skyward"}' http://127.0.0.1:8081/api/wow/armory/lookup)" = 400 ]
+grep -q "deploy/README.md" /tmp/nk
+[ "$(B8081 -X POST http://127.0.0.1:8081/api/characters/$BREEZY/refresh)" = 400 ]
+[ "$(B8081 http://127.0.0.1:8081/api/bnet/status)" = 200 ] && jq -e '(.enabled | not)' /tmp/nk >/dev/null
+# Saving a character with a region still works (no Armory call).
+[ "$(B8081 -X POST -d '{"name":"Offline","last_name":"Keys","class":"Mage","region":"eu"}' http://127.0.0.1:8081/api/users/@me/characters)" = 201 ]
+jq -e '.region == "eu" and .last_synced_at == null' /tmp/nk >/dev/null
+call DELETE "/api/characters/$(jq -r .id /tmp/nk)" >/dev/null
+kill $NOKEYS 2>/dev/null || true
+if grep -qi "mock-secret\|mock-app-token\|mock-token" "$LOG" /tmp/outhouse-nokeys.log; then echo "a secret or token got into the server log"; exit 1; fi
+if grep -q "Armory refresh failed" "$LOG"; then echo "the Armory refresher failed:"; grep "Armory refresh failed" "$LOG"; exit 1; fi
 
 step "wow: group finder"
 LF=$(call POST "/api/channels/$CHAN/lfg" '{"activity":"scholomance","note":"Bring a key","leader":{"role":"tank","class":"Paladin","character":"Tankadin","level":60}}')

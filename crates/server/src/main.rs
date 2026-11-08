@@ -1,6 +1,7 @@
 //! Outhouse chat server.
 
 mod api;
+mod armory;
 mod audio;
 mod audit;
 mod auth;
@@ -72,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
     api::polls::spawn_closer(state.clone());
     api::lfg::spawn_expirer(state.clone());
     audit::spawn_pruner(state.clone());
+    armory::spawn_refresher(state.clone());
     // `/` is the welcome page (it sends signed-in people and the apps on to
     // `/app`); `/app` and `/login` are the web client. Everything else is a
     // plain file from the web folder.

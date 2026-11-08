@@ -4,16 +4,19 @@
 //! `BNET_REGION`). The flow: the app asks for a sign-in link
 //! (`POST /api/bnet/authorize`), opens it, Battle.net sends the browser
 //! back to `/api/bnet/callback` with a code, and the server swaps that for
-//! a token, reads the BattleTag and the Classic character list, and adds
-//! the characters to the person's profile. The token isn't kept.
-//! Blizzard's Classic profile API may not list WoW: Forever characters; if
-//! it lists nothing, the link still works and people add characters by hand.
+//! a token, reads the BattleTag and the character lists (WoW: Forever's
+//! `profile-forever-{region}` first, then Classic Era and TBC), and adds the
+//! characters to the person's profile, or updates the ones already there
+//! (matched by Blizzard's character id, else game + name + last name / realm).
+//! The token is used for that and not kept. WoW: Forever characters are then
+//! read from the Armory (with the server's app token) for their portrait,
+//! guild and item level, in the background.
 
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::Html;
 use axum::Json;
-use outhouse_common::wow::{BnetStatus, CharacterRequest};
+use outhouse_common::wow::{races_for, BnetStatus, CharacterRequest};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -154,28 +157,71 @@ fn text(v: &Value) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Characters in a `/profile/user/wow` answer: (name, realm, class, level),
-/// from `game`.
-pub fn characters_in(profile: &Value, game: &str) -> Vec<CharacterRequest> {
+/// A character from Battle.net's account list.
+#[derive(Debug, Clone)]
+pub struct Listed {
+    pub req: CharacterRequest,
+    pub blizzard_id: Option<i64>,
+    /// The ruleset Battle.net gave ("" = it didn't say).
+    pub ruleset: String,
+}
+
+/// Characters in a `/profile/user/wow` answer, from `game`. WoW: Forever's
+/// list has first and last names (`name`, `surname`) and no realm.
+pub fn characters_in(profile: &Value, game: &str, region: &str) -> Vec<Listed> {
+    let forever = game == "forever";
     let mut out = Vec::new();
     for account in profile["wow_accounts"].as_array().into_iter().flatten() {
         for c in account["characters"].as_array().into_iter().flatten() {
-            let Some(name) = text(&c["name"]) else {
+            let p = crate::armory::parse_character(c, None, None);
+            if p.name.is_empty() {
                 continue;
+            }
+            // A class we don't know stays as Blizzard wrote it, so it's
+            // turned away (not quietly made into something else).
+            let class = if p.class.is_empty() {
+                text(&c["playable_class"]["name"]).unwrap_or_default()
+            } else {
+                p.class.clone()
             };
-            out.push(CharacterRequest {
-                name,
-                realm: text(&c["realm"]["name"])
-                    .or_else(|| text(&c["realm"]["slug"]))
-                    .unwrap_or_default(),
-                class: text(&c["playable_class"]["name"]).unwrap_or_default(),
-                level: c["level"].as_i64().map(|l| l as i32),
-                game: game.to_string(),
-                ..Default::default()
+            let race = if races_for(game).contains(&p.race.as_str()) {
+                p.race.clone()
+            } else {
+                String::new()
+            };
+            out.push(Listed {
+                req: CharacterRequest {
+                    name: p.name.clone(),
+                    last_name: if forever {
+                        p.surname.clone()
+                    } else {
+                        String::new()
+                    },
+                    realm: if forever {
+                        String::new()
+                    } else {
+                        text(&c["realm"]["name"])
+                            .or_else(|| text(&c["realm"]["slug"]))
+                            .unwrap_or_default()
+                    },
+                    class,
+                    race,
+                    level: p.level,
+                    game: game.to_string(),
+                    ruleset: if forever {
+                        p.ruleset.clone()
+                    } else {
+                        String::new()
+                    },
+                    region: region.to_string(),
+                    ..Default::default()
+                },
+                blizzard_id: p.blizzard_id,
+                ruleset: if forever { p.ruleset } else { String::new() },
             });
         }
     }
-    out.sort_by_key(|c| std::cmp::Reverse(c.level.unwrap_or(0)));
+    out.sort_by_key(|c| std::cmp::Reverse(c.req.level.unwrap_or(0)));
     out
 }
 
@@ -189,7 +235,7 @@ pub async fn callback(State(st): State<AppState>, Query(q): Query<CallbackQuery>
                 format!(" as <strong>{}</strong>", escape(&tag))
             };
             let chars = match imported {
-                0 => "Battle.net didn't list any Classic characters, so add yours by hand in Settings → Profile &amp; picture.".to_string(),
+                0 => "Battle.net didn't list any WoW: Forever or Classic characters, so add yours by hand in Settings → Profile &amp; picture.".to_string(),
                 1 => "Imported 1 character.".to_string(),
                 n => format!("Imported {n} characters."),
             };
@@ -290,7 +336,7 @@ async fn finish(st: &AppState, q: CallbackQuery) -> Result<(String, usize), Stri
         match client.get(&url).bearer_auth(&access).send().await {
             Ok(r) if r.status().is_success() => {
                 if let Ok(v) = r.json::<Value>().await {
-                    found.extend(characters_in(&v, cfg.game_for(ns)));
+                    found.extend(characters_in(&v, cfg.game_for(ns), &cfg.region));
                 }
             }
             Ok(r) => {
@@ -315,37 +361,73 @@ async fn finish(st: &AppState, q: CallbackQuery) -> Result<(String, usize), Stri
     Ok((battletag, imported))
 }
 
-/// Adds (or refreshes) characters; returns how many were taken in.
-async fn import(st: &AppState, user_id: i64, found: &[CharacterRequest]) -> AppResult<usize> {
+/// Adds (or refreshes) characters; returns how many were taken in. WoW:
+/// Forever ones are read from the Armory afterwards, in the background.
+async fn import(st: &AppState, user_id: i64, found: &[Listed]) -> AppResult<usize> {
     let mut count = 0;
-    for req in found {
+    let mut forever_ids = Vec::new();
+    for listed in found {
         // Skips anything that isn't one of the nine classes, has an odd name
-        // or a level the game doesn't have. WoW: Forever characters come in
-        // without a last name; their players can add it.
-        let Ok(c) = clean_character(req, true) else {
+        // or a level the game doesn't have. A WoW: Forever character without
+        // a last name (older lists) is kept; its player can add it.
+        let Ok(c) = clean_character(&listed.req, true) else {
             continue;
         };
-        // The same character: same game and name (and realm, outside WoW:
-        // Forever, which has none; a last name added since doesn't matter).
-        let existing: Option<i64> = sqlx::query_scalar(
-            "SELECT id FROM wow_characters
-             WHERE user_id = $1 AND game = $4 AND lower(name) = lower($2)
-               AND ($4 = 'forever' OR lower(realm) = lower($3))
-             ORDER BY created_at LIMIT 1",
-        )
-        .bind(user_id)
-        .bind(&c.name)
-        .bind(&c.realm)
-        .bind(&c.game)
-        .fetch_optional(&st.db)
-        .await?;
-        if let Some(id) = existing {
-            sqlx::query("UPDATE wow_characters SET class = $2, level = $3 WHERE id = $1")
-                .bind(id)
-                .bind(&c.class)
-                .bind(c.level)
-                .execute(&st.db)
-                .await?;
+        // The same character: Blizzard's id if we have it, else the same
+        // game and name, and last name (WoW: Forever; or none yet) or realm.
+        let mut existing: Option<i64> = None;
+        if let Some(bid) = listed.blizzard_id {
+            existing = sqlx::query_scalar(
+                "SELECT id FROM wow_characters
+                 WHERE user_id = $1 AND game = $2 AND blizzard_id = $3
+                 ORDER BY created_at LIMIT 1",
+            )
+            .bind(user_id)
+            .bind(&c.game)
+            .bind(bid)
+            .fetch_optional(&st.db)
+            .await?;
+        }
+        if existing.is_none() {
+            existing = sqlx::query_scalar(
+                "SELECT id FROM wow_characters
+                 WHERE user_id = $1 AND game = $4 AND lower(name) = lower($2)
+                   AND CASE WHEN $4 = 'forever'
+                            THEN lower(last_name) = lower($5) OR last_name = '' OR $5 = ''
+                            ELSE lower(realm) = lower($3) END
+                   AND (blizzard_id IS NULL OR $6::BIGINT IS NULL OR blizzard_id = $6)
+                 ORDER BY (lower(last_name) = lower($5)) DESC, created_at LIMIT 1",
+            )
+            .bind(user_id)
+            .bind(&c.name)
+            .bind(&c.realm)
+            .bind(&c.game)
+            .bind(&c.last_name)
+            .bind(listed.blizzard_id)
+            .fetch_optional(&st.db)
+            .await?;
+        }
+        let id = if let Some(id) = existing {
+            sqlx::query(
+                "UPDATE wow_characters SET class = $2, level = $3,
+                     last_name = CASE WHEN last_name = '' THEN $4 ELSE last_name END,
+                     race = CASE WHEN $5 = '' THEN race ELSE $5 END,
+                     ruleset = CASE WHEN $6 = '' OR game <> 'forever' THEN ruleset ELSE $6 END,
+                     blizzard_id = COALESCE($7, blizzard_id),
+                     region = CASE WHEN $8 = '' THEN region ELSE $8 END
+                 WHERE id = $1",
+            )
+            .bind(id)
+            .bind(&c.class)
+            .bind(c.level)
+            .bind(&c.last_name)
+            .bind(&c.race)
+            .bind(&listed.ruleset)
+            .bind(listed.blizzard_id)
+            .bind(&c.region)
+            .execute(&st.db)
+            .await?;
+            id
         } else {
             let total: i64 =
                 sqlx::query_scalar("SELECT count(*) FROM wow_characters WHERE user_id = $1")
@@ -355,12 +437,13 @@ async fn import(st: &AppState, user_id: i64, found: &[CharacterRequest]) -> AppR
             if total >= MAX_CHARACTERS {
                 continue;
             }
+            let id = st.ids.next_id();
             sqlx::query(
                 "INSERT INTO wow_characters (id, user_id, name, realm, class, level, source, game,
-                     ruleset)
-                 VALUES ($1, $2, $3, $4, $5, $6, 'bnet', $7, $8)",
+                     ruleset, last_name, race, region, blizzard_id)
+                 VALUES ($1, $2, $3, $4, $5, $6, 'bnet', $7, $8, $9, $10, $11, $12)",
             )
-            .bind(st.ids.next_id())
+            .bind(id)
             .bind(user_id)
             .bind(&c.name)
             .bind(&c.realm)
@@ -368,12 +451,28 @@ async fn import(st: &AppState, user_id: i64, found: &[CharacterRequest]) -> AppR
             .bind(c.level)
             .bind(&c.game)
             .bind(&c.ruleset)
+            .bind(&c.last_name)
+            .bind(&c.race)
+            .bind(&c.region)
+            .bind(listed.blizzard_id)
             .execute(&st.db)
             .await?;
+            id
+        };
+        if c.game == "forever" && !c.last_name.is_empty() {
+            forever_ids.push(id);
         }
         count += 1;
     }
     super::wow::ensure_main(&st.db, user_id).await?;
+    if !forever_ids.is_empty() && st.config.bnet.is_some() {
+        let st = st.clone();
+        tokio::spawn(async move {
+            for id in forever_ids.into_iter().take(MAX_CHARACTERS as usize) {
+                crate::armory::sync_quietly(&st, id, true).await;
+            }
+        });
+    }
     Ok(count)
 }
 
@@ -390,11 +489,38 @@ mod tests {
             ]}]}"#,
         )
         .unwrap();
-        let list = characters_in(&v, "tbc");
+        let list = characters_in(&v, "tbc", "us");
         assert_eq!(list.len(), 2);
-        assert_eq!(list[0].game, "tbc");
-        assert_eq!(list[0].name, "Tankadin");
-        assert_eq!(list[0].class, "Paladin");
-        assert_eq!(list[1].realm, "Forever");
+        assert_eq!(list[0].req.game, "tbc");
+        assert_eq!(list[0].req.name, "Tankadin");
+        assert_eq!(list[0].req.class, "Paladin");
+        assert_eq!(list[1].req.realm, "Forever");
+    }
+
+    #[test]
+    fn reads_forever_lists() {
+        let v: Value = serde_json::from_str(
+            r#"{"wow_accounts":[{"characters":[
+                {"id": 11, "name":"Breezy","surname":"Cloudsong","level":37,
+                 "playable_class":{"name":"Shaman","id":7},"playable_race":{"name":"Skyborne"},
+                 "faction":{"type":"HORDE"},"ruleset":{"id":1}},
+                {"id": 12, "name":"Deathy","surname":"Grim","level":60,"playable_class":{"name":"Death Knight"}}
+            ]}]}"#,
+        )
+        .unwrap();
+        let list = characters_in(&v, "forever", "us");
+        assert_eq!(list.len(), 2);
+        let b = &list[1].req;
+        assert_eq!(
+            (b.name.as_str(), b.last_name.as_str(), b.realm.as_str()),
+            ("Breezy", "Cloudsong", "")
+        );
+        assert_eq!(
+            (b.race.as_str(), b.class.as_str(), b.ruleset.as_str()),
+            ("Skyborne (Horde)", "Shaman", "PvP")
+        );
+        assert_eq!(list[1].blizzard_id, Some(11));
+        assert!(clean_character(b, true).is_ok());
+        assert!(clean_character(&list[0].req, true).is_err());
     }
 }

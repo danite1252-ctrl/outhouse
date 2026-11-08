@@ -292,6 +292,9 @@ pub fn router(state: AppState) -> Router {
             "/api/characters/{id}",
             patch(wow::update_character).delete(wow::delete_character),
         )
+        .route("/api/wow/armory/lookup", post(crate::armory::lookup))
+        .route("/api/wow/avatars/{key}", get(crate::armory::avatar))
+        .route("/api/characters/{id}/refresh", post(crate::armory::refresh))
         .route("/api/bnet/status", get(bnet::status))
         .route("/api/bnet/authorize", post(bnet::authorize))
         .route("/api/bnet/link", delete(bnet::unlink))

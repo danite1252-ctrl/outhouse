@@ -114,6 +114,10 @@ struct SignupRow {
     character_last_name: String,
     character_class: String,
     character_game: String,
+    character_level: Option<i32>,
+    character_item_level: Option<i32>,
+    character_guild: Option<String>,
+    character_avatar: Option<String>,
 }
 
 fn full_name(name: &str, last_name: &str) -> String {
@@ -176,11 +180,17 @@ async fn signups_for(db: &PgPool, event_ids: &[i64]) -> AppResult<HashMap<i64, V
                 COALESCE(gm.nickname, u.display_name) AS display_name,
                 s.status, s.role, s.class, s.spec, s.note, s.signed_at, s.bench_wanted,
                 s.character_id, s.character_name, s.character_last_name, s.character_class,
-                s.character_game
+                s.character_game,
+                wc.level AS character_level, wc.item_level AS character_item_level,
+                wc.guild_name AS character_guild,
+                CASE WHEN wc.avatar_key <> '' THEN '/api/wow/avatars/' || wc.avatar_key || '?v='
+                          || COALESCE(floor(extract(epoch FROM wc.last_synced_at))::BIGINT, 0)
+                     ELSE '' END AS character_avatar
          FROM event_signups s
          JOIN events e ON e.id = s.event_id
          JOIN users u ON u.id = s.user_id
          LEFT JOIN guild_members gm ON gm.guild_id = e.guild_id AND gm.user_id = s.user_id
+         LEFT JOIN wow_characters wc ON wc.id = s.character_id
          WHERE s.event_id = ANY($1)
          ORDER BY s.signed_at, s.user_id",
     )
@@ -196,6 +206,10 @@ async fn signups_for(db: &PgPool, event_ids: &[i64]) -> AppResult<HashMap<i64, V
             last_name: r.character_last_name,
             class: r.character_class,
             game: r.character_game,
+            level: r.character_level,
+            item_level: r.character_item_level,
+            guild_name: r.character_guild.unwrap_or_default(),
+            avatar: r.character_avatar.unwrap_or_default(),
         });
         map.entry(r.event_id).or_default().push(EventSignup {
             character,
