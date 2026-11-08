@@ -1813,6 +1813,20 @@ fail_call PATCH /api/users/@me '{"display_name":"a\u0000b"}'
 fail_call GET "/api/guilds/$GUILD/search?q=a%00b"
 call POST "/api/channels/$CHAN/messages" '{"content":"an escaped backslash: \\u0000 is fine"}' | jq -e '.content == "an escaped backslash: \\u0000 is fine"' >/dev/null
 
+step "security: who's in a hidden voice channel stays hidden"
+TOKEN=$TOKEN_A
+call POST /api/voice/leave >/dev/null
+HV=$(call POST "/api/guilds/$GUILD/channels" '{"name":"Officers","kind":2}' | jq -r .id)
+call PUT "/api/channels/$HV/permissions/$GUILD" '{"kind":"role","allow":"0","deny":"1"}' >/dev/null
+call POST "/api/channels/$HV/voice/join" >/dev/null
+call GET "/api/guilds/$GUILD/voice" | jq -e --arg a "$ALICE" --arg c "$HV" 'any(.[]; .user_id == $a and .channel_id == $c)' >/dev/null
+TOKEN=$TOKEN_B
+call GET "/api/guilds/$GUILD/voice" | jq -e --arg a "$ALICE" '[.[] | select(.user_id == $a)] | length == 0' >/dev/null \
+  || { echo "Bob can see who's in a voice channel he can't see"; exit 1; }
+TOKEN=$TOKEN_A
+call POST /api/voice/leave >/dev/null
+call DELETE "/api/channels/$HV" >/dev/null
+
 step "security: no CORS, no cookies"
 curl -sS -D /tmp/sec-c -o /dev/null -H "Origin: https://evil.example" -H "Authorization: Bearer $TOKEN_A" "$BASE/api/users/@me"
 if grep -qi "^access-control-allow-origin" /tmp/sec-c; then echo "API answers cross-origin reads:"; cat /tmp/sec-c; exit 1; fi

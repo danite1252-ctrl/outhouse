@@ -290,8 +290,8 @@ pub async fn list(
     AuthUser(user): AuthUser,
     Path(guild_id): Path<i64>,
 ) -> AppResult<Json<Vec<VoiceState>>> {
-    member_ctx(&st.db, guild_id, user.id).await?;
-    let states = st
+    let ctx = member_ctx(&st.db, guild_id, user.id).await?;
+    let states: Vec<VoiceState> = st
         .voice
         .lock()
         .expect("voice lock")
@@ -299,7 +299,26 @@ pub async fn list(
         .filter(|v| v.guild_id == guild_id)
         .cloned()
         .collect();
-    Ok(Json(states))
+    // Only voice channels you can see (who's in a hidden one is private).
+    let mut visible = std::collections::HashMap::new();
+    let mut out = Vec::with_capacity(states.len());
+    for v in states {
+        let ok = match visible.get(&v.channel_id) {
+            Some(ok) => *ok,
+            None => {
+                let ok = channel_perms(&st.db, &ctx, v.channel_id)
+                    .await
+                    .map(|perms| perms & p::VIEW_CHANNEL != 0)
+                    .unwrap_or(false);
+                visible.insert(v.channel_id, ok);
+                ok
+            }
+        };
+        if ok {
+            out.push(v);
+        }
+    }
+    Ok(Json(out))
 }
 
 // ---------- moderation: server mute/deafen, move, disconnect ----------

@@ -154,7 +154,13 @@ async fn run(socket: WebSocket, st: AppState) -> anyhow::Result<()> {
                 dispatch = events.recv() => match dispatch {
                     Ok(d) => {
                         let wanted = match d.audience {
-                            Audience::Guild(id) => guild_ids.contains(&id),
+                            Audience::Guild(id) => guild_ids.contains(&id) && match &d.event {
+                                // Who's in a voice channel you can't see stays private.
+                                ServerEvent::VoiceStateUpdate { channel_id: Some(c), .. } => {
+                                    perms::can_view(&st.db, id, *c, user.id).await
+                                }
+                                _ => true,
+                            },
                             Audience::User(id) => id == user.id,
                             Audience::Channel { guild_id, channel_id } => {
                                 (guild_id == DM_GUILD || guild_ids.contains(&guild_id))

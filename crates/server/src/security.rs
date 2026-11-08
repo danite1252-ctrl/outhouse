@@ -321,7 +321,7 @@ pub async fn headers(req: Request, next: Next) -> Response {
     set_default(
         h,
         HeaderName::from_static("permissions-policy"),
-        "camera=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), \
+        "geolocation=(), payment=(), usb=(), serial=(), hid=(), camera=(self), \
          microphone=(self), display-capture=(self), fullscreen=(self)",
     );
     set_default(
