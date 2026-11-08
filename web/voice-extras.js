@@ -162,7 +162,10 @@ function audioDuration(file) {
 async function entranceSoundSection() {
   const box = el("div", { class: "entrance-box" });
   const draw = async () => {
-    const mine = await api("GET", "/api/users/@me/entrance-sound").catch(() => null);
+    const [mine, classics] = await Promise.all([
+      api("GET", "/api/users/@me/entrance-sound").catch(() => null),
+      api("GET", "/api/builtin-sounds").catch(() => []),
+    ]);
     const file = el("input", { type: "file", accept: ".mp3,.ogg,.oga,.opus,.wav,audio/mpeg,audio/ogg,audio/wav", hidden: true, "aria-label": "Entrance sound file" });
     file.addEventListener("change", async () => {
       const f = file.files[0];
@@ -185,7 +188,7 @@ async function entranceSoundSection() {
       el("p", { class: "muted small", style: "margin:0" }, "Plays for everyone in a voice channel when you join it. MP3, OGG or WAV, up to 5 seconds and 200 KB."),
       el("div", { class: "inline-row entrance-row" },
         mine
-          ? el("button", { class: "ghost", onclick: () => playEntrance(mine.url) }, `▶ Play (${(mine.duration_ms / 1000).toFixed(1)} s)`)
+          ? el("button", { class: "ghost", onclick: () => playEntrance(mine.url) }, `▶ Play ${mine.builtin ? `${classics.find((c) => c.id === `builtin:${mine.builtin}`)?.name ?? "classic"} ` : ""}(${(mine.duration_ms / 1000).toFixed(1)} s)`)
           : el("span", { class: "muted" }, "No entrance sound yet."),
         el("button", { class: "ghost", onclick: () => file.click() }, mine ? "Change…" : "Upload…"),
         mine ? el("button", { class: "ghost danger", onclick: async () => {
@@ -193,6 +196,25 @@ async function entranceSoundSection() {
           if (ok) { toast("Entrance sound removed."); draw(); }
         } }, "Remove") : null,
         file),
+      el("div", { class: "entrance-classics" },
+        el("span", { class: "muted small" }, "Or pick an Outhouse classic:"),
+        classics.filter((c) => (c.duration_ms ?? 0) <= 5000).map((c) => {
+          const key = c.id.replace(/^builtin:/, "");
+          const chosen = mine?.builtin === key;
+          return el("button", {
+            type: "button",
+            class: chosen ? "on" : "",
+            "data-key": key,
+            "aria-pressed": String(chosen),
+            title: chosen ? "Your entrance sound" : `Use ${c.name} as your entrance sound`,
+            onclick: async () => {
+              playEntrance(c.url);
+              if (chosen) return;
+              const ok = await tryApi("PUT", "/api/users/@me/entrance-sound", { builtin: key }).catch(() => null);
+              if (ok) { toast(`${c.name} is your entrance sound.`); draw(); }
+            },
+          }, `${c.emoji} ${c.name}`);
+        })),
       el("label", { class: "check-row" }, on, "Play other people's entrance sounds"),
       el("div", { class: "vol-row" }, el("span", {}, "Entrance sound volume"), vol, volValue),
     );

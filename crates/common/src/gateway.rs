@@ -177,8 +177,8 @@ pub enum ServerEvent {
         channel_id: i64,
         #[serde(with = "as_string")]
         user_id: i64,
-        #[serde(with = "as_string")]
-        sound_id: i64,
+        /// A snowflake, or `builtin:<key>`.
+        sound_id: String,
         url: String,
         volume: f32,
     },

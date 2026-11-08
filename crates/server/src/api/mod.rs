@@ -190,7 +190,16 @@ pub fn router(state: AppState) -> Router {
                 .post(sounds::create)
                 .layer(DefaultBodyLimit::max(sounds::MAX_SOUND_BYTES + 64 * 1024)),
         )
-        .route("/api/sounds/{id}", delete(sounds::delete))
+        .route("/api/users/@me/sounds", get(sounds::list_mine))
+        .route("/api/builtin-sounds", get(sounds::list_builtins))
+        .route(
+            "/api/guilds/{id}/hidden-sounds/{key}",
+            put(sounds::hide_builtin).delete(sounds::show_builtin),
+        )
+        .route(
+            "/api/sounds/{id}",
+            patch(sounds::edit).delete(sounds::delete),
+        )
         .route("/api/sounds/{id}/play", post(sounds::play))
         .route(
             "/api/sounds/{id}/favourite",
@@ -200,6 +209,7 @@ pub fn router(state: AppState) -> Router {
             "/api/users/@me/entrance-sound",
             get(sounds::get_entrance)
                 .post(sounds::set_entrance)
+                .put(sounds::set_entrance_builtin)
                 .delete(sounds::delete_entrance)
                 .layer(DefaultBodyLimit::max(
                     sounds::MAX_ENTRANCE_BYTES + 64 * 1024,

@@ -204,6 +204,10 @@ for name, emoji in [("Leeroy", "🐔"), ("Bonk", "🔨"), ("Wipe", "💀"), ("Bl
     snd = upload(f"/api/guilds/{guild['id']}/sounds", {"name": name, "emoji": emoji}, {"file": (f"{name}.wav", make_wav(0.5), "audio/wav")}, TOKEN)
     if name in ("Leeroy", "Wipe"):
         api("PUT", f"/api/sounds/{snd['id']}/favourite", None, TOKEN)
+# A sound in Dave's Family outhouse (Carol's in it too): her soundboard
+# shows it in its own section and can play it in Raid comms.
+upload(f"/api/guilds/{family['id']}/sounds", {"name": "Dinner bell", "emoji": "🔔"}, {"file": ("bell.wav", make_wav(0.5), "audio/wav")}, dave["token"])
+api("PUT", "/api/sounds/builtin:plop/favourite", None, TOKEN)
 with open("/tmp/entrance-test.wav", "wb") as f:
     f.write(make_wav(1.5))
 
@@ -1129,15 +1133,123 @@ with sync_playwright() as p:
     davev.wait_for_selector("#voice-panel", state="hidden", timeout=10000)
     carolv.wait_for_selector(f"#voice-channels .voice-user[data-id='{DAVE}']", state="detached", timeout=10000)
 
-    # Soundboard with favourites.
-    carolv.click("#voice-panel .vp-btn[title='Soundboard']")
-    carolv.wait_for_selector(".soundboard .sb-label:has-text('Favourites')")
+    # The built-in classics really decode in Chrome, aren't silent or clipped, and fit the 10 s limit.
+    decoded = carolv.evaluate("""async () => {
+      const ctx = new OfflineAudioContext(1, 1, 48000);
+      const out = {};
+      for (const k of ['flush', 'strain', 'plop', 'door', 'blowie']) {
+        const a = await ctx.decodeAudioData(await (await fetch(`/sounds/builtin/${k}.mp3`)).arrayBuffer());
+        const d = a.getChannelData(0);
+        let peak = 0, sum = 0;
+        for (let i = 0; i < d.length; i++) { const v = Math.abs(d[i]); if (v > peak) peak = v; sum += d[i] * d[i]; }
+        out[k] = [a.duration, peak, Math.sqrt(sum / d.length)];
+      }
+      return out;
+    }""")
+    print("built-in sounds (seconds, peak, rms):", decoded)
+    for k, (secs, peak, rms) in decoded.items():
+        assert 0.3 < secs <= 10 and 0.3 < peak <= 1.0 and rms > 0.03, (k, secs, peak, rms)
+    # Soundboard: Discord-style popover above the voice panel.
+    # Dave listens; count the clips his client is told to play.
+    davev.evaluate("window.__plays = []; playSound = (url) => window.__plays.push(url);")
+    carolv.click("#voice-panel .vp-btn.sb-open")
+    carolv.wait_for_selector(".sb-board .sb-sec[data-sec='classics'] .sb-tile[data-id='builtin:flush']", timeout=10000)
+    carolv.wait_for_selector(".sb-board .sb-sec[data-sec='fav'] .sb-tile[data-id='builtin:plop']")
+    carolv.wait_for_selector(".sb-board .sb-sec[data-sec='fav'] .sb-tile:has-text('Leeroy')")
+    carolv.wait_for_selector(f".sb-board .sb-sec[data-sec='g{family['id']}'] .sb-tile:has-text('Dinner bell')")
+    carolv.wait_for_selector(f".sb-board .sb-sec[data-sec='g{guild['id']}'] .sb-tile:has-text('Bonk')")
+    order = carolv.eval_on_selector_all(".sb-board .sb-sec", "els => els.map((e) => e.dataset.sec)")
+    assert order[0] == "fav" and order[1] == "classics" and order[2] == f"g{guild['id']}" and f"g{family['id']}" in order, order
+    assert carolv.eval_on_selector_all(".sb-rail .sb-rail-btn", "els => els.length") == len(order)
+    box = carolv.eval_on_selector(".popover.sb-pop", "e => { const r = e.getBoundingClientRect(); const p = document.getElementById('voice-panel').getBoundingClientRect(); return [r.width, r.height, r.bottom <= p.top + 1]; }")
+    assert box[0] >= 500 and box[1] >= 460 and box[2], box
+    carolv.hover(".sb-board .sb-sec[data-sec='classics'] .sb-tile[data-id='builtin:door']")
+    carolv.wait_for_timeout(200)
     carolv.screenshot(path=f"{SHOTS}/88-soundboard.png")
-    carolv.click(".soundboard .sound-btn:has-text('Bonk') >> nth=0")
-    carolv.wait_for_selector(".soundboard.cooling")
-    carolv.click(".soundboard .sound-tile:has-text('Ding') .sound-star")
-    carolv.wait_for_selector(".soundboard .sound-tile.fav:has-text('Ding')")
+    # Play a classic: the board cools down for everyone's sake.
+    carolv.click(".sb-board .sb-sec[data-sec='classics'] .sb-tile[data-id='builtin:flush'] .sb-play")
+    carolv.wait_for_selector(".sb-board.cooling")
+    carolv.wait_for_timeout(500)
+    carolv.screenshot(path=f"{SHOTS}/88b-soundboard-cooldown.png")
+    davev.wait_for_function("window.__plays.includes('/sounds/builtin/flush.mp3')", timeout=10000)
+    # Favourite a classic with its star.
+    carolv.hover(".sb-board .sb-sec[data-sec='classics'] .sb-tile[data-id='builtin:door']")
+    carolv.click(".sb-board .sb-sec[data-sec='classics'] .sb-tile[data-id='builtin:door'] .sb-star")
+    carolv.wait_for_selector(".sb-board .sb-sec[data-sec='fav'] .sb-tile[data-id='builtin:door']")
+    # Search filters live; arrow keys move between tiles.
+    carolv.fill(".sb-search", "do")
+    carolv.wait_for_function("[...document.querySelectorAll('.sb-board .sb-tile')].every((t) => /do/i.test(t.textContent))")
+    assert carolv.query_selector(".sb-board .sb-tile[data-id='builtin:door']")
+    assert not carolv.query_selector(".sb-board .sb-tile:has-text('Leeroy')")
+    carolv.wait_for_timeout(200)
+    carolv.screenshot(path=f"{SHOTS}/88c-soundboard-search.png")
+    carolv.fill(".sb-search", "")
+    carolv.focus(".sb-search")
+    carolv.keyboard.press("ArrowDown")
+    first = carolv.evaluate("document.activeElement.closest('.sb-tile')?.dataset.id")
+    carolv.keyboard.press("ArrowRight")
+    second = carolv.evaluate("document.activeElement.closest('.sb-tile')?.dataset.id")
+    assert first and second and first != second, (first, second)
+    carolv.keyboard.press("ArrowDown")
+    assert carolv.evaluate("!!document.activeElement.closest('.sb-tile')")
+    # Typing anywhere goes to the search box.
+    carolv.keyboard.type("bell")
+    carolv.wait_for_function("document.querySelector('.sb-search').value === 'bell'")
+    carolv.wait_for_selector(".sb-board .sb-tile:has-text('Dinner bell')")
+    # A sound from Carol's other outhouse plays in this voice channel (Enter plays).
+    carolv.wait_for_timeout(1600)
+    carolv.focus(".sb-board .sb-tile:has-text('Dinner bell') .sb-play")
+    carolv.keyboard.press("Enter")
+    davev.wait_for_function("window.__plays.some((u) => u.startsWith('/files/'))", timeout=10000)
+    # Volume button.
+    carolv.fill(".sb-search", "")
+    carolv.click(".sb-board .sb-vol-btn")
+    carolv.wait_for_selector(".sb-board .sb-volume input[type=range]")
     carolv.keyboard.press("Escape")
+    carolv.wait_for_selector(".sb-board", state="detached")
+    # Reopen: what she played is under Recently used.
+    carolv.click("#voice-panel .vp-btn.sb-open")
+    carolv.wait_for_selector(".sb-board .sb-sec[data-sec='recent'] .sb-tile[data-id='builtin:flush']", timeout=10000)
+    carolv.wait_for_selector(".sb-board .sb-sec[data-sec='recent'] .sb-tile:has-text('Dinner bell')")
+    # Collapse a section, then jump with the rail.
+    carolv.click(".sb-board .sb-sec[data-sec='fav'] .sb-sec-head")
+    carolv.wait_for_selector(".sb-board .sb-sec.closed[data-sec='fav']")
+    carolv.click(".sb-board .sb-sec[data-sec='fav'] .sb-sec-head")
+    carolv.click(f".sb-rail .sb-rail-btn[title='{family['name']}']")
+    carolv.wait_for_timeout(600)
+    carolv.screenshot(path=f"{SHOTS}/88d-soundboard-other-outhouse.png")
+    # Manage sounds: hide a classic, then show it again.
+    carolv.click(".sb-board .sb-manage-link")
+    carolv.wait_for_selector("dialog.sb-manage .sbm-row.classic[data-id='builtin:strain']", timeout=10000)
+    carolv.click("dialog.sb-manage .sbm-row[data-id='builtin:strain'] .sbm-toggle")
+    carolv.wait_for_selector("dialog.sb-manage .sbm-row.is-hidden[data-id='builtin:strain']")
+    carolv.wait_for_timeout(200)
+    carolv.screenshot(path=f"{SHOTS}/88e-manage-sounds.png")
+    hidden = api("GET", f"/api/guilds/{guild['id']}/sounds", None, dave["token"])
+    assert all(s["id"] != "builtin:strain" for s in hidden), "hidden classic still listed for Dave"
+    carolv.click("dialog.sb-manage .sbm-row[data-id='builtin:strain'] .sbm-toggle")
+    carolv.wait_for_selector("dialog.sb-manage .sbm-row.classic:not(.is-hidden)[data-id='builtin:strain']")
+    carolv.keyboard.press("Escape")
+    carolv.wait_for_selector("dialog.sb-manage", state="detached")
+
+    # The same popover as a bottom sheet on a phone and in the Android app.
+    for pg, label in ((erinv, "phone"), (frankv, "android")):
+        if not pg.evaluate("document.getElementById('app').classList.contains('show-nav')"):
+            pg.click("#nav-toggle")
+            pg.wait_for_timeout(400)
+        pg.click("#voice-panel .vp-btn.sb-open")
+        pg.wait_for_selector(".sb-board .sb-sec[data-sec='classics'] .sb-tile[data-id='builtin:blowie']", timeout=10000)
+        sheet = pg.eval_on_selector(".popover.sb-pop", "e => { const r = e.getBoundingClientRect(); return [r.left, r.width, Math.round(innerHeight - r.bottom)]; }")
+        assert sheet[0] == 0 and sheet[1] >= 380 and sheet[2] <= 1, sheet
+        pg.wait_for_timeout(300)
+        pg.screenshot(path=f"{SHOTS}/88{'f' if label == 'phone' else 'g'}-{label}-soundboard.png")
+        pg.tap(".sb-board .sb-search")
+        pg.keyboard.type("plo")
+        pg.wait_for_selector(".sb-board .sb-tile[data-id='builtin:plop']")
+        pg.wait_for_timeout(200)
+        assert pg.query_selector(".sb-board"), "soundboard closed while typing"
+        pg.keyboard.press("Escape")
+        pg.wait_for_selector(".sb-board", state="detached")
 
     # Stop sharing.
     carolv.click("#voice-panel .vp-btn.share")
@@ -1152,6 +1264,12 @@ with sync_playwright() as p:
     davev.evaluate("document.querySelector('.entrance-box').scrollIntoView()")
     davev.wait_for_timeout(300)
     davev.screenshot(path=f"{SHOTS}/89-entrance-settings.png")
+    davev.click(".entrance-box .entrance-classics button[data-key='door']")
+    davev.wait_for_selector(".entrance-box .entrance-classics button.on[data-key='door']", timeout=10000)
+    davev.wait_for_selector(".entrance-box button:has-text('Door creak')")
+    davev.wait_for_timeout(200)
+    davev.screenshot(path=f"{SHOTS}/89b-entrance-classic.png")
+    assert api("GET", "/api/users/@me/entrance-sound", None, dave["token"])["builtin"] == "door"
     davev.keyboard.press("Escape")
     frankv.evaluate("openUserSettings('voice')")
     frankv.wait_for_selector(".entrance-box", timeout=10000)

@@ -222,12 +222,9 @@ async fn play_entrance(
     channel_id: i64,
     user_id: i64,
 ) -> AppResult<()> {
-    let key: Option<String> =
-        sqlx::query_scalar("SELECT storage_key FROM entrance_sounds WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_optional(&st.db)
-            .await?;
-    let Some(key) = key else { return Ok(()) };
+    let Some(url) = super::sounds::entrance_url(st, user_id).await? else {
+        return Ok(());
+    };
     {
         let mut cooldowns = st.entrance_cooldowns.lock().expect("cooldown lock");
         let now = Instant::now();
@@ -248,7 +245,7 @@ async fn play_entrance(
             guild_id,
             channel_id,
             user_id,
-            url: super::messages::attachment_url(&key, "entrance"),
+            url,
         },
     );
     Ok(())

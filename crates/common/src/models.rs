@@ -767,13 +767,17 @@ pub struct VoiceModerateRequest {
 pub struct EntranceSound {
     pub url: String,
     pub duration_ms: i32,
+    /// Set when it's one of the built-in sounds (e.g. "door").
+    #[serde(default)]
+    pub builtin: Option<String>,
 }
 
 /// A soundboard clip.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Sound {
-    #[serde(with = "as_string")]
-    pub id: i64,
+    /// A snowflake for uploaded clips, or `builtin:<key>` for the built-in
+    /// "Outhouse classics" every outhouse has.
+    pub id: String,
     #[serde(with = "as_string")]
     pub guild_id: i64,
     pub name: String,
@@ -783,6 +787,14 @@ pub struct Sound {
     /// In your favourites.
     #[serde(default)]
     pub favourite: bool,
+    /// One of the built-in "Outhouse classics" (can be hidden, not deleted).
+    #[serde(default)]
+    pub builtin: bool,
+    /// A built-in this outhouse has hidden (only listed for sound managers).
+    #[serde(default)]
+    pub hidden: bool,
+    #[serde(default)]
+    pub duration_ms: Option<i32>,
 }
 
 // ---- Requests and responses -------------------------------------------

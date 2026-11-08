@@ -315,7 +315,11 @@ document.addEventListener("keydown", (e) => {
     document.querySelector(".lightbox")?.remove();
   }
 });
-window.addEventListener("resize", () => { closeMenus(); closePopover(); });
+window.addEventListener("resize", () => {
+  closeMenus();
+  // The soundboard's bottom sheet on phones survives the on-screen keyboard.
+  if (!(popover?.classList.contains("sb-pop") && window.innerWidth <= 760)) closePopover();
+});
 window.addEventListener("blur", () => closeMenus());
 
 // Replace the browser's right-click menu inside the app (text boxes keep theirs).
@@ -624,6 +628,7 @@ function handleEvent({ t, d }) {
       break;
     case "SOUNDS_CHANGED":
       if (d.guild_id === state.guildId) loadSounds();
+      if (typeof onSoundsChanged === "function") onSoundsChanged(d);
       break;
     case "COMMANDS_CHANGED":
       if (d.guild_id === state.guildId) loadCommands();
@@ -1755,7 +1760,7 @@ function renderVoicePanel() {
       el("button", { class: `vp-btn${v.muted || forcedMute ? " off" : ""}${forcedMute ? " forced" : ""}`, title: forcedMute ? "Muted by a moderator" : v.muted ? "Unmute" : "Mute", onclick: toggleMute }, v.muted || forcedMute ? "🔇" : "🎙"),
       el("button", { class: `vp-btn${isDeafened() ? " off" : ""}${v.serverDeafened ? " forced" : ""}`, title: v.serverDeafened ? "Deafened by a moderator" : v.deafened ? "Undeafen" : "Deafen", onclick: toggleDeafen }, isDeafened() ? "🔕" : "🎧"),
       shareBtn,
-      el("button", { class: "vp-btn", title: "Soundboard", onclick: (e) => openSoundboard(e.currentTarget) }, "🔊"),
+      soundboardButton(),
       el("button", { class: "vp-btn", title: "Voice settings", onclick: (e) => openVoiceSettings(e.currentTarget) }, "⚙")),
     v.connecting ? null : touchPttButton(),
   ].filter(Boolean));
@@ -2310,109 +2315,7 @@ function playSound(url, volume = 1, preview = false) {
   audio.play().catch(() => {});
 }
 
-let soundCoolUntil = 0;
-function openSoundboard(anchor) {
-  const draw = () => {
-    const canPlay = state.voice.room && state.voice.guildId === state.guildId && can("use_soundboard", state.voice.channelId);
-    const play = async (snd, btn) => {
-      if (Date.now() < soundCoolUntil) return toast("Easy on the soundboard!");
-      const ok = await tryApi("POST", `/api/sounds/${snd.id}/play`).then(() => true).catch(() => false);
-      if (!ok) return;
-      soundCoolUntil = Date.now() + 2000;
-      const grid = btn.closest(".soundboard");
-      grid?.classList.add("cooling");
-      setTimeout(() => grid?.classList.remove("cooling"), 2000);
-    };
-    const favourite = async (snd) => {
-      const on = !snd.favourite;
-      const ok = await tryApi(on ? "PUT" : "DELETE", `/api/sounds/${snd.id}/favourite`).then(() => true).catch(() => false);
-      if (!ok) return;
-      snd.favourite = on;
-      redraw();
-    };
-    const tile = (snd) => el("div", { class: `sound-tile${snd.favourite ? " fav" : ""}` },
-      el("button", {
-        class: "sound-btn",
-        title: canPlay ? `Play ${snd.name}` : "Join voice in this outhouse to play sounds",
-        disabled: !canPlay,
-        onclick: (e) => play(snd, e.currentTarget),
-        oncontextmenu: (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          openMenu(e.clientX, e.clientY, [
-            { label: "Preview (just you)", onClick: () => playSound(snd.url, snd.volume, true) },
-            { label: snd.favourite ? "Remove from favourites" : "Add to favourites", onClick: () => favourite(snd) },
-            can("manage_sounds") ? "sep" : null,
-            can("manage_sounds") ? { label: "Delete sound", danger: true, onClick: async () => {
-              await tryApi("DELETE", `/api/sounds/${snd.id}`).catch(() => {});
-              await loadSounds();
-              redraw();
-            } } : null,
-          ]);
-        },
-      }, el("span", { class: "semoji" }, snd.emoji || "🔊"), el("span", { class: "sname" }, snd.name)),
-      el("button", { class: "sound-star", title: snd.favourite ? "Remove from favourites" : "Add to favourites", "aria-label": snd.favourite ? "Remove from favourites" : "Add to favourites", onclick: () => favourite(snd) }, snd.favourite ? "★" : "☆"));
-    const favs = state.sounds.filter((snd) => snd.favourite);
-    const rest = state.sounds.filter((snd) => !snd.favourite);
-    const grid = el("div", { class: "sound-scroll" },
-      favs.length ? el("div", { class: "sb-label" }, "★ Favourites") : null,
-      favs.length ? el("div", { class: "sound-grid" }, favs.map(tile)) : null,
-      favs.length && rest.length ? el("div", { class: "sb-label" }, "Other sounds") : null,
-      rest.length ? el("div", { class: "sound-grid" }, rest.map(tile)) : null,
-      state.sounds.length ? null : el("p", { class: "muted" }, "No sounds yet."));
-    const vol = el("input", { type: "range", min: 0, max: 100, step: 5, value: Math.round(prefs.get("soundboard_volume", 0.7) * 100), "aria-label": "Soundboard volume" });
-    vol.addEventListener("input", () => prefs.set("soundboard_volume", vol.value / 100));
-    const mute = el("input", { type: "checkbox", checked: prefs.get("soundboard_muted", false) });
-    mute.addEventListener("change", () => prefs.set("soundboard_muted", mute.checked));
-    return el("div", { class: "soundboard" },
-      el("div", { class: "sb-head" }, el("h3", {}, "Soundboard"),
-        can("manage_sounds") ? el("button", { class: "ghost small-btn", onclick: addSound }, "＋ Add sound") : null),
-      grid,
-      el("div", { class: "sb-foot" },
-        el("label", { class: "check-row" }, "Volume", vol),
-        el("label", { class: "check-row" }, mute, "Mute soundboard")),
-      el("p", { class: "muted small", style: "margin:0" }, "☆ adds a favourite. Right-click (or long-press) a sound to preview it."),
-    );
-  };
-  const redraw = () => { if (popover) popover.replaceChildren(draw()); };
-  const addSound = async () => {
-    const name = el("input", { placeholder: "Leeroy", maxlength: 32 });
-    const emoji = el("input", { placeholder: "🐔", maxlength: 8, style: "width:80px" });
-    const volume = el("input", { type: "range", min: 10, max: 100, value: 100 });
-    const file = el("input", { type: "file", accept: ".mp3,.ogg,.oga,.opus,.wav,audio/*" });
-    const dialog = el("dialog", {},
-      el("form", { method: "dialog" },
-        el("h2", {}, "Add a sound"),
-        el("p", { class: "muted", style: "margin:0" }, "MP3, OGG or WAV, up to 10 seconds and 1 MB. Short clips work best."),
-        el("label", { class: "field" }, "Name", name),
-        el("label", { class: "field" }, "Emoji", emoji),
-        el("label", { class: "field" }, "Volume", volume),
-        file,
-        el("div", { class: "row" },
-          el("button", { type: "button", class: "ghost", onclick: () => dialog.close() }, "Cancel"),
-          el("button", { type: "submit", class: "primary", value: "ok" }, "Upload")),
-      ));
-    dialog.addEventListener("close", async () => {
-      dialog.remove();
-      if (dialog.returnValue !== "ok") return;
-      if (!file.files[0]) return toast("Choose a sound file.");
-      const form = new FormData();
-      form.append("name", name.value.trim() || file.files[0].name.replace(/\.[^.]+$/, ""));
-      form.append("emoji", emoji.value.trim());
-      form.append("volume", String(volume.value / 100));
-      form.append("file", file.files[0], file.files[0].name);
-      const ok = await tryApi("POST", `/api/guilds/${state.guildId}/sounds`, form).catch(() => null);
-      if (ok) {
-        toast(`${ok.name} added to the soundboard.`);
-        await loadSounds();
-        redraw();
-      }
-    });
-    document.body.append(dialog);
-    dialog.showModal();
-  };
-  openPopover(anchor, draw());
-}
+// The soundboard popover itself is in soundboard.js.
 
 // ---------- navigation ----------
 

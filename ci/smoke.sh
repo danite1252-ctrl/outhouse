@@ -937,6 +937,98 @@ sleep 2.2
 call POST "/api/sounds/$SND/play" >/dev/null
 call POST /api/voice/leave >/dev/null
 
+step "built-in soundboard classics"
+TOKEN=$TOKEN_A
+call GET /api/builtin-sounds | jq -e '[.[].id] == ["builtin:flush","builtin:strain","builtin:plop","builtin:door","builtin:blowie"]' >/dev/null
+# Every outhouse has them (new ones too), listed first.
+G2=$(call POST /api/guilds '{"name":"Second Outhouse"}' | jq -r .id)
+for g in "$GUILD" "$G2"; do
+  call GET "/api/guilds/$g/sounds" | jq -e '([.[] | select(.builtin)] | length) == 5 and .[0].id == "builtin:flush" and .[0].emoji == "🚽"
+    and all(.[] | select(.builtin); (.url | startswith("/sounds/builtin/")) and (.hidden | not) and .duration_ms <= 10000)' >/dev/null \
+    || { echo "built-ins missing in $g"; cat /tmp/body; exit 1; }
+done
+# The files are served as MP3 and decode to the right sort of length.
+for k in flush strain plop door blowie; do
+  curl -fsS -D /tmp/headers "$BASE/sounds/builtin/$k.mp3" -o "/tmp/builtin-$k.mp3"
+  grep -qi "content-type: audio/mpeg" /tmp/headers || { echo "$k.mp3 content type"; cat /tmp/headers; exit 1; }
+  if command -v ffmpeg >/dev/null; then
+    d=$(ffmpeg -v error -i "/tmp/builtin-$k.mp3" -f s16le -ac 1 -ar 8000 - | wc -c | awk '{print $1 / 16000}')
+    awk -v d="$d" 'BEGIN { exit !(d > 0.3 && d <= 10) }' || { echo "$k.mp3 decodes to $d s"; exit 1; }
+    echo "  $k.mp3 decodes to $d s"
+  fi
+done
+# They can't be deleted or renamed; anyone can favourite them.
+fail_call DELETE /api/sounds/builtin:flush; grep -q "hide" /tmp/body
+fail_call PATCH /api/sounds/builtin:flush '{"name":"Nope"}'
+fail_call PUT /api/sounds/builtin:nope/favourite
+call PUT /api/sounds/builtin:plop/favourite >/dev/null
+call GET "/api/guilds/$G2/sounds" | jq -e '.[] | select(.id == "builtin:plop") | .favourite' >/dev/null
+TOKEN=$TOKEN_B; call GET "/api/guilds/$GUILD/sounds" | jq -e '.[] | select(.id == "builtin:plop") | .favourite | not' >/dev/null
+# Hiding one: managers only. Members stop seeing it; managers see it marked hidden.
+fail_call PUT "/api/guilds/$GUILD/hidden-sounds/strain"
+TOKEN=$OUT; fail_call GET "/api/guilds/$GUILD/sounds"; fail_call DELETE "/api/guilds/$GUILD/hidden-sounds/strain"; TOKEN=$TOKEN_A
+call PUT "/api/guilds/$GUILD/hidden-sounds/strain" >/dev/null
+fail_call PUT "/api/guilds/$GUILD/hidden-sounds/nope"
+call GET "/api/guilds/$GUILD/sounds" | jq -e '.[] | select(.id == "builtin:strain") | .hidden' >/dev/null
+call GET "/api/guilds/$G2/sounds" | jq -e '.[] | select(.id == "builtin:strain") | .hidden | not' >/dev/null
+TOKEN=$TOKEN_B; call GET "/api/guilds/$GUILD/sounds" | jq -e 'all(.[]; .id != "builtin:strain") and any(.[]; .id == "builtin:door")' >/dev/null
+# Renaming an uploaded clip.
+TOKEN=$TOKEN_B; fail_call PATCH "/api/sounds/$SND" '{"name":"Bob was here"}'
+TOKEN=$TOKEN_A; call PATCH "/api/sounds/$SND" '{"name":"Bonk!","emoji":"🔨"}' | jq -e '.name == "Bonk!"' >/dev/null
+# Built-in entrance sounds.
+call PUT /api/users/@me/entrance-sound '{"builtin":"door"}' | jq -e '.builtin == "door" and .url == "/sounds/builtin/door.mp3"' >/dev/null
+call GET /api/users/@me/entrance-sound | jq -e '.builtin == "door"' >/dev/null
+fail_call PUT /api/users/@me/entrance-sound '{"builtin":"nope"}'
+# Playing: Bob listens in voice while Alice plays.
+TOKEN=$TOKEN_B; call POST "/api/channels/$VOICE/voice/join" >/dev/null
+node ci/gateway_probe.mjs "$BASE" "$TOKEN_B" /tmp/gw-sb.jsonl 25 &
+PROBE=$!
+for i in $(seq 1 40); do grep -q '"READY"' /tmp/gw-sb.jsonl 2>/dev/null && break; sleep 0.25; done
+TOKEN=$TOKEN_A
+call POST "/api/channels/$VOICE/voice/join" >/dev/null   # door creak entrance for Bob
+sleep 2.2
+call POST /api/sounds/builtin:flush/play >/dev/null
+fail_call POST /api/sounds/builtin:plop/play; grep -q "Easy on the soundboard" /tmp/body   # same cooldown as uploads
+sleep 2.2
+fail_call POST /api/sounds/builtin:strain/play; grep -q "hidden" /tmp/body
+fail_call POST /api/sounds/builtin:nope/play
+# Sounds from your other outhouses play here too (Discord-style)...
+upload "/api/guilds/$G2/sounds" /tmp/short.wav -F name=Faraway -F "emoji=🛸"
+[[ "$code" == 200 ]] || { echo "second outhouse sound -> $code"; cat /tmp/body; exit 1; }
+SND2=$(jq -r .id /tmp/body)
+call GET /api/users/@me/sounds | jq -e --arg s "$SND2" --arg g "$G2" --arg s1 "$SND" 'any(.[]; .id == $s and .guild_id == $g) and any(.[]; .id == $s1) and all(.[]; .builtin | not)' >/dev/null
+call POST "/api/sounds/$SND2/play" >/dev/null
+# ...but not ones from an outhouse you aren't in.
+TOKEN=$TOKEN_B
+call GET /api/users/@me/sounds | jq -e --arg s "$SND2" 'all(.[]; .id != $s)' >/dev/null
+fail_call POST "/api/sounds/$SND2/play"
+call POST /api/sounds/builtin:door/play >/dev/null
+TOKEN=$TOKEN_A
+call DELETE "/api/guilds/$GUILD/hidden-sounds/strain" >/dev/null
+sleep 2.2
+call POST /api/sounds/builtin:strain/play >/dev/null
+for i in $(seq 1 40); do grep -q 'builtin:strain' /tmp/gw-sb.jsonl && break; sleep 0.25; done
+kill $PROBE 2>/dev/null || true
+jq -s -e --arg g "$GUILD" --arg v "$VOICE" --arg s2 "$SND2" '
+  any(.[]; .t == "SOUNDBOARD_PLAY" and .d.sound_id == "builtin:flush" and .d.url == "/sounds/builtin/flush.mp3" and .d.channel_id == $v and .d.guild_id == $g)
+  and any(.[]; .t == "SOUNDBOARD_PLAY" and .d.sound_id == $s2 and .d.guild_id == $g and (.d.url | startswith("/files/")))
+  and any(.[]; .t == "SOUNDBOARD_PLAY" and .d.sound_id == "builtin:strain")
+  and any(.[]; .t == "ENTRANCE_SOUND" and .d.url == "/sounds/builtin/door.mp3")
+  and any(.[]; .t == "SOUNDS_CHANGED" and .d.guild_id == $g)
+  and all(.[]; .t == "SOUNDBOARD_PLAY" and .d.sound_id == "builtin:plop" | not)' /tmp/gw-sb.jsonl >/dev/null \
+  || { echo "soundboard events wrong:"; cat /tmp/gw-sb.jsonl; exit 1; }
+TOKEN=$TOKEN_B; call POST /api/voice/leave >/dev/null
+TOKEN=$TOKEN_A; call POST /api/voice/leave >/dev/null
+# Swapping a built-in entrance for an upload and back cleans up the file.
+upload /api/users/@me/entrance-sound /tmp/short.wav
+[[ "$code" == 200 ]] || { echo "entrance upload after built-in -> $code"; cat /tmp/body; exit 1; }
+jq -e '.builtin == null and (.url | startswith("/files/"))' /tmp/body >/dev/null
+ENT=$(jq -r .url /tmp/body)
+call PUT /api/users/@me/entrance-sound '{"builtin":"plop"}' | jq -e '.builtin == "plop"' >/dev/null
+curl -sS -o /dev/null -w "%{http_code}" "$BASE$ENT" | grep -q 404
+call DELETE /api/users/@me/entrance-sound >/dev/null
+call GET /api/users/@me/entrance-sound | jq -e '. == null' >/dev/null
+
 step "audit log"
 TOKEN=$TOKEN_A
 AUD=$(call GET "/api/guilds/$GUILD/audit-log?limit=100")
