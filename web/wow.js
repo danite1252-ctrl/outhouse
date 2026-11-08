@@ -31,15 +31,72 @@ const charsFor = (game) => state.myCharacters.filter((c) => !game || (c.game || 
 const gameInfo = (id) => state.wowInfo?.games?.find((g) => g.id === id) ?? null;
 const nameOfUser = (id, fallback) => memberById(id)?.display_name ?? (id === state.me.id ? state.me.display_name : fallback);
 
+// ---------- The Armory (WoW: Forever on Blizzard's character pages) ----------
+
+const armoryOn = () => !!state.wowInfo?.armory_enabled;
+
+// A character page address from a template ({region}, {slug}, {name}, …).
+function fillArmory(template, region, name, surname) {
+  const enc = encodeURIComponent;
+  return template
+    .replaceAll("{region}", enc(region.toLowerCase()))
+    .replaceAll("{slug}", enc(`${name}-${surname}`.toLowerCase()))
+    .replaceAll("{Name}", enc(name))
+    .replaceAll("{Surname}", enc(surname))
+    .replaceAll("{name}", enc(name.toLowerCase()))
+    .replaceAll("{surname}", enc(surname.toLowerCase()));
+}
+
+// "View on Armory" links for a WoW: Forever character with both names.
+function armoryLinks(c) {
+  if ((c.game || "forever") !== "forever" || !c.last_name) return [];
+  const region = c.region || state.wowInfo?.armory_region || "us";
+  return (state.wowInfo?.armory_links ?? [])
+    .map((t) => ({ label: t.label, url: fillArmory(t.template, region, c.name, c.last_name) }))
+    .filter((l) => /^https?:\/\//i.test(l.url));
+}
+
+// Where a character's name links to: their own link, else the Armory.
+const charHref = (c) => c.armory_url || armoryLinks(c)[0]?.url || null;
+
+function linkRow(c, cls = "armory-links") {
+  const links = [
+    ...armoryLinks(c).map((l, i) => ({ label: i === 0 ? `View on ${l.label}` : l.label, url: l.url })),
+    c.armory_url && /^https?:\/\//i.test(c.armory_url) ? { label: "Their link", url: c.armory_url } : null,
+  ].filter(Boolean);
+  if (!links.length) return null;
+  return el("div", { class: cls }, links.map((l) => el("a", { href: l.url, target: "_blank", rel: "noopener noreferrer" }, `${l.label} ↗`)));
+}
+
+// The Armory portrait, or the class colour with an initial.
+function charAvatar(c, size = 40) {
+  const colour = classColour(c.class) ?? "var(--muted)";
+  const box = el("span", { class: "char-avatar", style: `--cc:${colour};width:${size}px;height:${size}px`, "aria-hidden": "true" },
+    el("span", { class: "char-avatar-initial", style: `font-size:${Math.max(9, Math.round(size * 0.45))}px` }, (c.name || "?").slice(0, 1)));
+  if (c.avatar) {
+    const img = el("img", { src: c.avatar, alt: "", loading: "lazy", width: size, height: size });
+    img.addEventListener("error", () => img.remove());
+    box.append(img);
+  }
+  return box;
+}
+
+// "ilvl 63 · <Forever Flush>" (what the Armory said), or null.
+function armoryBits(c) {
+  const bits = [c.item_level ? `ilvl ${c.item_level}` : null, c.guild_name ? `<${c.guild_name}>` : null].filter(Boolean);
+  return bits.length ? bits.join(" · ") : null;
+}
+
 function classChip(c, { onclick, on = false, small = false } = {}) {
   const colour = classColour(c.class) ?? "var(--text)";
   return el(onclick ? "button" : "span", {
     type: onclick ? "button" : null,
-    class: `char-chip${on ? " on" : ""}${small ? " small" : ""}`,
+    class: `char-chip${on ? " on" : ""}${small ? " small" : ""}${c.avatar ? " has-avatar" : ""}`,
     style: `--cc:${colour}`,
-    title: [GAME_LABEL[c.game], c.game === "forever" ? c.ruleset : c.realm, c.race, c.professions?.length ? c.professions.join(", ") : null].filter(Boolean).join(" · ") || null,
+    title: [GAME_LABEL[c.game], c.game === "forever" ? c.ruleset : c.realm, c.race, armoryBits(c), c.professions?.length ? c.professions.join(", ") : null].filter(Boolean).join(" · ") || null,
     onclick,
   },
+  c.avatar ? charAvatar(c, small ? 16 : 18) : null,
   c.is_main ? el("span", { class: "char-star", title: "Main" }, "★") : null,
   el("span", { class: "char-name" }, charName(c)),
   el("span", { class: "char-meta" }, `${c.level} ${c.class}`),
@@ -399,13 +456,21 @@ function renderWowEmbed(e) {
         el("div", { class: "wow-foot" }, [e.site_name, ...(e.fields ?? []).map((f) => `${f.name}: ${f.value}`), e.footer].filter(Boolean).join(" · "))));
   }
   if (e.kind === "wow-char") {
-    return el("div", { class: "wow-embed wow-char", style: colour ? `--q:${colour}` : "" },
+    // "Armory" holds "Label: https://…" lines: shown as links.
+    const links = (e.fields ?? []).filter((f) => f.name === "Armory").flatMap((f) => f.value.split("\n"))
+      .map((line) => { const at = line.indexOf(": "); return at > 0 ? { label: line.slice(0, at), url: line.slice(at + 2).trim() } : null; })
+      .filter((l) => l && /^https?:\/\//i.test(l.url));
+    const fields = (e.fields ?? []).filter((f) => f.name !== "Armory");
+    const thumb = e.thumbnail_url && /^(\/api\/wow\/avatars\/|https?:\/\/)/.test(e.thumbnail_url) ? e.thumbnail_url : null;
+    return el("div", { class: `wow-embed wow-char${thumb ? " has-portrait" : ""}`, style: colour ? `--q:${colour}` : "" },
+      thumb ? hideBroken(el("img", { class: "wow-portrait", src: thumb, alt: "", loading: "lazy" })) : null,
       el("div", { class: "wow-main" },
         el("div", { class: "wow-site" }, "⚔️ CHARACTER"),
         wowLink(e.title, e.url, "wow-title"),
         e.description ? el("div", { class: "wow-desc" }, e.description) : null,
-        e.fields?.length ? el("div", { class: "rich-fields" }, e.fields.map((f) =>
+        fields.length ? el("div", { class: "rich-fields" }, fields.map((f) =>
           el("div", { class: `rich-field${f.inline ? " inline" : ""}` }, el("div", { class: "fname" }, f.name), el("div", { class: "fvalue" }, f.value)))) : null,
+        links.length ? el("div", { class: "armory-links" }, links.map((l, i) => el("a", { href: l.url, target: "_blank", rel: "noopener noreferrer" }, `${i === 0 ? `View on ${l.label}` : l.label} ↗`))) : null,
         e.footer ? el("div", { class: "wow-foot" }, e.footer) : null));
   }
   // wow-link: Wowhead, Warcraft Logs, Raider.IO pages.
@@ -490,10 +555,20 @@ profileCard = function (p, opts) {
   const chars = p.characters ?? [];
   if (!chars.length) return card;
   const shown = chars.slice(0, 6);
+  // The main (or first) character, big, when the Armory knows them.
+  const star = chars.find((c) => c.is_main) ?? chars[0];
+  const feature = star && (star.avatar || armoryBits(star)) ? el("div", { class: "pc-armory", style: `--cc:${classColour(star.class) ?? "var(--text)"}` },
+    charAvatar(star, 48),
+    el("div", { class: "pc-armory-main" },
+      el("div", { class: "pc-armory-name" }, charName(star)),
+      el("div", { class: "muted small" }, [`Level ${star.level} ${[star.race, star.class].filter(Boolean).join(" ")}`, star.item_level ? `item level ${star.item_level}` : null].filter(Boolean).join(" · ")),
+      star.guild_name ? el("div", { class: "pc-armory-guild" }, `<${star.guild_name}>`) : null,
+      linkRow(star))) : null;
   const section = el("div", { class: "pc-section pc-chars" },
     el("h4", {}, "WOW CHARACTERS"),
-    el("div", { class: "char-chips" }, shown.map((c) => c.armory_url
-      ? el("a", { href: c.armory_url, target: "_blank", rel: "noopener noreferrer", class: "char-link" }, classChip(c))
+    feature,
+    el("div", { class: "char-chips" }, shown.map((c) => charHref(c)
+      ? el("a", { href: charHref(c), target: "_blank", rel: "noopener noreferrer", class: "char-link" }, classChip(c))
       : classChip(c))),
     chars.length > shown.length ? el("div", { class: "muted small" }, `+${chars.length - shown.length} more`) : null);
   const body = card.querySelector(".pc-body");
@@ -501,6 +576,21 @@ profileCard = function (p, opts) {
   body?.insertBefore(section, since ?? body.querySelector(".pc-actions"));
   return card;
 };
+
+// Raid rosters: the character's portrait, and level / item level / guild
+// (from the Armory) when you hover their name.
+if (typeof signupName === "function") {
+  const wowBaseSignupName = signupName;
+  signupName = function (s, ev) {
+    const node = wowBaseSignupName(s, ev);
+    const c = s.character;
+    if (!c) return node;
+    const bits = [c.level ? `Level ${c.level}` : null, c.item_level ? `item level ${c.item_level}` : null, c.guild_name ? `<${c.guild_name}>` : null].filter(Boolean);
+    if (bits.length) node.title = [`${c.full_name}: ${bits.join(" · ")}`, node.title].filter(Boolean).join("\n");
+    if (c.avatar) node.prepend(charAvatar({ ...c, name: c.name || c.full_name }, 16));
+    return node;
+  };
+}
 
 // Raid sign-ups: one tap on a character picks its class, and the roster
 // shows that character's name instead of yours.
@@ -565,15 +655,33 @@ async function drawCharacters(section) {
   ]);
   state.myCharacters = chars;
   const redraw = () => drawCharacters(section);
-  const rows = chars.map((c) => el("div", { class: `char-row${c.is_main ? " main" : ""}`, style: `--cc:${classColour(c.class) ?? "var(--text)"}` },
+  const armory = armoryOn();
+  const synced = (c) => {
+    if (c.game !== "forever" || !c.last_name) return null;
+    if (c.armory_status === "not_found") return el("div", { class: "muted small armory-missing" }, `Not on the Armory (${(c.region || state.wowInfo?.armory_region || "us").toUpperCase()}) last time we looked.`);
+    if (c.last_synced_at) return el("div", { class: "muted small armory-synced" }, `Armory: updated ${relativeTime(new Date(c.last_synced_at))}`);
+    return null;
+  };
+  const refresh = async (c, btn) => {
+    btn.disabled = true;
+    btn.textContent = "Refreshing…";
+    const r = await tryApi("POST", `/api/characters/${c.id}/refresh`).catch(() => null);
+    if (r) toast(r.message || `${charName(r.character)} is up to date: level ${r.character.level}${r.character.item_level ? `, item level ${r.character.item_level}` : ""}.`);
+    redraw();
+  };
+  const rows = chars.map((c) => el("div", { class: `char-row${c.is_main ? " main" : ""}${c.avatar ? " has-avatar" : ""}`, style: `--cc:${classColour(c.class) ?? "var(--text)"}`, "data-id": c.id },
+    c.game === "forever" ? charAvatar(c, 44) : null,
     el("div", { class: "char-row-main" },
       el("div", { class: "char-row-name" }, c.is_main ? el("span", { class: "char-star", title: "Main" }, "★ ") : null, charName(c),
         el("span", { class: `char-game g-${c.game}` }, GAME_SHORT[c.game] ?? c.game),
         c.source === "bnet" ? el("span", { class: "char-src", title: "Imported from Battle.net" }, "Battle.net") : null,
         c.game === "forever" && !c.last_name ? el("button", { type: "button", class: "char-fix", onclick: () => openCharacterDialog(c, redraw) }, "Add last name") : null),
       el("div", { class: "muted small" }, [`Level ${c.level} ${[c.race, c.class].filter(Boolean).join(" ")}`, c.faction && !c.race.includes(c.faction) ? c.faction : null, c.game === "forever" ? c.ruleset : c.realm, c.professions.join(", ")].filter(Boolean).join(" · ")),
-      c.armory_url ? el("a", { class: "small", href: c.armory_url, target: "_blank", rel: "noopener noreferrer" }, "Armory ↗") : null),
+      armoryBits(c) ? el("div", { class: "char-armory small" }, armoryBits(c)) : null,
+      synced(c),
+      linkRow(c, "armory-links small")),
     el("div", { class: "char-row-actions" },
+      armory && c.game === "forever" && c.last_name ? el("button", { class: "ghost small-btn char-refresh", title: "Read this character from the Armory again", onclick: (e) => refresh(c, e.currentTarget) }, "Refresh") : null,
       c.is_main ? null : el("button", { class: "ghost small-btn", onclick: async () => {
         const ok = await tryApi("PATCH", `/api/characters/${c.id}`, { ...c, is_main: true }).then(() => true, () => false);
         if (ok) redraw();
@@ -590,13 +698,14 @@ async function drawCharacters(section) {
       el("strong", {}, "Battle.net"),
       el("div", { class: "muted small" }, bnet.linked
         ? `Linked${bnet.battletag ? ` as ${bnet.battletag}` : ""}. Link again to refresh your character list.`
-        : "Sign in with Battle.net to bring in your Classic characters. You can still edit them here afterwards.")),
+        : "Sign in with Battle.net to bring in your WoW: Forever (and Classic) characters, with their portraits, guilds and item levels. You can still edit them here afterwards.")),
     el("div", { class: "inline-row" },
       el("button", { class: "ghost bnet-link", onclick: () => linkBattleNet(redraw) }, bnet.linked ? "Refresh from Battle.net" : "Link Battle.net"),
       bnet.linked ? el("button", { class: "ghost danger", onclick: async () => {
         const ok = await tryApi("DELETE", "/api/bnet/link").then(() => true, () => false);
         if (ok) { toast("Battle.net unlinked. Your characters stay."); redraw(); }
-      } }, "Unlink") : null)) : null;
+      } }, "Unlink") : null)) : el("p", { class: "muted small armory-off-note" },
+    "Battle.net import and Armory look-ups (portraits, guilds, item levels) are switched off on this server. An admin can switch them on with Battle.net API keys: see deploy/README.md.");
 
   section.replaceChildren(
     el("h2", {}, "WoW characters"),
@@ -629,7 +738,7 @@ async function linkBattleNet(onDone) {
 function openCharacterDialog(existing, onSaved) {
   const c = existing;
   const games = state.wowInfo?.games?.length ? state.wowInfo.games : [
-    { id: "forever", name: "WoW: Forever", max_level: 60, two_names: true, rulesets: ["Normal", "PvP", "Roleplay", "Hardcore"], professions: state.wowInfo?.professions ?? [], races: [] },
+    { id: "forever", name: "WoW: Forever", max_level: 60, two_names: true, rulesets: ["Normal", "PvP", "Roleplay", "Roleplay PvP"], professions: state.wowInfo?.professions ?? [], races: [] },
   ];
   let g = games.find((x) => x.id === (c?.game || prefs.get("char_game", "forever"))) ?? games[0];
   const professions = new Set(c?.professions ?? []);
@@ -657,7 +766,9 @@ function openCharacterDialog(existing, onSaved) {
       el("label", { class: "field" }, g.two_names ? "First name" : "Name", name),
       g.two_names ? el("label", { class: "field" }, "Last name", lastName) : el("label", { class: "field" }, "Realm", realm));
     const keepRuleset = ruleset.value || c?.ruleset || "Normal";
-    ruleset.replaceChildren(...g.rulesets.map((r) => el("option", { value: r, selected: r === keepRuleset }, r)));
+    // An older ruleset a character already has stays pickable.
+    const rulesets = g.two_names && keepRuleset && !g.rulesets.includes(keepRuleset) ? [...g.rulesets, keepRuleset] : g.rulesets;
+    ruleset.replaceChildren(...rulesets.map((r) => el("option", { value: r, selected: r === keepRuleset }, r)));
     const keepRace = race.value || c?.race || "";
     race.replaceChildren(el("option", { value: "" }, "Race (optional)"), ...g.races.map((r) => el("option", { value: r, selected: r === keepRace }, r)));
     placeRow.replaceChildren(...[
@@ -677,6 +788,49 @@ function openCharacterDialog(existing, onSaved) {
   game.addEventListener("change", () => { g = games.find((x) => x.id === game.value) ?? games[0]; paintGame(); });
   paintGame();
   const armory = el("input", { type: "url", maxlength: 300, value: c?.armory_url ?? "", placeholder: "https://… (optional)", "aria-label": "Armory link" });
+  // Look up on the Armory (WoW: Forever, when the server has Battle.net keys).
+  const regions = state.wowInfo?.regions?.length ? state.wowInfo.regions : ["us", "eu", "kr", "tw"];
+  const region = el("select", { class: "select", "aria-label": "Region" }, regions.map((r) => el("option", { value: r }, r.toUpperCase())));
+  region.value = c?.region || prefs.get("armory_region", state.wowInfo?.armory_region || "us");
+  const lookupBtn = el("button", { type: "button", class: "ghost armory-lookup" }, "Look up on the Armory");
+  const lookupOut = el("div", { class: "armory-result", "aria-live": "polite" });
+  const lookupBox = el("div", { class: "armory-box" },
+    el("div", { class: "armory-box-row" },
+      el("label", { class: "field armory-region" }, "Region", region),
+      lookupBtn),
+    el("p", { class: "muted small", style: "margin:0" }, "Fills in class, race, level, ruleset, guild, item level and portrait from Blizzard's Armory. Fill in the first and last name first."),
+    lookupOut);
+  const paintLookup = () => { lookupBox.hidden = !(armoryOn() && g.two_names); };
+  game.addEventListener("change", paintLookup);
+  paintLookup();
+  lookupBtn.addEventListener("click", async () => {
+    if (!name.value.trim() || !lastName.value.trim()) { lookupOut.replaceChildren(el("p", { class: "error" }, "Fill in the first and last name, then look them up.")); return; }
+    lookupBtn.disabled = true;
+    lookupBtn.textContent = "Looking…";
+    try {
+      const r = await api("POST", "/api/wow/armory/lookup", { region: region.value, name: name.value.trim(), last_name: lastName.value.trim() });
+      prefs.set("armory_region", region.value);
+      if (!r.found) { lookupOut.replaceChildren(el("p", { class: `muted small armory-${r.reason}` }, r.message)); return; }
+      name.value = r.name; lastName.value = r.last_name;
+      if (r.class) cls.value = r.class;
+      if (r.level) level.value = r.level;
+      if (r.ruleset && g.rulesets.includes(r.ruleset)) ruleset.value = r.ruleset;
+      if (r.race && g.races.includes(r.race)) race.value = r.race;
+      paintWarn();
+      lookupOut.replaceChildren(el("div", { class: "armory-found", style: `--cc:${classColour(r.class) ?? "var(--text)"}` },
+        charAvatar(r, 48),
+        el("div", {},
+          el("div", { class: "armory-found-name" }, `${r.name} ${r.last_name}`),
+          el("div", { class: "muted small" }, [`Level ${r.level ?? "?"} ${[r.race, r.class].filter(Boolean).join(" ")}`, r.ruleset].filter(Boolean).join(" · ")),
+          armoryBits(r) ? el("div", { class: "char-armory small" }, armoryBits(r)) : null,
+          el("div", { class: "muted small" }, "Found on the Armory. Saving keeps the portrait, guild and item level."))));
+    } catch (err) {
+      lookupOut.replaceChildren(el("p", { class: "error" }, err.message));
+    } finally {
+      lookupBtn.disabled = false;
+      lookupBtn.textContent = "Look up on the Armory";
+    }
+  });
   const isMain = el("input", { type: "checkbox", checked: c ? c.is_main : !state.myCharacters.length });
   const error = el("p", { class: "error" });
   // WoW: Forever changed which races can be which classes, so nothing is
@@ -700,6 +854,7 @@ function openCharacterDialog(existing, onSaved) {
     el("label", { class: "field" }, "Game", game),
     nameRow,
     nameHint,
+    lookupBox,
     placeRow,
     el("div", { class: "raid-row even" },
       el("label", { class: "field" }, "Class", cls),
@@ -722,6 +877,8 @@ function openCharacterDialog(existing, onSaved) {
       ruleset: g.two_names ? ruleset.value : "",
       race: race.value,
       class: cls.value, level: Number(level.value) || g.max_level, professions: [...professions], armory_url: armory.value.trim(), is_main: isMain.checked,
+      // With the Armory on, saving a WoW: Forever character reads it for them.
+      region: g.two_names && armoryOn() ? region.value : (c?.region ?? ""),
     };
     try {
       const saved = await api(c ? "PATCH" : "POST", c ? `/api/characters/${c.id}` : "/api/users/@me/characters", body);

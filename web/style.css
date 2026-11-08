@@ -1521,3 +1521,43 @@ dialog.nick-dialog .nick-reset:disabled { opacity: .45; cursor: default; }
 @media (max-width: 760px) {
   .rs-cleanup { grid-template-columns: 1fr; }
 }
+
+/* ---- The Armory: portraits, item level, guild, look-ups ---- */
+.char-avatar { position: relative; display: inline-grid; place-items: center; flex: none; border-radius: 8px; overflow: hidden;
+  background: color-mix(in srgb, var(--cc) 22%, var(--raised)); border: 1px solid color-mix(in srgb, var(--cc) 55%, var(--line)); vertical-align: middle; }
+.char-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.char-avatar-initial { font-weight: 700; color: var(--cc); line-height: 1; }
+.char-chip .char-avatar { border-radius: 4px; }
+.char-chip.has-avatar { align-items: center; padding-left: 4px; }
+.su-name .char-avatar { border-radius: 4px; margin-right: 5px; vertical-align: -3px; }
+.char-row.has-avatar, .char-row:has(> .char-avatar) { justify-content: flex-start; }
+.char-row > .char-avatar { border-radius: 10px; }
+.char-row:has(> .char-avatar) .char-row-main { flex: 1 1 180px; }
+.char-armory { color: var(--glow); font-weight: 600; }
+.armory-links { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.armory-links a { color: var(--glow); text-decoration: none; font-size: 13px; }
+.armory-links a:hover { text-decoration: underline; }
+.armory-missing { color: #e8b26a; }
+.armory-off-note { border: 1px dashed var(--line); border-radius: 10px; padding: 10px 12px; margin: 12px 0 0; }
+.armory-box { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid #22406e; border-radius: 10px; background: #0d1626; }
+.armory-box[hidden] { display: none; }
+.armory-box-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.armory-box-row .armory-region { flex: 0 0 96px; margin: 0; }
+.armory-box-row .armory-lookup { flex: 1 1 180px; min-height: 38px; }
+.armory-result:empty { display: none; }
+.armory-result .error { margin: 0; }
+.armory-found { display: flex; gap: 12px; align-items: center; padding: 8px; border-radius: 8px; background: var(--night); border-left: 3px solid var(--cc); }
+.armory-found-name { font-weight: 700; color: var(--cc); }
+.pc-armory { display: flex; gap: 10px; align-items: center; margin: 2px 0 8px; padding: 8px; border-radius: 10px; background: var(--night); border-left: 3px solid var(--cc); }
+.pc-armory .char-avatar { border-radius: 10px; }
+.pc-armory-main { display: grid; gap: 1px; min-width: 0; }
+.pc-armory-name { font-weight: 700; color: var(--cc); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-armory-guild { color: var(--glow); font-size: 13px; font-weight: 600; }
+.pc-armory .armory-links a { font-size: 12px; }
+.wow-char.has-portrait { display: flex; gap: 12px; align-items: flex-start; }
+.wow-portrait { width: 64px; height: 64px; flex: none; border-radius: 10px; object-fit: cover; border: 1px solid var(--q, var(--line)); background: var(--night); }
+.wow-char .armory-links { margin-top: 6px; }
+@media (max-width: 760px) {
+  .wow-portrait { width: 48px; height: 48px; }
+  .armory-box-row .armory-region { flex-basis: 84px; }
+}

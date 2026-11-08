@@ -163,8 +163,11 @@ assert pending["event"]["message_id"] is None and pending["event"]["signups_open
 
 # ---- Batch 4: WoW tools (Wowhead and Battle.net are the mock in ci/wow_mock.py) ----
 lfgc = api("POST", f"/api/guilds/{guild['id']}/channels", {"name": "lfg"}, TOKEN)
-api("POST", "/api/users/@me/characters", {"name": "Lightwell", "last_name": "Dawnstar", "ruleset": "PvP", "race": "Human", "class": "Priest", "level": 60,
+lightwell = api("POST", "/api/users/@me/characters", {"name": "Lightwell", "last_name": "Dawnstar", "ruleset": "PvP", "race": "Human", "class": "Priest", "level": 60,
     "professions": ["Tailoring", "Enchanting"], "armory_url": "https://example.com/lightwell", "is_main": True}, TOKEN)
+# The Armory (ci/wow_mock.py) knows Lightwell: portrait, guild, item level.
+synced = api("POST", f"/api/characters/{lightwell['id']}/refresh", None, TOKEN)
+assert synced["found"] and synced["character"]["guild_name"] == "Forever Flush" and synced["character"]["item_level"] == 66, synced
 api("POST", "/api/users/@me/characters", {"name": "Bubbles", "last_name": "Hearthglen", "class": "Paladin", "level": 58,
     "professions": ["Mining", "Blacksmithing"]}, TOKEN)
 api("POST", "/api/users/@me/characters", {"game": "tbc", "name": "Gemcutter", "realm": "Spineshatter", "race": "Blood Elf", "class": "Paladin", "level": 70,
@@ -183,6 +186,7 @@ api("POST", f"/api/channels/{lfgc['id']}/wow/item", {"query": "not a real item"}
 api("POST", f"/api/channels/{lfgc['id']}/messages", {"content": "Logs from last night https://classic.warcraftlogs.com/reports/aBcD1234 "
     "and my BiS https://www.wowhead.com/classic/item=16922/leggings-of-transcendence https://raider.io/characters/us/forever/Sparkles"}, erin["token"])
 api("POST", f"/api/channels/{lfgc['id']}/wow/char", {"query": "Shieldwall"}, erin["token"])
+api("POST", f"/api/channels/{lfgc['id']}/wow/char", {"query": "Lightwell"}, dave["token"])
 
 # ---- Batch 5: voice extras (moderation, entrance sounds, soundboard favourites, screen share) ----
 def make_wav(seconds, rate=8000):
@@ -741,10 +745,47 @@ with sync_playwright() as p:
     page.click(".char-dialog button[type=submit]")
     page.wait_for_selector(".char-dialog .error:has-text('last name')")
     page.fill(".char-dialog input[aria-label='Last name']", "Shadowstep")
-    page.select_option(".char-dialog select[aria-label='Ruleset']", "Hardcore")
+    page.select_option(".char-dialog select[aria-label='Ruleset']", "Roleplay PvP")
     page.screenshot(path=f"{SHOTS}/66-add-character.png")
     page.click(".char-dialog button[type=submit]")
-    page.wait_for_selector(".chars-settings .char-row:has-text('Stabbystab Shadowstep'):has-text('Hardcore')", timeout=10000)
+    page.wait_for_selector(".chars-settings .char-row:has-text('Stabbystab Shadowstep'):has-text('Roleplay PvP')", timeout=10000)
+    # Armory: Lightwell's card has her portrait, item level and guild, and Armory links.
+    page.wait_for_selector(".chars-settings .char-row:has-text('Lightwell') .char-avatar img", timeout=10000)
+    page.wait_for_selector(".chars-settings .char-row:has-text('Lightwell') .char-armory:has-text('ilvl 66'):has-text('Forever Flush')")
+    href = page.get_attribute(".chars-settings .char-row:has-text('Lightwell') .armory-links a >> nth=0", "href")
+    assert href == "https://worldofwarcraft.blizzard.com/en-us/character/forever-us/lightwell-dawnstar", href
+    page.evaluate("document.querySelector('.chars-settings .char-row').scrollIntoView({block: 'start'})")
+    page.wait_for_timeout(300)
+    page.screenshot(path=f"{SHOTS}/130-armory-character-cards.png")
+    page.click(".chars-settings .char-row:has-text('Lightwell') .char-refresh")
+    page.wait_for_selector(".toast:has-text('Lightwell Dawnstar is up to date'), .toast:has-text('moment ago')", timeout=10000)
+    # Look up on the Armory fills in the form.
+    page.click(".chars-settings .add-char")
+    page.wait_for_selector(".char-dialog[open] .armory-box:not([hidden])")
+    page.fill(".char-dialog input[aria-label='Name']", "sunny")
+    page.fill(".char-dialog input[aria-label='Last name']", "skyward")
+    page.click(".char-dialog .armory-lookup")
+    page.wait_for_selector(".char-dialog .armory-found:has-text('Cloud Nine')", timeout=10000)
+    assert page.input_value(".char-dialog select[aria-label='Class']") == "Mage"
+    assert page.input_value(".char-dialog select[aria-label='Race']") == "Skyborne (Alliance)"
+    assert page.input_value(".char-dialog select[aria-label='Ruleset']") == "Roleplay"
+    assert page.input_value(".char-dialog input[aria-label='Level']") == "52"
+    assert page.input_value(".char-dialog input[aria-label='Name']") == "Sunny"
+    page.wait_for_selector(".char-dialog .armory-found .char-avatar img")
+    page.wait_for_timeout(300)
+    page.screenshot(path=f"{SHOTS}/131-armory-lookup.png")
+    page.click(".char-dialog button[type=submit]")
+    page.wait_for_selector(".chars-settings .char-row:has-text('Sunny Skyward') .char-armory:has-text('Cloud Nine')", timeout=10000)
+    # Not on the Armory: said plainly, nothing else changes.
+    page.click(".chars-settings .add-char")
+    page.wait_for_selector(".char-dialog[open]")
+    page.fill(".char-dialog input[aria-label='Name']", "Ghosty")
+    page.fill(".char-dialog input[aria-label='Last name']", "Nobody")
+    page.click(".char-dialog .armory-lookup")
+    page.wait_for_selector(".char-dialog .armory-not_found:has-text('doesn')", timeout=10000)
+    page.screenshot(path=f"{SHOTS}/132-armory-not-found.png")
+    page.click(".char-dialog button:has-text('Cancel')")
+    page.wait_for_selector(".char-dialog", state="detached")
     # TBC: one name and a realm, level 70, Jewelcrafting, Blood Elf / Draenei.
     page.click(".chars-settings .add-char")
     page.wait_for_selector(".char-dialog[open]")
@@ -774,8 +815,43 @@ with sync_playwright() as p:
     page.click("#messages .msg-author:has-text('Carol') >> nth=0")
     page.wait_for_selector(".profile-card .pc-chars .char-chip:has-text('Lightwell Dawnstar')", timeout=10000)
     page.wait_for_selector(".profile-card .pc-chars .char-chip:has-text('Gemcutter') .char-game:has-text('TBC')")
+    page.wait_for_selector(".profile-card .pc-armory:has-text('Lightwell Dawnstar'):has-text('Forever Flush') .char-avatar img")
+    page.wait_for_timeout(200)
     page.screenshot(path=f"{SHOTS}/67-profile-characters.png")
     page.keyboard.press("Escape")
+    # /char card with the portrait and Armory links.
+    page.click(".channel:has-text('lfg')")
+    page.wait_for_selector("#messages .wow-char.has-portrait:has-text('Lightwell') .wow-portrait", timeout=10000)
+    page.wait_for_selector("#messages .wow-char:has-text('Lightwell') .armory-links a:has-text('AoTC.gg')")
+    page.evaluate("[...document.querySelectorAll('#messages .wow-char')].pop().scrollIntoView({block: 'center'})")
+    page.wait_for_timeout(300)
+    page.screenshot(path=f"{SHOTS}/133-char-card-armory.png")
+    # Without Battle.net keys: a note on where an admin switches it on, no look-up box.
+    nokeys = browser.new_page(viewport={"width": 1280, "height": 800})
+    watch(nokeys, "nokeys")
+    nokeys.add_init_script(f"localStorage.setItem('outhouse_token', {json.dumps(TOKEN)}); localStorage.setItem('outhouse_guild', {json.dumps(guild['id'])}); localStorage.setItem('outhouse_channel_{guild['id']}', {json.dumps(chan['id'])});")
+
+    def keys_off(route):
+        res = route.fetch()
+        body = res.json()
+        body["bnet_enabled"] = False
+        body["armory_enabled"] = False
+        route.fulfill(response=res, json=body)
+
+    nokeys.route("**/api/wow/info", keys_off)
+    nokeys.route("**/api/bnet/status", lambda route: route.fulfill(json={"enabled": False, "linked": False}))
+    nokeys.goto(BASE + "/")
+    nokeys.wait_for_selector(".event-card", timeout=15000)
+    nokeys.evaluate("openUserSettings('look')")
+    nokeys.wait_for_selector(".chars-settings .armory-off-note:has-text('deploy/README.md')", timeout=10000)
+    assert not nokeys.query_selector(".chars-settings .char-refresh")
+    nokeys.evaluate("document.querySelector('.chars-settings .armory-off-note').scrollIntoView({block: 'center'})")
+    nokeys.wait_for_timeout(200)
+    nokeys.screenshot(path=f"{SHOTS}/134-armory-keys-off.png")
+    nokeys.click(".chars-settings .add-char")
+    nokeys.wait_for_selector(".char-dialog[open]")
+    assert nokeys.is_hidden(".char-dialog .armory-box")
+    nokeys.close()
 
     # ---- Phone ----
     phone = browser.new_page(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
@@ -931,10 +1007,23 @@ with sync_playwright() as p:
     phone.evaluate("document.querySelector('.chars-settings').scrollIntoView()")
     phone.wait_for_timeout(200)
     phone.screenshot(path=f"{SHOTS}/117-phone-characters.png")
+    phone.wait_for_selector(".chars-settings .char-row:has-text('Lightwell') .char-avatar img", timeout=10000)
+    phone.evaluate("document.querySelector('.chars-settings .char-row').scrollIntoView({block: 'start'})")
+    phone.wait_for_timeout(200)
+    phone.screenshot(path=f"{SHOTS}/135-phone-armory-character-cards.png")
     phone.click(".chars-settings .add-char")
     phone.wait_for_selector(".char-dialog[open] input[aria-label='Last name']")
     phone.wait_for_timeout(200)
     phone.screenshot(path=f"{SHOTS}/117b-phone-character-forever.png")
+    phone.fill(".char-dialog input[aria-label='Name']", "Breezy")
+    phone.fill(".char-dialog input[aria-label='Last name']", "Cloudsong")
+    phone.click(".char-dialog .armory-lookup")
+    phone.wait_for_selector(".char-dialog .armory-found:has-text('Throne Room')", timeout=10000)
+    assert phone.input_value(".char-dialog select[aria-label='Race']") == "Skyborne (Horde)"
+    assert phone.input_value(".char-dialog select[aria-label='Ruleset']") == "Roleplay PvP"
+    phone.evaluate("document.querySelector('.char-dialog .armory-box').scrollIntoView({block: 'start'})")
+    phone.wait_for_timeout(300)
+    phone.screenshot(path=f"{SHOTS}/136-phone-armory-lookup.png")
     phone.select_option(".char-dialog select[aria-label='Game']", "tbc")
     phone.wait_for_selector(".char-dialog input[aria-label='Realm']")
     phone.wait_for_timeout(200)
@@ -943,6 +1032,11 @@ with sync_playwright() as p:
     phone.wait_for_selector(".char-dialog", state="detached")
     phone.keyboard.press("Escape")
     phone.wait_for_selector("dialog.settings", state="detached")
+    phone.evaluate(f"openProfile({json.dumps(CAROL)}, document.querySelector('#messages'))")
+    phone.wait_for_selector(".profile-card .pc-armory .char-avatar img", timeout=10000)
+    phone.wait_for_timeout(300)
+    phone.screenshot(path=f"{SHOTS}/137-phone-profile-armory.png")
+    phone.keyboard.press("Escape")
 
     # ---- Android app (draws under the status bar and navigation buttons) ----
     droid = browser.new_page(viewport={"width": 393, "height": 852}, is_mobile=True, has_touch=True)
@@ -993,6 +1087,13 @@ with sync_playwright() as p:
     droid.screenshot(path=f"{SHOTS}/73-android-characters.png")
     droid.click(".chars-settings .add-char")
     droid.wait_for_selector(".char-dialog[open]")
+    droid.fill(".char-dialog input[aria-label='Name']", "Mockadin")
+    droid.fill(".char-dialog input[aria-label='Last name']", "Lightforge")
+    droid.click(".char-dialog .armory-lookup")
+    droid.wait_for_selector(".char-dialog .armory-found:has-text('Forever Flush')", timeout=10000)
+    droid.evaluate("document.querySelector('.char-dialog .armory-box').scrollIntoView({block: 'start'})")
+    droid.wait_for_timeout(300)
+    droid.screenshot(path=f"{SHOTS}/138-android-armory-lookup.png")
     droid.select_option(".char-dialog select[aria-label='Game']", "tbc")
     droid.wait_for_selector(".char-dialog input[aria-label='Realm']")
     droid.wait_for_timeout(200)
@@ -1001,6 +1102,11 @@ with sync_playwright() as p:
     droid.wait_for_selector(".char-dialog", state="detached")
     droid.keyboard.press("Escape")
     droid.wait_for_selector("dialog.settings", state="detached")
+    droid.evaluate(f"openProfile({json.dumps(CAROL)}, document.querySelector('#messages'))")
+    droid.wait_for_selector(".profile-card .pc-armory .char-avatar img", timeout=10000)
+    droid.wait_for_timeout(300)
+    droid.screenshot(path=f"{SHOTS}/139-android-profile-armory.png")
+    droid.keyboard.press("Escape")
     droid.click("#nav-toggle")
     droid.wait_for_timeout(400)
     droid.click(".channel:has-text('lfg')")
