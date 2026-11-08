@@ -1150,8 +1150,8 @@ with sync_playwright() as p:
     for k, (secs, peak, rms) in decoded.items():
         assert 0.3 < secs <= 10 and 0.3 < peak <= 1.0 and rms > 0.03, (k, secs, peak, rms)
     # Soundboard: Discord-style popover above the voice panel.
-    # Dave listens; count the clips his client is told to play.
-    davev.evaluate("window.__plays = []; playSound = (url) => window.__plays.push(url);")
+    # Erin (on her phone, in Raid comms) listens; count the clips her client is told to play.
+    erinv.evaluate("window.__plays = []; playSound = (url) => window.__plays.push(url);")
     carolv.click("#voice-panel .vp-btn.sb-open")
     carolv.wait_for_selector(".sb-board .sb-sec[data-sec='classics'] .sb-tile[data-id='builtin:flush']", timeout=10000)
     carolv.wait_for_selector(".sb-board .sb-sec[data-sec='fav'] .sb-tile[data-id='builtin:plop']")
@@ -1171,7 +1171,7 @@ with sync_playwright() as p:
     carolv.wait_for_selector(".sb-board.cooling")
     carolv.wait_for_timeout(500)
     carolv.screenshot(path=f"{SHOTS}/88b-soundboard-cooldown.png")
-    davev.wait_for_function("window.__plays.includes('/sounds/builtin/flush.mp3')", timeout=10000)
+    erinv.wait_for_function("window.__plays.includes('/sounds/builtin/flush.mp3')", timeout=10000)
     # Favourite a classic with its star.
     carolv.hover(".sb-board .sb-sec[data-sec='classics'] .sb-tile[data-id='builtin:door']")
     carolv.click(".sb-board .sb-sec[data-sec='classics'] .sb-tile[data-id='builtin:door'] .sb-star")
@@ -1197,10 +1197,10 @@ with sync_playwright() as p:
     carolv.wait_for_function("document.querySelector('.sb-search').value === 'bell'")
     carolv.wait_for_selector(".sb-board .sb-tile:has-text('Dinner bell')")
     # A sound from Carol's other outhouse plays in this voice channel (Enter plays).
-    carolv.wait_for_timeout(1600)
+    carolv.wait_for_timeout(2100)
     carolv.focus(".sb-board .sb-tile:has-text('Dinner bell') .sb-play")
     carolv.keyboard.press("Enter")
-    davev.wait_for_function("window.__plays.some((u) => u.startsWith('/files/'))", timeout=10000)
+    erinv.wait_for_function("window.__plays.some((u) => u.startsWith('/files/'))", timeout=10000)
     # Volume button.
     carolv.fill(".sb-search", "")
     carolv.click(".sb-board .sb-vol-btn")
