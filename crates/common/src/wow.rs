@@ -65,6 +65,51 @@ pub const TBC_RACES: [&str; 10] = [
     "Blood Elf",
 ];
 
+/// WoW: Forever: the Classic races plus the Skyborne, a neutral elven race
+/// that picks Alliance or Horde when it's made (their class options differ
+/// by faction, and Forever adds new race/class combinations, so combinations
+/// aren't enforced).
+pub const FOREVER_RACES: [&str; 10] = [
+    "Human",
+    "Dwarf",
+    "Night Elf",
+    "Gnome",
+    "Skyborne (Alliance)",
+    "Orc",
+    "Undead",
+    "Tauren",
+    "Troll",
+    "Skyborne (Horde)",
+];
+
+pub const ALLIANCE_RACES: [&str; 6] = [
+    "Human",
+    "Dwarf",
+    "Night Elf",
+    "Gnome",
+    "Draenei",
+    "Skyborne (Alliance)",
+];
+pub const HORDE_RACES: [&str; 6] = [
+    "Orc",
+    "Undead",
+    "Tauren",
+    "Troll",
+    "Blood Elf",
+    "Skyborne (Horde)",
+];
+
+/// "Alliance", "Horde" or "" (no race given).
+pub fn faction_of(race: &str) -> &'static str {
+    if ALLIANCE_RACES.contains(&race) {
+        "Alliance"
+    } else if HORDE_RACES.contains(&race) {
+        "Horde"
+    } else {
+        ""
+    }
+}
+
 /// The canonical id of a game ("WoW: Forever" → "forever"), if it is one.
 pub fn game_id(raw: &str) -> Option<&'static str> {
     let k: String = raw
@@ -108,10 +153,10 @@ pub fn professions_for(game: &str) -> Vec<&'static str> {
 }
 
 pub fn races_for(game: &str) -> &'static [&'static str] {
-    if game == "tbc" {
-        &TBC_RACES
-    } else {
-        &CLASSIC_RACES
+    match game {
+        "tbc" => &TBC_RACES,
+        "forever" => &FOREVER_RACES,
+        _ => &CLASSIC_RACES,
     }
 }
 
@@ -362,6 +407,10 @@ pub struct WowCharacter {
     pub ruleset: String,
     #[serde(default)]
     pub race: String,
+    /// "Alliance" or "Horde" (from the race; "" when no race is given).
+    #[serde(default)]
+    #[cfg_attr(feature = "sqlx", sqlx(default))]
+    pub faction: String,
 }
 
 /// Add or change a character (`POST /api/users/@me/characters`,
@@ -450,6 +499,14 @@ mod tests {
         assert!(!professions_for("forever").contains(&"Jewelcrafting"));
         assert!(races_for("tbc").contains(&"Blood Elf"));
         assert!(!races_for("era").contains(&"Draenei"));
+        assert!(races_for("forever").contains(&"Skyborne (Alliance)"));
+        assert!(races_for("forever").contains(&"Skyborne (Horde)"));
+        assert!(!races_for("era").contains(&"Skyborne (Horde)"));
+        assert!(!races_for("tbc").contains(&"Skyborne (Horde)"));
+        assert_eq!(faction_of("Skyborne (Alliance)"), "Alliance");
+        assert_eq!(faction_of("Skyborne (Horde)"), "Horde");
+        assert_eq!(faction_of("Undead"), "Horde");
+        assert_eq!(faction_of(""), "");
         let g = games();
         assert!(g[0].two_names && g[0].rulesets.len() == 4 && !g[1].two_names);
     }

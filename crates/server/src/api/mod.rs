@@ -19,6 +19,7 @@ pub mod messages;
 mod notifications;
 pub mod polls;
 mod profiles;
+pub mod raid_settings;
 mod roles;
 mod search;
 pub mod sounds;
@@ -225,6 +226,11 @@ pub fn router(state: AppState) -> Router {
                 .delete(events::delete),
         )
         .route("/api/events/{id}/signup", put(events::signup))
+        .route("/api/events/{id}/export", get(events::export))
+        .route(
+            "/api/guilds/{id}/raid-settings",
+            get(raid_settings::get).put(raid_settings::set),
+        )
         .route("/api/events/{id}/signups/{user}", delete(events::withdraw))
         .route(
             "/api/events/{id}/attendance",

@@ -28,7 +28,12 @@ const MAX_QUERY_CHARS: usize = 100;
 
 pub const CHARACTER_SELECT: &str = "SELECT id, user_id, name, realm, class, level, is_main,
     professions, armory_url, source, game, last_name, ruleset, race,
-    CASE WHEN last_name <> '' THEN name || ' ' || last_name ELSE name END AS full_name
+    CASE WHEN last_name <> '' THEN name || ' ' || last_name ELSE name END AS full_name,
+    CASE WHEN race IN ('Human', 'Dwarf', 'Night Elf', 'Gnome', 'Draenei', 'Skyborne (Alliance)')
+              THEN 'Alliance'
+         WHEN race IN ('Orc', 'Undead', 'Tauren', 'Troll', 'Blood Elf', 'Skyborne (Horde)')
+              THEN 'Horde'
+         ELSE '' END AS faction
     FROM wow_characters";
 
 pub fn class_colour(class: &str) -> Option<i32> {
@@ -791,10 +796,50 @@ mod tests {
         assert!(clean_character(
             &CharacterRequest {
                 game: "retail".into(),
+                ..base.clone()
+            },
+            false
+        )
+        .is_err());
+        // Skyborne: WoW: Forever only, any of the nine classes (Forever's
+        // race/class combinations aren't enforced).
+        for (race, class) in [
+            ("skyborne (alliance)", "Shaman"),
+            ("Skyborne (Horde)", "Mage"),
+        ] {
+            let c = clean_character(
+                &CharacterRequest {
+                    race: race.into(),
+                    class: class.into(),
+                    ..base.clone()
+                },
+                false,
+            )
+            .unwrap();
+            assert!(c.race.starts_with("Skyborne ("));
+        }
+        assert!(clean_character(
+            &CharacterRequest {
+                game: "era".into(),
+                race: "Skyborne (Horde)".into(),
                 ..base
             },
             false
         )
         .is_err());
+    }
+
+    #[test]
+    fn factions_match_the_sql() {
+        use outhouse_common::wow::{ALLIANCE_RACES, HORDE_RACES};
+        let (alliance, horde) = CHARACTER_SELECT
+            .split_once("THEN 'Alliance'")
+            .expect("alliance case");
+        for r in ALLIANCE_RACES {
+            assert!(alliance.contains(&format!("'{r}'")), "{r}");
+        }
+        for r in HORDE_RACES {
+            assert!(horde.contains(&format!("'{r}'")), "{r}");
+        }
     }
 }

@@ -16,8 +16,8 @@ use axum::Json;
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use outhouse_common::gateway::ServerEvent;
 use outhouse_common::models::{
-    channel_kind, CreateEventRequest, EventSignup, Message, PostRule, RaidEvent, RepeatInfo,
-    SignupRequest, UpdateEventRequest,
+    channel_kind, CreateEventRequest, EventSignup, Message, PostRule, RaidEvent, RaidExport,
+    RaidExportEntry, RepeatInfo, SignupCharacter, SignupRequest, UpdateEventRequest,
 };
 use outhouse_common::permissions as p;
 use serde::{Deserialize, Serialize};
@@ -105,6 +105,19 @@ struct SignupRow {
     note: String,
     signed_at: DateTime<Utc>,
     bench_wanted: Option<String>,
+    character_id: Option<i64>,
+    character_name: String,
+    character_last_name: String,
+    character_class: String,
+    character_game: String,
+}
+
+fn full_name(name: &str, last_name: &str) -> String {
+    if last_name.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name} {last_name}")
+    }
 }
 
 #[derive(sqlx::FromRow)]
@@ -155,7 +168,9 @@ async fn signups_for(db: &PgPool, event_ids: &[i64]) -> AppResult<HashMap<i64, V
     let rows = sqlx::query_as::<_, SignupRow>(
         "SELECT s.event_id, s.user_id,
                 COALESCE(gm.nickname, u.display_name) AS display_name,
-                s.status, s.role, s.class, s.spec, s.note, s.signed_at, s.bench_wanted
+                s.status, s.role, s.class, s.spec, s.note, s.signed_at, s.bench_wanted,
+                s.character_id, s.character_name, s.character_last_name, s.character_class,
+                s.character_game
          FROM event_signups s
          JOIN events e ON e.id = s.event_id
          JOIN users u ON u.id = s.user_id
@@ -168,7 +183,16 @@ async fn signups_for(db: &PgPool, event_ids: &[i64]) -> AppResult<HashMap<i64, V
     .await?;
     let mut map: HashMap<i64, Vec<EventSignup>> = HashMap::new();
     for r in rows {
+        let character = (!r.character_name.is_empty()).then(|| SignupCharacter {
+            id: r.character_id,
+            full_name: full_name(&r.character_name, &r.character_last_name),
+            name: r.character_name,
+            last_name: r.character_last_name,
+            class: r.character_class,
+            game: r.character_game,
+        });
         map.entry(r.event_id).or_default().push(EventSignup {
+            character,
             user_id: r.user_id,
             display_name: r.display_name,
             status: r.status,
@@ -298,9 +322,17 @@ pub(crate) async fn load(
     Ok((row, access))
 }
 
-/// Raid leaders: whoever planned it, and anyone with Manage Events.
-pub(crate) fn can_manage(row: &EventRow, access: &ChannelAccess) -> bool {
-    row.creator_id == access.ctx.user_id || access.perms & p::MANAGE_EVENTS != 0
+/// Raid leaders: whoever planned it, anyone with Manage Events, and anyone
+/// with one of the outhouse's raid manager roles (Outhouse settings → Raids).
+pub(crate) async fn can_manage(
+    db: &PgPool,
+    row: &EventRow,
+    access: &ChannelAccess,
+) -> AppResult<bool> {
+    if row.creator_id == access.ctx.user_id || access.perms & p::MANAGE_EVENTS != 0 {
+        return Ok(true);
+    }
+    super::raid_settings::has_manager_role(db, &access.ctx).await
 }
 
 /// Tells everyone about the raid's new state (its card, calendars) and
@@ -1054,7 +1086,7 @@ pub async fn update(
     Json(req): Json<UpdateEventRequest>,
 ) -> AppResult<Json<EventReply>> {
     let (row, access) = load(&st, event_id, user.id).await?;
-    if !can_manage(&row, &access) {
+    if !can_manage(&st.db, &row, &access).await? {
         return Err(AppError::Forbidden);
     }
     let future = match req.scope.as_deref() {
@@ -1233,7 +1265,7 @@ pub async fn delete(
     Query(q): Query<ScopeQuery>,
 ) -> AppResult<StatusCode> {
     let (row, access) = load(&st, event_id, user.id).await?;
-    if !can_manage(&row, &access) {
+    if !can_manage(&st.db, &row, &access).await? {
         return Err(AppError::Forbidden);
     }
     let gone: Vec<(i64, Option<i64>)> = match (q.scope.as_deref(), row.series_id) {
@@ -1432,7 +1464,7 @@ pub async fn signup(
     Json(req): Json<SignupRequest>,
 ) -> AppResult<Json<EventReply>> {
     let (row, access) = load(&st, event_id, user.id).await?;
-    let manager = can_manage(&row, &access);
+    let manager = can_manage(&st.db, &row, &access).await?;
     let target = req.user_id.unwrap_or(user.id);
     let on_behalf = target != user.id;
     if on_behalf {
@@ -1461,6 +1493,18 @@ pub async fn signup(
     let needs_role = matches!(req.status.as_str(), "yes" | "late" | "tentative" | "bench");
     if needs_role && req.role.is_empty() {
         return Err(AppError::BadRequest("Pick tank, healer or DPS.".into()));
+    }
+    // The character they're bringing: copied onto the sign-up.
+    let character: Option<CharacterCopy> = match req.character_id {
+        Some(character_id) => Some(character_copy(&st.db, character_id, target, &row.game).await?),
+        None => None,
+    };
+    let set_character = !req.keep_character || character.is_some();
+    let mut class = clean_text(&req.class, 32);
+    if class.is_empty() {
+        if let Some(c) = &character {
+            class = c.class.clone();
+        }
     }
 
     let mut tx = st.db.begin().await?;
@@ -1501,12 +1545,25 @@ pub async fn signup(
             }
         }
     }
+    let copy = character.as_ref();
     sqlx::query(
-        "INSERT INTO event_signups (event_id, user_id, status, role, class, spec, note, bench_wanted)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        "INSERT INTO event_signups (event_id, user_id, status, role, class, spec, note, bench_wanted,
+                                    character_id, character_name, character_last_name,
+                                    character_class, character_game)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          ON CONFLICT (event_id, user_id) DO UPDATE
              SET status = EXCLUDED.status, role = EXCLUDED.role, class = EXCLUDED.class,
                  spec = EXCLUDED.spec, note = EXCLUDED.note, bench_wanted = EXCLUDED.bench_wanted,
+                 character_id = CASE WHEN $14 THEN EXCLUDED.character_id
+                                     ELSE event_signups.character_id END,
+                 character_name = CASE WHEN $14 THEN EXCLUDED.character_name
+                                       ELSE event_signups.character_name END,
+                 character_last_name = CASE WHEN $14 THEN EXCLUDED.character_last_name
+                                            ELSE event_signups.character_last_name END,
+                 character_class = CASE WHEN $14 THEN EXCLUDED.character_class
+                                        ELSE event_signups.character_class END,
+                 character_game = CASE WHEN $14 THEN EXCLUDED.character_game
+                                       ELSE event_signups.character_game END,
                  -- Changing your mind keeps your place unless you were out
                  -- or you're joining a different role's queue.
                  signed_at = CASE
@@ -1520,16 +1577,121 @@ pub async fn signup(
     .bind(target)
     .bind(&status)
     .bind(&req.role)
-    .bind(clean_text(&req.class, 32))
+    .bind(&class)
     .bind(clean_text(&req.spec, 32))
     .bind(clean_text(&req.note, 100))
     .bind(&bench_wanted)
+    .bind(copy.map(|c| c.id))
+    .bind(copy.map(|c| c.name.as_str()).unwrap_or(""))
+    .bind(copy.map(|c| c.last_name.as_str()).unwrap_or(""))
+    .bind(copy.map(|c| c.class.as_str()).unwrap_or(""))
+    .bind(copy.map(|c| c.game.as_str()).unwrap_or(""))
+    .bind(set_character)
     .execute(&mut *tx)
     .await?;
     let promoted = fill_slots(&mut tx, &row).await?;
     tx.commit().await?;
     notify_promoted(&st, &row, promoted).await;
     Ok(Json(broadcast(&st, event_id).await?))
+}
+
+/// A character picked for a sign-up, as it is right now.
+struct CharacterCopy {
+    id: i64,
+    name: String,
+    last_name: String,
+    class: String,
+    game: String,
+}
+
+/// Checks the character belongs to the person signing up (and suits the
+/// raid's game) and copies its name and class.
+async fn character_copy(
+    db: &PgPool,
+    character_id: i64,
+    owner: i64,
+    raid_game: &str,
+) -> AppResult<CharacterCopy> {
+    let found: Option<(i64, String, String, String, String)> = sqlx::query_as(
+        "SELECT user_id, name, last_name, class, game FROM wow_characters WHERE id = $1",
+    )
+    .bind(character_id)
+    .fetch_optional(db)
+    .await?;
+    let Some((_, name, last_name, class, game)) = found.filter(|f| f.0 == owner) else {
+        return Err(AppError::BadRequest(
+            "That character isn't one of theirs. Pick another, or sign up without one.".into(),
+        ));
+    };
+    if !raid_game.is_empty() && game != raid_game {
+        return Err(AppError::BadRequest(format!(
+            "This raid is for {}: pick a character from that game.",
+            outhouse_common::wow::game_label(raid_game)
+        )));
+    }
+    Ok(CharacterCopy {
+        id: character_id,
+        name,
+        last_name,
+        class,
+        game,
+    })
+}
+
+/// Raid leaders' list of who to invite (`GET /api/events/{id}/export`):
+/// everyone signed up except "can't make it", roster first (tanks, healers,
+/// DPS), then tentative, then the bench, each in sign-up order. The client
+/// turns it into invite lists and macros.
+pub async fn export(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(event_id): Path<i64>,
+) -> AppResult<Json<RaidExport>> {
+    let (row, access) = load(&st, event_id, user.id).await?;
+    if !can_manage(&st.db, &row, &access).await? {
+        return Err(AppError::Forbidden);
+    }
+    let (title, starts_at, game) = (row.title.clone(), row.starts_at, row.game.clone());
+    let ev = build(&st.db, vec![row])
+        .await?
+        .pop()
+        .ok_or(AppError::NotFound)?;
+    let status_rank = |s: &str| match s {
+        "yes" | "late" => 0,
+        "tentative" => 1,
+        _ => 2,
+    };
+    let role_rank = |r: &str| match r {
+        "tank" => 0,
+        "healer" => 1,
+        "dps" => 2,
+        _ => 3,
+    };
+    let mut signups: Vec<EventSignup> = ev
+        .signups
+        .into_iter()
+        .filter(|s| s.status != "no")
+        .collect();
+    // Stable: sign-up order is kept within each group.
+    signups.sort_by_key(|s| (status_rank(s.status.as_str()), role_rank(s.role.as_str())));
+    Ok(Json(RaidExport {
+        event_id,
+        title,
+        starts_at,
+        game,
+        entries: signups
+            .into_iter()
+            .map(|s| RaidExportEntry {
+                user_id: s.user_id,
+                display_name: s.display_name,
+                status: s.status,
+                role: s.role,
+                class: s.class,
+                spec: s.spec,
+                character: s.character,
+            })
+            .collect(),
+    }))
 }
 
 /// Removes a sign-up (yours, or anyone's if you lead the raid). The first
@@ -1540,7 +1702,7 @@ pub async fn withdraw(
     Path((event_id, target)): Path<(i64, i64)>,
 ) -> AppResult<Json<EventReply>> {
     let (row, access) = load(&st, event_id, user.id).await?;
-    let manager = can_manage(&row, &access);
+    let manager = can_manage(&st.db, &row, &access).await?;
     if target != user.id && !manager {
         return Err(AppError::Forbidden);
     }

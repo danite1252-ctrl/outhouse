@@ -7,7 +7,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::id::{as_string, option_as_string};
-use crate::models::{Channel, DmChannel, Guild, Member, Message, RaidEvent, ThreadInfo, User};
+use crate::models::{
+    Channel, DmChannel, Guild, Member, Message, RaidEvent, RaidSettings, ThreadInfo, User,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", content = "d", rename_all = "SCREAMING_SNAKE_CASE")]
@@ -238,6 +240,13 @@ pub enum ServerEvent {
     BadgesChanged {
         #[serde(with = "as_string")]
         guild_id: i64,
+    },
+    /// The outhouse's raid settings changed (raid manager roles, default
+    /// sign-up channel).
+    RaidSettingsUpdate {
+        #[serde(with = "as_string")]
+        guild_id: i64,
+        settings: RaidSettings,
     },
     /// Identify failed or the session expired; sign in again.
     InvalidSession {

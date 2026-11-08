@@ -480,6 +480,70 @@ pub struct EventSignup {
     /// (in sign-up order) when a spot opens.
     #[serde(default)]
     pub auto_bench: bool,
+    /// The character they're bringing, if they picked one (shown instead of
+    /// their display name).
+    #[serde(default)]
+    pub character: Option<SignupCharacter>,
+}
+
+/// A character on a raid sign-up: a copy taken when they signed up, so the
+/// roster still reads right if the character is renamed or removed later.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SignupCharacter {
+    /// Null once the character has been removed.
+    #[serde(with = "option_as_string", default)]
+    pub id: Option<i64>,
+    /// The (first) name.
+    pub name: String,
+    /// WoW: Forever's second name ("" otherwise).
+    #[serde(default)]
+    pub last_name: String,
+    /// "First Last" for WoW: Forever, otherwise the name.
+    pub full_name: String,
+    #[serde(default)]
+    pub class: String,
+    #[serde(default)]
+    pub game: String,
+}
+
+/// `GET` / `PUT /api/guilds/{id}/raid-settings`
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct RaidSettings {
+    /// Members with any of these roles manage every raid in the outhouse.
+    #[serde(with = "vec_as_string", default)]
+    pub manager_role_ids: Vec<i64>,
+    /// The channel "Plan a raid" starts on (null: the one you're in).
+    #[serde(with = "option_as_string", default)]
+    pub default_channel_id: Option<i64>,
+}
+
+/// `GET /api/events/{id}/export`: who to invite, for raid leaders.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RaidExport {
+    #[serde(with = "as_string")]
+    pub event_id: i64,
+    pub title: String,
+    pub starts_at: DateTime<Utc>,
+    pub game: String,
+    /// Everyone signed up except "can't make it", roster first (tanks,
+    /// healers, DPS), each in sign-up order.
+    pub entries: Vec<RaidExportEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RaidExportEntry {
+    #[serde(with = "as_string")]
+    pub user_id: i64,
+    /// Their name in the outhouse.
+    pub display_name: String,
+    /// "yes", "late", "tentative" or "bench".
+    pub status: String,
+    pub role: String,
+    pub class: String,
+    pub spec: String,
+    /// The character they picked, if any.
+    #[serde(default)]
+    pub character: Option<SignupCharacter>,
 }
 
 /// Everything shown on someone's profile card.
@@ -753,6 +817,14 @@ pub struct SignupRequest {
     /// Organisers can sign someone else up or move them (e.g. to the bench).
     #[serde(with = "option_as_string", default)]
     pub user_id: Option<i64>,
+    /// One of the signer's (or that person's) characters: the roster shows
+    /// its name. Null: no character (their display name is shown).
+    #[serde(with = "option_as_string", default)]
+    pub character_id: Option<i64>,
+    /// Keep the character already on the sign-up (raid leaders moving
+    /// someone between roster and bench).
+    #[serde(default)]
+    pub keep_character: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

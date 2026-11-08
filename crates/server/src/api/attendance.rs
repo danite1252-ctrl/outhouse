@@ -64,7 +64,7 @@ pub async fn set(
     Json(req): Json<AttendanceRequest>,
 ) -> AppResult<Json<Vec<AttendanceRecord>>> {
     let (row, access) = load(&st, event_id, user.id).await?;
-    if !can_manage(&row, &access) {
+    if !can_manage(&st.db, &row, &access).await? {
         return Err(AppError::Forbidden);
     }
     if row.starts_at > Utc::now() {
