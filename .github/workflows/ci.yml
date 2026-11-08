@@ -167,7 +167,14 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           OUTHOUSE_UPDATER_PUBKEY: ${{ secrets.OUTHOUSE_UPDATER_PUBKEY }}
-        run: npx --yes @tauri-apps/cli@^2 build
+        shell: bash
+        # Downloads (NSIS tools from GitHub) sometimes 504; try up to 3 times.
+        run: |
+          for i in 1 2 3; do
+            npx --yes @tauri-apps/cli@^2 build && exit 0
+            echo "::warning::Build attempt $i failed; retrying in 30s"; sleep 30
+          done
+          exit 1
       - name: Check invite links (outhouse:// deep links) are in the build
         shell: bash
         working-directory: desktop/src-tauri
@@ -260,6 +267,16 @@ jobs:
           MANIFEST=desktop/src-tauri/gen/android/app/src/main/AndroidManifest.xml
           sed -i 's#<uses-permission android:name="android.permission.INTERNET" />#<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />#' "$MANIFEST"
           grep -n "permission" "$MANIFEST"
+      - name: Fetch Gradle (with retries; services.gradle.org can be slow)
+        working-directory: desktop/src-tauri/gen/android
+        run: |
+          sed -i 's/^networkTimeout=.*/networkTimeout=120000/' gradle/wrapper/gradle-wrapper.properties
+          grep -q '^networkTimeout=' gradle/wrapper/gradle-wrapper.properties || echo 'networkTimeout=120000' >> gradle/wrapper/gradle-wrapper.properties
+          for i in 1 2 3 4 5; do
+            ./gradlew --version >/dev/null && exit 0
+            echo "::warning::Gradle download attempt $i failed; retrying in 30s"; sleep 30
+          done
+          exit 1
       - name: Build APK
         working-directory: desktop/src-tauri
         env:
