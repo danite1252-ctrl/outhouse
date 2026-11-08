@@ -89,7 +89,7 @@ with sync_playwright() as p:
     pg = ctx.new_page()
     watch(pg, "landing")
     pg.goto(BASE + "/")
-    pg.wait_for_selector("text=Chat out the back", timeout=15000)
+    pg.wait_for_selector("#stage.open", timeout=15000)
     pg.wait_for_timeout(1000)
     violations(pg, "landing")
     pg.goto(BASE + "/login")
