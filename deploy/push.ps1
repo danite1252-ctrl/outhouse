@@ -26,10 +26,25 @@ tar -czf $archive -C $root `
     --exclude=./deploy/.env --exclude=./deploy/livekit.yaml --exclude=./.git --exclude=./desktop --exclude=./deploy/updates --exclude=./deploy/status --exclude=./github-secrets.txt .
 if ($LASTEXITCODE -ne 0) { throw "Packing failed." }
 
+# Find ssh/scp even when this window's PATH doesn't have them (e.g. a 32-bit
+# or VS Code terminal, or PATH reset by an update).
+function Find-Tool($name) {
+    $cmd = Get-Command $name -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    foreach ($dir in @("$env:WINDIR\System32\OpenSSH", "$env:WINDIR\Sysnative\OpenSSH",
+                       "$env:ProgramFiles\OpenSSH", "$env:ProgramFiles\Git\usr\bin")) {
+        $exe = Join-Path $dir "$name.exe"
+        if (Test-Path $exe) { return $exe }
+    }
+    throw "Can't find $name. Install it: Settings > System > Optional features > OpenSSH Client (then open a new PowerShell window)."
+}
+$scp = Find-Tool "scp"
+$ssh = Find-Tool "ssh"
+
 Write-Host "Uploading to $Server..."
-scp $archive "${Server}:outhouse-upload.tgz"
+& $scp $archive "${Server}:outhouse-upload.tgz"
 if ($LASTEXITCODE -ne 0) { throw "Upload failed. Can you 'ssh $Server'?" }
 
 Write-Host "Unpacking and starting..."
-ssh -t $Server "mkdir -p ~/$Folder && tar -xzf ~/outhouse-upload.tgz -C ~/$Folder && rm ~/outhouse-upload.tgz && sed -i 's/\r$//' ~/$Folder/deploy/setup.sh && bash ~/$Folder/deploy/setup.sh"
+& $ssh -t $Server "mkdir -p ~/$Folder && tar -xzf ~/outhouse-upload.tgz -C ~/$Folder && rm ~/outhouse-upload.tgz && sed -i 's/\r$//' ~/$Folder/deploy/setup.sh && bash ~/$Folder/deploy/setup.sh"
 Remove-Item $archive
