@@ -1484,11 +1484,12 @@ with sync_playwright() as p:
     api("PATCH", f"/api/channels/{chan['id']}", {
         "topic": f"Raid nights Wed & Sun 8pm server time. Sign up on the cards, ask <@{DAVE}> about loot, strats at https://example.com/strats and `/raid` for a new one."}, TOKEN)
     spoil = api("POST", f"/api/guilds/{G}/channels", {"name": "naxx-spoilers"}, TOKEN)
-    api("PATCH", f"/api/channels/{spoil['id']}", {"content_mode": "spoiler", "slowmode_secs": 30,
+    api("PATCH", f"/api/channels/{spoil['id']}", {"content_mode": "spoiler",
                                                    "topic": "New raid talk. Everything is blurred until you click it."}, TOKEN)
     for text in ("Kel'Thuzad drops the Frostmourne-looking sword now??", "Phase 3 adds Guardians of Icecrown, save your cooldowns",
                  "Sapphiron has a new frost breath pattern, hide behind the ice blocks"):
         api("POST", f"/api/channels/{spoil['id']}/messages", {"content": text}, dave["token"])
+    api("PATCH", f"/api/channels/{spoil['id']}", {"slowmode_secs": 30}, TOKEN)
     dark = api("POST", f"/api/guilds/{G}/channels", {"name": "after-dark"}, TOKEN)
     api("PATCH", f"/api/channels/{dark['id']}", {"content_mode": "nsfw", "topic": "Grown-ups only. Keep it legal."}, TOKEN)
     api("PUT", f"/api/channels/{dark['id']}/age-gate", None, TOKEN)
