@@ -44,6 +44,10 @@ pub struct MutedChannel {
     #[serde(with = "as_string")]
     pub guild_id: i64,
     pub name: String,
+    /// Channel kind (1 = DM, 3 = group DM).
+    pub kind: i16,
+    /// When the mute wears off (null: until it's turned back on).
+    pub until: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -70,8 +74,14 @@ pub async fn get(
     .bind(user.id)
     .fetch_all(&st.db)
     .await?;
+    // Mutes that have worn off go.
+    sqlx::query("DELETE FROM channel_mutes WHERE user_id = $1 AND muted_until <= now()")
+        .bind(user.id)
+        .execute(&st.db)
+        .await?;
     let muted = sqlx::query_as::<_, MutedChannel>(
-        "SELECT cm.channel_id, COALESCE(c.guild_id, 0) AS guild_id, c.name
+        "SELECT cm.channel_id, COALESCE(c.guild_id, 0) AS guild_id, c.name, c.kind,
+                cm.muted_until AS until
          FROM channel_mutes cm JOIN channels c ON c.id = cm.channel_id
          WHERE cm.user_id = $1 ORDER BY cm.created_at",
     )
@@ -129,9 +139,16 @@ pub async fn set_level(
 #[derive(Deserialize)]
 pub struct MuteRequest {
     muted: bool,
+    /// How long for (15 minutes to 30 days); left out: until unmuted.
+    #[serde(default)]
+    minutes: Option<i64>,
 }
 
-/// `PUT /api/users/@me/notifications/channels/{id}` `{muted}`
+/// Longest timed mute: 30 days.
+const MAX_MUTE_MINUTES: i64 = 30 * 24 * 60;
+
+/// `PUT /api/users/@me/notifications/channels/{id}` `{muted, minutes?}`:
+/// mutes a channel or DM (for `minutes`, or until unmuted) or unmutes it.
 pub async fn set_mute(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
@@ -139,13 +156,23 @@ pub async fn set_mute(
     Json(req): Json<MuteRequest>,
 ) -> AppResult<Json<serde_json::Value>> {
     channel_access(&st.db, channel_id, user.id).await?;
+    let mut until: Option<DateTime<Utc>> = None;
     if req.muted {
+        if let Some(m) = req.minutes {
+            if !(1..=MAX_MUTE_MINUTES).contains(&m) {
+                return Err(AppError::BadRequest(
+                    "Mute for 1 minute to 30 days, or until you turn it back on.".into(),
+                ));
+            }
+            until = Some(Utc::now() + chrono::Duration::minutes(m));
+        }
         sqlx::query(
-            "INSERT INTO channel_mutes (user_id, channel_id) VALUES ($1, $2)
-             ON CONFLICT DO NOTHING",
+            "INSERT INTO channel_mutes (user_id, channel_id, muted_until) VALUES ($1, $2, $3)
+             ON CONFLICT (user_id, channel_id) DO UPDATE SET muted_until = EXCLUDED.muted_until",
         )
         .bind(user.id)
         .bind(channel_id)
+        .bind(until)
         .execute(&st.db)
         .await?;
     } else {
@@ -155,8 +182,17 @@ pub async fn set_mute(
             .execute(&st.db)
             .await?;
     }
+    // Your other devices grey it out (or bring it back) too.
+    st.dispatch(
+        crate::state::Audience::User(user.id),
+        outhouse_common::gateway::ServerEvent::ChannelMuteUpdate {
+            channel_id,
+            muted: req.muted,
+            until,
+        },
+    );
     Ok(Json(
-        json!({ "channel_id": channel_id.to_string(), "muted": req.muted }),
+        json!({ "channel_id": channel_id.to_string(), "muted": req.muted, "until": until }),
     ))
 }
 

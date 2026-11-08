@@ -555,12 +555,37 @@ pub struct ArmoryRefresh {
     pub message: String,
 }
 
-/// A link to a character page somewhere: `{name}`, `{surname}`, `{region}`
-/// and `{slug}` ("name-surname", lower case) are filled in.
+/// A link to a character page somewhere: `{name}`, `{surname}`, `{region}`,
+/// `{realm}` (the realm's slug, e.g. "pyrewood-village") and `{slug}`
+/// ("name-surname", lower case) are filled in.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ArmoryLinkTemplate {
     pub label: String,
     pub template: String,
+    /// Which game's characters it's for ("forever", "tbc" or "era").
+    #[serde(default = "default_link_game")]
+    pub game: String,
+}
+
+fn default_link_game() -> String {
+    "forever".into()
+}
+
+/// A realm name as Blizzard's addresses write it: "Pyrewood Village" →
+/// "pyrewood-village", "Zul'jin" → "zuljin".
+pub fn realm_slug(realm: &str) -> String {
+    let mut out = String::new();
+    for word in realm.split_whitespace() {
+        if !out.is_empty() {
+            out.push('-');
+        }
+        out.extend(
+            word.chars()
+                .filter(|c| c.is_alphanumeric() || *c == '-')
+                .flat_map(char::to_lowercase),
+        );
+    }
+    out
 }
 
 /// `/item` and `/char`: what to look up.
@@ -605,7 +630,13 @@ pub struct WowInfo {
 }
 
 /// A character page address from a template (see [`ArmoryLinkTemplate`]).
-pub fn fill_armory_template(template: &str, region: &str, name: &str, surname: &str) -> String {
+pub fn fill_armory_template(
+    template: &str,
+    region: &str,
+    name: &str,
+    surname: &str,
+    realm: &str,
+) -> String {
     fn enc(s: &str) -> String {
         let mut out = String::new();
         for b in s.bytes() {
@@ -625,6 +656,7 @@ pub fn fill_armory_template(template: &str, region: &str, name: &str, surname: &
     template
         .replace("{region}", &enc(&region.to_lowercase()))
         .replace("{slug}", &enc(&slug))
+        .replace("{realm}", &enc(&realm_slug(realm)))
         .replace("{Name}", &enc(name))
         .replace("{Surname}", &enc(surname))
         .replace("{name}", &enc(&name.to_lowercase()))
@@ -677,10 +709,22 @@ mod tests {
                 "https://x.example/{region}/{slug}?n={Name}",
                 "US",
                 "Thrall",
-                "Stormborn"
+                "Stormborn",
+                ""
             ),
             "https://x.example/us/thrall-stormborn?n=Thrall"
         );
+        assert_eq!(
+            fill_armory_template(
+                "https://x.example/classicann/{region}/armory/character/{realm}/{name}",
+                "EU",
+                "Arthas",
+                "",
+                "Pyrewood Village"
+            ),
+            "https://x.example/classicann/eu/armory/character/pyrewood-village/arthas"
+        );
+        assert_eq!(realm_slug(" Zul'jin "), "zuljin");
     }
 
     #[test]

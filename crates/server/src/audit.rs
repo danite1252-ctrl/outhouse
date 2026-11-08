@@ -128,6 +128,7 @@ pub const ACTIONS: &[(&str, &str)] = &[
     ("feed_create", "Followed a news feed"),
     ("feed_delete", "Removed a news feed"),
     ("raid_delete", "Cancelled a raid"),
+    ("raid_repeat_update", "Changed a repeating raid's days"),
     ("raid_settings_update", "Changed raid settings"),
     ("badge_create", "Made a badge"),
     ("badge_update", "Changed a badge"),

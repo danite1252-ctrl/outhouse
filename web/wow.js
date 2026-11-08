@@ -35,11 +35,16 @@ const nameOfUser = (id, fallback) => memberById(id)?.display_name ?? (id === sta
 
 const armoryOn = () => !!state.wowInfo?.armory_enabled;
 
-// A character page address from a template ({region}, {slug}, {name}, …).
-function fillArmory(template, region, name, surname) {
+// A realm as Blizzard's addresses write it: "Pyrewood Village" → "pyrewood-village".
+const realmSlug = (realm) => (realm || "").trim().split(/\s+/).filter(Boolean)
+  .map((w) => [...w].filter((ch) => /[\p{L}\p{N}-]/u.test(ch)).join("").toLowerCase()).join("-");
+
+// A character page address from a template ({region}, {slug}, {realm}, {name}, …).
+function fillArmory(template, region, name, surname, realm = "") {
   const enc = encodeURIComponent;
   return template
     .replaceAll("{region}", enc(region.toLowerCase()))
+    .replaceAll("{realm}", enc(realmSlug(realm)))
     .replaceAll("{slug}", enc(`${name}-${surname}`.toLowerCase()))
     .replaceAll("{Name}", enc(name))
     .replaceAll("{Surname}", enc(surname))
@@ -47,12 +52,15 @@ function fillArmory(template, region, name, surname) {
     .replaceAll("{surname}", enc(surname.toLowerCase()));
 }
 
-// "View on Armory" links for a WoW: Forever character with both names.
+// "View on Armory" links: WoW: Forever characters with both names, TBC and
+// Classic Era characters with a realm (each game has its own addresses).
 function armoryLinks(c) {
-  if ((c.game || "forever") !== "forever" || !c.last_name) return [];
+  const gameId = c.game || "forever";
+  if (gameId === "forever" ? !c.last_name : !(c.realm || "").trim() || !c.name) return [];
   const region = c.region || state.wowInfo?.armory_region || "us";
   return (state.wowInfo?.armory_links ?? [])
-    .map((t) => ({ label: t.label, url: fillArmory(t.template, region, c.name, c.last_name) }))
+    .filter((t) => (t.game || "forever") === gameId)
+    .map((t) => ({ label: t.label, url: fillArmory(t.template, region, c.name, c.last_name || "", c.realm || "") }))
     .filter((l) => /^https?:\/\//i.test(l.url));
 }
 
@@ -757,6 +765,10 @@ function openCharacterDialog(existing, onSaved) {
     type: "button", class: `day-chip prof-chip${professions.has(p) ? " on" : ""}`, "aria-pressed": professions.has(p) ? "true" : "false",
     onclick: () => { professions.has(p) ? professions.delete(p) : professions.size < 5 && professions.add(p); paintProfs(); },
   }, p)));
+  // TBC and Classic Era: which region's Armory the "View on Armory" link opens.
+  const regionList = state.wowInfo?.regions?.length ? state.wowInfo.regions : ["us", "eu", "kr", "tw"];
+  const realmRegion = el("select", { class: "select", "aria-label": "Region" }, regionList.map((r) => el("option", { value: r }, r.toUpperCase())));
+  realmRegion.value = c?.region || prefs.get("armory_region", state.wowInfo?.armory_region || "us");
   const nameRow = el("div", { class: "raid-row even" });
   const placeRow = el("div", { class: "raid-row even char-place" });
   const nameHint = el("p", { class: "muted small", style: "margin:0" });
@@ -773,8 +785,9 @@ function openCharacterDialog(existing, onSaved) {
     race.replaceChildren(el("option", { value: "" }, "Race (optional)"), ...g.races.map((r) => el("option", { value: r, selected: r === keepRace }, r)));
     placeRow.replaceChildren(...[
       g.two_names ? el("label", { class: "field" }, "Ruleset", ruleset) : null,
-      el("label", { class: "field" }, "Race", race)].filter(Boolean));
-    placeRow.classList.toggle("even", g.two_names);
+      el("label", { class: "field" }, "Race", race),
+      g.two_names ? null : el("label", { class: "field char-region" }, "Region", realmRegion)].filter(Boolean));
+    placeRow.classList.add("even");
     // A new character starts at the game's level cap.
     if (!c && (!level.value || Number(level.value) === Number(level.max))) level.value = g.max_level;
     level.max = g.max_level;
@@ -878,7 +891,7 @@ function openCharacterDialog(existing, onSaved) {
       race: race.value,
       class: cls.value, level: Number(level.value) || g.max_level, professions: [...professions], armory_url: armory.value.trim(), is_main: isMain.checked,
       // With the Armory on, saving a WoW: Forever character reads it for them.
-      region: g.two_names && armoryOn() ? region.value : (c?.region ?? ""),
+      region: g.two_names ? (armoryOn() ? region.value : (c?.region ?? "")) : realmRegion.value,
     };
     try {
       const saved = await api(c ? "PATCH" : "POST", c ? `/api/characters/${c.id}` : "/api/users/@me/characters", body);

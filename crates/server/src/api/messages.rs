@@ -684,6 +684,16 @@ async fn create_message(
         .bind(id)
         .execute(&mut *tx)
         .await?;
+        // Your own replies count as read.
+        sqlx::query(
+            "INSERT INTO thread_reads (user_id, thread_id, last_read_id) VALUES ($1, $2, $3)
+             ON CONFLICT (user_id, thread_id) DO UPDATE SET last_read_id = EXCLUDED.last_read_id",
+        )
+        .bind(user.id)
+        .bind(thread_id)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
     } else {
         sqlx::query("UPDATE channels SET last_message_id = $2 WHERE id = $1")
             .bind(channel_id)

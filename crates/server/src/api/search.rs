@@ -2,7 +2,9 @@
 
 use axum::extract::{Path, Query, State};
 use axum::Json;
-use outhouse_common::models::{ChannelUnread, GuildRoleIds, SearchResults, UnreadState};
+use outhouse_common::models::{
+    ChannelUnread, GuildRoleIds, SearchResults, ThreadUnread, UnreadState,
+};
 use outhouse_common::permissions as p;
 use serde::Deserialize;
 use sqlx::{Postgres, QueryBuilder};
@@ -263,7 +265,8 @@ const UNREAD_SQL: &str = r#"
                                   WHERE strpos(m.content, r.pat) > 0)
                        OR EXISTS (SELECT 1 FROM messages parent
                                   WHERE parent.id = m.reply_to_id AND parent.author_id = $2))
-                LIMIT 100) mentions) AS mention_count
+                LIMIT 100) mentions) AS mention_count,
+           0::BIGINT AS direct_count
     FROM channels c
     JOIN guild_members gm ON gm.guild_id = c.guild_id AND gm.user_id = $2
     LEFT JOIN read_states rs ON rs.channel_id = c.id AND rs.user_id = $2
@@ -279,11 +282,56 @@ const DM_UNREAD_SQL: &str = r#"
                   AND m.author_id <> $1
                   AND m.id > COALESCE(rs.last_read_id, 0)
                   AND m.created_at >= p.joined_at
-                LIMIT 100) unread) AS mention_count
+                LIMIT 100) unread) AS mention_count,
+           (SELECT count(*) FROM (
+                SELECT 1 FROM messages m
+                WHERE m.channel_id = c.id
+                  AND m.thread_id IS NULL
+                  AND m.author_id <> $1
+                  AND m.id > COALESCE(rs.last_read_id, 0)
+                  AND m.created_at >= p.joined_at
+                  AND (strpos(m.content, '<@' || ($1::BIGINT)::TEXT || '>') > 0
+                       OR m.content ~ '(^|\s)@(everyone|here)\M'
+                       OR EXISTS (SELECT 1 FROM messages parent
+                                  WHERE parent.id = m.reply_to_id AND parent.author_id = $1))
+                LIMIT 100) pings) AS direct_count
     FROM dm_participants p
     JOIN channels c ON c.id = p.channel_id
     LEFT JOIN read_states rs ON rs.channel_id = c.id AND rs.user_id = $1
     WHERE p.user_id = $1"#;
+
+/// Threads with replies you haven't read in these channels, with how many
+/// of those mention you. Before you've opened a thread, only replies since
+/// you joined the outhouse count (and threads only show up once someone
+/// else has replied).
+const THREAD_UNREAD_SQL: &str = r#"
+    SELECT t.id AS thread_id, t.channel_id, c.guild_id, t.last_message_id, tr.last_read_id,
+           (SELECT count(*) FROM (
+                SELECT 1 FROM messages m
+                WHERE m.thread_id = t.id
+                  AND m.author_id <> $2
+                  AND m.id > COALESCE(tr.last_read_id, 0)
+                  AND (tr.last_read_id IS NOT NULL OR m.created_at > gm.joined_at)
+                  AND (strpos(m.content, $4) > 0
+                       OR m.content ~ '(^|\s)@(everyone|here)\M'
+                       OR EXISTS (SELECT 1 FROM unnest($3::TEXT[]) AS r(pat)
+                                  WHERE strpos(m.content, r.pat) > 0)
+                       OR EXISTS (SELECT 1 FROM messages parent
+                                  WHERE parent.id = m.reply_to_id AND parent.author_id = $2))
+                LIMIT 100) mentions) AS mention_count
+    FROM threads t
+    JOIN channels c ON c.id = t.channel_id
+    JOIN guild_members gm ON gm.guild_id = c.guild_id AND gm.user_id = $2
+    LEFT JOIN thread_reads tr ON tr.thread_id = t.id AND tr.user_id = $2
+    WHERE t.channel_id = ANY($1)
+      AND t.last_message_id IS NOT NULL
+      AND t.last_message_id > COALESCE(tr.last_read_id, 0)
+      AND EXISTS (SELECT 1 FROM messages m
+                  WHERE m.thread_id = t.id AND m.author_id <> $2
+                    AND m.id > COALESCE(tr.last_read_id, 0)
+                    AND (tr.last_read_id IS NOT NULL OR m.created_at > gm.joined_at))
+    ORDER BY t.last_message_id DESC
+    LIMIT 500"#;
 
 /// `GET /api/users/@me/unread`: unread state and mention counts for every
 /// text channel you can see, in all your outhouses.
@@ -297,6 +345,7 @@ pub async fn unread(
             .fetch_all(&st.db)
             .await?;
     let mut channels = Vec::new();
+    let mut threads = Vec::new();
     let mut roles = Vec::new();
     for guild_id in guild_ids {
         let ctx = match member_ctx(&st.db, guild_id, user.id).await {
@@ -316,6 +365,14 @@ pub async fn unread(
                 .fetch_all(&st.db)
                 .await?;
             channels.extend(rows);
+            let thread_rows = sqlx::query_as::<_, ThreadUnread>(THREAD_UNREAD_SQL)
+                .bind(&visible)
+                .bind(user.id)
+                .bind(&role_patterns)
+                .bind(format!("<@{}>", user.id))
+                .fetch_all(&st.db)
+                .await?;
+            threads.extend(thread_rows);
         }
         roles.push(GuildRoleIds {
             guild_id,
@@ -328,7 +385,11 @@ pub async fn unread(
         .fetch_all(&st.db)
         .await?;
     channels.extend(dms);
-    Ok(Json(UnreadState { channels, roles }))
+    Ok(Json(UnreadState {
+        channels,
+        roles,
+        threads,
+    }))
 }
 
 #[cfg(test)]

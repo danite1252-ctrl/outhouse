@@ -398,6 +398,29 @@ pub struct ChannelUnread {
     #[serde(with = "option_as_string", default)]
     pub last_read_id: Option<i64>,
     /// Unread messages mentioning you, your roles, @everyone or @here, or
+    /// replying to you (counted up to 100). For a DM: every unread message.
+    pub mention_count: i64,
+    /// For a DM: unread messages that @mention you or reply to you (what
+    /// still counts while the DM is muted). 0 for outhouse channels.
+    #[serde(default)]
+    pub direct_count: i64,
+}
+
+/// Unread state for a thread with replies you haven't read.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
+pub struct ThreadUnread {
+    #[serde(with = "as_string")]
+    pub thread_id: i64,
+    #[serde(with = "as_string")]
+    pub channel_id: i64,
+    #[serde(with = "as_string")]
+    pub guild_id: i64,
+    #[serde(with = "option_as_string", default)]
+    pub last_message_id: Option<i64>,
+    #[serde(with = "option_as_string", default)]
+    pub last_read_id: Option<i64>,
+    /// Unread replies mentioning you, your roles, @everyone or @here, or
     /// replying to you (counted up to 100).
     pub mention_count: i64,
 }
@@ -416,6 +439,9 @@ pub struct GuildRoleIds {
 pub struct UnreadState {
     pub channels: Vec<ChannelUnread>,
     pub roles: Vec<GuildRoleIds>,
+    /// Threads with unread replies (in channels you can see).
+    #[serde(default)]
+    pub threads: Vec<ThreadUnread>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -876,6 +902,12 @@ pub struct UpdateEventRequest {
     /// "off", "after" or "next" (repeating raids only).
     #[serde(default)]
     pub card_cleanup: Option<String>,
+    /// With `scope: "future"`: a new repeat pattern from this raid on (days,
+    /// every N weeks, end). `starts_at` is then the first raid's day and
+    /// time. Later raids that no longer fit are cancelled; ones still on a
+    /// matching day keep their sign-ups. The time zone stays the series' own.
+    #[serde(default)]
+    pub repeat: Option<RepeatInfo>,
 }
 
 /// `PUT /api/events/{id}/attendance`

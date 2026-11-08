@@ -151,6 +151,7 @@ pub fn router(state: AppState) -> Router {
             "/api/channels/{id}/threads",
             get(threads::list).post(threads::create),
         )
+        .route("/api/threads/{id}/ack", post(threads::ack))
         .route(
             "/api/threads/{id}",
             get(threads::get)
@@ -257,6 +258,10 @@ pub fn router(state: AppState) -> Router {
             get(events::get)
                 .patch(events::update)
                 .delete(events::delete),
+        )
+        .route(
+            "/api/events/{id}/repeat-preview",
+            post(events::repeat_preview),
         )
         .route("/api/events/{id}/signup", put(events::signup))
         .route("/api/events/{id}/export", get(events::export))

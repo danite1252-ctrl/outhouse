@@ -640,14 +640,80 @@ async fn local_time_in(db: &PgPool, at: DateTime<Utc>, tz: &str) -> AppResult<Na
 /// `at_least_one`). Returns the new raids' IDs.
 async fn materialise(st: &AppState, series_id: i64, at_least_one: bool) -> AppResult<Vec<i64>> {
     let mut tx = st.db.begin().await?;
+    let (new_ids, _) =
+        materialise_tx(st, &mut tx, series_id, at_least_one, &HashMap::new()).await?;
+    tx.commit().await?;
+    dispatch_events(st, &new_ids).await;
+    Ok(new_ids)
+}
+
+/// Sends the current state of these raids to whoever can see them.
+async fn dispatch_events(st: &AppState, ids: &[i64]) {
+    for &id in ids {
+        if let Ok(row) = load_row(&st.db, id).await {
+            if let Ok(mut ev) = build(&st.db, vec![row]).await {
+                if let Some(ev) = ev.pop() {
+                    st.dispatch(
+                        Audience::Channel {
+                            guild_id: ev.guild_id,
+                            channel_id: ev.channel_id,
+                        },
+                        ServerEvent::EventUpdate(ev),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The days a repeat pattern lands on: from `start` (weeks are counted
+/// from the week `start` is in), up to and including `to`, at most `limit`
+/// of them, and never past `until` or more than `count` in all.
+fn pattern_days(
+    start: NaiveDate,
+    mask: i32,
+    every_weeks: i32,
+    until: Option<NaiveDate>,
+    count: Option<i32>,
+    to: NaiveDate,
+    limit: usize,
+) -> Vec<NaiveDate> {
+    let week0 = start - chrono::Duration::days(start.weekday().num_days_from_monday() as i64);
+    let every = every_weeks.max(1) as i64;
+    let mut out = Vec::new();
+    let mut day = start;
+    while day <= to && out.len() < limit {
+        if until.is_some_and(|u| day > u) || count.is_some_and(|c| out.len() as i64 >= c as i64) {
+            break;
+        }
+        let week = (day - week0).num_days() / 7;
+        if week % every == 0 && mask & (1 << day.weekday().num_days_from_monday()) != 0 {
+            out.push(day);
+        }
+        day = day + chrono::Duration::days(1);
+    }
+    out
+}
+
+/// [`materialise`] inside a transaction. Raids in `adopt` (by day, in the
+/// series' time zone) already exist: when the pattern lands on their day
+/// they join the series and take its details instead of a new raid being
+/// made (they keep their sign-ups). Returns (new raids, adopted raids).
+async fn materialise_tx(
+    st: &AppState,
+    tx: &mut Transaction<'_, Postgres>,
+    series_id: i64,
+    at_least_one: bool,
+    adopt: &HashMap<NaiveDate, i64>,
+) -> AppResult<(Vec<i64>, Vec<i64>)> {
     let sql =
         format!("SELECT {SERIES_COLUMNS} FROM event_series WHERE id = $1 AND NOT ended FOR UPDATE");
     let Some(s) = sqlx::query_as::<_, SeriesRow>(&sql)
         .bind(series_id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?
     else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     };
     let now = Utc::now();
     let horizon = (now + chrono::Duration::days(AHEAD_DAYS + 1)).date_naive();
@@ -661,9 +727,10 @@ async fn materialise(st: &AppState, series_id: i64, at_least_one: bool) -> AppRe
     let mut made = s.made_count;
     let mut ended = false;
     let mut new_ids = Vec::new();
+    let mut adopted = Vec::new();
     // At most every 8 weeks: a match always turns up within 56 days.
     for _ in 0..800 {
-        if day > horizon && !(at_least_one && new_ids.is_empty()) {
+        if day > horizon && !(at_least_one && new_ids.is_empty() && adopted.is_empty()) {
             break;
         }
         if s.until_date.is_some_and(|u| day > u) || s.max_count.is_some_and(|c| made >= c) {
@@ -679,13 +746,39 @@ async fn materialise(st: &AppState, series_id: i64, at_least_one: bool) -> AppRe
                     .bind(day)
                     .bind(s.local_time)
                     .bind(&s.time_zone)
-                    .fetch_one(&mut *tx)
+                    .fetch_one(&mut **tx)
                     .await?;
-            // Skip ones already over (e.g. a series that started today, earlier on).
-            if starts_at > now - chrono::Duration::minutes(30) {
+            if let Some(&id) = adopt.get(&day) {
+                // An existing raid on this day: it stays (with its sign-ups).
+                sqlx::query(
+                    "UPDATE events SET series_id = $2, starts_at = $3, title = $4,
+                            description = $5, duration_minutes = $6, max_tanks = $7,
+                            max_healers = $8, max_dps = $9, signup_deadline_minutes = $10,
+                            post_rule = $11, game = $12, card_cleanup = $13,
+                            reminded = reminded AND starts_at = $3
+                     WHERE id = $1",
+                )
+                .bind(id)
+                .bind(s.id)
+                .bind(starts_at)
+                .bind(&s.title)
+                .bind(&s.description)
+                .bind(s.duration_minutes)
+                .bind(s.max_tanks)
+                .bind(s.max_healers)
+                .bind(s.max_dps)
+                .bind(s.signup_deadline_minutes)
+                .bind(&s.post_rule)
+                .bind(&s.game)
+                .bind(&s.card_cleanup)
+                .execute(&mut **tx)
+                .await?;
+                adopted.push(id);
+            } else if starts_at > now - chrono::Duration::minutes(30) {
+                // Skip ones already over (e.g. a series that started today, earlier on).
                 let id = st.ids.next_id();
                 let rule = s.post_rule.as_ref().map(|j| &j.0);
-                let post_at = post_at_for(&mut *tx, rule, starts_at).await?;
+                let post_at = post_at_for(&mut **tx, rule, starts_at).await?;
                 sqlx::query(
                     "INSERT INTO events (id, guild_id, channel_id, message_id, creator_id, title,
                          description, starts_at, duration_minutes, max_tanks, max_healers,
@@ -711,7 +804,7 @@ async fn materialise(st: &AppState, series_id: i64, at_least_one: bool) -> AppRe
                 .bind(post_at)
                 .bind(&s.game)
                 .bind(&s.card_cleanup)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?;
                 new_ids.push(id);
             }
@@ -726,25 +819,9 @@ async fn materialise(st: &AppState, series_id: i64, at_least_one: bool) -> AppRe
     .bind(made)
     .bind(through)
     .bind(ended)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
-    tx.commit().await?;
-    for &id in &new_ids {
-        if let Ok(row) = load_row(&st.db, id).await {
-            if let Ok(mut ev) = build(&st.db, vec![row]).await {
-                if let Some(ev) = ev.pop() {
-                    st.dispatch(
-                        Audience::Channel {
-                            guild_id: ev.guild_id,
-                            channel_id: ev.channel_id,
-                        },
-                        ServerEvent::EventUpdate(ev),
-                    );
-                }
-            }
-        }
-    }
-    Ok(new_ids)
+    Ok((new_ids, adopted))
 }
 
 /// Posts the chat card for raids whose posting time has come and that
@@ -839,7 +916,10 @@ async fn remove_old_cards(st: &AppState) -> AppResult<()> {
                 AND now() >= ends_at + make_interval(hours => {CARD_CLEANUP_HOURS}))
             OR (card_cleanup = 'next' AND series_id IS NOT NULL AND EXISTS (
                     SELECT 1 FROM events n
-                    WHERE n.series_id = c.series_id AND n.starts_at > c.starts_at
+                    WHERE (n.series_id = c.series_id
+                           OR n.series_id IN (SELECT id FROM event_series
+                                              WHERE split_from = c.series_id))
+                      AND n.starts_at > c.starts_at
                       AND n.card_posted_at IS NOT NULL
                       AND (n.card_posted_at >= c.ends_at
                            OR now() >= c.ends_at + make_interval(hours => {CARD_CLEANUP_HOURS}))))
@@ -1283,6 +1363,31 @@ pub async fn update(
     .await?
     .map(DbJson);
 
+    if let Some(repeat) = req.repeat.as_ref() {
+        let details = NewDetails {
+            title,
+            description,
+            starts_at,
+            duration,
+            tanks,
+            healers,
+            dps,
+            deadline,
+            game,
+            card_cleanup,
+            post_rule: if rule_given { Some(post_rule) } else { None },
+        };
+        if !future || row.series_id.is_none() {
+            return Err(AppError::BadRequest(
+                "Changing the repeat pattern applies to this and later raids of a repeating raid."
+                    .into(),
+            ));
+        }
+        return Ok(Json(
+            change_pattern(&st, user.id, &row, repeat, details).await?,
+        ));
+    }
+
     let changed: Vec<i64> = match (future, row.series_id) {
         (true, Some(series_id)) => {
             let delta = (starts_at - row.starts_at).num_seconds() as f64;
@@ -1404,6 +1509,543 @@ pub async fn update(
     // Moving raids (or posting earlier) may make a card due: post it.
     post_due_cards(&st, None, Some(changed.as_slice())).await?;
     Ok(Json(broadcast(&st, event_id).await?))
+}
+
+// ---- Changing a repeating raid's pattern -------------------------------
+
+/// The details "Edit this and future raids" saves along with a new pattern.
+struct NewDetails {
+    title: String,
+    description: String,
+    starts_at: DateTime<Utc>,
+    duration: i32,
+    tanks: i32,
+    healers: i32,
+    dps: i32,
+    deadline: Option<i32>,
+    game: String,
+    card_cleanup: String,
+    /// `None`: keep the series' rule. `Some(None)`: post straight away.
+    post_rule: Option<Option<DbJson<PostRule>>>,
+}
+
+/// What a new pattern would do from a raid on (worked out without changing
+/// anything, for the preview and for saving).
+struct PatternPlan {
+    series: SeriesRow,
+    pat: Pattern,
+    first_day: NaiveDate,
+    local_time: NaiveTime,
+    /// The series has no raids before this one: it's changed in place.
+    in_place: bool,
+    /// The chosen raid's day (in the series' time zone).
+    from_day: NaiveDate,
+    /// Existing raids that land on a day of the new pattern, by day.
+    keep: HashMap<NaiveDate, i64>,
+    kept_signups: i64,
+    /// Existing raids that don't: cancelled when it's saved.
+    removed: Vec<i64>,
+    removed_signups: i64,
+    new_raids: usize,
+    next: Vec<DateTime<Utc>>,
+    /// How many raids the series has left from this one on (if it has an end count).
+    remaining: Option<i32>,
+}
+
+/// The pattern's next `n` start times from `first_day`, in UTC.
+async fn next_starts(
+    db: &PgPool,
+    pat: &Pattern,
+    first_day: NaiveDate,
+    local_time: NaiveTime,
+    n: usize,
+) -> AppResult<Vec<DateTime<Utc>>> {
+    let days = pattern_days(
+        first_day,
+        pat.mask,
+        pat.every_weeks,
+        pat.until,
+        pat.count,
+        first_day + chrono::Duration::days(3 * 366),
+        n,
+    );
+    let mut out = Vec::with_capacity(days.len());
+    for day in days {
+        let at: DateTime<Utc> = sqlx::query_scalar("SELECT ($1::date + $2::time) AT TIME ZONE $3")
+            .bind(day)
+            .bind(local_time)
+            .bind(&pat.time_zone)
+            .fetch_one(db)
+            .await?;
+        out.push(at);
+    }
+    Ok(out)
+}
+
+/// `repeat: None` keeps the series' current pattern (with what's left of its count).
+async fn plan_pattern(
+    db: &PgPool,
+    row: &EventRow,
+    repeat: Option<&RepeatInfo>,
+    starts_at: DateTime<Utc>,
+) -> AppResult<PatternPlan> {
+    let Some(series_id) = row.series_id else {
+        return Err(AppError::BadRequest("This raid doesn't repeat.".into()));
+    };
+    let sql = format!("SELECT {SERIES_COLUMNS} FROM event_series WHERE id = $1");
+    let series = sqlx::query_as::<_, SeriesRow>(&sql)
+        .bind(series_id)
+        .fetch_optional(db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let now = Utc::now();
+    if row.starts_at <= now {
+        return Err(AppError::BadRequest(
+            "That raid has already started. Change the pattern from an upcoming raid.".into(),
+        ));
+    }
+    if starts_at <= now {
+        return Err(AppError::BadRequest("That time has already passed.".into()));
+    }
+    let tz = series.time_zone.clone();
+    // The raids from this one on, with their day and how many signed up.
+    let existing: Vec<(i64, NaiveDate, i64)> = sqlx::query_as(
+        "SELECT e.id, (e.starts_at AT TIME ZONE $3)::date,
+                (SELECT count(*) FROM event_signups s WHERE s.event_id = e.id AND s.status <> 'no')
+         FROM events e
+         WHERE e.series_id = $1 AND e.starts_at >= $2
+         ORDER BY e.starts_at, e.id",
+    )
+    .bind(series_id)
+    .bind(row.starts_at)
+    .bind(&tz)
+    .fetch_all(db)
+    .await?;
+    let earlier: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM events WHERE series_id = $1 AND starts_at < $2)",
+    )
+    .bind(series_id)
+    .bind(row.starts_at)
+    .fetch_one(db)
+    .await?;
+    let remaining = series
+        .max_count
+        .map(|c| (c - (series.made_count - existing.len() as i32)).max(1));
+    let info = match repeat {
+        Some(r) => RepeatInfo {
+            time_zone: tz.clone(),
+            ..r.clone()
+        },
+        None => RepeatInfo {
+            weekdays: mask_to_days(series.weekdays),
+            every_weeks: series.every_weeks,
+            until: series.until_date,
+            count: remaining,
+            time_zone: tz.clone(),
+        },
+    };
+    if !(1..=4).contains(&info.every_weeks) && repeat.is_some() {
+        return Err(AppError::BadRequest(
+            "It can repeat every week or every 2, 3 or 4 weeks.".into(),
+        ));
+    }
+    let pat = check_pattern(db, &info).await?;
+    let local = local_time_in(db, starts_at, &tz).await?;
+    let first_day = local.date();
+    if pat.until.is_some_and(|u| u < first_day) {
+        return Err(AppError::BadRequest(
+            "The end date is before the first raid.".into(),
+        ));
+    }
+    if pat
+        .until
+        .is_some_and(|u| u > first_day + chrono::Duration::days(731))
+    {
+        return Err(AppError::BadRequest(
+            "A series can run for up to two years.".into(),
+        ));
+    }
+    let from_day = local_time_in(db, row.starts_at, &tz).await?.date();
+    let horizon = (now + chrono::Duration::days(AHEAD_DAYS + 1)).date_naive();
+    let mut days = pattern_days(
+        first_day,
+        pat.mask,
+        pat.every_weeks,
+        pat.until,
+        pat.count,
+        horizon,
+        800,
+    );
+    if days.is_empty() {
+        days = pattern_days(
+            first_day,
+            pat.mask,
+            pat.every_weeks,
+            pat.until,
+            pat.count,
+            first_day + chrono::Duration::days(800),
+            1,
+        );
+    }
+    if days.is_empty() {
+        return Err(AppError::BadRequest(
+            "That pattern doesn't have any raids in it.".into(),
+        ));
+    }
+    let mut keep = HashMap::new();
+    let (mut kept_signups, mut removed_signups) = (0, 0);
+    let mut removed = Vec::new();
+    for (id, day, signups) in existing {
+        if days.contains(&day) && !keep.contains_key(&day) {
+            keep.insert(day, id);
+            kept_signups += signups;
+        } else {
+            removed.push(id);
+            removed_signups += signups;
+        }
+    }
+    let new_raids = days.len() - keep.len();
+    let next = next_starts(db, &pat, first_day, local.time(), 4).await?;
+    Ok(PatternPlan {
+        series,
+        first_day,
+        local_time: local.time(),
+        in_place: !earlier,
+        from_day,
+        keep,
+        kept_signups,
+        removed,
+        removed_signups,
+        new_raids,
+        next,
+        remaining,
+        pat,
+    })
+}
+
+const WEEKDAY_NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+/// "Weekly on Tue & Thu" / "Every 2 weeks on Sun".
+fn pattern_label(mask: i32, every_weeks: i32) -> String {
+    let names: Vec<&str> = (0..7)
+        .filter(|d| mask & (1 << d) != 0)
+        .map(|d| WEEKDAY_NAMES[d as usize])
+        .collect();
+    let days = match names.len() {
+        0 => String::new(),
+        1 => names[0].to_string(),
+        n => format!("{} & {}", names[..n - 1].join(", "), names[n - 1]),
+    };
+    if every_weeks == 1 {
+        format!("Weekly on {days}")
+    } else {
+        format!("Every {every_weeks} weeks on {days}")
+    }
+}
+
+#[derive(Serialize)]
+pub struct PatternPreview {
+    /// The next (up to) four raids under the pattern.
+    next: Vec<DateTime<Utc>>,
+    /// Raids from this one on that would be cancelled, and their sign-ups.
+    removed_raids: usize,
+    removed_signups: i64,
+    /// Raids that stay (same day), keeping their sign-ups.
+    kept_raids: usize,
+    kept_signups: i64,
+    /// Raids that would be made (up to four weeks ahead).
+    new_raids: usize,
+    /// The pattern as it would be saved.
+    repeat: RepeatInfo,
+    label: String,
+    /// How many raids the series has left from this one on (end count only).
+    remaining_count: Option<i32>,
+    /// No raids before this one: the series is changed rather than split.
+    first_of_series: bool,
+}
+
+/// `POST /api/events/{id}/repeat-preview` (same body as editing "this and
+/// future raids"): what a new pattern would do, without saving it. With no
+/// `repeat` it describes the current pattern from this raid on.
+pub async fn repeat_preview(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(event_id): Path<i64>,
+    Json(req): Json<UpdateEventRequest>,
+) -> AppResult<Json<PatternPreview>> {
+    let (row, access) = load(&st, event_id, user.id).await?;
+    if !can_manage(&st.db, &row, &access).await? {
+        return Err(AppError::Forbidden);
+    }
+    let starts_at = req.starts_at.unwrap_or(row.starts_at);
+    let plan = plan_pattern(&st.db, &row, req.repeat.as_ref(), starts_at).await?;
+    Ok(Json(PatternPreview {
+        next: plan.next.clone(),
+        removed_raids: plan.removed.len(),
+        removed_signups: plan.removed_signups,
+        kept_raids: plan.keep.len(),
+        kept_signups: plan.kept_signups,
+        new_raids: plan.new_raids,
+        label: pattern_label(plan.pat.mask, plan.pat.every_weeks),
+        repeat: RepeatInfo {
+            weekdays: mask_to_days(plan.pat.mask),
+            every_weeks: plan.pat.every_weeks,
+            until: plan.pat.until,
+            count: plan.pat.count,
+            time_zone: plan.pat.time_zone.clone(),
+        },
+        remaining_count: plan.remaining,
+        first_of_series: plan.in_place,
+    }))
+}
+
+/// Saves a new pattern from a raid on: the series is changed in place (if
+/// this is its first raid) or split here. Later raids on a day the new
+/// pattern still has stay, with their sign-ups (and take the new time and
+/// details); the others are cancelled and the people signed up get a DM
+/// from the Outhouse Helper. Earlier raids aren't touched.
+async fn change_pattern(
+    st: &AppState,
+    user_id: i64,
+    row: &EventRow,
+    repeat: &RepeatInfo,
+    d: NewDetails,
+) -> AppResult<EventReply> {
+    let plan = plan_pattern(&st.db, row, Some(repeat), d.starts_at).await?;
+    let s = &plan.series;
+    let post_rule = match d.post_rule {
+        Some(rule) => rule,
+        None => s.post_rule.clone(),
+    };
+    // Who to tell about cancelled raids (before their sign-ups go).
+    let told: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT event_id, user_id FROM event_signups
+         WHERE event_id = ANY($1) AND status <> 'no' ORDER BY event_id, signed_at",
+    )
+    .bind(&plan.removed)
+    .fetch_all(&st.db)
+    .await?;
+    let removed_rows: Vec<EventRow> = {
+        let sql = format!("SELECT {EVENT_COLUMNS} FROM events WHERE id = ANY($1)");
+        sqlx::query_as::<_, EventRow>(&sql)
+            .bind(&plan.removed)
+            .fetch_all(&st.db)
+            .await?
+    };
+
+    let mut tx = st.db.begin().await?;
+    let target = if plan.in_place {
+        sqlx::query(
+            "UPDATE event_series SET title = $2, description = $3, duration_minutes = $4,
+                    max_tanks = $5, max_healers = $6, max_dps = $7, signup_deadline_minutes = $8,
+                    start_date = $9, local_time = $10, weekdays = $11, every_weeks = $12,
+                    until_date = $13, max_count = $14, made_count = 0, generated_through = NULL,
+                    ended = false, post_rule = $15, game = $16, card_cleanup = $17
+             WHERE id = $1",
+        )
+        .bind(s.id)
+        .bind(&d.title)
+        .bind(&d.description)
+        .bind(d.duration)
+        .bind(d.tanks)
+        .bind(d.healers)
+        .bind(d.dps)
+        .bind(d.deadline)
+        .bind(plan.first_day)
+        .bind(plan.local_time)
+        .bind(plan.pat.mask)
+        .bind(plan.pat.every_weeks)
+        .bind(plan.pat.until)
+        .bind(plan.pat.count)
+        .bind(&post_rule)
+        .bind(&d.game)
+        .bind(&d.card_cleanup)
+        .execute(&mut *tx)
+        .await?;
+        s.id
+    } else {
+        // The old part ends the day before; its earlier raids stay as they are.
+        let last_old = plan.from_day.min(plan.first_day) - chrono::Duration::days(1);
+        sqlx::query(
+            "UPDATE event_series SET ended = true,
+                    until_date = LEAST(COALESCE(until_date, $2), $2)
+             WHERE id = $1",
+        )
+        .bind(s.id)
+        .bind(last_old)
+        .execute(&mut *tx)
+        .await?;
+        let id = st.ids.next_id();
+        sqlx::query(
+            "INSERT INTO event_series (id, guild_id, channel_id, creator_id, title, description,
+                 duration_minutes, max_tanks, max_healers, max_dps, signup_deadline_minutes,
+                 time_zone, start_date, local_time, weekdays, every_weeks, until_date, max_count,
+                 post_rule, game, card_cleanup, split_from)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+                     $18, $19, $20, $21, $22)",
+        )
+        .bind(id)
+        .bind(s.guild_id)
+        .bind(s.channel_id)
+        .bind(s.creator_id)
+        .bind(&d.title)
+        .bind(&d.description)
+        .bind(d.duration)
+        .bind(d.tanks)
+        .bind(d.healers)
+        .bind(d.dps)
+        .bind(d.deadline)
+        .bind(&s.time_zone)
+        .bind(plan.first_day)
+        .bind(plan.local_time)
+        .bind(plan.pat.mask)
+        .bind(plan.pat.every_weeks)
+        .bind(plan.pat.until)
+        .bind(plan.pat.count)
+        .bind(&post_rule)
+        .bind(&d.game)
+        .bind(&d.card_cleanup)
+        .bind(s.id)
+        .execute(&mut *tx)
+        .await?;
+        id
+    };
+    let (new_ids, adopted) = materialise_tx(st, &mut tx, target, true, &plan.keep).await?;
+    // Raids the new pattern doesn't have (sign-ups go with them).
+    let gone: Vec<(i64, Option<i64>)> = sqlx::query_as(
+        "DELETE FROM events WHERE id = ANY($1) AND starts_at > now() RETURNING id, message_id",
+    )
+    .bind(&plan.removed)
+    .fetch_all(&mut *tx)
+    .await?;
+    let cards: Vec<i64> = gone.iter().filter_map(|g| g.1).collect();
+    sqlx::query("DELETE FROM messages WHERE id = ANY($1)")
+        .bind(&cards)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    let audience = Audience::Channel {
+        guild_id: s.guild_id,
+        channel_id: s.channel_id,
+    };
+    for (id, message_id) in &gone {
+        if let Some(message_id) = message_id {
+            st.dispatch(
+                audience.clone(),
+                ServerEvent::MessageDelete {
+                    id: *message_id,
+                    channel_id: s.channel_id,
+                },
+            );
+        }
+        st.dispatch(
+            audience.clone(),
+            ServerEvent::EventDelete {
+                id: *id,
+                guild_id: s.guild_id,
+            },
+        );
+    }
+    dispatch_events(st, &new_ids).await;
+    let label = pattern_label(plan.pat.mask, plan.pat.every_weeks);
+    let gone_ids: Vec<i64> = gone.iter().map(|g| g.0).collect();
+    for r in removed_rows.iter().filter(|r| gone_ids.contains(&r.id)) {
+        for (_, uid) in told.iter().filter(|(e, _)| *e == r.id) {
+            if let Err(e) = dm_moved(st, r, *uid, &s.time_zone, &label).await {
+                tracing::warn!(error = %e, "couldn't DM someone about a moved raid");
+            }
+        }
+    }
+    // Kept raids: new time and details; posting times and the bench follow.
+    refresh_post_times(st, &adopted).await?;
+    for &id in &adopted {
+        let promoted = {
+            let mut tx = st.db.begin().await?;
+            let r = lock_event(&mut tx, id).await?;
+            let promoted = fill_slots(&mut tx, &r).await?;
+            tx.commit().await?;
+            promoted
+        };
+        let r = load_row(&st.db, id).await?;
+        notify_promoted(st, &r, promoted).await;
+        broadcast(st, id).await?;
+    }
+    let mut touched = new_ids.clone();
+    touched.extend(&adopted);
+    post_due_cards(st, None, Some(touched.as_slice())).await?;
+
+    let old_label = pattern_label(s.weekdays, s.every_weeks);
+    crate::audit::Entry::new(s.guild_id, user_id, "raid_repeat_update")
+        .target("raid", row.id, d.title.clone())
+        .details(format!(
+            "{old_label} → {label}, from {}: {} raid{} cancelled ({} sign-up{} dropped), {} kept, {} new",
+            plan.first_day.min(plan.from_day).format("%a %-d %b %Y"),
+            gone.len(),
+            if gone.len() == 1 { "" } else { "s" },
+            plan.removed_signups,
+            if plan.removed_signups == 1 { "" } else { "s" },
+            adopted.len(),
+            new_ids.len(),
+        ))
+        .save(st)
+        .await;
+
+    let first: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM events WHERE series_id = $1 AND starts_at >= $2 ORDER BY starts_at, id LIMIT 1",
+    )
+    .bind(target)
+    .bind(Utc::now() - chrono::Duration::minutes(30))
+    .fetch_optional(&st.db)
+    .await?;
+    let first = first
+        .ok_or_else(|| AppError::BadRequest("That pattern doesn't have any raids in it.".into()))?;
+    broadcast(st, first).await
+}
+
+fn lower_first(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_lowercase().chain(c).collect(),
+        None => String::new(),
+    }
+}
+
+/// Tells someone the raid they signed up for is off (the pattern changed).
+async fn dm_moved(
+    st: &AppState,
+    row: &EventRow,
+    user_id: i64,
+    tz: &str,
+    label: &str,
+) -> AppResult<()> {
+    let (guild, channel): (String, String) = sqlx::query_as(
+        "SELECT g.name, c.name FROM channels c JOIN guilds g ON g.id = c.guild_id WHERE c.id = $1",
+    )
+    .bind(row.channel_id)
+    .fetch_one(&st.db)
+    .await?;
+    let local = local_time_in(&st.db, row.starts_at, tz).await?;
+    let bot = helper_bot(st, row.guild_id).await?;
+    let dm = super::dms::open_direct(st, bot, user_id).await?;
+    let content = format!(
+        "📅 Heads up: **{}** on {} ({tz}) has been moved or cancelled. The raid now repeats {}, so your sign-up for that day was dropped. Check the calendar in #{channel} ({guild}) for the new dates and sign up again.",
+        row.title,
+        local.format("%a %-d %b, %-I:%M %p"),
+        lower_first(label),
+    );
+    post_bot_message(
+        st,
+        outhouse_common::models::DM_GUILD,
+        dm,
+        bot,
+        None,
+        None,
+        content,
+        Vec::new(),
+    )
+    .await?;
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -1974,4 +2616,61 @@ async fn send_due_reminders(st: &AppState) -> AppResult<()> {
         .await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    #[test]
+    fn pattern_days_follow_weeks_and_ends() {
+        // Mon 2 Nov 2026, Tuesdays and Thursdays every second week.
+        let mask = (1 << 1) | (1 << 3);
+        let days = pattern_days(d(2026, 11, 2), mask, 2, None, None, d(2026, 11, 30), 100);
+        assert_eq!(
+            days,
+            vec![
+                d(2026, 11, 3),
+                d(2026, 11, 5),
+                d(2026, 11, 17),
+                d(2026, 11, 19)
+            ]
+        );
+        // Ends after three, or on a date.
+        assert_eq!(
+            pattern_days(d(2026, 11, 2), mask, 1, None, Some(3), d(2027, 1, 1), 100).len(),
+            3
+        );
+        assert_eq!(
+            pattern_days(
+                d(2026, 11, 2),
+                mask,
+                1,
+                Some(d(2026, 11, 10)),
+                None,
+                d(2027, 1, 1),
+                100
+            ),
+            vec![d(2026, 11, 3), d(2026, 11, 5), d(2026, 11, 10)]
+        );
+        // The first day counts when it matches; a limit caps the list.
+        assert_eq!(
+            pattern_days(d(2026, 11, 3), 1 << 1, 1, None, None, d(2027, 1, 1), 2),
+            vec![d(2026, 11, 3), d(2026, 11, 10)]
+        );
+    }
+
+    #[test]
+    fn labels_read_nicely() {
+        assert_eq!(pattern_label(1 << 6, 1), "Weekly on Sun");
+        assert_eq!(
+            pattern_label((1 << 1) | (1 << 3), 2),
+            "Every 2 weeks on Tue & Thu"
+        );
+        assert_eq!(lower_first("Weekly on Sun"), "weekly on Sun");
+    }
 }

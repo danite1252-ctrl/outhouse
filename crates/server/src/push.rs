@@ -518,7 +518,8 @@ async fn message_push(st: &AppState, guild_id: i64, message: &Message) -> anyhow
              LEFT JOIN notify_levels l ON l.user_id = p.user_id AND l.guild_id = 0
              WHERE p.channel_id = $1 AND p.user_id <> $2
                AND NOT EXISTS (SELECT 1 FROM channel_mutes cm
-                               WHERE cm.user_id = p.user_id AND cm.channel_id = $1)",
+                               WHERE cm.user_id = p.user_id AND cm.channel_id = $1
+                                 AND (cm.muted_until IS NULL OR cm.muted_until > now()))",
         )
         .bind(channel_id)
         .bind(message.author_id)
@@ -532,7 +533,8 @@ async fn message_push(st: &AppState, guild_id: i64, message: &Message) -> anyhow
              LEFT JOIN notify_levels l ON l.user_id = m.user_id AND l.guild_id = $1
              WHERE m.guild_id = $1 AND m.user_id <> $3
                AND NOT EXISTS (SELECT 1 FROM channel_mutes cm
-                               WHERE cm.user_id = m.user_id AND cm.channel_id = $2)",
+                               WHERE cm.user_id = m.user_id AND cm.channel_id = $2
+                                 AND (cm.muted_until IS NULL OR cm.muted_until > now()))",
         )
         .bind(guild_id)
         .bind(channel_id)
@@ -552,6 +554,28 @@ async fn message_push(st: &AppState, guild_id: i64, message: &Message) -> anyhow
     .fetch_optional(&st.db)
     .await?
     .unwrap_or((None, None));
+    // Thread replies say which thread (and open it).
+    let thread_name: Option<String> = match message.thread_id {
+        Some(thread_id) => {
+            sqlx::query_scalar("SELECT name FROM threads WHERE id = $1")
+                .bind(thread_id)
+                .fetch_optional(&st.db)
+                .await?
+        }
+        None => None,
+    };
+    let place = match &thread_name {
+        Some(t) => format!("🧵 {t} (#{})", channel_name.as_deref().unwrap_or("chat")),
+        None => format!("#{}", channel_name.as_deref().unwrap_or("chat")),
+    };
+    let tag = match message.thread_id {
+        Some(t) => format!("th-{t}"),
+        None => format!("ch-{channel_id}"),
+    };
+    let thread_q = message
+        .thread_id
+        .map(|t| format!("&thread={t}"))
+        .unwrap_or_default();
     let mut body = plain_text(&st.db, guild_id, &message.content).await;
     if body.is_empty() {
         body = if let Some(poll) = &message.poll {
@@ -644,13 +668,9 @@ async fn message_push(st: &AppState, guild_id: i64, message: &Message) -> anyhow
                 Some(name) if !name.is_empty() => format!("{author} in {name}"),
                 _ => author.clone(),
             },
-            ("reply", false) => format!(
-                "{author} replied in #{}",
-                channel_name.as_deref().unwrap_or("chat")
-            ),
+            ("reply", false) => format!("{author} replied in {place}"),
             (_, false) => format!(
-                "{author} in #{}{}",
-                channel_name.as_deref().unwrap_or("chat"),
+                "{author} in {place}{}",
                 guild_name
                     .as_deref()
                     .map(|g| format!(" ({g})"))
@@ -664,8 +684,9 @@ async fn message_push(st: &AppState, guild_id: i64, message: &Message) -> anyhow
             "guild_id": guild_id.to_string(),
             "channel_id": channel_id.to_string(),
             "message_id": message.id.to_string(),
-            "tag": format!("ch-{channel_id}"),
-            "url": format!("/app?guild={guild_id}&channel={channel_id}"),
+            "thread_id": message.thread_id.map(|t| t.to_string()),
+            "tag": tag,
+            "url": format!("/app?guild={guild_id}&channel={channel_id}{thread_q}"),
         });
         send_to_user(st, c.user_id, &payload).await?;
     }

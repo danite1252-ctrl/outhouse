@@ -289,24 +289,45 @@ impl Config {
 /// yet, so it can be changed with `ARMORY_URL_TEMPLATE`).
 pub const DEFAULT_ARMORY_URL_TEMPLATE: &str =
     "https://worldofwarcraft.blizzard.com/en-us/forever/{region}/armory/character/{slug}";
+/// Blizzard's character pages for TBC Anniversary and Classic Era realms.
+pub const DEFAULT_ARMORY_URL_TEMPLATE_TBC: &str =
+    "https://worldofwarcraft.blizzard.com/en-us/classicann/{region}/armory/character/{realm}/{name}";
+pub const DEFAULT_ARMORY_URL_TEMPLATE_ERA: &str =
+    "https://worldofwarcraft.blizzard.com/en-us/classic1x/{region}/armory/character/{realm}/{name}";
 /// A community armory that lists WoW: Forever characters.
 pub const DEFAULT_COMMUNITY_ARMORY_URL_TEMPLATE: &str =
     "https://www.aotc.gg/forever/character/{region}/{slug}";
 
 fn armory_links_from_env() -> Vec<outhouse_common::wow::ArmoryLinkTemplate> {
     let mut out = Vec::new();
-    for (env, label_env, default, label) in [
+    for (env, label_env, default, label, game) in [
         (
             "ARMORY_URL_TEMPLATE",
             "ARMORY_LABEL",
             DEFAULT_ARMORY_URL_TEMPLATE,
             "Armory",
+            "forever",
         ),
         (
             "ARMORY_COMMUNITY_URL_TEMPLATE",
             "ARMORY_COMMUNITY_LABEL",
             DEFAULT_COMMUNITY_ARMORY_URL_TEMPLATE,
             "AoTC.gg",
+            "forever",
+        ),
+        (
+            "ARMORY_URL_TEMPLATE_TBC",
+            "ARMORY_LABEL_TBC",
+            DEFAULT_ARMORY_URL_TEMPLATE_TBC,
+            "Armory",
+            "tbc",
+        ),
+        (
+            "ARMORY_URL_TEMPLATE_ERA",
+            "ARMORY_LABEL_ERA",
+            DEFAULT_ARMORY_URL_TEMPLATE_ERA,
+            "Armory",
+            "era",
         ),
     ] {
         let template = env_opt(env).unwrap_or_else(|| default.into());
@@ -318,6 +339,7 @@ fn armory_links_from_env() -> Vec<outhouse_common::wow::ArmoryLinkTemplate> {
         out.push(outhouse_common::wow::ArmoryLinkTemplate {
             label: env_opt(label_env).unwrap_or_else(|| label.into()),
             template,
+            game: game.into(),
         });
     }
     out

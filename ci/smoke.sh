@@ -877,7 +877,10 @@ call GET "/api/channels/$CHAN/messages?limit=20" | jq -e --arg id "$LK2" '.[] | 
 step "wow: Battle.net linking (mock): WoW: Forever first, re-import updates"
 call GET /api/bnet/status | jq -e '.enabled and (.linked | not)' >/dev/null
 call GET /api/wow/info | jq -e '.armory_enabled and .armory_region == "us" and .regions == ["us","eu","kr","tw"]
-  and (.armory_links | map(.label) == ["Armory","AoTC.gg"]) and (.armory_links[1].template == "https://www.aotc.gg/forever/character/{region}/{slug}")' >/dev/null
+  and (.armory_links | map(.label) == ["Armory","AoTC.gg","Armory","Armory"]) and (.armory_links | map(.game) == ["forever","forever","tbc","era"])
+  and (.armory_links[1].template == "https://www.aotc.gg/forever/character/{region}/{slug}")
+  and (.armory_links[2].template == "https://worldofwarcraft.blizzard.com/en-us/classicann/{region}/armory/character/{realm}/{name}")
+  and (.armory_links[3].template == "https://worldofwarcraft.blizzard.com/en-us/classic1x/{region}/armory/character/{realm}/{name}")' >/dev/null
 # Mockadin Lightforge was added by hand before linking: the import finds him instead of adding him twice.
 MOCKID=$(call POST /api/users/@me/characters '{"name":"Mockadin","last_name":"Lightforge","class":"Paladin","level":58}' | jq -r 'select(.last_synced_at == null and .blizzard_id == null) | .id')
 BEFORE=$(call GET /api/users/@me/characters | jq length)
@@ -989,7 +992,7 @@ NOKEYS=$!
 for i in $(seq 1 60); do curl -fsS "http://127.0.0.1:8081/api/health" >/dev/null 2>&1 && break; sleep 0.5; done
 B8081() { curl -sS -o /tmp/nk -w "%{http_code}" -H "Authorization: Bearer $TOKEN_A" -H "Content-Type: application/json" "$@"; }
 [ "$(B8081 http://127.0.0.1:8081/api/wow/info)" = 200 ]
-jq -e '(.bnet_enabled | not) and (.armory_enabled | not) and (.armory_links | length == 2)' /tmp/nk >/dev/null || { cat /tmp/nk; exit 1; }
+jq -e '(.bnet_enabled | not) and (.armory_enabled | not) and (.armory_links | length == 4)' /tmp/nk >/dev/null || { cat /tmp/nk; exit 1; }
 [ "$(B8081 -X POST -d '{"region":"us","name":"Sunny","last_name":"Skyward"}' http://127.0.0.1:8081/api/wow/armory/lookup)" = 400 ]
 grep -q "deploy/README.md" /tmp/nk
 [ "$(B8081 -X POST http://127.0.0.1:8081/api/characters/$BREEZY/refresh)" = 400 ]

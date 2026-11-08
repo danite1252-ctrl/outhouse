@@ -649,9 +649,15 @@ pub async fn char_command(
     ))
 }
 
-/// "View on Armory" links for a WoW: Forever character: (label, address).
+/// "View on Armory" links for a character: (label, address). WoW: Forever
+/// characters need both names; TBC and Classic Era ones a realm.
 pub fn armory_links(cfg: &crate::state::Config, c: &WowCharacter) -> Vec<(String, String)> {
-    if c.game != "forever" || c.last_name.is_empty() {
+    let ready = match c.game.as_str() {
+        "forever" => !c.last_name.is_empty(),
+        "tbc" | "era" => !c.realm.trim().is_empty() && !c.name.is_empty(),
+        _ => false,
+    };
+    if !ready {
         return Vec::new();
     }
     let region = if c.region.is_empty() {
@@ -661,10 +667,11 @@ pub fn armory_links(cfg: &crate::state::Config, c: &WowCharacter) -> Vec<(String
     };
     cfg.armory_links
         .iter()
+        .filter(|t| t.game == c.game)
         .map(|t| {
             (
                 t.label.clone(),
-                fill_armory_template(&t.template, region, &c.name, &c.last_name),
+                fill_armory_template(&t.template, region, &c.name, &c.last_name, &c.realm),
             )
         })
         .collect()

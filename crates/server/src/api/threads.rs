@@ -6,7 +6,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
 use outhouse_common::gateway::ServerEvent;
-use outhouse_common::models::{channel_kind, CreateThreadRequest, ThreadInfo};
+use outhouse_common::models::{channel_kind, AckRequest, CreateThreadRequest, ThreadInfo};
 use outhouse_common::permissions as p;
 use serde::Deserialize;
 
@@ -237,5 +237,41 @@ pub async fn delete(
         },
     );
     refresh_starter(&st, &access, thread.starter_message_id).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /api/threads/{id}/ack` `{"message_id"}`: you've read the thread up
+/// to that reply (opening it does this). Your other devices hear about it.
+pub async fn ack(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(thread_id): Path<i64>,
+    Json(req): Json<AckRequest>,
+) -> AppResult<StatusCode> {
+    let (thread, access) = load(&st, thread_id, user.id).await?;
+    // Never past the thread's newest reply.
+    let upto = thread
+        .last_message_id
+        .map_or(req.message_id, |l| req.message_id.min(l));
+    let last_read_id: i64 = sqlx::query_scalar(
+        "INSERT INTO thread_reads (user_id, thread_id, last_read_id) VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, thread_id)
+         DO UPDATE SET last_read_id = GREATEST(thread_reads.last_read_id, EXCLUDED.last_read_id)
+         RETURNING last_read_id",
+    )
+    .bind(user.id)
+    .bind(thread_id)
+    .bind(upto)
+    .fetch_one(&st.db)
+    .await?;
+    st.dispatch(
+        crate::state::Audience::User(user.id),
+        ServerEvent::ThreadAck {
+            guild_id: access.channel.guild_id,
+            channel_id: thread.channel_id,
+            thread_id,
+            last_read_id,
+        },
+    );
     Ok(StatusCode::NO_CONTENT)
 }

@@ -213,6 +213,26 @@ pub enum ServerEvent {
         #[serde(with = "as_string")]
         channel_id: i64,
     },
+    /// You read a thread up to a reply (sent to all of your own clients).
+    ThreadAck {
+        #[serde(with = "as_string")]
+        guild_id: i64,
+        #[serde(with = "as_string")]
+        channel_id: i64,
+        #[serde(with = "as_string")]
+        thread_id: i64,
+        #[serde(with = "as_string")]
+        last_read_id: i64,
+    },
+    /// You muted or unmuted a channel or DM (sent to all of your own
+    /// clients). `until`: when the mute wears off (none: until unmuted).
+    ChannelMuteUpdate {
+        #[serde(with = "as_string")]
+        channel_id: i64,
+        muted: bool,
+        #[serde(default)]
+        until: Option<chrono::DateTime<chrono::Utc>>,
+    },
     /// A DM you're in was created or changed (renamed, people added or left).
     DmUpdate(DmChannel),
     /// You left a group DM.
