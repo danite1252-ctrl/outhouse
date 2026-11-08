@@ -157,7 +157,7 @@ function sbBody() {
       }, el("span", { class: "sb-caret" }, "▾"), el("span", {}, sec.title)),
       isClosed ? null : sec.sounds.length
         ? el("div", { class: "sb-grid" }, sec.sounds.map(sbTile))
-        : el("p", { class: "muted small sb-empty" }, sec.key === "fav" ? "Hover a sound and tap ☆ to keep it here." : "No sounds here yet.")));
+        : el("p", { class: "muted small sb-empty" }, sec.key === "fav" ? "Tap ☆ on a sound to keep it here." : "No sounds here yet.")));
   }
   if (searching && !shown) list.append(el("p", { class: "muted sb-none" }, `No sounds match “${sb.query.trim()}”.`));
   const rail = el("nav", { class: "sb-rail", "aria-label": "Soundboard sections" },
@@ -327,7 +327,7 @@ async function openManageSounds() {
           } }, snd.hidden ? "Hidden · Show" : "Shown · Hide")))),
       el("div", { class: "sbm-sub" },
         el("h3", {}, `Uploaded sounds (${mine.length})`),
-        el("button", { type: "button", class: "primary small-btn", onclick: () => addSoundDialog(gid, draw) }, "＋ Add sound")),
+        el("button", { type: "button", class: "primary sbm-add", onclick: () => addSoundDialog(gid, draw) }, "＋ Add sound")),
       mine.length ? el("div", { class: "sbm-list" }, mine.map(row)) : el("p", { class: "muted" }, "No uploaded sounds yet."),
     );
   };

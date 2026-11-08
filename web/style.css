@@ -1415,6 +1415,7 @@ dialog.edit-channel .settings-nav .ec-delete-tab { gap: 0; white-space: pre; }
   .sb-board { width: 100%; max-width: 100%; height: min(78dvh, 620px); padding-bottom: var(--safe-bottom); }
   .sb-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sb-foot > .muted { display: none; }
+  .sb-foot:not(:has(.sb-manage-link)) { display: none; }
 }
 
 /* Manage sounds */
@@ -1424,7 +1425,7 @@ dialog.sb-manage { width: min(560px, 94vw); max-height: 86dvh; overflow-y: auto;
 dialog.sb-manage h3 { margin: 18px 0 4px; font-size: 15px; }
 dialog.sb-manage p { margin: 0 0 8px; }
 .sbm-sub { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.sbm-sub .primary { height: 32px; }
+.sbm-sub .primary.sbm-add { height: 32px; padding: 0 14px; font-size: 13px; }
 .sbm-classics, .sbm-list { display: grid; gap: 6px; }
 .sbm-row { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); }
 .sbm-row input { min-width: 0; flex: 1; height: 32px; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--night); }
