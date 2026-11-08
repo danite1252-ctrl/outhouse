@@ -151,6 +151,7 @@ updateComposer = function (...args) {
   const ch = state.home ? null : chById(state.channelId);
   const gated = !!(ch && isGated(ch));
   $("composer-wrap").classList.toggle("age-gated", gated);
+  $("app").classList.toggle("age-gated", gated);
   if (gated) {
     input.disabled = true;
     input.placeholder = "Age-restricted channel";
@@ -414,7 +415,7 @@ function openEditChannel(channel, tab = "overview") {
       el("h3", { class: "ec-kind" }, current.kind === VOICE ? "VOICE CHANNEL" : "TEXT CHANNEL"),
       ...tabs.map(([key, label]) => el("button", { class: key === active ? "active" : "", "data-tab": key, onclick: () => draw(key) }, label)),
       can("manage_channels", ch.id) ? el("div", { class: "ec-sep" }) : null,
-      can("manage_channels", ch.id) ? el("button", { class: `ec-delete-tab${active === "delete" ? " active" : ""}`, "data-tab": "delete", onclick: () => draw("delete") }, "Delete channel") : null);
+      can("manage_channels", ch.id) ? el("button", { class: `ec-delete-tab${active === "delete" ? " active" : ""}`, "data-tab": "delete", onclick: () => draw("delete") }, "Delete", el("span", { class: "ec-wide" }, " channel")) : null);
     if (active === "overview") dirty = drawChannelOverview(main, current, dialog);
     else if (active === "permissions") drawChannelPermissions(main, current, dialog);
     else drawChannelDelete(main, current, dialog);
@@ -443,14 +444,17 @@ function drawChannelOverview(main, ch, dialog) {
   showNameHint();
 
   const topic = el("textarea", { rows: 4, maxlength: TOPIC_MAX, placeholder: DEFAULT_TOPIC_HINT, "aria-label": "Channel topic" });
-  topic.value = ch.topic || "";
+  // Mentions show as @names while editing (stored as <@id> so renames don't break them).
+  const decodeTopic = (t) => (t || "").replace(/<@(&?)(\d+)>/g, (_, amp, id) => mentionLabel(amp ? "role" : "user", id));
+  const encodeTopic = (t) => encodeMentions(t.trim());
+  topic.value = decodeTopic(ch.topic);
   const count = el("span", { class: "ec-count" });
   const preview = el("div", { class: "ec-topic-preview" });
   const showTopic = () => {
-    const n = [...topic.value].length;
+    const n = [...encodeTopic(topic.value)].length;
     count.textContent = `${n} / ${TOPIC_MAX}`;
     count.classList.toggle("near", n > TOPIC_MAX - 50);
-    const v = topic.value.trim();
+    const v = encodeTopic(topic.value);
     preview.hidden = !v;
     preview.replaceChildren(el("span", { class: "ec-preview-label" }, "Preview"), el("div", { class: "ec-preview-text" }, renderText(v)));
   };
@@ -480,7 +484,7 @@ function drawChannelOverview(main, ch, dialog) {
 
   const values = () => ({
     name: name.value.trim(),
-    topic: topic.value.trim(),
+    topic: encodeTopic(topic.value),
     slowmode_secs: SLOWMODES[slider.value],
     content_mode: mode,
   });
@@ -504,7 +508,7 @@ function drawChannelOverview(main, ch, dialog) {
     if (local && local !== ch) Object.assign(local, updated, { last_read_id: lastRead });
     Object.assign(ch, updated, { last_read_id: lastRead });
     name.value = updated.name;
-    topic.value = updated.topic;
+    topic.value = decodeTopic(updated.topic);
     showNameHint(); showTopic();
     toast("Channel saved.");
     renderChannels();
@@ -513,7 +517,7 @@ function drawChannelOverview(main, ch, dialog) {
   } }, "Save changes");
   const reset = el("button", { class: "link", onclick: () => {
     name.value = ch.name;
-    topic.value = ch.topic || "";
+    topic.value = decodeTopic(ch.topic);
     slider.value = Math.max(0, SLOWMODES.indexOf(ch.slowmode_secs || 0));
     mode = ch.content_mode || "default";
     for (const r of modeBox.querySelectorAll("input")) r.checked = r.value === mode;

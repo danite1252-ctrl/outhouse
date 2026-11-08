@@ -1348,3 +1348,11 @@ dialog.edit-channel .settings-nav .ec-delete-tab:hover, dialog.edit-channel .set
   .spoiler-bar { margin: -8px 4px 8px; }
   .age-gate { padding: 26px 18px 20px; }
 }
+.app.age-gated #pins-btn, .app.age-gated #threads-btn { visibility: hidden; }
+dialog.edit-channel .ec-perm-targets h3 { font-size: 11px !important; margin: 4px 8px 6px; }
+dialog.edit-channel .ec-perm-targets h3:first-child { display: none; }
+.ec-perm-page > p { font-size: 13px; line-height: 1.45; }
+@media (max-width: 760px) {
+  dialog.edit-channel .ec-wide { display: none; }
+  .ec-ticks span:nth-child(13) { display: none; }
+}

@@ -1568,7 +1568,7 @@ with sync_playwright() as p:
     sd.fill("#composer-input", "Who's got the frost resist gear?")
     sd.keyboard.press("Enter")
     sd.wait_for_selector("#slowmode-note.cooling", timeout=10000)
-    sd.wait_for_timeout(1200)
+    sd.wait_for_timeout(2500)
     sd.screenshot(path=f"{SHOTS}/171-slowmode-countdown.png")
     sd.fill("#composer-input", "too quick")
     sd.keyboard.press("Enter")
