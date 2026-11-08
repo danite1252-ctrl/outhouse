@@ -14,3 +14,4 @@
 10024	INFO	ZAP's spider submits the sign-in form without JavaScript; the form is method=post so a password never lands in a URL
 10111	INFO	Yes, /api/auth/login is a sign-in request
 100001	INFO	ZAP expected JSON from HTML pages and the reverse in its API pass
+10202	INFO	The sign-in form is sent by JavaScript with no cookies involved (the API uses bearer tokens), so there's nothing for CSRF to ride on
