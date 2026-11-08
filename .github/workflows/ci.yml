@@ -106,8 +106,8 @@ jobs:
           curl -fsS http://127.0.0.1:7880 >/dev/null || { docker logs livekit; exit 1; }
           python3 ci/wow_mock.py 8099 > /tmp/wow-mock-ui.log 2>&1 &
           ./target/debug/outhouse-server > /tmp/ui-server.log 2>&1 &
-          python ci/ui_test.py
           python ci/landing_test.py
+          python ci/ui_test.py
       - name: Screenshots (base64, for review)
         if: always()
         run: |
