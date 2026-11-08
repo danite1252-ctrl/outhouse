@@ -767,7 +767,7 @@ function openCharacterDialog(existing, onSaved) {
   }, p)));
   // TBC and Classic Era: which region's Armory the "View on Armory" link opens.
   const regionList = state.wowInfo?.regions?.length ? state.wowInfo.regions : ["us", "eu", "kr", "tw"];
-  const realmRegion = el("select", { class: "select", "aria-label": "Region" }, regionList.map((r) => el("option", { value: r }, r.toUpperCase())));
+  const realmRegion = el("select", { class: "select", "aria-label": "Armory region" }, regionList.map((r) => el("option", { value: r }, r.toUpperCase())));
   realmRegion.value = c?.region || prefs.get("armory_region", state.wowInfo?.armory_region || "us");
   const nameRow = el("div", { class: "raid-row even" });
   const placeRow = el("div", { class: "raid-row even char-place" });

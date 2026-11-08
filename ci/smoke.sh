@@ -1088,6 +1088,20 @@ call POST "/api/channels/$CHAN/wow/item" '{"query":"990001"}' | jq -e '.embeds[0
   and (.description | contains("Item Level 62")) and (.footer | contains("Battle.net")) and (.thumbnail_url | endswith("/icons/inv_belt_13.jpg"))' >/dev/null
 call POST "/api/channels/$CHAN/wow/item" '{"query":"Skyborne Sash"}' | jq -e '.embeds[0].title == "Skyborne Sash"' >/dev/null
 
+step "wow: Armory links for TBC Anniversary and Classic Era characters"
+TBCC=$(call POST /api/users/@me/characters '{"game":"tbc","name":"Kaelthas","realm":"Pyrewood Village","region":"EU","race":"Blood Elf","class":"Mage","level":70}')
+jq -e '.game == "tbc" and .region == "eu" and .realm == "Pyrewood Village"' <<<"$TBCC" >/dev/null || { echo "odd TBC character: $TBCC"; exit 1; }
+call POST "/api/channels/$CHAN/wow/char" '{"query":"Kaelthas-Pyrewood Village"}' | jq -e '.embeds[0]
+  | .url == "https://worldofwarcraft.blizzard.com/en-us/classicann/eu/armory/character/pyrewood-village/kaelthas"
+  and (.fields[] | select(.name == "Armory") | .value == "Armory: https://worldofwarcraft.blizzard.com/en-us/classicann/eu/armory/character/pyrewood-village/kaelthas")' >/dev/null \
+  || { echo "no TBC armory link"; cat /tmp/body; exit 1; }
+# Classic Era, no region set: the server's (us).
+call POST /api/users/@me/characters '{"game":"era","name":"Grimbold","realm":"Old Blanchy","class":"Warrior","level":60}' >/dev/null
+call POST "/api/channels/$CHAN/wow/char" '{"query":"Grimbold-Old Blanchy"}' | jq -e '.embeds[0]
+  | .url == "https://worldofwarcraft.blizzard.com/en-us/classic1x/us/armory/character/old-blanchy/grimbold"
+  and (.fields[] | select(.name == "Armory") | .value | contains("classic1x/us/armory/character/old-blanchy/grimbold"))' >/dev/null \
+  || { echo "no Era armory link"; cat /tmp/body; exit 1; }
+
 step "wow: without Battle.net keys"
 BIND_ADDR=127.0.0.1:8081 BNET_CLIENT_ID= BNET_CLIENT_SECRET= ./target/debug/outhouse-server >/tmp/outhouse-nokeys.log 2>&1 &
 NOKEYS=$!

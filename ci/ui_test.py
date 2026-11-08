@@ -1612,7 +1612,10 @@ with sync_playwright() as p:
     b6.keyboard.press("Escape")
     # Mute a channel and set the outhouse's level from right-click menus.
     b6.click("#text-channels .channel:has-text('general')", button="right")
-    b6.click(".menu button:has-text('Mute channel')")
+    b6.hover(".menu button:has-text('Mute channel')")
+    b6.wait_for_selector(".menu button:has-text('For 8 hours')")
+    b6.screenshot(path=f"{SHOTS}/96b-channel-mute-menu.png")
+    b6.click(".menu button:has-text('Until I turn it back on')")
     b6.wait_for_selector("#text-channels .channel.muted-channel:has-text('general')", timeout=10000)
     b6.click(f".guild[title='UI Test Guild']", button="right")
     b6.hover(".menu button:has-text('Notifications')")
@@ -2349,6 +2352,25 @@ with sync_playwright() as p:
         mp.wait_for_timeout(300)
         mp.screenshot(path=f"{SHOTS}/{shot}-{label}-muted-dm-list.png")
         mp.close()
+
+    # TBC Anniversary and Classic Era characters get "View on Armory" links too.
+    api("POST", "/api/users/@me/characters", {"game": "era", "name": "Oldtimer", "realm": "Old Blanchy", "region": "eu", "race": "Dwarf", "class": "Hunter", "level": 60}, TOKEN)
+    ar = fresh(TOKEN, "armory-classic", viewport={"width": 1280, "height": 800})
+    ar.evaluate("openUserSettings('look')")
+    ar.wait_for_selector(".chars-settings .char-row:has-text('Gemcutter') .armory-links a", timeout=10000)
+    tbc_href = ar.get_attribute(".chars-settings .char-row:has-text('Gemcutter') .armory-links a >> nth=0", "href")
+    assert tbc_href == "https://worldofwarcraft.blizzard.com/en-us/classicann/us/armory/character/spineshatter/gemcutter", tbc_href
+    era_href = ar.get_attribute(".chars-settings .char-row:has-text('Oldtimer') .armory-links a >> nth=0", "href")
+    assert era_href == "https://worldofwarcraft.blizzard.com/en-us/classic1x/eu/armory/character/old-blanchy/oldtimer", era_href
+    ar.evaluate("[...document.querySelectorAll('.chars-settings .char-row')].find((r) => r.textContent.includes('Gemcutter'))?.scrollIntoView({block: 'center'})")
+    ar.wait_for_timeout(250)
+    ar.screenshot(path=f"{SHOTS}/2113-desktop-classic-armory-links.png")
+    ar.click(".chars-settings .char-row:has-text('Gemcutter') button:has-text('Edit')")
+    ar.wait_for_selector(".char-dialog select[aria-label='Armory region']", timeout=10000)
+    assert ar.input_value(".char-dialog select[aria-label='Armory region']") == "us"
+    ar.wait_for_timeout(200)
+    ar.screenshot(path=f"{SHOTS}/2114-desktop-tbc-character-region.png")
+    ar.close()
 
 
     browser.close()
