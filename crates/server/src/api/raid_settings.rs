@@ -1,5 +1,6 @@
-//! Outhouse settings → Raids: which roles are raid managers, and the channel
-//! "Plan a raid" starts on.
+//! Outhouse settings → Raids: which roles are raid managers, the channel
+//! "Plan a raid" starts on, and whether old sign-up cards are removed from
+//! chat by default.
 //!
 //! A raid manager runs every raid in the outhouse (moves people between
 //! roster and bench, removes sign-ups, takes attendance, edits and cancels
@@ -34,9 +35,12 @@ pub async fn load(db: &PgPool, guild_id: i64) -> AppResult<RaidSettings> {
             .fetch_optional(db)
             .await?
             .flatten();
+    let (series, single) = super::events::card_cleanup_defaults(db, guild_id).await?;
     Ok(RaidSettings {
         manager_role_ids,
         default_channel_id,
+        card_cleanup_series: Some(series),
+        card_cleanup_single: Some(single),
     })
 }
 
@@ -76,6 +80,14 @@ async fn role_names(db: &PgPool, ids: &[i64]) -> AppResult<String> {
             .fetch_all(db)
             .await?;
     Ok(names.join(", "))
+}
+
+fn cleanup_label(v: &str) -> &'static str {
+    match v {
+        "after" => "3 hours after it ends",
+        "next" => "when the next raid's sign-ups go up",
+        _ => "keep it",
+    }
 }
 
 async fn channel_label(db: &PgPool, id: Option<i64>) -> AppResult<String> {
@@ -144,6 +156,32 @@ pub async fn set(
     }
 
     let before = load(&st.db, guild_id).await?;
+    // Left out: unchanged.
+    let series_cleanup = match req.card_cleanup_series.as_deref().map(str::trim) {
+        None => before
+            .card_cleanup_series
+            .clone()
+            .unwrap_or_else(|| "next".into()),
+        Some(v @ ("off" | "after" | "next")) => v.to_string(),
+        Some(_) => {
+            return Err(AppError::BadRequest(
+                "Unknown choice for old repeating raid cards.".into(),
+            ))
+        }
+    };
+    let single_cleanup = match req.card_cleanup_single.as_deref().map(str::trim) {
+        None => before
+            .card_cleanup_single
+            .clone()
+            .unwrap_or_else(|| "off".into()),
+        Some(v @ ("off" | "after")) => v.to_string(),
+        Some(_) => {
+            return Err(AppError::BadRequest(
+                "One-off raids can keep their card or have it removed 3 hours after the raid."
+                    .into(),
+            ))
+        }
+    };
     let mut tx = st.db.begin().await?;
     sqlx::query("DELETE FROM raid_manager_roles WHERE guild_id = $1")
         .bind(guild_id)
@@ -157,11 +195,18 @@ pub async fn set(
     .execute(&mut *tx)
     .await?;
     sqlx::query(
-        "INSERT INTO raid_settings (guild_id, default_channel_id) VALUES ($1, $2)
-         ON CONFLICT (guild_id) DO UPDATE SET default_channel_id = EXCLUDED.default_channel_id",
+        "INSERT INTO raid_settings (guild_id, default_channel_id, card_cleanup_series,
+                                    card_cleanup_single)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (guild_id) DO UPDATE
+             SET default_channel_id = EXCLUDED.default_channel_id,
+                 card_cleanup_series = EXCLUDED.card_cleanup_series,
+                 card_cleanup_single = EXCLUDED.card_cleanup_single",
     )
     .bind(guild_id)
     .bind(req.default_channel_id)
+    .bind(&series_cleanup)
+    .bind(&single_cleanup)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -187,6 +232,26 @@ pub async fn set(
             channel_label(&st.db, before.default_channel_id).await?,
             channel_label(&st.db, after.default_channel_id).await?
         ));
+    }
+    for (what, old, new) in [
+        (
+            "Old repeating raid cards",
+            &before.card_cleanup_series,
+            &after.card_cleanup_series,
+        ),
+        (
+            "Old one-off raid cards",
+            &before.card_cleanup_single,
+            &after.card_cleanup_single,
+        ),
+    ] {
+        if old != new {
+            details.push(format!(
+                "{what}: {} → {}",
+                cleanup_label(old.as_deref().unwrap_or("")),
+                cleanup_label(new.as_deref().unwrap_or(""))
+            ));
+        }
     }
     if !details.is_empty() {
         crate::audit::Entry::new(guild_id, user.id, "raid_settings_update")

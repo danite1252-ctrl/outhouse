@@ -48,7 +48,7 @@ function raidWindow(className, onClose) {
 
 const closeX = (dialog) => el("button", { type: "button", class: "icon-btn raid-close", title: "Close", "aria-label": "Close", onclick: () => dialog.close() }, "✕");
 
-// ---------- One raid in a window (for raids whose card isn't in chat yet) ----------
+// ---------- One raid in a window (for raids whose card isn't in chat yet, or was removed) ----------
 
 const raidCard = { dialog: null, ev: null, body: null };
 
@@ -58,7 +58,8 @@ function openRaidCard(ev) {
   raidCard.dialog = dialog;
   raidCard.body = el("div", { class: "raid-card-body" });
   dialog.append(el("div", { class: "raid-card-head" },
-    el("span", { class: "muted small" }, signupsNotOpen(ev) ? `📬 ${opensText(ev)} (the sign-up post goes up in chat then).` : ""), closeX(dialog)), raidCard.body);
+    el("span", { class: "muted small" }, signupsNotOpen(ev) ? `📬 ${opensText(ev)} (the sign-up post goes up in chat then).`
+      : ev.card_removed ? "🧹 Its chat card was removed after the raid; everything's still here." : ""), closeX(dialog)), raidCard.body);
   drawRaidCard();
 }
 

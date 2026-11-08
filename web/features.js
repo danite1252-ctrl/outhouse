@@ -477,6 +477,19 @@ function postTimeFor(rule, start) {
   return d;
 }
 
+// "Remove the chat card after the raid" (the raid itself always stays).
+const CARD_CLEANUP = [["off", "Keep it"], ["after", "3 hours after it ends"], ["next", "When the next raid's sign-ups go up"]];
+const CARD_CLEANUP_HINT = {
+  off: "The sign-up card stays in chat.",
+  after: "The card leaves chat 3 hours after the raid ends. The raid stays in the calendar with its sign-ups and attendance.",
+  next: "Each raid's card leaves chat when the next raid's sign-ups go up (if those go up before it has ended, 3 hours after it ends). The raid stays in the calendar with its sign-ups and attendance.",
+};
+// What the dialog starts on: the outhouse's choice (Outhouse settings → Raids).
+function cardCleanupDefault(series) {
+  const s = state.raidSettings?.guild_id === state.guildId ? state.raidSettings : null;
+  return series ? (s?.card_cleanup_series || "next") : (s?.card_cleanup_single || "off");
+}
+
 // The card isn't up yet: sign-ups open later.
 const signupsNotOpen = (ev) => !ev.message_id && !!ev.signups_open_at && Date.now() < new Date(ev.signups_open_at).getTime();
 const opensText = (ev) => `Sign-ups open ${fullDay(new Date(ev.signups_open_at))}`;
@@ -601,10 +614,31 @@ function openRaidDialog(existing = null, { scope = "one", date = null } = {}) {
   });
   repeat.addEventListener("change", () => { repeatBox.hidden = repeat.value === "0"; postDefaults(); });
   paintPost();
-  // Editing one raid whose post is already up: nothing to choose.
-  const postedAlready = ev && ev.message_id && scope !== "future";
+  // Editing one raid whose post is already up (or was taken down): nothing to choose.
+  const postedAlready = ev && (ev.message_id || ev.card_removed) && scope !== "future";
   const postField = postedAlready ? null : el("div", { class: "field post-field" }, "Post sign-ups",
     el("div", { class: "post-row" }, postMode, postExtra), postPreview);
+
+  // Removing the chat card after the raid.
+  const isSeries = () => (ev ? !!ev.series_id : repeat.value !== "0");
+  let cleanupTouched = false;
+  const cleanup = el("select", { class: "select", "aria-label": "Remove the chat card after the raid" });
+  const cleanupHint = el("p", { class: "muted small cleanup-hint", style: "margin:0" });
+  const paintCleanup = (value) => {
+    const allowed = CARD_CLEANUP.filter(([v]) => v !== "next" || isSeries());
+    const want = allowed.some(([v]) => v === value) ? value : cardCleanupDefault(isSeries());
+    cleanup.replaceChildren(...allowed.map(([v, label]) => el("option", { value: v, selected: v === want }, label)));
+    cleanup.value = want;
+    cleanupHint.textContent = CARD_CLEANUP_HINT[cleanup.value] ?? "";
+  };
+  paintCleanup(ev ? (ev.card_cleanup || "off") : cardCleanupDefault(isSeries()));
+  cleanup.addEventListener("change", () => { cleanupTouched = true; paintCleanup(cleanup.value); });
+  repeat.addEventListener("change", () => paintCleanup(cleanupTouched ? cleanup.value : cardCleanupDefault(isSeries())));
+  const cardGone = ev?.card_removed && scope !== "future";
+  const cleanupField = cardGone
+    ? el("p", { class: "muted small cleanup-gone", style: "margin:0" }, "🧹 This raid's chat card has been removed. The raid, its sign-ups and attendance are still here.")
+    : el("div", { class: "field cleanup-field" },
+      el("label", { class: "cleanup-label" }, "Remove the chat card after the raid", cleanup), cleanupHint);
 
   const heading = !ev ? "Plan a raid" : !ev.series_id ? "Edit raid" : scope === "future" ? "Edit this and future raids" : "Edit this raid";
   const form = el("form", { method: "dialog" },
@@ -623,6 +657,7 @@ function openRaidDialog(existing = null, { scope = "one", date = null } = {}) {
     ev ? null : el("label", { class: "field" }, "Repeat", repeat),
     ev ? null : repeatBox,
     postField,
+    cleanupField,
     el("div", { class: "raid-row even" },
       el("label", { class: "field" }, "Size", size),
       el("label", { class: "field" }, "Sign-ups close", deadline)),
@@ -655,6 +690,7 @@ function openRaidDialog(existing = null, { scope = "one", date = null } = {}) {
       game: game.value,
     };
     if (postField && (!ev || postTouched)) body.post_rule = { ...currentRule(), time_zone: tz };
+    if (!cardGone && (!ev || cleanupTouched)) body.card_cleanup = cleanup.value;
     if (ev) {
       body.scope = scope;
       applyEventReply(await tryApi("PATCH", `/api/events/${ev.id}`, body).catch(() => null));

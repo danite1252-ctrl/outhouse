@@ -1618,7 +1618,8 @@ with sync_playwright() as p:
         if rs["manager_role_ids"] == [raid_leader["id"]]:
             break
         rm.wait_for_timeout(200)
-    assert rs == {"manager_role_ids": [raid_leader["id"]], "default_channel_id": chan["id"]}, rs
+    assert rs == {"manager_role_ids": [raid_leader["id"]], "default_channel_id": chan["id"],
+                  "card_cleanup_series": "next", "card_cleanup_single": "off"}, rs
     rm.keyboard.press("Escape")
     rm.wait_for_selector("dialog.settings", state="detached")
     # Plan a raid starts on the sign-up channel even from another channel.
@@ -1958,6 +1959,110 @@ with sync_playwright() as p:
         pg.keyboard.press("Escape")
         pg.wait_for_selector("dialog.nick-dialog", state="detached")
         pg.close()
+
+
+    # ---- Old raid cards removed from chat after the raid ----
+    # A weekly raid whose first raid ended 5 minutes ago: every card goes up
+    # straight away, so the first one's card leaves chat at once.
+    tidy_ch = api("POST", f"/api/guilds/{G}/channels", {"name": "weekly-raids"}, TOKEN)
+    tstart = time.time() - 20 * 60
+    tidy = api("POST", f"/api/channels/{tidy_ch['id']}/events", {
+        "title": "AQ20 weekly", "description": "Ruins of Ahn'Qiraj, bring nature resist.", "starts_at": iso(tstart), "duration_minutes": 15,
+        "post_rule": {"mode": "now"}, "repeat": {"weekdays": [time.gmtime(tstart).tm_wday], "every_weeks": 1, "count": 3, "time_zone": "UTC"},
+    }, TOKEN)
+    assert tidy["event"]["card_removed"] and tidy["event"]["message_id"] is None and tidy["event"]["card_cleanup"] == "next", tidy
+    TID = tidy["event"]["id"]
+    api("PUT", f"/api/events/{TID}/signup", {"status": "yes", "role": "tank", "class": "Warrior", "spec": "Protection", "user_id": DAVE}, TOKEN)
+    api("PUT", f"/api/events/{TID}/signup", {"status": "yes", "role": "dps", "class": "Mage", "spec": "Frost", "user_id": ERIN}, TOKEN)
+    later_ids = [e["id"] for e in api("GET", f"/api/guilds/{G}/events", None, TOKEN) if e.get("series_id") == tidy["event"]["series_id"]]
+    assert len(later_ids) == 2, later_ids
+    cleanup_sel = ".raid-dialog select[aria-label='Remove the chat card after the raid']"
+    cleanup_opts = "s => [...s.options].map((o) => o.value)"
+    td = fresh(TOKEN, "tidy-desktop", viewport={"width": 1280, "height": 800})
+    td.click(".channel:has-text('weekly-raids')")
+    td.wait_for_selector("#messages .event-card:has-text('AQ20 weekly')", timeout=10000)
+    td.wait_for_timeout(300)
+    n_cards = td.evaluate("document.querySelectorAll('#messages .event-card').length")
+    assert n_cards == 2, f"expected only the next two raids' cards in chat, got {n_cards}"
+    # Plan a raid: Off for one-off raids, "when the next raid's sign-ups go up" once it repeats.
+    td.click("#raid-btn")
+    td.wait_for_selector(".raid-list button.primary")
+    td.click(".raid-list button.primary")
+    td.wait_for_selector(".raid-dialog[open]")
+    assert td.input_value(cleanup_sel) == "off"
+    assert td.eval_on_selector(cleanup_sel, cleanup_opts) == ["off", "after"]
+    td.select_option(".raid-dialog select[aria-label='Repeat']", "1")
+    assert td.input_value(cleanup_sel) == "next"
+    assert td.eval_on_selector(cleanup_sel, cleanup_opts) == ["off", "after", "next"]
+    td.fill(".raid-dialog input[maxlength='100']", "Molten Core weekly")
+    td.eval_on_selector(".raid-dialog .cleanup-field", "e => e.scrollIntoView({block: 'center'})")
+    td.wait_for_timeout(200)
+    td.screenshot(path=f"{SHOTS}/2000-plan-raid-card-cleanup.png")
+    td.keyboard.press("Escape")
+    td.wait_for_selector(".raid-dialog", state="detached")
+    # Edit this and future: the series' choice; editing the raid whose card went says so.
+    td.evaluate(f"api('GET', '/api/events/{later_ids[0]}').then((ev) => openRaidDialog(ev, {{ scope: 'future' }}))")
+    td.wait_for_selector(".raid-dialog[open] h2:has-text('Edit this and future raids')")
+    assert td.input_value(cleanup_sel) == "next"
+    td.keyboard.press("Escape")
+    td.wait_for_selector(".raid-dialog", state="detached")
+    td.evaluate(f"api('GET', '/api/events/{TID}').then((ev) => openRaidDialog(ev))")
+    td.wait_for_selector(".raid-dialog[open] .cleanup-gone")
+    td.keyboard.press("Escape")
+    td.wait_for_selector(".raid-dialog", state="detached")
+    # The calendar shows the whole raid (roster, invite list, Take attendance) without a chat card.
+    td.evaluate(f"openCalendar(new Date({json.dumps(iso(tstart))}))")
+    td.wait_for_selector(".calendar-dialog .cal-tz")
+    td.wait_for_function("!document.querySelector('.calendar-dialog .cal-tz').textContent.includes('Loading')")
+    tcard = ".calendar-dialog .cal-daypanel .event-card:has-text('AQ20 weekly')"
+    td.wait_for_selector(f"{tcard} .ev-btn.attendance:has-text('Take attendance')", timeout=10000)
+    td.wait_for_selector(f"{tcard} .ev-btn.export")
+    td.wait_for_selector(f"{tcard} .ev-col.tank .su-name")
+    td.eval_on_selector(tcard, "e => e.scrollIntoView({block: 'center'})")
+    td.wait_for_timeout(200)
+    td.screenshot(path=f"{SHOTS}/2001-calendar-raid-without-card.png")
+    td.click(f"{tcard} .ev-btn.attendance")
+    td.wait_for_selector(".attendance-dialog .att-row", timeout=10000)
+    td.click(".attendance-dialog .att-all")
+    td.wait_for_timeout(200)
+    td.screenshot(path=f"{SHOTS}/2002-attendance-without-card.png")
+    td.click(".attendance-dialog button.primary:has-text('Save attendance')")
+    td.wait_for_selector(".attendance-dialog", state="detached", timeout=10000)
+    for _ in range(30):
+        if api("GET", f"/api/events/{TID}", None, TOKEN)["attendance_taken"]:
+            break
+        td.wait_for_timeout(200)
+    assert api("GET", f"/api/events/{TID}", None, TOKEN)["attendance_taken"]
+    td.click(".calendar-dialog button[title='Close']")
+    td.wait_for_selector(".calendar-dialog", state="detached")
+    # Opening it from anywhere else (raid list rows use the same path) shows it in a window.
+    td.evaluate(f"api('GET', '/api/events/{TID}').then(openRaid)")
+    td.wait_for_selector(".raid-card-dialog .event-card:has-text('AQ20 weekly')", timeout=10000)
+    td.wait_for_selector(".raid-card-dialog .raid-card-head:has-text('chat card was removed')")
+    td.wait_for_selector(".raid-card-dialog .ev-btn.attendance:has-text('Attendance ✓')")
+    td.screenshot(path=f"{SHOTS}/2003-raid-window-without-card.png")
+    td.keyboard.press("Escape")
+    td.close()
+    # Phone width: the dialog option and the calendar agenda.
+    tp = fresh(TOKEN, "tidy-phone", viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
+    tp.evaluate("openRaidDialog()")
+    tp.wait_for_selector(".raid-dialog[open]")
+    tp.select_option(".raid-dialog select[aria-label='Repeat']", "1")
+    assert tp.input_value(cleanup_sel) == "next"
+    tp.eval_on_selector(".raid-dialog .cleanup-field", "e => e.scrollIntoView({block: 'center'})")
+    tp.wait_for_timeout(200)
+    tp.screenshot(path=f"{SHOTS}/2004-phone-plan-raid-card-cleanup.png")
+    tp.keyboard.press("Escape")
+    tp.wait_for_selector(".raid-dialog", state="detached")
+    tp.evaluate(f"openCalendar(new Date({json.dumps(iso(tstart))}))")
+    tp.wait_for_selector(".calendar-dialog .cal-tz")
+    tp.wait_for_function("!document.querySelector('.calendar-dialog .cal-tz').textContent.includes('Loading')")
+    tp.click(".calendar-dialog .cal-agenda-row:has-text('AQ20 weekly') >> nth=0")
+    tp.wait_for_selector(".calendar-dialog .cal-agenda-item.open .event-card .ev-btn.attendance", timeout=10000)
+    tp.eval_on_selector(".calendar-dialog .cal-agenda-item.open .event-card", "e => e.scrollIntoView({block: 'start'})")
+    tp.wait_for_timeout(200)
+    tp.screenshot(path=f"{SHOTS}/2005-phone-calendar-raid-without-card.png")
+    tp.close()
 
 
     browser.close()

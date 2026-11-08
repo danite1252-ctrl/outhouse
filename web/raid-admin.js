@@ -79,10 +79,15 @@ async function drawRaidSettings(page) {
   const channel = el("select", { class: "select", "aria-label": "Sign-up channel" },
     el("option", { value: "" }, "The channel you're in"),
     textChannels.map((c) => el("option", { value: c.id, selected: c.id === settings.default_channel_id }, `# ${c.name}`)));
+  const cleanupPick = (label, value, choices) => el("select", { class: "select", "aria-label": label },
+    choices.map(([v, text]) => el("option", { value: v, selected: v === value }, text)));
+  const cleanupSeries = cleanupPick("Old cards of repeating raids", settings.card_cleanup_series || "next", CARD_CLEANUP);
+  const cleanupSingle = cleanupPick("Old cards of one-off raids", settings.card_cleanup_single || "off", CARD_CLEANUP.filter(([v]) => v !== "next"));
   const save = el("button", { class: "primary", onclick: async () => {
     save.disabled = true;
     const saved = await tryApi("PUT", `/api/guilds/${state.guildId}/raid-settings`, {
       manager_role_ids: [...chosen], default_channel_id: channel.value || null,
+      card_cleanup_series: cleanupSeries.value, card_cleanup_single: cleanupSingle.value,
     }).catch(() => null);
     save.disabled = false;
     if (saved) {
@@ -104,6 +109,12 @@ async function drawRaidSettings(page) {
     el("h3", { class: "rs-head" }, "Sign-up channel"),
     el("label", { class: "field rs-channel" }, "Plan a raid posts in", channel),
     el("p", { class: "muted small", style: "margin:0" }, "Plan a raid starts with this channel picked. You can still choose another channel for each raid."),
+    el("h3", { class: "rs-head" }, "Old sign-up cards"),
+    el("p", { class: "muted", style: "margin:0" }, "Raid sign-up cards can tidy themselves out of chat once the raid is over. Only the chat card goes: the raid stays in the calendar with its sign-ups and attendance."),
+    el("div", { class: "rs-cleanup" },
+      el("label", { class: "field" }, "Repeating raids", cleanupSeries),
+      el("label", { class: "field" }, "One-off raids", cleanupSingle)),
+    el("p", { class: "muted small", style: "margin:0" }, "This is what Plan a raid starts with. Each raid can still choose for itself under \u201cRemove the chat card after the raid\u201d."),
     el("div", { class: "settings-actions" }, el("span"), save),
   );
 }

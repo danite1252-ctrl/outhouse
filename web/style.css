@@ -1512,3 +1512,12 @@ dialog.nick-dialog .nick-reset:disabled { opacity: .45; cursor: default; }
   .me-voice .icon-btn, .user-panel #user-settings { width: 36px; height: 36px; }
 }
 .sb-level-wrap { display: grid; gap: 6px; }
+
+/* ---- Removing old raid cards from chat ---- */
+.cleanup-field .cleanup-label { display: grid; gap: 6px; }
+.cleanup-field .cleanup-hint, .cleanup-gone { font-weight: 400; }
+.rs-cleanup { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; max-width: 560px; }
+.rs-cleanup .select { width: 100%; }
+@media (max-width: 760px) {
+  .rs-cleanup { grid-template-columns: 1fr; }
+}

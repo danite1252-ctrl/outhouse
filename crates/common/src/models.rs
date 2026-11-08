@@ -473,6 +473,15 @@ pub struct RaidEvent {
     /// Which game it's for ("forever", "tbc", "era"; "" = any).
     #[serde(default)]
     pub game: String,
+    /// When the chat card is removed after the raid: "off", "after" (3 hours
+    /// after it ends) or "next" (repeating raids: when the next raid's card
+    /// goes up).
+    #[serde(default)]
+    pub card_cleanup: String,
+    /// The chat card was removed after the raid (`message_id` is null; the
+    /// raid, its sign-ups and attendance are all still here).
+    #[serde(default)]
+    pub card_removed: bool,
 }
 
 /// When a raid's sign-up card is posted in chat.
@@ -564,6 +573,13 @@ pub struct RaidSettings {
     /// The channel "Plan a raid" starts on (null: the one you're in).
     #[serde(with = "option_as_string", default)]
     pub default_channel_id: Option<i64>,
+    /// What "Remove the chat card after the raid" starts on for repeating
+    /// raids ("off", "after" or "next"; left out when saving: unchanged).
+    #[serde(default)]
+    pub card_cleanup_series: Option<String>,
+    /// The same for one-off raids ("off" or "after").
+    #[serde(default)]
+    pub card_cleanup_single: Option<String>,
 }
 
 /// `GET /api/events/{id}/export`: who to invite, for raid leaders.
@@ -822,6 +838,10 @@ pub struct CreateEventRequest {
     /// Which game it's for ("forever", "tbc", "era"; empty: any).
     #[serde(default)]
     pub game: Option<String>,
+    /// Remove the chat card after the raid: "off", "after" or "next"
+    /// (repeating raids only). Default: the outhouse's raid settings.
+    #[serde(default)]
+    pub card_cleanup: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -844,6 +864,9 @@ pub struct UpdateEventRequest {
     pub post_rule: Option<PostRule>,
     #[serde(default)]
     pub game: Option<String>,
+    /// "off", "after" or "next" (repeating raids only).
+    #[serde(default)]
+    pub card_cleanup: Option<String>,
 }
 
 /// `PUT /api/events/{id}/attendance`

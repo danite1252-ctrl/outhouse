@@ -40,6 +40,8 @@ const AHEAD_DAYS: i64 = 28;
 const MAX_POST_DAYS: i32 = 14;
 /// Longest sign-up deadline: a week before the start.
 const MAX_DEADLINE_MINUTES: i32 = 7 * 24 * 60;
+/// "Remove the chat card after the raid": how long after the end.
+const CARD_CLEANUP_HOURS: i32 = 3;
 
 #[derive(sqlx::FromRow)]
 pub(crate) struct EventRow {
@@ -61,6 +63,8 @@ pub(crate) struct EventRow {
     post_rule: Option<DbJson<PostRule>>,
     post_at: Option<DateTime<Utc>>,
     game: String,
+    card_cleanup: String,
+    card_removed_at: Option<DateTime<Utc>>,
 }
 
 impl EventRow {
@@ -144,16 +148,18 @@ struct SeriesRow {
     generated_through: Option<NaiveDate>,
     post_rule: Option<DbJson<PostRule>>,
     game: String,
+    card_cleanup: String,
 }
 
 pub(crate) const EVENT_COLUMNS: &str = "id, guild_id, channel_id, message_id, creator_id, title,
     description, starts_at, duration_minutes, max_tanks, max_healers, max_dps,
-    series_id, signup_deadline_minutes, attendance_taken, post_rule, post_at, game";
+    series_id, signup_deadline_minutes, attendance_taken, post_rule, post_at, game, card_cleanup,
+    card_removed_at";
 
 const SERIES_COLUMNS: &str = "id, guild_id, channel_id, creator_id, title, description,
     duration_minutes, max_tanks, max_healers, max_dps, signup_deadline_minutes, time_zone,
     start_date, local_time, weekdays, every_weeks, until_date, max_count, made_count,
-    generated_through, post_rule, game";
+    generated_through, post_rule, game, card_cleanup";
 
 /// The response to anything that changes a raid: its chat message (with
 /// the card) when it has one, otherwise just `{"event": …}`.
@@ -252,7 +258,7 @@ pub(crate) async fn build(db: &PgPool, rows: Vec<EventRow>) -> AppResult<Vec<Rai
         .into_iter()
         .map(|r| {
             let closes = r.closes_at();
-            let opens = if r.message_id.is_none() {
+            let opens = if r.message_id.is_none() && r.card_removed_at.is_none() {
                 r.post_at
             } else {
                 None
@@ -261,6 +267,8 @@ pub(crate) async fn build(db: &PgPool, rows: Vec<EventRow>) -> AppResult<Vec<Rai
                 post_rule: r.post_rule.map(|j| j.0),
                 signups_open_at: opens,
                 game: r.game,
+                card_cleanup: r.card_cleanup,
+                card_removed: r.card_removed_at.is_some(),
                 signups: signups.remove(&r.id).unwrap_or_default(),
                 repeat: r.series_id.and_then(|s| repeats.get(&s).cloned()),
                 id: r.id,
@@ -410,6 +418,21 @@ fn check_game(raw: Option<&str>) -> AppResult<Option<String>> {
         Some(g) => outhouse_common::wow::game_id(g)
             .map(|id| Some(id.to_string()))
             .ok_or_else(|| AppError::BadRequest("Unknown game.".into())),
+    }
+}
+
+/// "off", "after" or "next" ("next" only for repeating raids).
+fn check_card_cleanup(raw: Option<&str>, repeating: bool) -> AppResult<Option<String>> {
+    match raw.map(str::trim) {
+        None => Ok(None),
+        Some(v @ ("off" | "after")) => Ok(Some(v.to_string())),
+        Some("next") if repeating => Ok(Some("next".into())),
+        Some("next") => Err(AppError::BadRequest(
+            "Only repeating raids can wait for the next raid's sign-ups.".into(),
+        )),
+        Some(_) => Err(AppError::BadRequest(
+            "Keep the chat card, remove it 3 hours after the raid, or when the next raid's sign-ups go up.".into(),
+        )),
     }
 }
 
@@ -652,9 +675,10 @@ async fn materialise(st: &AppState, series_id: i64, at_least_one: bool) -> AppRe
                 sqlx::query(
                     "INSERT INTO events (id, guild_id, channel_id, message_id, creator_id, title,
                          description, starts_at, duration_minutes, max_tanks, max_healers,
-                         max_dps, series_id, signup_deadline_minutes, post_rule, post_at, game)
+                         max_dps, series_id, signup_deadline_minutes, post_rule, post_at, game,
+                         card_cleanup)
                      VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                             $15, $16)",
+                             $15, $16, $17)",
                 )
                 .bind(id)
                 .bind(s.guild_id)
@@ -672,6 +696,7 @@ async fn materialise(st: &AppState, series_id: i64, at_least_one: bool) -> AppRe
                 .bind(&s.post_rule)
                 .bind(post_at)
                 .bind(&s.game)
+                .bind(&s.card_cleanup)
                 .execute(&mut *tx)
                 .await?;
                 new_ids.push(id);
@@ -741,13 +766,15 @@ async fn post_due_cards(
         .bind(row.creator_id)
         .execute(&mut *tx)
         .await?;
-        let claimed =
-            sqlx::query("UPDATE events SET message_id = $2 WHERE id = $1 AND message_id IS NULL")
-                .bind(row.id)
-                .bind(message_id)
-                .execute(&mut *tx)
-                .await?
-                .rows_affected();
+        let claimed = sqlx::query(
+            "UPDATE events SET message_id = $2, card_posted_at = now(), card_removed_at = NULL
+                 WHERE id = $1 AND message_id IS NULL",
+        )
+        .bind(row.id)
+        .bind(message_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
         if claimed == 0 {
             // Someone else posted it first.
             tx.rollback().await?;
@@ -770,7 +797,97 @@ async fn post_due_cards(
         }
         st.dispatch(audience, ServerEvent::MessageCreate(message));
     }
+    // A new card may be what an older raid's card was waiting for.
+    if let Err(e) = remove_old_cards(st).await {
+        tracing::warn!(error = %e, "removing old raid cards failed");
+    }
     Ok(())
+}
+
+/// Removes the chat cards of finished raids that asked for it ("Remove the
+/// chat card after the raid"). Only the message goes: the raid keeps its
+/// sign-ups, attendance and calendar entry, and a thread started on the
+/// card stays in the channel's thread list. Pinned cards are left alone
+/// (someone wanted them kept). Safe to run any number of times.
+async fn remove_old_cards(st: &AppState) -> AppResult<()> {
+    let due: Vec<(i64, i64, i64, i64)> = sqlx::query_as(&format!(
+        "WITH c AS (
+             SELECT e.id, e.guild_id, e.channel_id, e.message_id, e.series_id, e.starts_at,
+                    e.card_cleanup,
+                    e.starts_at + make_interval(mins => e.duration_minutes) AS ends_at
+             FROM events e
+             JOIN messages m ON m.id = e.message_id
+             WHERE e.card_cleanup <> 'off'
+               AND m.pinned_at IS NULL
+               AND e.starts_at + make_interval(mins => e.duration_minutes) <= now())
+         SELECT id, guild_id, channel_id, message_id FROM c
+         WHERE (card_cleanup = 'after'
+                AND now() >= ends_at + make_interval(hours => {CARD_CLEANUP_HOURS}))
+            OR (card_cleanup = 'next' AND series_id IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM events n
+                    WHERE n.series_id = c.series_id AND n.starts_at > c.starts_at
+                      AND n.card_posted_at IS NOT NULL
+                      AND (n.card_posted_at >= c.ends_at
+                           OR now() >= c.ends_at + make_interval(hours => {CARD_CLEANUP_HOURS}))))
+         ORDER BY starts_at
+         LIMIT 100"
+    ))
+    .fetch_all(&st.db)
+    .await?;
+    for (event_id, guild_id, channel_id, message_id) in due {
+        let mut tx = st.db.begin().await?;
+        // Unhook the card first: deleting a raid's message would delete the raid.
+        let claimed = sqlx::query(
+            "UPDATE events SET message_id = NULL, card_removed_at = now()
+             WHERE id = $1 AND message_id = $2",
+        )
+        .bind(event_id)
+        .bind(message_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if claimed == 0 {
+            tx.rollback().await?;
+            continue;
+        }
+        sqlx::query("DELETE FROM messages WHERE id = $1")
+            .bind(message_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        let audience = Audience::Channel {
+            guild_id,
+            channel_id,
+        };
+        st.dispatch(
+            audience.clone(),
+            ServerEvent::MessageDelete {
+                id: message_id,
+                channel_id,
+            },
+        );
+        if let Ok(row) = load_row(&st.db, event_id).await {
+            if let Ok(Some(ev)) = build(&st.db, vec![row]).await.map(|mut v| v.pop()) {
+                st.dispatch(audience, ServerEvent::EventUpdate(ev));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// What "Remove the chat card after the raid" starts on in this outhouse
+/// (repeating raids, one-off raids).
+pub(crate) async fn card_cleanup_defaults(
+    db: &PgPool,
+    guild_id: i64,
+) -> AppResult<(String, String)> {
+    let found: Option<(String, String)> = sqlx::query_as(
+        "SELECT card_cleanup_series, card_cleanup_single FROM raid_settings WHERE guild_id = $1",
+    )
+    .bind(guild_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(found.unwrap_or_else(|| ("next".into(), "off".into())))
 }
 
 /// Every minute: make the next raids of every series, and post due cards.
@@ -821,6 +938,18 @@ pub async fn create(
     let healers = check_slots(req.max_healers)?.unwrap_or(10);
     let dps = check_slots(req.max_dps)?.unwrap_or(25);
     let deadline = check_deadline(req.signup_deadline_minutes)?.flatten();
+    let card_cleanup = match check_card_cleanup(req.card_cleanup.as_deref(), req.repeat.is_some())?
+    {
+        Some(c) => c,
+        None => {
+            let (series, single) = card_cleanup_defaults(&st.db, access.channel.guild_id).await?;
+            if req.repeat.is_some() {
+                series
+            } else {
+                single
+            }
+        }
+    };
     if req.starts_at < Utc::now() - chrono::Duration::hours(1) {
         return Err(AppError::BadRequest("That time has already passed.".into()));
     }
@@ -864,9 +993,9 @@ pub async fn create(
             "INSERT INTO event_series (id, guild_id, channel_id, creator_id, title, description,
                  duration_minutes, max_tanks, max_healers, max_dps, signup_deadline_minutes,
                  time_zone, start_date, local_time, weekdays, every_weeks, until_date, max_count,
-                 post_rule, game)
+                 post_rule, game, card_cleanup)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                     $18, $19, $20)",
+                     $18, $19, $20, $21)",
         )
         .bind(series_id)
         .bind(guild_id)
@@ -888,6 +1017,7 @@ pub async fn create(
         .bind(pat.count)
         .bind(post_rule.map(DbJson))
         .bind(&game)
+        .bind(&card_cleanup)
         .execute(&st.db)
         .await?;
         let made = materialise(&st, series_id, true).await?;
@@ -912,8 +1042,8 @@ pub async fn create(
         sqlx::query(
             "INSERT INTO events (id, guild_id, channel_id, message_id, creator_id, title,
                  description, starts_at, duration_minutes, max_tanks, max_healers, max_dps,
-                 signup_deadline_minutes, post_rule, post_at, game)
-             VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+                 signup_deadline_minutes, post_rule, post_at, game, card_cleanup)
+             VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
         )
         .bind(event_id)
         .bind(guild_id)
@@ -930,6 +1060,7 @@ pub async fn create(
         .bind(post_rule.map(DbJson))
         .bind(post_at)
         .bind(&game)
+        .bind(&card_cleanup)
         .execute(&st.db)
         .await?;
         return Ok(Json(broadcast(&st, event_id).await?));
@@ -948,8 +1079,9 @@ pub async fn create(
     sqlx::query(
         "INSERT INTO events (id, guild_id, channel_id, message_id, creator_id, title, description,
                              starts_at, duration_minutes, max_tanks, max_healers, max_dps,
-                             signup_deadline_minutes, post_rule, game)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+                             signup_deadline_minutes, post_rule, game, card_cleanup,
+                             card_posted_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, now())",
     )
     .bind(event_id)
     .bind(guild_id)
@@ -966,6 +1098,7 @@ pub async fn create(
     .bind(deadline)
     .bind(post_rule.map(DbJson))
     .bind(&game)
+    .bind(&card_cleanup)
     .execute(&mut *tx)
     .await?;
     sqlx::query("UPDATE channels SET last_message_id = $2 WHERE id = $1")
@@ -1115,6 +1248,8 @@ pub async fn update(
     let deadline =
         check_deadline(req.signup_deadline_minutes)?.unwrap_or(row.signup_deadline_minutes);
     let game = check_game(req.game.as_deref())?.unwrap_or_else(|| row.game.clone());
+    let card_cleanup = check_card_cleanup(req.card_cleanup.as_deref(), row.series_id.is_some())?
+        .unwrap_or_else(|| row.card_cleanup.clone());
     // A new posting rule (only raids whose card isn't up yet are affected).
     let series_tz: Option<String> = match row.series_id {
         Some(series_id) => {
@@ -1144,7 +1279,8 @@ pub async fn update(
                         signup_deadline_minutes = $10,
                         reminded = reminded AND NOT $11,
                         game = $12,
-                        post_rule = CASE WHEN $13 THEN $14 ELSE post_rule END
+                        post_rule = CASE WHEN $13 THEN $14 ELSE post_rule END,
+                        card_cleanup = $15
                  WHERE series_id = $1 AND starts_at >= $2
                  RETURNING id",
             )
@@ -1162,6 +1298,7 @@ pub async fn update(
             .bind(&game)
             .bind(rule_given)
             .bind(&post_rule)
+            .bind(&card_cleanup)
             .fetch_all(&st.db)
             .await?;
             // Future raids the server hasn't made yet follow the new details too.
@@ -1179,7 +1316,8 @@ pub async fn update(
                             generated_through = generated_through + $11::int,
                             until_date = until_date + $11::int,
                             game = $12,
-                            post_rule = CASE WHEN $13 THEN $14 ELSE post_rule END
+                            post_rule = CASE WHEN $13 THEN $14 ELSE post_rule END,
+                            card_cleanup = $15
                      WHERE id = $1",
                 )
                 .bind(series_id)
@@ -1196,6 +1334,7 @@ pub async fn update(
                 .bind(&game)
                 .bind(rule_given)
                 .bind(&post_rule)
+                .bind(&card_cleanup)
                 .execute(&st.db)
                 .await?;
             }
@@ -1208,7 +1347,8 @@ pub async fn update(
                         signup_deadline_minutes = $9,
                         reminded = reminded AND NOT $10,
                         game = $11,
-                        post_rule = CASE WHEN $12 THEN $13 ELSE post_rule END
+                        post_rule = CASE WHEN $12 THEN $13 ELSE post_rule END,
+                        card_cleanup = $14
                  WHERE id = $1",
             )
             .bind(event_id)
@@ -1224,6 +1364,7 @@ pub async fn update(
             .bind(&game)
             .bind(rule_given)
             .bind(&post_rule)
+            .bind(&card_cleanup)
             .execute(&st.db)
             .await?;
             vec![event_id]
