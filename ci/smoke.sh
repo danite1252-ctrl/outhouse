@@ -773,7 +773,7 @@ tidy | jq -e '(.[0] | .card_removed and .message_id == null and .signups_open_at
 cards_in "$CC" | jq -e --arg a "$C1" 'length == 2 and (index($a) | not)' >/dev/null
 call GET "/api/channels/$CC/messages?limit=100" | jq -e --arg m "$C1M" 'all(.[]; .id != $m)' >/dev/null
 # The raid is all still there: a raid leader adds people, takes attendance and exports it.
-call PUT "/api/events/$C1/signup" '{"status":"yes","role":"tank","class":"Warrior","spec":"Protection"}' | jq -e '.event.signups | length == 1 and (.event.message_id == null)' >/dev/null
+call PUT "/api/events/$C1/signup" '{"status":"yes","role":"tank","class":"Warrior","spec":"Protection"}' | jq -e '(.event.signups | length == 1) and .event.message_id == null' >/dev/null
 call PUT "/api/events/$C1/signup" '{"status":"yes","role":"dps","class":"Mage","spec":"Frost","user_id":"'"$BOB"'"}' >/dev/null
 call PUT "/api/events/$C1/attendance" '{"all_signed_up":true}' | jq -e 'length == 2' >/dev/null
 call GET "/api/events/$C1" | jq -e '.attendance_taken and .card_removed and (.signups | length == 2)' >/dev/null
