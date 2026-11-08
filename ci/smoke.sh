@@ -672,6 +672,81 @@ fail_call POST "/api/channels/$CHAN/wow/char" '{"query":"Nobodyhere"}'
 fail_call POST "/api/channels/$CHAN/wow/char" '{"query":""}'
 TOKEN=$OUT; fail_call POST "/api/channels/$CHAN/wow/char" '{"query":"tank"}'; TOKEN=$TOKEN_A
 
+step "raid managers by role, sign-up channel, characters on sign-ups, invite list"
+call GET /api/wow/info | jq -e '(.games[0].races | index("Skyborne (Alliance)") and index("Skyborne (Horde)")) and (.games[1].races | index("Skyborne (Horde)") | not) and (.games[2].races | index("Skyborne (Alliance)") | not) and (.classes | length == 9)' >/dev/null
+# Settings: anyone in the outhouse can read them, only Manage Outhouse can change them.
+call GET "/api/guilds/$GUILD/raid-settings" | jq -e '.manager_role_ids == [] and .default_channel_id == null' >/dev/null
+TOKEN=$OUT; fail_call GET "/api/guilds/$GUILD/raid-settings"; TOKEN=$TOKEN_A
+TOKEN=$TOKEN_B; fail_call PUT "/api/guilds/$GUILD/raid-settings" '{"manager_role_ids":[],"default_channel_id":null}'; TOKEN=$TOKEN_A
+RMV=$(call POST "/api/guilds/$GUILD/channels" '{"name":"rm-voice","kind":2}' | jq -r .id)
+fail_call PUT "/api/guilds/$GUILD/raid-settings" '{"manager_role_ids":["'"$GUILD"'"]}'
+fail_call PUT "/api/guilds/$GUILD/raid-settings" '{"manager_role_ids":["123"]}'
+fail_call PUT "/api/guilds/$GUILD/raid-settings" '{"manager_role_ids":[],"default_channel_id":"'"$RMV"'"}'
+call DELETE "/api/channels/$RMV" >/dev/null
+RL=$(call POST "/api/guilds/$GUILD/roles" '{"name":"Raid leader"}' | jq -r .id)
+call PUT "/api/guilds/$GUILD/members/$CARL/roles/$RL" >/dev/null
+# Skyborne pick a faction; any of the nine classes goes (Forever's combinations aren't enforced).
+TOKEN=$TOKEN_B
+SKY=$(call POST /api/users/@me/characters '{"name":"Shieldy","last_name":"Mcshield","race":"skyborne (horde)","class":"Warrior","level":60}')
+jq -e '.race == "Skyborne (Horde)" and .faction == "Horde" and .full_name == "Shieldy Mcshield"' <<<"$SKY" >/dev/null
+SKYID=$(jq -r .id <<<"$SKY")
+call POST /api/users/@me/characters '{"name":"Sparky","last_name":"Mcshield","race":"Skyborne (Alliance)","class":"Shaman"}' | jq -e '.faction == "Alliance"' >/dev/null
+fail_call POST /api/users/@me/characters '{"game":"era","name":"Skyguy","race":"Skyborne (Alliance)","class":"Mage"}'
+TOKEN=$TOKEN_A
+RM=$(call POST "/api/channels/$RX/events" '{"title":"Manager test","starts_at":"'"$START"'","game":"forever","max_tanks":1,"max_healers":1,"max_dps":2}' | jq -r .event.id)
+# Bob signs up with his own character (its class fills in); not someone else's, nor one from another game.
+TOKEN=$TOKEN_B
+fail_call PUT "/api/events/$RM/signup" '{"status":"yes","role":"tank","class":"Paladin","character_id":"'"$CH1ID"'"}'
+HOLY=$(call GET /api/users/@me/characters | jq -r '[.[] | select(.game == "tbc")][0].id')
+fail_call PUT "/api/events/$RM/signup" '{"status":"yes","role":"healer","class":"Priest","character_id":"'"$HOLY"'"}'
+call PUT "/api/events/$RM/signup" '{"status":"yes","role":"tank","spec":"Protection","character_id":"'"$SKYID"'"}' \
+  | jq -e --arg b "$BOB" --arg c "$SKYID" '.event.signups[] | select(.user_id == $b) | .class == "Warrior" and .display_name == "Bob"
+      and .character.id == $c and .character.name == "Shieldy" and .character.last_name == "Mcshield" and .character.full_name == "Shieldy Mcshield" and .character.game == "forever"' >/dev/null
+# Carl has no say yet.
+TOKEN=$TOKEN_C
+call PUT "/api/events/$RM/signup" '{"status":"yes","role":"dps","class":"Rogue","spec":"Combat"}' | jq -e --arg c "$CARL" '.event.signups[] | select(.user_id == $c) | .character == null' >/dev/null
+fail_call PUT "/api/events/$RM/signup" '{"status":"bench","role":"tank","user_id":"'"$BOB"'","keep_character":true}'
+fail_call DELETE "/api/events/$RM/signups/$BOB"
+fail_call GET "/api/events/$RM/export"
+fail_call PATCH "/api/events/$RM" '{"description":"Hijacked"}'
+TOKEN=$TOKEN_A
+# Raid leader becomes a raid manager role; #raid-extras the sign-up channel.
+call PUT "/api/guilds/$GUILD/raid-settings" '{"manager_role_ids":["'"$RL"'"],"default_channel_id":"'"$RX"'"}' \
+  | jq -e --arg r "$RL" --arg c "$RX" '.manager_role_ids == [$r] and .default_channel_id == $c' >/dev/null
+TOKEN=$TOKEN_B; call GET "/api/guilds/$GUILD/raid-settings" | jq -e --arg r "$RL" --arg c "$RX" '.manager_role_ids == [$r] and .default_channel_id == $c' >/dev/null; TOKEN=$TOKEN_A
+call GET "/api/guilds/$GUILD/audit-log?action=raid_settings_update" | jq -e '.entries | length == 1 and (.[0].details | contains("Raid managers: nobody → Raid leader") and contains("#raid-extras"))' >/dev/null
+TOKEN=$TOKEN_C
+# Moving Bob to the bench keeps his character.
+call PUT "/api/events/$RM/signup" '{"status":"bench","role":"tank","class":"Warrior","spec":"Protection","user_id":"'"$BOB"'","keep_character":true}' \
+  | jq -e --arg b "$BOB" '.event.signups[] | select(.user_id == $b) | .status == "bench" and .character.full_name == "Shieldy Mcshield"' >/dev/null
+# Adding Alice with one of her characters (not one of Bob's).
+fail_call PUT "/api/events/$RM/signup" '{"status":"yes","role":"tank","class":"Paladin","user_id":"'"$ALICE"'","character_id":"'"$SKYID"'"}'
+call PUT "/api/events/$RM/signup" '{"status":"yes","role":"tank","class":"Paladin","spec":"Protection","user_id":"'"$ALICE"'","character_id":"'"$CH1ID"'"}' \
+  | jq -e --arg a "$ALICE" '.event.signups[] | select(.user_id == $a) | .status == "yes" and .character.full_name == "Tankadin Lightbringer"' >/dev/null
+call PATCH "/api/events/$RM" '{"description":"Run by Carl"}' | jq -e '.event.description == "Run by Carl"' >/dev/null
+# The invite list: roster (tanks, healers, DPS), then tentative, then the bench; nobody who can't make it.
+call GET "/api/events/$RM/export" | jq -e --arg a "$ALICE" --arg b "$BOB" --arg c "$CARL" --arg e "$RM" '
+  .event_id == $e and .title == "Manager test" and .game == "forever"
+  and (.entries | map(.user_id)) == [$a, $c, $b]
+  and (.entries[0] | .role == "tank" and .character.name == "Tankadin" and .character.last_name == "Lightbringer")
+  and (.entries[1] | .display_name == "Carl" and .character == null and .role == "dps")
+  and (.entries[2] | .status == "bench" and .character.full_name == "Shieldy Mcshield")' >/dev/null
+# A removed character stays on old sign-ups.
+TOKEN=$TOKEN_B; call DELETE "/api/characters/$SKYID" >/dev/null; TOKEN=$TOKEN_C
+call GET "/api/events/$RM" | jq -e --arg b "$BOB" '.signups[] | select(.user_id == $b) | .character.id == null and .character.full_name == "Shieldy Mcshield"' >/dev/null
+call DELETE "/api/events/$RM/signups/$BOB" | jq -e --arg b "$BOB" 'all(.event.signups[]; .user_id != $b)' >/dev/null
+# Attendance by a raid manager.
+TOKEN=$TOKEN_A; RMP=$(call POST "/api/channels/$RX/events" '{"title":"Manager attendance","starts_at":"'"$PAST"'"}' | jq -r .event.id); TOKEN=$TOKEN_C
+call PUT "/api/events/$RMP/attendance" '{"records":[{"user_id":"'"$CARL"'","status":"present"}]}' | jq -e 'length == 1' >/dev/null
+# Taking the role away (or the setting) ends it.
+TOKEN=$TOKEN_A; call DELETE "/api/guilds/$GUILD/members/$CARL/roles/$RL" >/dev/null; TOKEN=$TOKEN_C
+fail_call GET "/api/events/$RM/export"
+TOKEN=$TOKEN_A; call PUT "/api/guilds/$GUILD/members/$CARL/roles/$RL" >/dev/null
+call PUT "/api/guilds/$GUILD/raid-settings" '{"manager_role_ids":[],"default_channel_id":null}' | jq -e '.manager_role_ids == [] and .default_channel_id == null' >/dev/null
+TOKEN=$TOKEN_C; fail_call GET "/api/events/$RM/export"; fail_call DELETE "/api/events/$RM/signups/$ALICE"; TOKEN=$TOKEN_A
+call GET "/api/events/$RM/export" | jq -e '.entries | length == 2' >/dev/null
+call DELETE "/api/events/$RM" >/dev/null; call DELETE "/api/events/$RMP" >/dev/null
+
 step "wow: /item (mock Wowhead, cache, fallbacks)"
 call POST "/api/channels/$CHAN/wow/item" '{"query":"thunderfury"}' | jq -e '.interaction.command == "item" and (.embeds[0] | .kind == "wow-item" and .title == "Thunderfury, Blessed Blade of the Windseeker" and .color == 16744448 and (.description | contains("Item Level 80")) and (.url | endswith("/classic/item=19019")) and (.thumbnail_url | endswith("/inv_sword_39.jpg")) and (.fields[0].value == "Legendary"))' >/dev/null
 call POST "/api/channels/$CHAN/wow/item" '{"query":"19019"}' | jq -e '.embeds[0].title == "Thunderfury, Blessed Blade of the Windseeker"' >/dev/null

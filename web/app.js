@@ -2719,6 +2719,9 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
     if (can("manage_guild") && typeof drawBadgeSettings === "function") {
       nav.append(el("button", { class: activeTab === "badges" ? "active" : "", onclick: () => draw("badges") }, "Badges"));
     }
+    if (can("manage_guild") && typeof drawRaidSettings === "function") {
+      nav.append(el("h3", {}, "RAIDS"), el("button", { class: activeTab === "raids" ? "active" : "", onclick: () => draw("raids") }, "Raids"));
+    }
     const canAudit = (can("view_audit_log") || can("manage_guild")) && typeof drawAuditLog === "function";
     if (can("ban_members") || canAudit) nav.append(el("h3", {}, "MODERATION"));
     if (can("ban_members")) {
@@ -2734,6 +2737,7 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
     if (activeTab === "bans") return drawBans(page);
     if (activeTab === "audit") return drawAuditLog(page);
     if (activeTab === "badges") return drawBadgeSettings(page);
+    if (activeTab === "raids") return drawRaidSettings(page);
     if (activeTab === "status") return drawServerStatus(page);
     if (activeTab === "integrations") return drawIntegrations(page);
     if (activeTab === "bots") return drawBots(page);

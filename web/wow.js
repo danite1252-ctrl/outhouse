@@ -84,9 +84,9 @@ function renderLfgCard(m) {
     const node = el("div", { class: `lfg-person${x.user_id === state.me.id ? " me" : ""}` },
       el("span", { class: "lfg-pname", style: colour ? `color:${colour}` : "" },
         x.user_id === g.leader_id ? el("span", { class: "lfg-crown", title: "Group leader" }, "👑") : null,
-        nameOfUser(x.user_id, x.display_name)),
-      el("span", { class: "lfg-pmeta" }, [x.character, x.level ? `${x.level}` : null, x.class && !x.character ? x.class : null].filter(Boolean).join(" · ")));
-    node.title = [x.character && `${x.character}${x.level ? ` (level ${x.level})` : ""}`, x.class].filter(Boolean).join(" — ");
+        x.character || nameOfUser(x.user_id, x.display_name)),
+      el("span", { class: "lfg-pmeta" }, [x.character ? nameOfUser(x.user_id, x.display_name) : null, x.level ? `${x.level}` : null, x.class && !x.character ? x.class : null].filter(Boolean).join(" · ")));
+    node.title = [x.character && `${x.character}${x.level ? ` (level ${x.level})` : ""}`, x.class, x.character ? `${nameOfUser(x.user_id, x.display_name)} in the outhouse` : null].filter(Boolean).join(" — ");
     if (manage && x.user_id !== state.me.id) {
       node.classList.add("manageable");
       node.addEventListener("click", (e) => {
@@ -161,7 +161,7 @@ function lfgText(g) {
   for (const role of ROLES) {
     const people = g.members.filter((x) => x.role === role);
     if (!people.length) continue;
-    lines.push(`${ROLE_INFO[role].label}: ${people.map((x) => `${nameOfUser(x.user_id, x.display_name)}${x.character ? ` (${x.character}${x.class ? ` ${x.class}` : ""})` : x.class ? ` (${x.class})` : ""}`).join(", ")}`);
+    lines.push(`${ROLE_INFO[role].label}: ${people.map((x) => `${x.character || nameOfUser(x.user_id, x.display_name)}${x.class ? ` (${x.class})` : ""}`).join(", ")}`);
   }
   return lines.join("\n");
 }
@@ -502,7 +502,8 @@ profileCard = function (p, opts) {
   return card;
 };
 
-// Raid sign-ups: one tap on a character picks its class (and notes which character).
+// Raid sign-ups: one tap on a character picks its class, and the roster
+// shows that character's name instead of yours.
 const wowBaseOpenSignup = openSignup;
 openSignup = function (ev, anchor, status) {
   wowBaseOpenSignup(ev, anchor, status);
@@ -510,24 +511,39 @@ openSignup = function (ev, anchor, status) {
   const box = pop?.querySelector(".signup-pop");
   const mineChars = charsFor(ev.game);
   if (!box || !mineChars.length) return;
-  const note = box.querySelector("input[placeholder^='Note']");
   const mine = ev.signups.find((s) => s.user_id === state.me.id);
-  let autoNote = "";
+  let picked = null;
+  const mark = () => {
+    row.querySelectorAll(".char-chip").forEach((b) => b.classList.toggle("on", b.dataset.id === picked?.id));
+    if (picked) box.dataset.characterId = picked.id;
+    else delete box.dataset.characterId;
+    hint.textContent = picked ? `The roster shows you as ${charName(picked)}.` : "Not bringing one of these? The roster shows your name.";
+  };
   const pick = (c) => {
-    box.querySelector(`.su-class[title="${c.class}"]`)?.click();
-    if (note && (!note.value || note.value === autoNote)) { autoNote = `on ${charName(c)}`; note.value = autoNote; }
-    row.querySelectorAll(".char-chip").forEach((b) => b.classList.toggle("on", b.dataset.id === c.id));
+    picked = picked?.id === c.id ? null : c;
+    if (picked) box.querySelector(`.su-class[title="${c.class}"]`)?.click();
+    mark();
   };
   const row = el("div", { class: "char-chips" }, mineChars.slice(0, 8).map((c) => {
     const b = classChip(c, { onclick: () => pick(c), small: true });
     b.dataset.id = c.id;
     return b;
   }));
+  const hint = el("div", { class: "muted small su-char-hint" });
+  // Picking a different class by hand means it isn't that character.
+  box.querySelector(".su-classes")?.addEventListener("click", (e) => {
+    const b = e.target.closest(".su-class");
+    if (b && picked && b.title !== picked.class) { picked = null; mark(); }
+  });
   const label = el("div", { class: "muted small" }, "Your characters");
   box.insertBefore(row, box.children[1]);
   box.insertBefore(label, row);
+  box.insertBefore(hint, row.nextSibling);
+  const already = mine?.character?.id ? mineChars.find((c) => c.id === mine.character.id) : null;
   const main = mainCharacter();
-  if (!mine && !prefs.get("raid_class", "") && main && mineChars.includes(main)) pick(main);
+  if (already) pick(already);
+  else if (!mine && !prefs.get("raid_class", "") && main && mineChars.includes(main)) pick(main);
+  else mark();
   const r = anchor.getBoundingClientRect();
   const above = r.top - pop.offsetHeight - 8;
   placeFixed(pop, r.left, above >= 8 ? above : r.bottom + 8);
@@ -555,7 +571,7 @@ async function drawCharacters(section) {
         el("span", { class: `char-game g-${c.game}` }, GAME_SHORT[c.game] ?? c.game),
         c.source === "bnet" ? el("span", { class: "char-src", title: "Imported from Battle.net" }, "Battle.net") : null,
         c.game === "forever" && !c.last_name ? el("button", { type: "button", class: "char-fix", onclick: () => openCharacterDialog(c, redraw) }, "Add last name") : null),
-      el("div", { class: "muted small" }, [`Level ${c.level} ${[c.race, c.class].filter(Boolean).join(" ")}`, c.game === "forever" ? c.ruleset : c.realm, c.professions.join(", ")].filter(Boolean).join(" · ")),
+      el("div", { class: "muted small" }, [`Level ${c.level} ${[c.race, c.class].filter(Boolean).join(" ")}`, c.faction && !c.race.includes(c.faction) ? c.faction : null, c.game === "forever" ? c.ruleset : c.realm, c.professions.join(", ")].filter(Boolean).join(" · ")),
       c.armory_url ? el("a", { class: "small", href: c.armory_url, target: "_blank", rel: "noopener noreferrer" }, "Armory ↗") : null),
     el("div", { class: "char-row-actions" },
       c.is_main ? null : el("button", { class: "ghost small-btn", onclick: async () => {
@@ -654,7 +670,7 @@ function openCharacterDialog(existing, onSaved) {
     if (Number(level.value) > g.max_level) level.value = g.max_level;
     for (const p of [...professions]) if (!g.professions.includes(p)) professions.delete(p);
     nameHint.textContent = g.two_names
-      ? "WoW: Forever has no realms: characters have a first and a last name (2 to 12 letters each) and a ruleset. Level cap 60."
+      ? "WoW: Forever has no realms: characters have a first and a last name (2 to 12 letters each) and a ruleset. Level cap 60. Skyborne pick Alliance or Horde when they're made."
       : `${g.name}: one name (2 to 12 letters) and a realm. Level cap ${g.max_level}.`;
     paintProfs();
   };
@@ -663,6 +679,22 @@ function openCharacterDialog(existing, onSaved) {
   const armory = el("input", { type: "url", maxlength: 300, value: c?.armory_url ?? "", placeholder: "https://… (optional)", "aria-label": "Armory link" });
   const isMain = el("input", { type: "checkbox", checked: c ? c.is_main : !state.myCharacters.length });
   const error = el("p", { class: "error" });
+  // WoW: Forever changed which races can be which classes, so nothing is
+  // refused; only the Skyborne's faction-specific classes get a heads-up.
+  const comboWarn = el("p", { class: "muted small combo-warn", style: "margin:0" });
+  const paintWarn = () => {
+    const r = race.value, k = cls.value;
+    comboWarn.textContent = g.id === "forever" && r === "Skyborne (Alliance)" && k === "Shaman"
+      ? "Heads up: from what we've read, only Horde Skyborne can be Shamans. Saving anyway is fine if Forever says otherwise."
+      : g.id === "forever" && r === "Skyborne (Horde)" && k === "Mage"
+        ? "Heads up: from what we've read, only Alliance Skyborne can be Mages. Saving anyway is fine if Forever says otherwise."
+        : "";
+    comboWarn.hidden = !comboWarn.textContent;
+  };
+  race.addEventListener("change", paintWarn);
+  cls.addEventListener("change", paintWarn);
+  game.addEventListener("change", paintWarn);
+  paintWarn();
   const form = el("form", { method: "dialog" },
     el("h2", {}, c ? `Edit ${charName(c)}` : "Add a character"),
     el("label", { class: "field" }, "Game", game),
@@ -672,6 +704,7 @@ function openCharacterDialog(existing, onSaved) {
     el("div", { class: "raid-row even" },
       el("label", { class: "field" }, "Class", cls),
       el("label", { class: "field" }, "Level", level)),
+    comboWarn,
     el("div", { class: "field" }, "Professions", profBox),
     el("label", { class: "field" }, "Armory or profile link", armory),
     el("label", { class: "check-row" }, isMain, "This is my main"),

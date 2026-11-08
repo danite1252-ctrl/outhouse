@@ -1287,6 +1287,168 @@ with sync_playwright() as p:
     dr6.screenshot(path=f"{SHOTS}/105-android-server-status.png")
     dr6.close()
 
+    # ---- Raid managers by role, characters on sign-ups, invite lists ----
+    raid_leader = api("POST", f"/api/guilds/{G}/roles", {"name": "Raid leader", "color": 0x4F7FD0}, TOKEN)
+    api("PUT", f"/api/guilds/{G}/members/{DAVE}/roles/{raid_leader['id']}", None, TOKEN)
+    gus = api("POST", "/api/auth/register", {"username": f"gus{suffix}", "password": "password123", "display_name": "Gus"})
+    hank = api("POST", "/api/auth/register", {"username": f"hank{suffix}", "password": "password123", "display_name": "Hank"})
+    ivy = api("POST", "/api/auth/register", {"username": f"ivy{suffix}", "password": "password123", "display_name": "Ivy"})
+    for u in (gus, hank, ivy):
+        api("POST", f"/api/invites/{code}", None, u["token"])
+    hammer = api("POST", "/api/users/@me/characters", {"name": "Hammer", "last_name": "Stonefist", "race": "Dwarf", "class": "Paladin", "level": 60}, hank["token"])
+    api("POST", "/api/users/@me/characters", {"name": "Windy", "last_name": "Skysong", "race": "Skyborne (Horde)", "class": "Shaman", "level": 60}, ivy["token"])
+    shieldwall = next(c for c in api("GET", "/api/users/@me/characters", None, dave["token"]) if c["name"] == "Shieldwall")
+    sparkles = next(c for c in api("GET", "/api/users/@me/characters", None, erin["token"]) if c["name"] == "Sparkles")
+    naxx = api("POST", f"/api/channels/{chan['id']}/events", {
+        "title": "Naxx invite test", "description": "Roster check for the invite list.", "starts_at": iso(time.time() + 4 * 86400),
+        "game": "forever", "max_tanks": 2, "max_healers": 3, "max_dps": 5,
+    }, TOKEN)
+    NX = naxx["event"]["id"]
+    api("PUT", f"/api/events/{NX}/signup", {"status": "yes", "role": "tank", "spec": "Protection", "character_id": shieldwall["id"]}, dave["token"])
+    api("PUT", f"/api/events/{NX}/signup", {"status": "yes", "role": "dps", "spec": "Frost", "character_id": sparkles["id"]}, erin["token"])
+    api("PUT", f"/api/events/{NX}/signup", {"status": "late", "role": "dps", "class": "Rogue", "spec": "Combat"}, gus["token"])
+    naxx_card = ".event-card:has-text('Naxx invite test')"
+
+    def open_card(pg):
+        pg.wait_for_selector(naxx_card, timeout=15000)
+        scroll_to_card(pg, "Naxx invite test")
+
+    # Outhouse settings → Raids: Raid leader manages raids; #raids is the sign-up channel.
+    rm = fresh(TOKEN, "raids-desktop", viewport={"width": 1280, "height": 800})
+    rm.evaluate("openSettings('raids')")
+    rm.wait_for_selector(".rs-roles .rs-role:has-text('Raid leader')", timeout=10000)
+    rm.click(".rs-role:has-text('Raid leader')")
+    rm.select_option("select[aria-label='Sign-up channel']", chan["id"])
+    rm.wait_for_selector(".rs-who:has-text('Dave')")
+    rm.wait_for_timeout(200)
+    rm.screenshot(path=f"{SHOTS}/130-raid-settings.png")
+    rm.click(".settings-actions button.primary:has-text('Save changes')")
+    for _ in range(30):
+        rs = api("GET", f"/api/guilds/{G}/raid-settings", None, dave["token"])
+        if rs["manager_role_ids"] == [raid_leader["id"]]:
+            break
+        rm.wait_for_timeout(200)
+    assert rs == {"manager_role_ids": [raid_leader["id"]], "default_channel_id": chan["id"]}, rs
+    rm.keyboard.press("Escape")
+    rm.wait_for_selector("dialog.settings", state="detached")
+    # Plan a raid starts on the sign-up channel even from another channel.
+    rm.click(".channel:has-text('general')")
+    rm.wait_for_timeout(500)
+    rm.evaluate("openRaidDialog()")
+    rm.wait_for_selector(".raid-dialog[open] select[aria-label='Post in']")
+    assert rm.input_value(".raid-dialog select[aria-label='Post in']") == chan["id"]
+    rm.keyboard.press("Escape")
+    rm.click(".channel:has-text('raids')")
+    # Carol signs up with her main (picked for her); the roster shows the character.
+    open_card(rm)
+    rm.click(f"{naxx_card} .ev-btn:has-text('Sign up')")
+    rm.wait_for_selector(".signup-pop .char-chip.on:has-text('Lightwell')")
+    rm.wait_for_selector(".signup-pop .su-char-hint:has-text('Lightwell Dawnstar')")
+    rm.click(".signup-pop .su-spec:has-text('Holy') >> nth=0")
+    rm.screenshot(path=f"{SHOTS}/131-signup-with-character.png")
+    rm.click(".signup-pop button.primary")
+    rm.wait_for_selector(f"{naxx_card} .ev-col.healer .su-name.me:has-text('Lightwell Dawnstar')", timeout=10000)
+    rm.wait_for_selector(f"{naxx_card} .ev-col.tank .su-name:has-text('Shieldwall Ironfoe')")
+    rm.wait_for_selector(f"{naxx_card} .ev-col.tank .ev-owner:has-text('Dave')")
+    rm.wait_for_selector(f"{naxx_card} .ev-col.dps .su-name:has-text('Gus')")
+    scroll_to_card(rm, "Naxx invite test")
+    rm.screenshot(path=f"{SHOTS}/132-roster-characters.png")
+    # Export / invite list.
+    rm.click(f"{naxx_card} .ev-btn.export")
+    rm.wait_for_selector(".export-dialog .exp-text")
+    names = rm.input_value(".export-dialog .exp-text")
+    assert names == "Shieldwall Ironfoe\nLightwell Dawnstar\nSparkles Fizzwick\nGus", names
+    rm.wait_for_selector(".export-dialog .exp-flag:has-text('Gus')")
+    rm.wait_for_selector(".export-dialog .exp-summary:has-text('4 names')")
+    rm.screenshot(path=f"{SHOTS}/133-export-dialog.png")
+    rm.click(".export-dialog .exp-tab:has-text('Comma')")
+    assert rm.input_value(".export-dialog .exp-text") == "Shieldwall Ironfoe,Lightwell Dawnstar,Sparkles Fizzwick,Gus"
+    rm.click(".export-dialog .exp-tab:has-text('MRT')")
+    mrt = rm.input_value(".export-dialog .exp-text")
+    assert mrt == "Group 1\nShieldwall Ironfoe\nLightwell Dawnstar\nSparkles Fizzwick\nGus", mrt
+    rm.select_option(".export-dialog select[aria-label='Name format']", "dash")
+    rm.click(".export-dialog .exp-tab:has-text('/invite')")
+    macro = rm.input_value(".export-dialog .exp-text")
+    assert macro.startswith("/invite Shieldwall-Ironfoe\n/invite Lightwell-Dawnstar"), macro
+    rm.uncheck(".export-dialog .check-row:has-text('Tentative') input")
+    assert "Gus" not in rm.input_value(".export-dialog .exp-text")
+    rm.check(".export-dialog .check-row:has-text('Tentative') input")
+    rm.select_option(".export-dialog select[aria-label='Name format']", "full")
+    rm.wait_for_timeout(200)
+    rm.screenshot(path=f"{SHOTS}/134-export-macros.png")
+    rm.keyboard.press("Escape")
+    rm.wait_for_selector(".export-dialog", state="detached")
+    rm.close()
+
+    # Dave has Raid leader: he runs Carol's raid. He adds Hank (his character is picked) to the bench.
+    dv = fresh(dave["token"], "raids-dave", viewport={"width": 1280, "height": 800})
+    open_card(dv)
+    dv.wait_for_selector(f"{naxx_card} button[title='Raid options']", timeout=10000)
+    dv.wait_for_selector(f"{naxx_card} .ev-btn.export")
+    dv.click(f"{naxx_card} button[title='Raid options']")
+    dv.click(".menu button:has-text('Add someone')")
+    dv.wait_for_selector(".add-raid-dialog select[aria-label='Who']")
+    dv.select_option(".add-raid-dialog select[aria-label='Who']", hank["user"]["id"])
+    dv.wait_for_selector(".add-raid-dialog .char-chip.on:has-text('Hammer Stonefist')", timeout=10000)
+    dv.click(".add-raid-dialog .su-spec:has-text('Holy')")
+    dv.select_option(".add-raid-dialog select[aria-label='Where']", "bench")
+    dv.wait_for_timeout(200)
+    dv.screenshot(path=f"{SHOTS}/135-add-someone.png")
+    dv.click(".add-raid-dialog button.primary")
+    dv.wait_for_selector(f"{naxx_card} .ev-bench .su-name:has-text('Hammer Stonefist')", timeout=10000)
+    ex = api("GET", f"/api/events/{NX}/export", None, dave["token"])
+    hank_entry = next(e for e in ex["entries"] if e["user_id"] == hank["user"]["id"])
+    assert hank_entry["status"] == "bench" and hank_entry["character"]["id"] == hammer["id"], hank_entry
+    # Change Gus's role from the roster menu (he has no characters).
+    dv.click(f"{naxx_card} .ev-col.dps .su-name:has-text('Gus')")
+    dv.click(".menu button:has-text('Change character or role')")
+    dv.wait_for_selector(".add-raid-dialog .char-chips:has-text('No WoW: Forever characters')")
+    dv.keyboard.press("Escape")
+    dv.wait_for_selector(".add-raid-dialog", state="detached")
+    scroll_to_card(dv, "Naxx invite test")
+    dv.screenshot(path=f"{SHOTS}/136-manager-view.png")
+    # Ivy (no raid role) can't run it.
+    dv.close()
+    iv = fresh(ivy["token"], "raids-ivy", viewport={"width": 1280, "height": 800})
+    open_card(iv)
+    assert not iv.query_selector(f"{naxx_card} button[title='Raid options']"), "Ivy got raid options"
+    assert not iv.query_selector(f"{naxx_card} .ev-btn.export"), "Ivy got the invite list"
+    # A Skyborne character in the form, with the Forever combo note.
+    iv.evaluate("openUserSettings('look')")
+    iv.wait_for_selector(".chars-settings .char-row:has-text('Windy Skysong')", timeout=10000)
+    iv.click(".chars-settings .char-row:has-text('Windy Skysong') button:has-text('Edit')")
+    iv.wait_for_selector(".char-dialog[open]")
+    assert iv.input_value(".char-dialog select[aria-label='Race']") == "Skyborne (Horde)"
+    iv.select_option(".char-dialog select[aria-label='Race']", "Skyborne (Alliance)")
+    iv.wait_for_selector(".char-dialog .combo-warn:has-text('only Horde Skyborne can be Shamans')")
+    iv.screenshot(path=f"{SHOTS}/137-skyborne-character.png")
+    iv.keyboard.press("Escape")
+    iv.close()
+
+    # Phone and Android app.
+    for label, kw, n in (("raids-phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True}, 140),
+                         ("android-raids", {"viewport": {"width": 393, "height": 852}, "is_mobile": True, "has_touch": True}, 150)):
+        pg = fresh(TOKEN, label, **kw)
+        pg.evaluate("openSettings('raids')")
+        pg.wait_for_selector(".rs-roles .rs-role:has-text('Raid leader') input:checked", timeout=10000)
+        pg.wait_for_timeout(300)
+        pg.screenshot(path=f"{SHOTS}/{n}-{label}-settings.png")
+        pg.keyboard.press("Escape")
+        pg.wait_for_selector("dialog.settings", state="detached")
+        open_card(pg)
+        pg.wait_for_selector(f"{naxx_card} .su-name:has-text('Lightwell Dawnstar')")
+        pg.screenshot(path=f"{SHOTS}/{n + 1}-{label}-roster.png")
+        pg.click(f"{naxx_card} .ev-btn.export")
+        pg.wait_for_selector(".export-dialog .exp-text")
+        pg.wait_for_timeout(300)
+        pg.screenshot(path=f"{SHOTS}/{n + 2}-{label}-export.png")
+        pg.click(".export-dialog .exp-tab:has-text('MRT')")
+        pg.wait_for_timeout(200)
+        pg.screenshot(path=f"{SHOTS}/{n + 3}-{label}-export-mrt.png")
+        pg.keyboard.press("Escape")
+        pg.close()
+
+
     browser.close()
 
 if errors:

@@ -226,23 +226,30 @@ function eventWhen(ev) {
   return { text: `${day} · ${t(start)} – ${t(end)}`, status, live: now >= start && now <= end, over: now > end, started: now >= start };
 }
 
+// Their name in the outhouse.
+const signupPerson = (s) => memberById(s.user_id)?.display_name ?? s.display_name;
+// What the roster calls them: the character they picked, else their name.
+const signupLabel = (s) => s.character?.full_name || signupPerson(s);
+
 function signupName(s, ev) {
   const colour = classColour(s.class);
+  const person = signupPerson(s);
   const node = el("span", {
-    class: `su-name${s.user_id === state.me.id ? " me" : ""}`,
+    class: `su-name${s.user_id === state.me.id ? " me" : ""}${s.character ? " has-char" : ""}`,
     style: colour ? `color:${colour}` : "",
-    title: [s.class && `${s.spec} ${s.class}`.trim(), s.note].filter(Boolean).join(" — ") || STATUS_LABEL[s.status],
-  }, memberById(s.user_id)?.display_name ?? s.display_name, s.status === "late" ? " ⏱" : "", s.note ? " 💬" : "");
+    title: [s.character ? `${person} in the outhouse` : null, s.class && `${s.spec} ${s.class}`.trim(), s.note].filter(Boolean).join(" — ") || STATUS_LABEL[s.status],
+  }, signupLabel(s), s.status === "late" ? " ⏱" : "", s.note ? " 💬" : "");
   if (canManageEvent(ev)) {
     node.classList.add("manageable");
     node.addEventListener("click", (e) => {
       const r = e.currentTarget.getBoundingClientRect();
-      const set = (status) => setSignup(ev, { ...s, status, user_id: s.user_id });
+      const set = (status) => setSignup(ev, { status, role: s.role, class: s.class, spec: s.spec, note: s.note, user_id: s.user_id, keep_character: true });
       const onRoster = s.status === "yes" || s.status === "late";
       openMenu(r.left, r.bottom + 4, [
         onRoster ? null : { label: "Move to roster", onClick: () => set("yes") },
         s.status !== "bench" ? { label: "Move to bench", onClick: () => set("bench") } : null,
         s.status !== "tentative" ? { label: "Mark tentative", onClick: () => set("tentative") } : null,
+        typeof openAddToRaid === "function" ? { label: "Change character or role…", onClick: () => openAddToRaid(ev, s) } : null,
         "sep",
         { label: "Remove from raid", danger: true, onClick: () => tryApi("DELETE", `/api/events/${ev.id}/signups/${s.user_id}`).then(applyEventReply, () => {}) },
       ]);
@@ -275,6 +282,7 @@ function renderEventCard(m) {
       el("div", { class: "ev-col-head" }, `${ROLE_INFO[role].icon} ${ROLE_INFO[role].label}`,
         el("span", { class: `ev-count${people.length >= max && max > 0 ? " full" : ""}` }, `${people.length}/${max}`)),
       people.length ? people.map((s, i) => el("div", { class: `ev-person${i >= max ? " over" : ""}` }, signupName(s, ev),
+        s.character && s.character.full_name !== signupPerson(s) ? el("span", { class: "ev-owner", title: `${signupPerson(s)} in the outhouse` }, signupPerson(s)) : el("span", { class: "ev-owner" }),
         s.spec ? el("span", { class: "ev-spec" }, s.spec) : null)) : el("div", { class: "ev-empty" }, "—"));
   };
   const list = (status, label) => {
@@ -299,6 +307,9 @@ function renderEventCard(m) {
     locked
       ? `🔒 Sign-ups closed${manager ? " · as raid leader you can still make changes" : ""}`
       : `⏳ Sign-ups close ${relativeTime(closes)} (${closes.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })})`) : null;
+  const exportBtn = manager && typeof openRaidExport === "function" && ev.signups.some((s) => s.status !== "no") ? el("button", {
+    class: "ev-btn export", title: "Names to paste into Method Raid Tools or an /invite macro", onclick: () => openRaidExport(ev),
+  }, "📨 Invite list") : null;
   const attendanceBtn = manager && when.started ? el("button", {
     class: `ev-btn attendance${ev.attendance_taken ? " done" : ""}`,
     onclick: () => openAttendanceDialog(ev),
@@ -325,6 +336,8 @@ function renderEventCard(m) {
           { label: series ? "Edit this raid" : "Edit raid", onClick: () => openRaidDialog(ev) },
           series ? { label: "Edit this and future raids", onClick: () => openRaidDialog(ev, { scope: "future" }) } : null,
           { label: "Copy roster", onClick: () => copy(rosterText(ev), "Roster copied") },
+          typeof openRaidExport === "function" ? { label: "Export / invite list", onClick: () => openRaidExport(ev) } : null,
+          typeof openAddToRaid === "function" && !when.over ? { label: "Add someone…", onClick: () => openAddToRaid(ev) } : null,
           when.started ? { label: "Take attendance", onClick: () => openAttendanceDialog(ev) } : null,
           "sep",
           { label: series ? "Cancel this raid" : "Delete raid", danger: true, onClick: () => cancelRaid(ev, "one") },
@@ -337,7 +350,7 @@ function renderEventCard(m) {
     el("div", { class: "ev-cols" }, column("tank", ev.max_tanks), column("healer", ev.max_healers), column("dps", ev.max_dps)),
     benchBox,
     list("tentative", "Tentative"), list("no", "Can't make it"),
-    canSign || attendanceBtn ? el("div", { class: "ev-actions" },
+    canSign || attendanceBtn || exportBtn ? el("div", { class: "ev-actions" },
       canSign ? [
         quick("yes", mine && mine.status !== "no" ? "Change sign-up" : "Sign up"),
         quick("late", "Late"),
@@ -345,7 +358,7 @@ function renderEventCard(m) {
         quick("no", "Can't make it"),
         mine ? el("button", { class: "ev-btn ghost", onclick: () => tryApi("DELETE", `/api/events/${ev.id}/signups/${state.me.id}`).then(applyEventReply, () => {}) }, "Withdraw") : null,
       ] : null,
-      attendanceBtn) : null,
+      attendanceBtn, exportBtn) : null,
   );
 }
 
@@ -354,11 +367,11 @@ function rosterText(ev) {
   const lines = [`${ev.title} — ${when.text}`];
   for (const role of ["tank", "healer", "dps"]) {
     const people = ev.signups.filter((s) => (s.status === "yes" || s.status === "late") && s.role === role);
-    lines.push(`${ROLE_INFO[role].label}: ${people.map((s) => `${memberById(s.user_id)?.display_name ?? s.display_name}${s.spec ? ` (${s.spec} ${s.class})` : ""}`).join(", ") || "—"}`);
+    lines.push(`${ROLE_INFO[role].label}: ${people.map((s) => `${signupLabel(s)}${s.spec ? ` (${s.spec} ${s.class})` : ""}`).join(", ") || "—"}`);
   }
   for (const [status, label] of [["tentative", "Tentative"], ["bench", "Bench"]]) {
     const people = ev.signups.filter((s) => s.status === status);
-    if (people.length) lines.push(`${label}: ${people.map((s) => memberById(s.user_id)?.display_name ?? s.display_name).join(", ")}`);
+    if (people.length) lines.push(`${label}: ${people.map(signupLabel).join(", ")}`);
   }
   return lines.join("\n");
 }
@@ -415,17 +428,19 @@ function openSignup(ev, anchor, status) {
     full.textContent = role && (status === "yes" || status === "late") && !alreadyIn && taken >= max
       ? `🪑 ${ROLE_INFO[role].label} are full: you'll go on the bench and move up when a spot opens.` : "";
   };
-  go.addEventListener("click", async () => {
-    prefs.set("raid_class", cls); prefs.set("raid_spec", spec); prefs.set("raid_role", role);
-    closePopover();
-    await setSignup(ev, { status, role, class: cls, spec, note: note.value.trim() });
-  });
-  paint();
-  const pop = openPopover(anchor, el("div", { class: "signup-pop" },
+  const box = el("div", { class: "signup-pop" },
     el("h3", {}, ev.title),
     el("div", { class: "muted small" }, "Class"), classes,
     el("div", { class: "muted small" }, "Spec"), specs,
-    full, note, go), "above");
+    full, note, go);
+  go.addEventListener("click", async () => {
+    prefs.set("raid_class", cls); prefs.set("raid_spec", spec); prefs.set("raid_role", role);
+    closePopover();
+    // wow.js sets data-character-id when you pick one of your characters.
+    await setSignup(ev, { status, role, class: cls, spec, note: note.value.trim(), character_id: box.dataset.characterId || null });
+  });
+  paint();
+  const pop = openPopover(anchor, box, "above");
   // Line it up with the button rather than off to the side.
   const r = anchor.getBoundingClientRect();
   const above = r.top - pop.offsetHeight - 8;
@@ -497,8 +512,10 @@ function openRaidDialog(existing = null, { scope = "one", date = null } = {}) {
       .map(([m, label]) => el("option", { value: m, selected: m === current }, label)));
 
   // Where it goes (new raids): this channel, else the last one used.
+  // The outhouse's sign-up channel (Outhouse settings → Raids) comes first.
   const remembered = prefs.get(`raid_channel_${state.guildId}`, "");
-  const startChannel = channels.find((c) => c.id === state.channelId) ?? channels.find((c) => c.id === remembered) ?? channels[0];
+  const preferred = state.raidSettings?.guild_id === state.guildId ? state.raidSettings.default_channel_id : null;
+  const startChannel = channels.find((c) => c.id === preferred) ?? channels.find((c) => c.id === state.channelId) ?? channels.find((c) => c.id === remembered) ?? channels[0];
   const channel = el("select", { class: "select", "aria-label": "Post in" },
     channels.map((c) => el("option", { value: c.id, selected: c.id === startChannel?.id }, `# ${c.name}`)));
   const game = el("select", { class: "select", "aria-label": "Game" },

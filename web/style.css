@@ -1190,3 +1190,47 @@ span.audit-target { cursor: default; }
   .raid-dialog .raid-row.lfg-what { grid-template-columns: 1fr; }
 }
 .char-place:not(.even) { grid-template-columns: 1fr; }
+
+/* ---------- Raid managers, characters on sign-ups, invite lists ---------- */
+.ev-person .su-name { flex: 0 1 auto; min-width: 0; }
+.ev-owner { flex: 1 1 0; min-width: 0; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; align-self: center; }
+.ev-btn.export { margin-left: auto; }
+.ev-btn.attendance + .ev-btn.export { margin-left: 0; }
+.su-char-hint { margin-top: -2px; }
+.combo-warn { color: var(--glow) !important; }
+.rs-head { margin: 10px 0 0; }
+.rs-roles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; }
+.rs-role { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--night); cursor: pointer; min-width: 0; }
+.rs-role:has(input:checked) { border-color: var(--ember); background: color-mix(in srgb, var(--ember) 12%, var(--night)); }
+.rs-role input { width: 18px; height: 18px; margin: 0; accent-color: var(--ember); flex: none; }
+.rs-role .swatch { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.rs-role-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rs-who { margin: 0; }
+.rs-channel .select { width: 100%; max-width: 360px; }
+dialog.export-dialog, dialog.add-raid-dialog { width: min(600px, 96vw); }
+dialog.export-dialog[open], dialog.add-raid-dialog[open] { display: flex; flex-direction: column; gap: 10px; max-height: 92vh; }
+.add-raid-body { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; min-height: 0; }
+.add-raid-body .select { width: 100%; }
+.exp-options { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; }
+.exp-name { display: flex; flex-direction: row; align-items: center; gap: 8px; margin-left: auto; }
+.exp-name .select { width: auto; }
+.exp-tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+.exp-tab { height: 32px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--night); color: var(--muted); font-size: 13px; font-weight: 600; }
+.exp-tab.on { background: var(--ember); border-color: var(--ember); color: #1a0d05; }
+.exp-out { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; min-height: 0; }
+.exp-help { margin: 0; }
+.exp-block { display: grid; gap: 4px; }
+.exp-block-head { display: flex; justify-content: space-between; align-items: center; }
+.exp-copy { height: 30px; padding: 0 14px; border-radius: 8px; font-size: 13px; }
+.exp-text { width: 100%; box-sizing: border-box; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--night); color: var(--text); resize: vertical; }
+.exp-flag { padding: 8px 10px; border-radius: 8px; border: 1px dashed var(--glow); background: color-mix(in srgb, var(--glow) 8%, transparent); font-size: 13px; }
+.exp-flag strong { color: var(--glow); }
+@media (max-width: 760px) {
+  .ev-owner { display: none; }
+  dialog.export-dialog, dialog.add-raid-dialog { width: 100vw; max-width: none; height: auto; max-height: 100dvh; border-radius: 0; padding: calc(var(--safe-top) + 12px) 12px calc(var(--safe-bottom) + 12px); }
+  dialog.export-dialog[open], dialog.add-raid-dialog[open] { max-height: 100dvh; }
+  .exp-name { margin-left: 0; width: 100%; }
+  .exp-name .select { flex: 1; }
+  .exp-tab { flex: 1 1 calc(50% - 4px); padding: 0 6px; }
+  .rs-roles { grid-template-columns: 1fr; }
+}
