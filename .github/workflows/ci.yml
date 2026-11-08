@@ -57,6 +57,7 @@ jobs:
           node --check web/notify.js
           node --check web/admin-extras.js
           node --check web/raid-admin.js
+          node --check web/channel-settings.js
           node --check web/sw.js
           node --check web/landing.js
           node --check web/entry.js
