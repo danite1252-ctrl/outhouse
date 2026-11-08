@@ -381,6 +381,9 @@ pub async fn insert_embeds(db: &PgPool, message_id: i64, embeds: &[Embed]) -> Ap
     .fetch_one(db)
     .await?;
     for (i, e) in embeds.iter().enumerate() {
+        // Bots, webhooks and news feeds can send anything: only web links
+        // (never javascript: and friends) and sensible sizes are kept.
+        let e = &crate::security::clean_embed(e);
         sqlx::query(
             "INSERT INTO message_embeds
                  (message_id, position, url, kind, title, description, site_name, image_url,

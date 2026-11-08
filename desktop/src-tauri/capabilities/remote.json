@@ -1,10 +1,10 @@
 {
   "$schema": "../gen/schemas/remote-schema.json",
   "identifier": "outhouse-server",
-  "description": "Lets the Outhouse site (wherever it's hosted) talk to the desktop app: push to talk, notifications, opening links. The window only ever shows the Outhouse server (DEFAULT_SERVER in src/lib.rs); other links open in your browser.",
+  "description": "The Outhouse site itself (https://oh.hartspace.cc, DEFAULT_SERVER in src/lib.rs). The site talks to the app through the http://outhouse.localhost bridge, which checks the page's origin, not through Tauri commands; this only lets Tauri's own scripts run there. Moving the server to another domain? Change it here too.",
   "windows": ["main"],
   "remote": {
-    "urls": ["https://*", "http://localhost:*"]
+    "urls": ["https://oh.hartspace.cc/*"]
   },
   "permissions": ["core:default"]
 }

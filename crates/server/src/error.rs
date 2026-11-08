@@ -22,6 +22,12 @@ pub enum AppError {
     NotFound,
     #[error("{0}")]
     Conflict(String),
+    /// Not allowed, with a reason to show (e.g. sign-ups are closed).
+    #[error("{0}")]
+    Refused(String),
+    /// Too many tries (sign-in, sign-up, invite look-ups): slow down.
+    #[error("{0}")]
+    TooManyRequests(String),
     #[error(transparent)]
     Db(#[from] sqlx::Error),
     #[error(transparent)]
@@ -33,9 +39,12 @@ impl IntoResponse for AppError {
         let status = match &self {
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Unauthorized | AppError::InvalidCredentials => StatusCode::UNAUTHORIZED,
-            AppError::Forbidden | AppError::AgeRestricted => StatusCode::FORBIDDEN,
+            AppError::Forbidden | AppError::AgeRestricted | AppError::Refused(_) => {
+                StatusCode::FORBIDDEN
+            }
             AppError::NotFound | AppError::Db(sqlx::Error::RowNotFound) => StatusCode::NOT_FOUND,
             AppError::Conflict(_) => StatusCode::CONFLICT,
+            AppError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
             AppError::Db(_) | AppError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let message = if status == StatusCode::INTERNAL_SERVER_ERROR {

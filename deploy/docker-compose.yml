@@ -40,6 +40,11 @@ services:
       # Outhouse itself talks to LiveKit's API (server mute, disconnect) on this machine.
       LIVEKIT_API_URL: http://host.docker.internal:7880
       GIPHY_API_KEY: ${GIPHY_API_KEY:-}
+      # Who can make accounts: open (default), invite or closed. See README "Security checks".
+      REGISTRATION: ${REGISTRATION:-open}
+      # Proxies whose X-Forwarded-For is believed (blank = this machine, LAN and Docker networks).
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      RATE_LIMITS: ${RATE_LIMITS:-on}
       # WoW tools (all optional; see README "WoW tools").
       PUBLIC_URL: https://${DOMAIN}
       BNET_CLIENT_ID: ${BNET_CLIENT_ID:-}

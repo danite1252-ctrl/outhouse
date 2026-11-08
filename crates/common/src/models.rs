@@ -975,6 +975,10 @@ pub struct RegisterRequest {
     pub username: String,
     pub password: String,
     pub display_name: Option<String>,
+    /// An invite code, needed when the server only lets people in by invite
+    /// (`REGISTRATION=invite`).
+    #[serde(default)]
+    pub invite: Option<String>,
 }
 
 /// Change your own account. Leave out anything you're not changing.

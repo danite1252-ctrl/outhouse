@@ -9,6 +9,8 @@
 
 :8080 {
 	encode zstd gzip
+	# Don't advertise the web server (Outhouse sets its own security headers).
+	header -Server
 	# Voice signalling goes to LiveKit (running on the host network).
 	handle /rtc* {
 		reverse_proxy host.docker.internal:7880

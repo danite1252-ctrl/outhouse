@@ -19,7 +19,19 @@ use crate::audit;
 use crate::auth::{self, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::perms::member_ctx;
+use crate::security::{self, ClientIp};
 use crate::state::{AppState, Audience};
+
+/// Invite codes can't be guessed by hammering the look-up (or join) page.
+fn check_lookup_rate(ip: std::net::IpAddr) -> AppResult<()> {
+    if security::allow_invite_lookup(ip) {
+        Ok(())
+    } else {
+        Err(AppError::TooManyRequests(
+            "That's a lot of invite look-ups. Wait a minute and try again.".into(),
+        ))
+    }
+}
 
 const INVITE_ALPHABET: &[u8] = b"abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 /// An invite made without saying otherwise lasts a week.
@@ -331,9 +343,11 @@ async fn preview_for(st: &AppState, row: &InviteRow, base: &str) -> AppResult<In
 /// Expired, used-up and revoked invites are "not found".
 pub async fn preview(
     State(st): State<AppState>,
+    ClientIp(ip): ClientIp,
     Path(code): Path<String>,
     headers: HeaderMap,
 ) -> AppResult<Json<InvitePreview>> {
+    check_lookup_rate(ip)?;
     let row = find_invite(&st, &code)
         .await?
         .filter(|r| r.usable)
@@ -348,8 +362,10 @@ pub async fn preview(
 pub async fn join(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
+    ClientIp(ip): ClientIp,
     Path(code): Path<String>,
 ) -> AppResult<Json<Guild>> {
+    check_lookup_rate(ip)?;
     let row = find_invite(&st, &code).await?.ok_or(AppError::NotFound)?;
     let already: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM guild_members WHERE guild_id = $1 AND user_id = $2)",
@@ -543,11 +559,9 @@ pub fn render_invite_page(
         ("{{CODE}}", html_escape(code)),
         ("{{DATA}}", script_json(&data)),
     ];
-    let mut out = template.to_string();
-    for (key, value) in replacements {
-        out = out.replace(key, &value);
-    }
-    out
+    // One pass, so a name like "{{DATA}}" can't pull other values (with
+    // their quotes) into an attribute.
+    security::fill_template(template, &replacements)
 }
 
 const FALLBACK_TEMPLATE: &str =
@@ -561,9 +575,13 @@ const FALLBACK_TEMPLATE: &str =
 /// link previews (Discord, Messenger, WhatsApp) read its Open Graph tags.
 pub async fn page(
     State(st): State<AppState>,
+    ClientIp(ip): ClientIp,
     Path(code): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    if let Err(e) = check_lookup_rate(ip) {
+        return e.into_response();
+    }
     let base = public_base(&st, &headers);
     let row = match find_invite(&st, &code).await {
         Ok(row) => row.filter(|r| r.usable),
@@ -693,5 +711,36 @@ mod tests {
         assert!(html.contains("&quot;Al&quot;"));
         assert!(!html.contains("<b>"));
         assert!(html.contains("1 member"));
+    }
+
+    #[test]
+    fn page_placeholders_in_names_stay_text() {
+        let p = InvitePreview {
+            code: "abc".into(),
+            url: "https://x/invite/abc".into(),
+            guild: InviteGuild {
+                id: 1,
+                name: "{{DATA}}".into(),
+            },
+            inviter: Some(InviteCreator {
+                id: 2,
+                name: "\" autofocus onfocus=\"alert(1)".into(),
+                avatar_url: None,
+            }),
+            member_count: 1,
+            online_count: 0,
+            expires_at: None,
+        };
+        let html = render_invite_page(
+            "<meta content=\"{{TITLE}}\"><script>{{DATA}}</script>",
+            "https://x",
+            Some(&p),
+            "abc",
+            "cc.example",
+        );
+        let meta = html.split("<script>").next().unwrap();
+        assert!(meta.contains("{{DATA}}"), "{meta}");
+        assert!(!meta.contains("autofocus"), "{meta}");
+        assert_eq!(meta.matches('"').count(), 2, "{meta}");
     }
 }

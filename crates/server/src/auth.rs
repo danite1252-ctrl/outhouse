@@ -93,6 +93,11 @@ pub async fn create_session(db: &PgPool, user_id: i64) -> AppResult<String> {
     let mut raw = [0u8; 32];
     OsRng.fill_bytes(&mut raw);
     let token = hex(&raw);
+    // Tidy up this account's expired sign-ins while we're here.
+    sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND expires_at <= now()")
+        .bind(user_id)
+        .execute(db)
+        .await?;
     sqlx::query(
         "INSERT INTO sessions (token_hash, user_id, expires_at)
          VALUES ($1, $2, now() + make_interval(days => $3))",

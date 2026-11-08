@@ -13,6 +13,7 @@ mod gateway;
 mod livekit;
 mod perms;
 mod push;
+mod security;
 mod state;
 mod wowhead;
 
@@ -57,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
         .context("running database migrations")?;
 
     let config = Config::from_env();
+    security::init(&config);
     tokio::fs::create_dir_all(&config.upload_dir)
         .await
         .with_context(|| format!("creating upload folder {}", config.upload_dir.display()))?;
@@ -85,15 +87,20 @@ async fn main() -> anyhow::Result<()> {
         .route_service("/login", ServeFile::new(&client))
         .fallback_service(ServeDir::new(&web_dir))
         .layer(axum::middleware::map_response(no_stale_files))
+        .layer(axum::middleware::from_fn(security::headers))
         .layer(TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("Outhouse is open for business on http://{bind}");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await?;
+    // The connecting address is kept for rate limits (see security::client_ip).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+    .await?;
     Ok(())
 }
 

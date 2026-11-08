@@ -1,0 +1,537 @@
+{
+ "openapi": "3.0.3",
+ "info": {
+  "title": "Outhouse API (ZAP scan subset)",
+  "version": "1"
+ },
+ "servers": [
+  {
+   "url": "__BASE__"
+  }
+ ],
+ "paths": {
+  "/api/users/@me": {
+   "get": {
+    "summary": "me",
+    "parameters": [],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/guilds": {
+   "get": {
+    "summary": "my outhouses",
+    "parameters": [],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/guilds/{guild}/channels": {
+   "get": {
+    "summary": "channels",
+    "parameters": [
+     {
+      "name": "guild",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "__GUILD__"
+      },
+      "example": "__GUILD__"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/guilds/{guild}/members": {
+   "get": {
+    "summary": "members",
+    "parameters": [
+     {
+      "name": "guild",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "__GUILD__"
+      },
+      "example": "__GUILD__"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/guilds/{guild}/roles": {
+   "get": {
+    "summary": "roles",
+    "parameters": [
+     {
+      "name": "guild",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "__GUILD__"
+      },
+      "example": "__GUILD__"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/guilds/{guild}/events": {
+   "get": {
+    "summary": "raids",
+    "parameters": [
+     {
+      "name": "guild",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "__GUILD__"
+      },
+      "example": "__GUILD__"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/guilds/{guild}/search": {
+   "get": {
+    "summary": "search",
+    "parameters": [
+     {
+      "name": "guild",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "__GUILD__"
+      },
+      "example": "__GUILD__"
+     },
+     {
+      "name": "q",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "hello"
+      },
+      "example": "hello"
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "25"
+      },
+      "example": "25"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/guilds/{guild}/audit-log": {
+   "get": {
+    "summary": "audit log",
+    "parameters": [
+     {
+      "name": "guild",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "__GUILD__"
+      },
+      "example": "__GUILD__"
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "50"
+      },
+      "example": "50"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/channels/{channel}/messages": {
+   "get": {
+    "summary": "messages",
+    "parameters": [
+     {
+      "name": "channel",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "__CHANNEL__"
+      },
+      "example": "__CHANNEL__"
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "50"
+      },
+      "example": "50"
+     },
+     {
+      "name": "before",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "__MESSAGE__"
+      },
+      "example": "__MESSAGE__"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   },
+   "post": {
+    "summary": "send",
+    "parameters": [
+     {
+      "name": "channel",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "__CHANNEL__"
+      },
+      "example": "__CHANNEL__"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       },
+       "example": {
+        "content": "zap test message"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/channels/{channel}/messages/{message}": {
+   "patch": {
+    "summary": "edit",
+    "parameters": [
+     {
+      "name": "channel",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "__CHANNEL__"
+      },
+      "example": "__CHANNEL__"
+     },
+     {
+      "name": "message",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "__MESSAGE__"
+      },
+      "example": "__MESSAGE__"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       },
+       "example": {
+        "content": "zap edit"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/channels/{channel}/threads": {
+   "get": {
+    "summary": "threads",
+    "parameters": [
+     {
+      "name": "channel",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "__CHANNEL__"
+      },
+      "example": "__CHANNEL__"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/channels/{channel}/pins": {
+   "get": {
+    "summary": "pins",
+    "parameters": [
+     {
+      "name": "channel",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "__CHANNEL__"
+      },
+      "example": "__CHANNEL__"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/invites/{code}": {
+   "get": {
+    "summary": "invite preview",
+    "parameters": [
+     {
+      "name": "code",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "__CODE__"
+      },
+      "example": "__CODE__"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/invite/{code}": {
+   "get": {
+    "summary": "invite page",
+    "parameters": [
+     {
+      "name": "code",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "__CODE__"
+      },
+      "example": "__CODE__"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/profiles/{user}": {
+   "get": {
+    "summary": "profile",
+    "parameters": [
+     {
+      "name": "user",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "__USER__"
+      },
+      "example": "__USER__"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/dms": {
+   "get": {
+    "summary": "dms",
+    "parameters": [],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/users/@me/contacts": {
+   "get": {
+    "summary": "contacts",
+    "parameters": [],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/wow/info": {
+   "get": {
+    "summary": "wow info",
+    "parameters": [],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/permissions": {
+   "get": {
+    "summary": "permission list",
+    "parameters": [],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/auth/registration": {
+   "get": {
+    "summary": "sign-up mode",
+    "parameters": [],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/emojis/{id}": {
+   "get": {
+    "summary": "emoji picture",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "1"
+      },
+      "example": "1"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/files/{key}/{name}": {
+   "get": {
+    "summary": "file",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "AAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "example": "AAAAAAAAAAAAAAAAAAAAAAAA"
+     },
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "x.png"
+      },
+      "example": "x.png"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  }
+ }
+}

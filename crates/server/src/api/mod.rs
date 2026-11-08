@@ -48,6 +48,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/permissions", get(permission_list))
         // Accounts
         .route("/api/auth/register", post(account::register))
+        .route("/api/auth/registration", get(account::registration_mode))
         .route("/api/auth/login", post(account::login))
         .route("/api/auth/logout", post(account::logout))
         .route("/api/users/@me", get(account::me).patch(account::update_me))

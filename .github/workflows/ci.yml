@@ -68,7 +68,7 @@ jobs:
       - name: Deploy scripts check (bash -n + shellcheck)
         run: |
           for f in deploy/*.sh ci/smoke.sh; do bash -n "$f"; done
-          shellcheck -S warning deploy/backup.sh deploy/healthcheck.sh deploy/setup.sh deploy/restore.sh
+          shellcheck -S warning deploy/backup.sh deploy/healthcheck.sh deploy/setup.sh deploy/restore.sh deploy/security-scan.sh ci/zap.sh
       - name: Smoke test (real server + Postgres)
         env:
           DATABASE_URL: postgres://outhouse:outhouse@localhost:5432/outhouse
@@ -148,6 +148,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: PowerShell scripts parse (deploy/*.ps1)
+        shell: pwsh
+        run: |
+          $bad = $false
+          foreach ($f in Get-ChildItem deploy/*.ps1) {
+            $errs = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errs) | Out-Null
+            if ($errs) { $bad = $true; $errs | ForEach-Object { Write-Host "::error file=$($f.Name)::$($_.Message) (line $($_.Extent.StartLineNumber))" } }
+          }
+          if ($bad) { exit 1 }
       - name: Set the version (and updater files when the signing key is set)
         shell: bash
         env:
@@ -337,6 +347,44 @@ jobs:
           path: Outhouse-Android.apk
           if-no-files-found: error
 
+  dast:
+    name: DAST (OWASP ZAP against a test server)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: outhouse
+          POSTGRES_PASSWORD: outhouse
+          POSTGRES_DB: outhouse
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U outhouse"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build -p outhouse-server
+      - name: ZAP baseline + API scan (High alerts fail; see ci/zap-rules.tsv)
+        env:
+          DATABASE_URL: postgres://outhouse:outhouse@localhost:5432/outhouse
+          BIND_ADDR: 127.0.0.1:8080
+          WEB_DIR: web
+          UPLOAD_DIR: /tmp/outhouse-uploads
+          LIVEKIT_API_KEY: devkey
+          LIVEKIT_API_SECRET: secret-secret-secret-secret-secret
+          LINK_PREVIEWS_OFFLINE: "1"
+          RUST_LOG: outhouse_server=info
+        run: |
+          ./target/debug/outhouse-server > /tmp/dast-server.log 2>&1 &
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8080/api/health >/dev/null 2>&1 && break; sleep 1; done
+          bash ci/zap.sh
+      - name: Server log
+        if: always()
+        run: tail -200 /tmp/dast-server.log 2>/dev/null || true
+
   security:
     name: Security (cargo audit, vendored scripts)
     runs-on: ubuntu-latest
@@ -347,20 +395,24 @@ jobs:
           tool: cargo-audit
       - name: cargo audit (RustSec advisories; fails on vulnerabilities, warnings are listed)
         run: |
-          cargo audit --file Cargo.lock 2>&1 | tee /tmp/audit-server.txt || AUDIT_FAIL=1
+          set -o pipefail
+          # RUSTSEC-2023-0071 (rsa, Marvin attack): only reached through sqlx-mysql, which
+          # sqlx's lock file lists but Outhouse never builds or uses (Postgres only).
+          cargo audit --file Cargo.lock --ignore RUSTSEC-2023-0071 2>&1 | tee /tmp/audit-server.txt || AUDIT_FAIL=1
           echo "---- desktop app ----"
           cargo audit --file desktop/src-tauri/Cargo.lock 2>&1 | tee /tmp/audit-desktop.txt || echo "::warning::cargo audit found problems in the desktop app's dependencies (see above)"
           if [ -n "$AUDIT_FAIL" ]; then echo "::error::cargo audit found vulnerable server dependencies"; exit 1; fi
       - name: Vendored LiveKit client matches the npm release it says it is
         run: |
-          V=$(cat web/vendor/livekit-client.version 2>/dev/null || npm view livekit-client version)
+          V=$(cat web/vendor/livekit-client.version)
           echo "LiveKit client $V"
-          curl -fsSL --retry 3 "https://cdn.jsdelivr.net/npm/livekit-client@$V/dist/livekit-client.umd.min.js" -o /tmp/lk.js
-          if ! cmp -s /tmp/lk.js web/vendor/livekit-client.umd.min.js; then
-            echo "::error::web/vendor/livekit-client.umd.min.js isn't livekit-client $V from npm"
-            echo "=====LIVEKIT $V"; base64 -w0 /tmp/lk.js; echo
+          (cd /tmp && npm pack "livekit-client@$V" --silent >/dev/null && tar xzf "livekit-client-$V.tgz")
+          if ! cmp /tmp/package/dist/livekit-client.umd.js web/vendor/livekit-client.umd.js; then
+            echo "::error::web/vendor/livekit-client.umd.js isn't dist/livekit-client.umd.js from livekit-client $V on npm"
+            echo "=====LIVEKIT $V"; base64 -w0 /tmp/package/dist/livekit-client.umd.js; echo
             exit 1
           fi
+          echo "web/vendor/livekit-client.umd.js is livekit-client $V, byte for byte"
 
   release:
     name: Publish downloads (Releases → "latest")

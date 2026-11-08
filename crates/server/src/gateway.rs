@@ -25,13 +25,23 @@ use crate::state::{AppState, Audience};
 
 const IDENTIFY_TIMEOUT: Duration = Duration::from_secs(10);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(90);
+/// Clients only send small JSON (identify, heartbeats, idle): anything
+/// bigger is refused rather than buffered.
+const MAX_CLIENT_MESSAGE: usize = 16 * 1024;
+/// Open connections one account may have at once (tabs, phone, desktop app).
+const MAX_CONNECTIONS_PER_USER: usize = 20;
+/// How often an open connection re-checks its sign-in is still good, so
+/// signing out (or changing your password) closes other connections too.
+const SESSION_RECHECK: Duration = Duration::from_secs(60);
 
 pub async fn gateway(ws: WebSocketUpgrade, State(st): State<AppState>) -> Response {
-    ws.on_upgrade(move |socket| async move {
-        if let Err(e) = run(socket, st).await {
-            tracing::debug!(error = %e, "gateway connection ended");
-        }
-    })
+    ws.max_message_size(MAX_CLIENT_MESSAGE)
+        .max_frame_size(MAX_CLIENT_MESSAGE)
+        .on_upgrade(move |socket| async move {
+            if let Err(e) = run(socket, st).await {
+                tracing::debug!(error = %e, "gateway connection ended");
+            }
+        })
 }
 
 type Sink = SplitSink<WebSocket, WsMessage>;
@@ -80,6 +90,19 @@ async fn run(socket: WebSocket, st: AppState) -> anyhow::Result<()> {
     let Some(user) = user_for_token(&st.db, &token).await? else {
         return reject(&mut sink, "Your session has expired. Sign in again.").await;
     };
+    let open_now = st
+        .presence
+        .lock()
+        .expect("presence lock")
+        .get(&user.id)
+        .copied()
+        .unwrap_or(0);
+    if open_now >= MAX_CONNECTIONS_PER_USER {
+        // Just close (not INVALID_SESSION, which signs the client out).
+        tracing::warn!(user = %user.username, "too many gateway connections");
+        sink.send(WsMessage::Close(None)).await?;
+        return Ok(());
+    }
 
     // Subscribe before loading servers so nothing slips through the gap.
     let mut events = st.events.subscribe();
@@ -104,6 +127,7 @@ async fn run(socket: WebSocket, st: AppState) -> anyhow::Result<()> {
     let idle = std::sync::atomic::AtomicBool::new(false);
     let outcome: anyhow::Result<()> = async {
         let mut last_heartbeat = Instant::now();
+        let mut last_session_check = Instant::now();
         let mut watchdog = tokio::time::interval(Duration::from_secs(15));
 
         loop {
@@ -164,6 +188,20 @@ async fn run(socket: WebSocket, st: AppState) -> anyhow::Result<()> {
                     if last_heartbeat.elapsed() > HEARTBEAT_TIMEOUT {
                         tracing::debug!(user = %user.username, "heartbeat timed out");
                         break;
+                    }
+                    if last_session_check.elapsed() >= SESSION_RECHECK {
+                        last_session_check = Instant::now();
+                        // A database hiccup isn't a sign-out: only a definite "no".
+                        if let Ok(current) = user_for_token(&st.db, &token).await {
+                            if current.map(|u| u.id) != Some(user.id) {
+                                tracing::debug!(user = %user.username, "session ended; closing gateway");
+                                let _ = send(&mut sink, &ServerEvent::InvalidSession {
+                                    reason: "You've been signed out. Sign in again.".into(),
+                                }).await;
+                                let _ = sink.send(WsMessage::Close(None)).await;
+                                break;
+                            }
+                        }
                     }
                 }
             }

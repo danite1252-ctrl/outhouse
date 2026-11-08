@@ -74,6 +74,13 @@ A=$(call POST /api/auth/register '{"username":"alice","password":"password123","
 TOKEN_A=$(jq -r .token <<<"$A"); ALICE=$(jq -r .user.id <<<"$A")
 B=$(call POST /api/auth/register '{"username":"bob","password":"password123","display_name":"Bob"}')
 TOKEN_B=$(jq -r .token <<<"$B"); BOB=$(jq -r .user.id <<<"$B")
+# Signing out also closes that session's open gateway connection (checked
+# in the security section near the end; the server re-checks every 30 s).
+LOGOUT_TOKEN=$(TOKEN="" call POST /api/auth/login '{"username":"alice","password":"password123"}' | jq -r .token)
+node ci/gateway_probe.mjs "$BASE" "$LOGOUT_TOKEN" /tmp/gw-logout.jsonl 150 &
+GW_LOGOUT_PID=$!
+for i in $(seq 1 40); do grep -q '"READY"' /tmp/gw-logout.jsonl 2>/dev/null && break; sleep 0.25; done
+TOKEN=$LOGOUT_TOKEN call POST /api/auth/logout >/dev/null
 TOKEN=$TOKEN_A
 call GET /api/users/@me >/dev/null
 call PATCH /api/users/@me '{"display_name":"Alice W"}' >/dev/null
@@ -1759,6 +1766,156 @@ jq -e '.[0].relation == ["delegate_permission/common.handle_all_urls"]
   and (.[0].target.sha256_cert_fingerprints[0] | test("^([0-9A-F]{2}:){31}[0-9A-F]{2}$"))
   and .[0].target.sha256_cert_fingerprints[0] == "D6:31:45:91:E5:FA:44:C0:82:28:27:92:C5:28:31:88:3B:FE:0C:FD:85:63:2B:51:8B:E5:04:FE:83:0F:8A:E3"' /tmp/assetlinks.json >/dev/null \
   || { echo "bad assetlinks.json:"; cat /tmp/assetlinks.json; exit 1; }
+TOKEN=$TOKEN_A
+
+step "security: headers (CSP, HSTS, framing, sniffing) on pages, API and files"
+for path in / /app /invite/zzzzzzzz /api/health /style.css; do
+  curl -sS -D /tmp/sec-h -o /tmp/sec-b "$BASE$path"
+  for want in "x-content-type-options: nosniff" "x-frame-options: DENY" "referrer-policy: strict-origin-when-cross-origin" \
+              "strict-transport-security: max-age=31536000" "cross-origin-opener-policy: same-origin"; do
+    grep -qi "^$want" /tmp/sec-h || { echo "$path is missing '$want':"; cat /tmp/sec-h; exit 1; }
+  done
+  grep -qi "^permissions-policy: .*microphone=(self).*display-capture=(self)" /tmp/sec-h || { echo "$path permissions-policy:"; cat /tmp/sec-h; exit 1; }
+  CSP=$(grep -i "^content-security-policy:" /tmp/sec-h | cut -d' ' -f2- | tr -d '\r')
+  for want in "default-src 'self'" "script-src 'self' blob: 'sha256-" "object-src 'none'" "frame-ancestors 'none'" "base-uri 'self'" \
+              "connect-src 'self' http://outhouse.localhost"; do
+    grep -qF "$want" <<<"$CSP" || { echo "$path CSP lacks \"$want\": $CSP"; exit 1; }
+  done
+  grep -qF "'unsafe-inline' https://fonts" <<<"$CSP"   # styles only
+  if grep -q "script-src[^;]*unsafe" <<<"$CSP"; then echo "scripts allowed inline/eval: $CSP"; exit 1; fi
+done
+# The landing and invite pages' inline scripts are allowed by their exact hashes.
+for page in landing.html invite.html; do
+  HASH=$(python3 -c 'import re,sys,hashlib,base64
+html=open(sys.argv[1]).read()
+for attrs, body in re.findall(r"<script([^>]*)>(.*?)</script>", html, re.S | re.I):
+    if "src=" not in attrs and "application/json" not in attrs:
+        print(base64.b64encode(hashlib.sha256(body.encode()).digest()).decode())' "web/$page")
+  [ -n "$HASH" ] || { echo "no inline script found in $page"; exit 1; }
+  for h in $HASH; do grep -qF "'sha256-$h'" <<<"$CSP" || { echo "CSP doesn't allow $page's inline script ($h)"; exit 1; }; done
+done
+# Uploaded files keep their own locked-down policy (no scripts, sandboxed).
+UP=$(curl -fsS -H "Authorization: Bearer $TOKEN_A" -F "content=header check" -F "files=@/tmp/pixel.png;type=image/png" "$BASE/api/channels/$CHAN/messages/upload")
+FURL=$(jq -r '.attachments[0].url' <<<"$UP")
+curl -sS -D /tmp/sec-f -o /dev/null "$BASE$FURL"
+grep -qi "^content-security-policy: default-src 'none'; sandbox" /tmp/sec-f || { echo "file CSP:"; cat /tmp/sec-f; exit 1; }
+grep -qi "^x-content-type-options: nosniff" /tmp/sec-f
+# The web client loads LiveKit from this server, not a CDN.
+grep -q 'src="vendor/livekit-client.umd.js"' web/index.html
+curl -fsS -o /dev/null "$BASE/vendor/livekit-client.umd.js"
+if grep -rq "cdn.jsdelivr" web/*.html; then echo "a page still loads scripts from a CDN"; exit 1; fi
+
+step "security: no CORS, no cookies"
+curl -sS -D /tmp/sec-c -o /dev/null -H "Origin: https://evil.example" -H "Authorization: Bearer $TOKEN_A" "$BASE/api/users/@me"
+if grep -qi "^access-control-allow-origin" /tmp/sec-c; then echo "API answers cross-origin reads:"; cat /tmp/sec-c; exit 1; fi
+if grep -qi "^set-cookie" /tmp/sec-c; then echo "API sets cookies:"; cat /tmp/sec-c; exit 1; fi
+
+step "security: javascript: links in bot embeds are dropped"
+TOKEN=$TOKEN_A
+XB=$(call POST "/api/guilds/$GUILD/bots" '{"name":"Linky"}'); XB_TOKEN=$(jq -r .token <<<"$XB"); XB_ID=$(jq -r .bot.id <<<"$XB")
+TOKEN=$XB_TOKEN
+call PUT "/api/guilds/$GUILD/commands" '[{"name":"linky","description":"posts a link"}]' >/dev/null
+XCMD=$(call GET "/api/guilds/$GUILD/commands" | jq -r '.[] | select(.name == "linky") | .id')
+node ci/gateway_probe.mjs "$BASE" "$XB_TOKEN" /tmp/gw-linky.jsonl 20 &
+XB_PROBE=$!
+for i in $(seq 1 20); do grep -q '"READY"' /tmp/gw-linky.jsonl 2>/dev/null && break; sleep 0.5; done
+TOKEN=$TOKEN_A
+call POST "/api/channels/$CHAN/interactions" '{"command_id":"'"$XCMD"'","options":{}}' >/dev/null
+for i in $(seq 1 20); do grep -q '"INTERACTION_CREATE"' /tmp/gw-linky.jsonl && break; sleep 0.5; done
+XI=$(jq -r 'select(.t == "INTERACTION_CREATE") | .d.id' /tmp/gw-linky.jsonl | head -1)
+TOKEN=$XB_TOKEN
+call POST "/api/interactions/$XI/reply" '{"content":"","embeds":[{"url":"javascript:alert(document.domain)","kind":"rich","title":"click me","author_name":"me","author_url":" JavaScript:alert(1)","thumbnail_url":"data:text/html,x","image_url":"https://img.example/a.png","fields":[{"name":"a","value":"b"}]}]}' \
+  | jq -e '.embeds[0].url == "" and .embeds[0].author_url == null and .embeds[0].thumbnail_url == null
+           and .embeds[0].image_url == "https://img.example/a.png" and .embeds[0].title == "click me"' >/dev/null
+TOKEN=$TOKEN_A
+call GET "/api/channels/$CHAN/messages" | jq -e '[.[] | .embeds[] | .url, .author_url, .image_url, .thumbnail_url | select(. != null and . != "") | select(test("^(https?://|/[^/])") | not)] | length == 0' >/dev/null \
+  || { echo "a non-web link is stored in an embed"; exit 1; }
+kill $XB_PROBE 2>/dev/null || true
+call DELETE "/api/bots/$XB_ID" >/dev/null
+
+step "security: gateway refuses huge messages and closes signed-out sessions"
+node -e '
+const ws = new WebSocket(process.argv[1].replace(/^http/, "ws") + "/api/gateway");
+const t = setTimeout(() => { console.error("still open after a 100 KB message"); process.exit(1); }, 8000);
+ws.addEventListener("open", () => {
+  ws.send(JSON.stringify({ op: "IDENTIFY", d: { token: process.argv[2] } }));
+  setTimeout(() => ws.send("x".repeat(100 * 1024)), 500);
+});
+ws.addEventListener("close", () => { clearTimeout(t); process.exit(0); });
+ws.addEventListener("error", () => {});' "$BASE" "$TOKEN_A"
+for i in $(seq 1 90); do grep -q '"INVALID_SESSION"' /tmp/gw-logout.jsonl && break; sleep 1; done
+grep -q '"READY"' /tmp/gw-logout.jsonl || { echo "logout probe never connected:"; cat /tmp/gw-logout.jsonl; exit 1; }
+grep -q '"INVALID_SESSION"' /tmp/gw-logout.jsonl || { echo "signed-out session's gateway stayed open"; tail -3 /tmp/gw-logout.jsonl; exit 1; }
+kill $GW_LOGOUT_PID 2>/dev/null || true
+
+step "security: sign-in brute-force limits (per account and per address)"
+TOKEN=""
+call POST /api/auth/register '{"username":"lockme","password":"password123"}' >/dev/null
+xff_login() { # xff_login IP USER PASSWORD -> HTTP status
+  curl -sS -o /tmp/body -w "%{http_code}" -H "Content-Type: application/json" -H "X-Forwarded-For: $1" \
+    -d '{"username":"'"$2"'","password":"'"$3"'"}' "$BASE/api/auth/login"
+}
+# Ten wrong passwords for one account (from ten addresses) lock it, even for the right password.
+for i in $(seq 1 10); do [ "$(xff_login "198.51.100.$i" lockme wrongpass$i)" = 401 ]; done
+[ "$(xff_login 198.51.100.99 lockme password123)" = 429 ] || { echo "account wasn't locked:"; cat /tmp/body; exit 1; }
+grep -q "Wait 15 minutes" /tmp/body
+# Twenty wrong guesses from one address block that address (for any account)...
+for i in $(seq 1 20); do [ "$(xff_login 203.0.113.50 "nobody$i" wrongpass)" = 401 ]; done
+[ "$(xff_login 203.0.113.50 alice password123)" = 429 ]
+# ...but not anyone else. A client's own X-Forwarded-For entries before the
+# proxy's are ignored (see security::client_ip unit tests).
+[ "$(xff_login 203.0.113.51 alice password123)" = 200 ]
+[ "$(xff_login "203.0.113.50, 203.0.113.52" alice password123)" = 200 ]
+# Absurdly long passwords are refused without hashing them.
+code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Content-Type: application/json" \
+  -d "{\"username\":\"longpw\",\"password\":\"$(head -c 400 /dev/zero | tr '\0' a)\"}" "$BASE/api/auth/register")
+[ "$code" = 400 ] && grep -q "up to 256" /tmp/body
+
+step "security: sign-up and invite look-up limits"
+for i in $(seq 1 20); do
+  code=$(curl -sS -o /dev/null -w "%{http_code}" -H "Content-Type: application/json" -H "X-Forwarded-For: 203.0.113.60" \
+    -d '{"username":"!","password":"password123"}' "$BASE/api/auth/register")
+  [ "$code" = 400 ]
+done
+code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Content-Type: application/json" -H "X-Forwarded-For: 203.0.113.60" \
+  -d '{"username":"toomany","password":"password123"}' "$BASE/api/auth/register")
+[ "$code" = 429 ] || { echo "sign-up limit: $code"; cat /tmp/body; exit 1; }
+for i in $(seq 1 120); do
+  code=$(curl -sS -o /dev/null -w "%{http_code}" -H "X-Forwarded-For: 203.0.113.70" "$BASE/api/invites/zzzz$i")
+  [ "$code" = 404 ] || { echo "invite look-up $i -> $code"; exit 1; }
+done
+[ "$(curl -sS -o /dev/null -w "%{http_code}" -H "X-Forwarded-For: 203.0.113.70" "$BASE/api/invites/$CODE")" = 429 ]
+[ "$(curl -sS -o /dev/null -w "%{http_code}" -H "X-Forwarded-For: 203.0.113.70" "$BASE/invite/$CODE")" = 429 ]
+[ "$(curl -sS -o /dev/null -w "%{http_code}" -H "X-Forwarded-For: 203.0.113.71" "$BASE/api/invites/$CODE")" = 200 ]
+call GET /api/auth/registration | jq -e '.mode == "open"' >/dev/null
+
+step "security: REGISTRATION=invite and REGISTRATION=closed"
+TOKEN=$TOKEN_A
+REG_INV=$(call POST "/api/guilds/$GUILD/invites" | jq -r .code)
+TOKEN=""
+for mode in invite closed; do
+  PORT=$([ "$mode" = invite ] && echo 8181 || echo 8182)
+  BIND_ADDR=127.0.0.1:$PORT REGISTRATION=$mode ./target/debug/outhouse-server >"/tmp/outhouse-$mode.log" 2>&1 &
+  REG_PID=$!
+  for i in $(seq 1 30); do curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break; sleep 0.5; done
+  R="http://127.0.0.1:$PORT"
+  curl -fsS "$R/api/auth/registration" | jq -e --arg m "$mode" '.mode == $m' >/dev/null
+  reg() { curl -sS -o /tmp/body -w "%{http_code}" -H "Content-Type: application/json" -d "$1" "$R/api/auth/register"; }
+  [ "$(reg '{"username":"reg'"$mode"'1","password":"password123"}')" = 403 ] || { echo "$mode: signed up without an invite"; cat /tmp/body; exit 1; }
+  [ "$(reg '{"username":"reg'"$mode"'2","password":"password123","invite":"nope1234"}')" = 403 ]
+  if [ "$mode" = invite ]; then
+    grep -q "need an invite" /tmp/body
+    [ "$(reg '{"username":"reginvite3","password":"password123","invite":"'"$REG_INV"'"}')" = 200 ] || { cat /tmp/body; exit 1; }
+    T3=$(jq -r .token /tmp/body)
+    curl -fsS -X POST -H "Authorization: Bearer $T3" "$R/api/invites/$REG_INV" | jq -e --arg g "$GUILD" '.id == $g' >/dev/null
+  else
+    grep -q "closed" /tmp/body
+    [ "$(reg '{"username":"regclosed3","password":"password123","invite":"'"$REG_INV"'"}')" = 403 ]
+  fi
+  # Signing in still works.
+  curl -fsS -H "Content-Type: application/json" -d '{"username":"bob","password":"password123"}' "$R/api/auth/login" >/dev/null
+  kill $REG_PID; wait $REG_PID 2>/dev/null || true
+done
 TOKEN=$TOKEN_A
 
 echo "Smoke test passed."

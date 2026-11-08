@@ -294,6 +294,70 @@ If the Armory doesn't know a character (Blizzard's EU Forever data started
 late, and brand-new characters can take a while), people see a friendly note
 and can still save the character by hand.
 
+## Security checks
+Outhouse sends its own security headers (a strict Content-Security-Policy,
+HSTS, no framing, no sniffing), limits sign-in attempts (10 wrong passwords
+for one account or 20 from one address in 15 minutes pause sign-in for that
+account/address), new accounts (20 an hour per address) and invite look-ups
+(120 a minute per address), and closes other open sessions when you sign
+out or change your password.
+
+**Who can sign up.** Set `REGISTRATION` in `deploy/.env`, then
+`docker compose up -d`:
+- `open` (the default): anyone who can reach the site.
+- `invite`: only people with a working invite link (the invite page passes
+  the code along when they make their account).
+- `closed`: nobody new (the very first account on a new server always works).
+
+**Check your sites yourself** (oh.hartspace.cc and hartspace.cc by default).
+On the Outhouse VM, which has Docker:
+
+    cd ~/outhouse/deploy && ./security-scan.sh
+    ./security-scan.sh --quick            # skip ZAP and the full port scan
+    ./security-scan.sh oh.hartspace.cc    # one site
+
+It checks TLS (testssl.sh), headers and http→https redirects, that `.env`,
+`.git`, backups, `server-status`, folder listings and `/updates/` listings
+aren't public, open ports on your public address (nmap: top 1000 TCP and the
+UDP ports that matter; Postgres 5432, LiveKit's API 7880 and 8080 must be
+closed) and runs an OWASP ZAP baseline (passive) scan. Nothing it does is an
+attack: no password guessing, no floods. The report lands in
+`~/outhouse-security/<date-time>/report.md`, with every tool's raw output
+next to it, and a summary is printed at the end (it exits non-zero if
+anything needs fixing).
+
+From inside the house your router "hairpins" traffic to your own public
+address, so the port scan may show the inside view. For the real outside
+view, run the Windows version on a laptop connected to a **phone hotspot**:
+
+    powershell -ExecutionPolicy Bypass -File .\deploy\security-scan.ps1
+
+(or point an online port scanner at your public IP). Expected open: 80 and
+443 (Apache), 7881 TCP and 7882 UDP (voice). Anything else, especially
+5432, 7880, 8080 or 22 with passwords allowed, should be closed on the
+router.
+
+**Apache** (it also serves hartspace.cc): `deploy/apache-hardening.conf` is
+a server-wide snippet (ServerTokens Prod, ServerSignature Off, TraceEnable
+Off, TLS 1.2+ only with modern ciphers, no folder listings, dotfiles and
+backup files refused, mod_status for localhost only, HSTS and nosniff for
+every site). Install steps are at the top of the file. The Outhouse site
+file (`oh.hartspace.cc.conf`) also drops any `X-Forwarded-For` a visitor
+sends, so the sign-in limits see the real address.
+
+**Other things worth knowing**
+- Outhouse believes `X-Forwarded-For` only from `TRUSTED_PROXIES` (default:
+  this machine, home and Docker networks). If Apache isn't on a private
+  address, set `TRUSTED_PROXIES=127.0.0.1/32,172.16.0.0/12,<apache ip>/32`.
+- Docker's published port 8080 (the behind-Apache set-up) skips ufw, so
+  anyone on your home network can reach it directly. That's fine for a home
+  LAN; to allow only Apache, add a `DOCKER-USER` rule:
+  `sudo iptables -I DOCKER-USER -p tcp --dport 8080 ! -s 192.168.1.32 -j DROP`
+  (and save it with `iptables-persistent`).
+- Backups contain `.env` (every password). They're readable only by you;
+  the off-site copies are as safe as the share they're on.
+- `RATE_LIMITS=off` turns the limits off (for testing only).
+
 ## If something's off
 - **Certificate errors / site won't load from outside:** port 80 or 443 isn't
   reaching the server, or DNS isn't pointing at your IP yet. `docker compose logs caddy`.

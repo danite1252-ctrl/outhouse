@@ -136,11 +136,30 @@ pub fn is_public(ip: IpAddr) -> bool {
                 return is_public(IpAddr::V4(v4));
             }
             let s = v6.segments();
+            let embedded_v4 = |hi: u16, lo: u16| {
+                std::net::Ipv4Addr::new((hi >> 8) as u8, hi as u8, (lo >> 8) as u8, lo as u8)
+            };
+            // Old IPv4-compatible form (::a.b.c.d).
+            if s[..6].iter().all(|&x| x == 0) && !v6.is_loopback() && !v6.is_unspecified() {
+                return is_public(IpAddr::V4(embedded_v4(s[6], s[7])));
+            }
+            // NAT64 (64:ff9b::a.b.c.d) reaches the IPv4 address inside it.
+            if s[0] == 0x64 && s[1] == 0xff9b && s[2..6].iter().all(|&x| x == 0) {
+                return is_public(IpAddr::V4(embedded_v4(s[6], s[7])));
+            }
+            // 6to4 (2002:aabb:ccdd::) carries an IPv4 address too.
+            if s[0] == 0x2002 {
+                return is_public(IpAddr::V4(embedded_v4(s[1], s[2])));
+            }
             !(v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 || (s[0] & 0xfe00) == 0xfc00 // unique local
                 || (s[0] & 0xffc0) == 0xfe80 // link local
+                || (s[0] & 0xffc0) == 0xfec0 // old site local
+                || (s[0] == 0x64 && s[1] == 0xff9b && s[2] == 1) // local NAT64
+                || (s[0] == 0x2001 && s[1] == 0) // Teredo
+                || (s[0] == 0x0100 && s[1..4].iter().all(|&x| x == 0)) // discard
                 || s[0] == 0x2001 && s[1] == 0x0db8) // documentation
         }
     }
@@ -194,6 +213,9 @@ pub async fn safe_fetch(
         let (host, addrs) = checked_addrs(&url).await?;
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            // A proxy from the environment would do its own DNS and skip the
+            // address check above.
+            .no_proxy()
             .timeout(Duration::from_secs(6))
             .user_agent("Mozilla/5.0 (compatible; OuthouseBot/0.3; +link previews and feeds)")
             .resolve_to_addrs(&host, &addrs)
@@ -398,11 +420,46 @@ mod tests {
             "fd00::1",
             "fe80::1",
             "::ffff:127.0.0.1",
+            "::127.0.0.1",
+            "::ffff:10.0.0.1",
+            "64:ff9b::7f00:1",
+            "64:ff9b::a9fe:a9fe",
+            "2002:c0a8:0101::1",
+            "2002:7f00:0001::",
+            "fec0::1",
+            "2001:0:4136:e378::1",
+            "0.0.0.0",
+            "255.255.255.255",
+            "224.0.0.1",
         ] {
             assert!(!is_public(ip.parse().unwrap()), "{ip} should be blocked");
         }
-        for ip in ["1.1.1.1", "142.250.70.78", "2606:4700:4700::1111"] {
+        for ip in [
+            "1.1.1.1",
+            "142.250.70.78",
+            "2606:4700:4700::1111",
+            "64:ff9b::808:808",
+            "2002:0808:0808::1",
+        ] {
             assert!(is_public(ip.parse().unwrap()), "{ip} should be allowed");
+        }
+    }
+
+    #[test]
+    fn odd_ways_of_writing_local_addresses_are_normalised() {
+        // The URL parser turns decimal, octal and hex IPv4 forms into the
+        // plain address before we look at it, so they're caught too.
+        for raw in [
+            "http://2130706433/",
+            "http://0x7f.1/",
+            "http://0177.0.0.1/",
+            "http://127.1/",
+            "http://[::ffff:7f00:1]/",
+        ] {
+            let url = Url::parse(raw).unwrap();
+            let host = url.host_str().unwrap().trim_matches(['[', ']']).to_string();
+            let ip: IpAddr = host.parse().unwrap();
+            assert!(!is_public(ip), "{raw} → {ip} should be blocked");
         }
     }
 

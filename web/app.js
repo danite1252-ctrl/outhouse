@@ -419,7 +419,11 @@ $("auth-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const form = new FormData(e.target);
   const body = { username: form.get("username"), password: form.get("password") };
-  if (registering) body.display_name = form.get("display_name") || null;
+  if (registering) {
+    body.display_name = form.get("display_name") || null;
+    // Servers that only take sign-ups by invite (REGISTRATION=invite) check this.
+    try { const invite = sessionStorage.getItem("outhouse_pending_invite"); if (invite) body.invite = invite; } catch { /* storage blocked */ }
+  }
   $("auth-error").textContent = "";
   try {
     const res = await api("POST", registering ? "/api/auth/register" : "/api/auth/login", body);
@@ -870,10 +874,17 @@ function renderAttachments(m) {
   }));
 }
 
+// Only web links (and paths on this site) go in an href: embeds come from
+// bots, webhooks and feeds, so a javascript: link is never made clickable.
+function safeHref(url) {
+  const u = String(url ?? "").trim();
+  return /^https?:\/\//i.test(u) || (/^\/(?![/\\])/.test(u)) ? u : null;
+}
+
 function renderRich(e) {
   const colour = e.color ? hexColour(e.color) : "var(--ember)";
-  const linkOrText = (text, url, cls) => url
-    ? el("a", { class: cls, href: url, target: "_blank", rel: "noopener noreferrer" }, text)
+  const linkOrText = (text, url, cls) => safeHref(url)
+    ? el("a", { class: cls, href: safeHref(url), target: "_blank", rel: "noopener noreferrer" }, text)
     : el("span", { class: cls }, text);
   return el("div", { class: "embed rich", style: `border-left-color:${colour}` },
     el("div", { class: "rich-main" },
@@ -901,7 +912,8 @@ function renderEmbeds(m) {
     }
     return el("div", { class: "embed" },
       e.site_name ? el("div", { class: "site" }, e.site_name) : null,
-      e.title ? el("a", { class: "title", href: e.url, target: "_blank", rel: "noopener noreferrer" }, e.title) : null,
+      e.title && safeHref(e.url) ? el("a", { class: "title", href: safeHref(e.url), target: "_blank", rel: "noopener noreferrer" }, e.title)
+        : e.title ? el("span", { class: "title" }, e.title) : null,
       e.description ? el("div", { class: "desc" }, e.description) : null,
       e.image_url ? el("img", { src: e.image_url, alt: "", loading: "lazy", onclick: () => openLightbox(e.image_url) }) : null,
     );

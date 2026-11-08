@@ -1,0 +1,11 @@
+# ZAP rule overrides for ci/zap.sh (tab separated: rule id, action, why).
+# Actions: IGNORE (don't report), INFO / WARN (report, never fail), FAIL.
+# Every High alert fails CI unless its rule is listed here with a reason.
+# Rule ids: https://www.zaproxy.org/docs/alerts/
+10055	WARN	CSP allows inline styles (the client styles elements from JS; no script can run from CSS) and https: images (link previews, GIFs, Battle.net art come from anywhere)
+90004	WARN	No COEP/CORP: cross-origin isolation would block Google Fonts and link-preview images; nothing here needs SharedArrayBuffer
+10027	INFO	Comments in the vendored LiveKit client and our own scripts (no secrets in a public client)
+10096	INFO	Snowflake IDs and timestamps in JSON look like Unix times; they're meant to be there
+10109	INFO	Yes, it's a modern web app
+10049	INFO	Static files are cacheable by design (Cache-Control: no-cache revalidates them)
+10015	INFO	Static files use no-cache (revalidate); API answers aren't shared caches' business behind Apache

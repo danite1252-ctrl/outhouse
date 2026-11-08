@@ -196,7 +196,11 @@ Add `?wait=true` to get the message back. Note: services on the internet can onl
 Every push to GitHub runs `.github/workflows/ci.yml`: builds and tests the
 server, runs `ci/smoke.sh` (the whole API against a real Postgres, including a
 live bot and raid reminders) and `ci/ui_test.py` (clicks through the site in
-headless Chrome), and builds the Windows installer and Android APK.
+headless Chrome), and builds the Windows installer and Android APK. Security
+jobs run `cargo audit`, check the vendored LiveKit client against npm, and
+scan a test server with OWASP ZAP (`ci/zap.sh`, false positives explained in
+`ci/zap-rules.tsv`). To check the live sites, see "Security checks" in
+`deploy/README.md` (`deploy/security-scan.sh`).
 
 ## Next up (see the project docs for the full plan)
 1. Battle.net character linking (pick your character when signing up for raids)

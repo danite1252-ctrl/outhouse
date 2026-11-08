@@ -12,6 +12,8 @@
 # Each run writes status/backup.json, which the server's status page and
 # healthcheck.sh read (so a failed backup or copy sends an alert).
 set -euo pipefail
+# Backups hold every password (.env) and all messages: keep them private.
+umask 077
 cd "$(dirname "$0")"
 
 # Read KEY=VALUE lines from .env without running it, keeping anything
