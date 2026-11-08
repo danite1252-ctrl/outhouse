@@ -1,4 +1,4 @@
-//! Servers ("outhouses"): create, list, join, leave, delete, invites.
+//! Servers ("outhouses"): create, list, leave, delete. Invites are in `invites.rs`.
 
 use std::collections::HashMap;
 
@@ -6,19 +6,14 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
 use outhouse_common::gateway::ServerEvent;
-use outhouse_common::models::{
-    channel_kind, CreateGuildRequest, Guild, InviteResponse, MyPermissions,
-};
+use outhouse_common::models::{channel_kind, CreateGuildRequest, Guild, MyPermissions};
 use outhouse_common::permissions as p;
 use sqlx::PgPool;
 
-use super::members::fetch_member;
-use crate::auth::{self, AuthUser};
+use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::perms::{self, member_ctx};
 use crate::state::{AppState, Audience};
-
-const INVITE_ALPHABET: &[u8] = b"abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 pub async fn guilds_for_user(db: &PgPool, user_id: i64) -> AppResult<Vec<Guild>> {
     let guilds = sqlx::query_as::<_, Guild>(
@@ -198,99 +193,4 @@ pub async fn my_permissions(
         channels,
         top_position: ctx.top_position,
     }))
-}
-
-pub async fn create_invite(
-    State(st): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(guild_id): Path<i64>,
-) -> AppResult<Json<InviteResponse>> {
-    member_ctx(&st.db, guild_id, user.id)
-        .await?
-        .require(p::CREATE_INVITE)?;
-    let code = auth::random_code(8, INVITE_ALPHABET);
-    sqlx::query(
-        "INSERT INTO invites (code, guild_id, creator_id, expires_at)
-         VALUES ($1, $2, $3, now() + interval '7 days')",
-    )
-    .bind(&code)
-    .bind(guild_id)
-    .bind(user.id)
-    .execute(&st.db)
-    .await?;
-    Ok(Json(InviteResponse { code }))
-}
-
-#[derive(sqlx::FromRow)]
-struct InviteRow {
-    guild_id: i64,
-    usable: bool,
-}
-
-pub async fn join_invite(
-    State(st): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(code): Path<String>,
-) -> AppResult<Json<Guild>> {
-    let code = code.trim();
-    let invite = sqlx::query_as::<_, InviteRow>(
-        "SELECT guild_id,
-                (expires_at IS NULL OR expires_at > now())
-                AND (max_uses IS NULL OR uses < max_uses) AS usable
-         FROM invites WHERE code = $1",
-    )
-    .bind(code)
-    .fetch_optional(&st.db)
-    .await?
-    .ok_or(AppError::NotFound)?;
-    if !invite.usable {
-        return Err(AppError::BadRequest(
-            "That invite has expired or been used up.".into(),
-        ));
-    }
-    let banned: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM bans WHERE guild_id = $1 AND user_id = $2)",
-    )
-    .bind(invite.guild_id)
-    .bind(user.id)
-    .fetch_one(&st.db)
-    .await?;
-    if banned {
-        return Err(AppError::BadRequest(
-            "You've been banned from that outhouse.".into(),
-        ));
-    }
-
-    let joined = sqlx::query(
-        "INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(invite.guild_id)
-    .bind(user.id)
-    .execute(&st.db)
-    .await?
-    .rows_affected()
-        == 1;
-
-    let guild = fetch_guild(&st.db, invite.guild_id).await?;
-    if joined {
-        sqlx::query("UPDATE invites SET uses = uses + 1 WHERE code = $1")
-            .bind(code)
-            .execute(&st.db)
-            .await?;
-        let mut member = fetch_member(&st.db, guild.id, user.id).await?;
-        member.online = st.is_online(user.id);
-        st.dispatch(
-            Audience::Guild(guild.id),
-            ServerEvent::MemberJoin {
-                guild_id: guild.id,
-                member,
-            },
-        );
-        st.dispatch(
-            Audience::User(user.id),
-            ServerEvent::GuildCreate(guild.clone()),
-        );
-    }
-    Ok(Json(guild))
 }

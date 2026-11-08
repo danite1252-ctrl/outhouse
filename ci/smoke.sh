@@ -1378,4 +1378,117 @@ jq -e '
   and any(.entries[]; .details | contains("Name: Edit Voice → Raid Comms"))
   and all(.entries[]; .target_kind == "channel")' <<<"$AUDC" >/dev/null || { echo "channel changes missing from the audit log:"; jq '.entries[] | .details' <<<"$AUDC"; exit 1; }
 
+step "invite links: expiry, max uses, list, revoke, preview, the /invite page, assetlinks.json"
+TOKEN=$TOKEN_A
+IG=$(call POST /api/guilds '{"name":"Invite <Test> & Co"}'); IGUILD=$(jq -r .id <<<"$IG")
+ANAME=$(call GET /api/users/@me | jq -r .display_name)
+# An empty body still makes a week-long, unlimited invite (older clients).
+I0=$(call POST "/api/guilds/$IGUILD/invites")
+jq -e --arg base "$BASE" '(.code | test("^[A-Za-z0-9]{8}$")) and .url == ($base + "/invite/" + .code)
+  and .max_uses == null and .uses == 0' <<<"$I0" >/dev/null \
+  || { echo "bad default invite: $I0"; exit 1; }
+jq -e --arg n "$ANAME" '.creator.name == $n' <<<"$I0" >/dev/null || { echo "creator: $I0"; exit 1; }
+jq -e '((.expires_at | sub("\\.[0-9]+"; "") | fromdateiso8601) - now) | (. > 6.9*86400 and . < 7.1*86400)' <<<"$I0" >/dev/null \
+  || { echo "default invite doesn't last 7 days: $I0"; exit 1; }
+# One hour, two uses.
+I1=$(call POST "/api/guilds/$IGUILD/invites" '{"max_age_secs":3600,"max_uses":2}'); C1=$(jq -r .code <<<"$I1")
+jq -e '.max_uses == 2 and (((.expires_at | sub("\\.[0-9]+"; "") | fromdateiso8601) - now) | (. > 3500 and . < 3700))' <<<"$I1" >/dev/null \
+  || { echo "bad 1h/2-use invite: $I1"; exit 1; }
+# Never expires.
+I2=$(call POST "/api/guilds/$IGUILD/invites" '{"max_age_secs":0,"max_uses":0}'); C2=$(jq -r .code <<<"$I2")
+jq -e '.expires_at == null and .max_uses == null' <<<"$I2" >/dev/null || { echo "bad forever invite: $I2"; exit 1; }
+fail_call POST "/api/guilds/$IGUILD/invites" '{"max_age_secs":5}'
+fail_call POST "/api/guilds/$IGUILD/invites" '{"max_age_secs":99999999}'
+fail_call POST "/api/guilds/$IGUILD/invites" '{"max_uses":-1}'
+fail_call POST "/api/guilds/$IGUILD/invites" 'not json'
+# Preview without signing in.
+TOKEN=""
+PV=$(call GET "/api/invites/$C1")
+jq -e --arg g "$IGUILD" '.guild.id == $g and .guild.name == "Invite <Test> & Co" and .member_count == 1
+  and (.online_count | type == "number") and (.inviter.name | length > 0)' <<<"$PV" >/dev/null || { echo "bad preview: $PV"; exit 1; }
+fail_call GET "/api/invites/nope1234"
+fail_call GET "/api/invites/..%2Fetc"
+# Joining counts uses; a 2-use invite lets two people in, not three.
+fail_call POST "/api/invites/$C1"
+IU=()
+for n in 1 2 3; do
+  R=$(call POST /api/auth/register "{\"username\":\"invitee$n\",\"password\":\"password123\",\"display_name\":\"Invitee $n\"}")
+  IU+=("$(jq -r .token <<<"$R")")
+done
+TOKEN=${IU[0]}; call POST "/api/invites/$C1" | jq -e --arg g "$IGUILD" '.id == $g' >/dev/null
+# Already in: you just get the outhouse back and no use is counted.
+call POST "/api/invites/$C1" | jq -e --arg g "$IGUILD" '.id == $g' >/dev/null
+TOKEN=${IU[1]}; call POST "/api/invites/$C1" >/dev/null
+TOKEN=${IU[2]}; fail_call POST "/api/invites/$C1"
+grep -q "expired or been used up" /tmp/body || { echo "wrong used-up message:"; cat /tmp/body; exit 1; }
+TOKEN=""; fail_call GET "/api/invites/$C1"
+TOKEN=$TOKEN_A
+call GET "/api/guilds/$IGUILD/members" | jq -e 'length == 3' >/dev/null
+# The list shows invites that still work, with their creator.
+LIST=$(call GET "/api/guilds/$IGUILD/invites")
+jq -e --arg c1 "$C1" --arg c2 "$C2" '(map(.code) | index($c1) == null) and (map(.code) | index($c2) != null)
+  and all(.[]; .creator.id != null and (.url | contains("/invite/")))' <<<"$LIST" >/dev/null || { echo "bad invite list: $LIST"; exit 1; }
+# Members see only their own invites; they can't revoke someone else's.
+TOKEN=${IU[0]}
+MI=$(call POST "/api/guilds/$IGUILD/invites" '{"max_age_secs":1800,"max_uses":1}'); MC=$(jq -r .code <<<"$MI")
+call GET "/api/guilds/$IGUILD/invites" | jq -e --arg m "$MC" 'length == 1 and .[0].code == $m' >/dev/null
+fail_call DELETE "/api/invites/$C2"
+call DELETE "/api/invites/$MC" >/dev/null
+TOKEN=${IU[2]}; fail_call GET "/api/guilds/$IGUILD/invites"
+fail_call POST "/api/guilds/$IGUILD/invites"
+# Expired invites are refused.
+TOKEN=$TOKEN_A
+I3=$(call POST "/api/guilds/$IGUILD/invites" '{"max_age_secs":1800}'); C3=$(jq -r .code <<<"$I3")
+psql "$DATABASE_URL" -qc "UPDATE invites SET expires_at = now() - interval '1 minute' WHERE code = '$C3'"
+TOKEN=${IU[2]}; fail_call POST "/api/invites/$C3"
+TOKEN=""; fail_call GET "/api/invites/$C3"
+# Revoked (by the owner, who has Manage Outhouse) = gone.
+TOKEN=$TOKEN_A; call DELETE "/api/invites/$C2" >/dev/null
+TOKEN=${IU[2]}; fail_call POST "/api/invites/$C2"
+TOKEN=$TOKEN_A
+# Someone else's invite revoked by a moderator lands in the audit log.
+TOKEN=${IU[0]}; MI2=$(call POST "/api/guilds/$IGUILD/invites"); MC2=$(jq -r .code <<<"$MI2"); TOKEN=$TOKEN_A
+call DELETE "/api/invites/$MC2" >/dev/null
+call GET "/api/guilds/$IGUILD/audit-log?action=invite_delete" | jq -e 'any(.entries[]; .details | contains("Revoked invite"))' >/dev/null
+
+# The /invite/<code> page: works signed out, never cached, link-preview tags with the name filled in (escaped).
+I4=$(call POST "/api/guilds/$IGUILD/invites"); C4=$(jq -r .code <<<"$I4")
+curl -sS -D /tmp/inv-headers -o /tmp/inv.html "$BASE/invite/$C4"
+grep -qi "^HTTP/1.1 200" /tmp/inv-headers || { echo "invite page status:"; cat /tmp/inv-headers; exit 1; }
+grep -qi "^cache-control: no-cache" /tmp/inv-headers || { echo "invite page is cacheable:"; cat /tmp/inv-headers; exit 1; }
+grep -qi "^content-type: text/html" /tmp/inv-headers
+grep -q '<meta property="og:title" content="You&#39;ve been invited to Invite &lt;Test&gt; &amp; Co on Outhouse">' /tmp/inv.html \
+  || { echo "og:title missing:"; grep -n "og:" /tmp/inv.html; exit 1; }
+grep -q "<meta property=\"og:image\" content=\"$BASE/icons/icon-512.png\">" /tmp/inv.html
+grep -q "<meta property=\"og:url\" content=\"$BASE/invite/$C4\">" /tmp/inv.html
+grep -q 'name="twitter:card" content="summary"' /tmp/inv.html
+grep -q "og:description\" content=\"$ANAME saved you a seat in Invite &lt;Test&gt; &amp; Co. 3 members · 0 online" /tmp/inv.html \
+  || { echo "og:description:"; grep -n "description" /tmp/inv.html; exit 1; }
+grep -q 'data-state="valid"' /tmp/inv.html
+if grep -q "<Test>" /tmp/inv.html; then echo "invite page didn't escape the name"; exit 1; fi
+grep -q '{{' /tmp/inv.html && { echo "unfilled template bits:"; grep -n '{{' /tmp/inv.html; exit 1; }
+sed -n 's:.*<script type="application/json" id="invite-data">\(.*\)</script>.*:\1:p' /tmp/inv.html \
+  | jq -e --arg c "$C4" '.valid and .invite.code == $c and .invite.guild.name == "Invite <Test> & Co" and .android_package == "cc.hartspace.outhouse"' >/dev/null \
+  || { echo "bad invite data:"; grep -n "invite-data" /tmp/inv.html; exit 1; }
+# Expired, revoked and made-up codes: a friendly 404 page.
+for bad in "$C3" "$C2" "zzzzzzzz" "%3Cscript%3E"; do
+  code=$(curl -sS -o /tmp/inv-bad.html -w "%{http_code}" "$BASE/invite/$bad")
+  [ "$code" = 404 ] || { echo "/invite/$bad -> $code"; exit 1; }
+  grep -q "gone down the long drop" /tmp/inv-bad.html
+  grep -q 'data-state="invalid"' /tmp/inv-bad.html
+  grep -q '<meta property="og:title" content="This invite has gone down the long drop">' /tmp/inv-bad.html
+  grep -q '"code":""\|"code":"[A-Za-z0-9]*"' /tmp/inv-bad.html || { echo "bad code in the page:"; grep -n invite-data /tmp/inv-bad.html; exit 1; }
+  if grep -q "%3C\|&lt;script" /tmp/inv-bad.html; then echo "made-up code echoed into the page"; exit 1; fi
+done
+# Android App Links file.
+curl -sS -D /tmp/al-headers -o /tmp/assetlinks.json "$BASE/.well-known/assetlinks.json"
+grep -qi "^content-type: application/json" /tmp/al-headers
+jq -e '.[0].relation == ["delegate_permission/common.handle_all_urls"]
+  and .[0].target.namespace == "android_app"
+  and .[0].target.package_name == "cc.hartspace.outhouse"
+  and (.[0].target.sha256_cert_fingerprints[0] | test("^([0-9A-F]{2}:){31}[0-9A-F]{2}$"))
+  and .[0].target.sha256_cert_fingerprints[0] == "D6:31:45:91:E5:FA:44:C0:82:28:27:92:C5:28:31:88:3B:FE:0C:FD:85:63:2B:51:8B:E5:04:FE:83:0F:8A:E3"' /tmp/assetlinks.json >/dev/null \
+  || { echo "bad assetlinks.json:"; cat /tmp/assetlinks.json; exit 1; }
+TOKEN=$TOKEN_A
+
 echo "Smoke test passed."

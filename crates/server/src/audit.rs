@@ -133,6 +133,7 @@ pub const ACTIONS: &[(&str, &str)] = &[
     ("badge_delete", "Deleted a badge"),
     ("badge_award", "Gave a badge"),
     ("badge_revoke", "Took a badge away"),
+    ("invite_delete", "Revoked someone's invite"),
 ];
 
 /// "Kick members, Ban members" for a set of permission bits.

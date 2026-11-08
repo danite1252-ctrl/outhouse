@@ -13,6 +13,7 @@ pub mod events;
 mod feeds;
 mod gifs;
 pub mod guilds;
+pub mod invites;
 pub mod lfg;
 pub mod members;
 pub mod messages;
@@ -56,8 +57,18 @@ pub fn router(state: AppState) -> Router {
         .route("/api/guilds/{id}", delete(guilds::delete))
         .route("/api/guilds/{id}/leave", post(guilds::leave))
         .route("/api/guilds/{id}/permissions", get(guilds::my_permissions))
-        .route("/api/guilds/{id}/invites", post(guilds::create_invite))
-        .route("/api/invites/{code}", post(guilds::join_invite))
+        .route(
+            "/api/guilds/{id}/invites",
+            get(invites::list).post(invites::create),
+        )
+        .route(
+            "/api/invites/{code}",
+            get(invites::preview)
+                .post(invites::join)
+                .delete(invites::revoke),
+        )
+        .route("/invite/{code}", get(invites::page))
+        .route("/.well-known/assetlinks.json", get(invites::asset_links))
         // Channels
         .route(
             "/api/guilds/{id}/channels",

@@ -66,6 +66,36 @@ pub struct Config {
     /// Endpoint prefixes allowed as-is, even over plain HTTP (tests only:
     /// `PUSH_EXTRA_ENDPOINTS=http://127.0.0.1:8097/`).
     pub push_extra_endpoints: Vec<String>,
+    /// The web client's folder (`WEB_DIR`), e.g. for the invite page template.
+    pub web_dir: PathBuf,
+    /// The Android app's package name, for `/.well-known/assetlinks.json`.
+    pub android_package: String,
+    /// SHA-256 fingerprints of the Android app's signing certificate
+    /// (`AB:CD:…`), for `/.well-known/assetlinks.json`. Empty = no App Links.
+    pub android_cert_sha256: Vec<String>,
+}
+
+/// The Android app's package (the `identifier` in desktop/src-tauri/tauri.conf.json).
+pub const DEFAULT_ANDROID_PACKAGE: &str = "cc.hartspace.outhouse";
+/// SHA-256 of the Outhouse Android release signing certificate (CN=Outhouse,
+/// O=Hartspace), as printed by `apksigner verify --print-certs` in CI. It's
+/// public (anyone can read it from the APK). Override with
+/// `ANDROID_CERT_SHA256` (comma-separated; `off` to switch App Links off).
+pub const DEFAULT_ANDROID_CERT_SHA256: &str =
+    "d6314591e5fa44c082282792c52831883bfe0cfd85632b518be504fe830f8ae3";
+
+/// "d631…" or "D6:31:…" → "D6:31:…"; None if it isn't a SHA-256.
+pub fn format_fingerprint(raw: &str) -> Option<String> {
+    let hex: String = raw
+        .chars()
+        .filter(|c| !matches!(c, ':' | ' '))
+        .collect::<String>()
+        .to_ascii_uppercase();
+    if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let pairs: Vec<&str> = (0..32).map(|i| &hex[i * 2..i * 2 + 2]).collect();
+    Some(pairs.join(":"))
 }
 
 #[derive(Debug, Clone)]
@@ -173,6 +203,16 @@ impl Config {
                 .unwrap_or_else(|| "mailto:admin@outhouse.invalid".into()),
             push_allowed_hosts: list_env("PUSH_ALLOWED_HOSTS"),
             push_extra_endpoints: list_env("PUSH_EXTRA_ENDPOINTS"),
+            web_dir: env_opt("WEB_DIR").unwrap_or_else(|| "web".into()).into(),
+            android_package: env_opt("ANDROID_APP_PACKAGE")
+                .unwrap_or_else(|| DEFAULT_ANDROID_PACKAGE.into()),
+            android_cert_sha256: match env_opt("ANDROID_CERT_SHA256").as_deref() {
+                Some("off" | "none" | "0") => Vec::new(),
+                Some(list) => list.split(',').filter_map(format_fingerprint).collect(),
+                None => format_fingerprint(DEFAULT_ANDROID_CERT_SHA256)
+                    .into_iter()
+                    .collect(),
+            },
         }
     }
 }
