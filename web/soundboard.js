@@ -179,13 +179,14 @@ function sbDraw() {
     const body = popover?.querySelector(".sb-body");
     body?.replaceWith(sbBody());
   });
-  const volBtn = el("button", { class: `sb-vol-btn${sb.showVolume ? " on" : ""}${prefs.get("soundboard_muted", false) ? " muted" : ""}`, title: "Soundboard volume", "aria-label": "Soundboard volume", onclick: () => { sb.showVolume = !sb.showVolume; sbRedraw(); } });
-  volBtn.innerHTML = prefs.get("soundboard_muted", false) ? VOICE_ICONS.speakerOff : SB_ICONS.speaker;
-  const vol = el("input", { type: "range", min: 0, max: 100, step: 5, value: Math.round(prefs.get("soundboard_volume", 0.7) * 100), "aria-label": "Soundboard volume" });
+  const volBtn = el("button", { class: `sb-vol-btn${sb.showVolume ? " on" : ""}${soundboardMuted() ? " muted" : ""}`, title: "Soundboard volume", "aria-label": "Soundboard volume", onclick: () => { sb.showVolume = !sb.showVolume; sbRedraw(); } });
+  volBtn.innerHTML = soundboardMuted() ? VOICE_ICONS.speakerOff : SB_ICONS.speaker;
+  // The same setting as Soundboard volume in Settings → Voice & audio.
+  const vol = el("input", { type: "range", min: 0, max: 200, step: 5, value: Math.round(soundboardLevel() * 100), "aria-label": "Soundboard volume" });
   const volValue = el("span", { class: "vol-value" }, `${vol.value}%`);
-  vol.addEventListener("input", () => { prefs.set("soundboard_volume", vol.value / 100); volValue.textContent = `${vol.value}%`; });
-  const mute = el("input", { type: "checkbox", checked: prefs.get("soundboard_muted", false) });
-  mute.addEventListener("change", () => { prefs.set("soundboard_muted", mute.checked); sbRedraw(); });
+  vol.addEventListener("input", () => { setSoundboardLevel(vol.value / 100); volValue.textContent = `${vol.value}%`; });
+  const mute = el("input", { type: "checkbox", checked: soundboardMuted() });
+  mute.addEventListener("change", () => { setSoundboardMuted(mute.checked); sbRedraw(); });
   const canManage = can("manage_sounds");
   const inVoice = !!state.voice.room;
   const board = el("div", { class: `sb-board${Date.now() < sb.coolUntil ? " cooling" : ""}`, role: "dialog", "aria-label": "Soundboard" },

@@ -360,6 +360,45 @@ pub async fn remove_role(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Tidies a requested nickname: trimmed, at most 32 characters, empty = none.
+fn clean_nickname(req: &NicknameRequest) -> Option<String> {
+    req.nickname
+        .as_deref()
+        .map(clean_name)
+        .filter(|n| !n.is_empty())
+}
+
+/// Saves a member's nickname, tells everyone, and returns (old nickname,
+/// the member as they are now).
+async fn store_nickname(
+    st: &AppState,
+    guild_id: i64,
+    target_id: i64,
+    nickname: &Option<String>,
+) -> AppResult<(Option<String>, Member)> {
+    let old: Option<String> = sqlx::query_scalar(
+        "SELECT nickname FROM guild_members WHERE guild_id = $1 AND user_id = $2",
+    )
+    .bind(guild_id)
+    .bind(target_id)
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    sqlx::query("UPDATE guild_members SET nickname = $3 WHERE guild_id = $1 AND user_id = $2")
+        .bind(guild_id)
+        .bind(target_id)
+        .bind(nickname)
+        .execute(&st.db)
+        .await?;
+    st.dispatch(
+        Audience::Guild(guild_id),
+        ServerEvent::GuildRefresh { guild_id },
+    );
+    let mut member = fetch_member(&st.db, guild_id, target_id).await?;
+    member.online = st.is_online(member.id);
+    Ok((old, member))
+}
+
 /// Sets (or clears) your own nickname in an outhouse.
 pub async fn set_nickname(
     State(st): State<AppState>,
@@ -368,23 +407,47 @@ pub async fn set_nickname(
     Json(req): Json<NicknameRequest>,
 ) -> AppResult<Json<Member>> {
     let actor = member_ctx(&st.db, guild_id, user.id).await?;
-    actor.require(p::CHANGE_NICKNAME)?;
-    let nickname = req
-        .nickname
-        .as_deref()
-        .map(clean_name)
-        .filter(|n| !n.is_empty());
-    sqlx::query("UPDATE guild_members SET nickname = $3 WHERE guild_id = $1 AND user_id = $2")
-        .bind(guild_id)
-        .bind(user.id)
-        .bind(&nickname)
-        .execute(&st.db)
-        .await?;
-    st.dispatch(
-        Audience::Guild(guild_id),
-        ServerEvent::GuildRefresh { guild_id },
-    );
-    let mut member = fetch_member(&st.db, guild_id, user.id).await?;
-    member.online = st.is_online(member.id);
+    if actor.require(p::CHANGE_NICKNAME).is_err() {
+        actor.require(p::MANAGE_NICKNAMES)?;
+    }
+    let nickname = clean_nickname(&req);
+    let (_, member) = store_nickname(&st, guild_id, user.id, &nickname).await?;
+    Ok(Json(member))
+}
+
+/// Sets (or clears) someone else's nickname (Manage Nicknames, and you
+/// must outrank them). Your own goes through the self-service rules.
+pub async fn set_member_nickname(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((guild_id, target_id)): Path<(i64, i64)>,
+    Json(req): Json<NicknameRequest>,
+) -> AppResult<Json<Member>> {
+    let actor = member_ctx(&st.db, guild_id, user.id).await?;
+    let nickname = clean_nickname(&req);
+    if target_id == user.id {
+        if actor.require(p::CHANGE_NICKNAME).is_err() {
+            actor.require(p::MANAGE_NICKNAMES)?;
+        }
+        let (_, member) = store_nickname(&st, guild_id, user.id, &nickname).await?;
+        return Ok(Json(member));
+    }
+    moderate(&st.db, &actor, target_id, p::MANAGE_NICKNAMES).await?;
+    let (old, member) = store_nickname(&st, guild_id, target_id, &nickname).await?;
+    if old != nickname {
+        let shown = |n: &Option<String>| match n {
+            Some(n) => format!("“{n}”"),
+            None => "(none)".to_string(),
+        };
+        let account: String = sqlx::query_scalar("SELECT display_name FROM users WHERE id = $1")
+            .bind(target_id)
+            .fetch_one(&st.db)
+            .await?;
+        audit::Entry::new(guild_id, user.id, "member_nickname")
+            .target("member", target_id, account)
+            .details(format!("{} → {}", shown(&old), shown(&nickname)))
+            .save(&st)
+            .await;
+    }
     Ok(Json(member))
 }

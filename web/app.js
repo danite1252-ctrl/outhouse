@@ -67,6 +67,15 @@ const prefs = {
 
 const $ = (id) => document.getElementById(id);
 
+// Your own mute / deafen are remembered between visits and applied when
+// you join voice (like Discord's user panel).
+state.voice.muted = !!prefs.get("self_muted", false);
+state.voice.deafened = !!prefs.get("self_deafened", false);
+function saveSelfVoice() {
+  prefs.set("self_muted", !!state.voice.muted);
+  prefs.set("self_deafened", !!state.voice.deafened);
+}
+
 // ---------- small helpers ----------
 
 function el(tag, attrs = {}, ...children) {
@@ -438,6 +447,8 @@ async function signOut(callServer = true) {
 
 $("logout").addEventListener("click", () => signOut());
 $("user-settings").addEventListener("click", () => openUserSettings());
+$("me-mute").addEventListener("click", () => toggleMute());
+$("me-deafen").addEventListener("click", () => toggleDeafen());
 
 // ---------- gateway ----------
 
@@ -664,6 +675,7 @@ function renderMe() {
   a.style.background = url ? `center / cover no-repeat url("${url}")` : colourFor(state.me.id);
   a.style.cursor = "pointer";
   a.onclick = (e) => openProfile(state.me.id, e.currentTarget);
+  renderSelfVoiceButtons();
 }
 
 function renderGuilds() {
@@ -1645,30 +1657,83 @@ async function leaveVoice(callServer = true) {
     try { await room.disconnect(); } catch { /* already gone */ }
   }
   $("voice-audio").replaceChildren();
+  // A moderator's mute only lasts while you're in their voice channel; your
+  // own mute goes back to what you chose (not "can't speak in that channel").
+  Object.assign(state.voice, { serverMuted: false, serverDeafened: false, listenOnly: false, canSpeak: true, pttDown: false });
+  state.voice.muted = !!prefs.get("self_muted", false);
+  state.voice.deafened = !!prefs.get("self_deafened", false);
+  renderSelfVoiceButtons();
   if (callServer) api("POST", "/api/voice/leave").catch(() => {});
   chime(780, 440);
   renderChannels();
 }
 
+// Works in voice or out of it (then it's remembered for when you join).
+// Deafen also mutes; undeafen puts your own mute back how it was, and
+// unmuting while deafened undeafens you too.
 async function toggleMute() {
-  if (state.voice.listenOnly) return toast("Your browser blocks the microphone on this http:// address, so you can listen but not talk.");
-  if (!state.voice.canSpeak) return toast("You don't have permission to speak here.");
-  if (state.voice.serverMuted || state.voice.serverDeafened) return toast("A moderator has muted you in this outhouse.");
-  state.voice.muted = !state.voice.muted;
-  if (!state.voice.muted && state.voice.deafened) state.voice.deafened = false;
-  await syncMic();
-  applyAllVolumes();
-  pushVoiceState();
+  const v = state.voice;
+  if (v.room) {
+    if (v.listenOnly) return toast("Your browser blocks the microphone on this http:// address, so you can listen but not talk.");
+    if (!v.canSpeak) return toast("You don't have permission to speak here.");
+    if (v.serverMuted || v.serverDeafened) return toast("A moderator has muted you in this outhouse.");
+  }
+  if (v.deafened) {
+    v.deafened = false;
+    v.muted = false;
+  } else {
+    v.muted = !v.muted;
+  }
+  saveSelfVoice();
+  if (v.room) {
+    await syncMic();
+    applyAllVolumes();
+    pushVoiceState();
+  }
   renderVoicePanel();
 }
 
 async function toggleDeafen() {
-  if (state.voice.serverDeafened) return toast("A moderator has deafened you in this outhouse.");
-  state.voice.deafened = !state.voice.deafened;
-  await syncMic();
-  applyAllVolumes();
-  pushVoiceState();
+  const v = state.voice;
+  if (v.room && v.serverDeafened) return toast("A moderator has deafened you in this outhouse.");
+  v.deafened = !v.deafened;
+  saveSelfVoice();
+  if (v.room) {
+    await syncMic();
+    applyAllVolumes();
+    pushVoiceState();
+  }
   renderVoicePanel();
+}
+
+// Mic and headphones in the user bar (always there, in voice or not).
+const SELF_VOICE_ICONS = {
+  mic: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/>',
+  headphones: '<path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>',
+};
+function selfVoiceSvg(name, off) {
+  return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${SELF_VOICE_ICONS[name]}${off ? '<path class="slash" d="M3 3l18 18"/>' : ""}</svg>`;
+}
+
+function renderSelfVoiceButtons() {
+  const mute = $("me-mute"), deafen = $("me-deafen");
+  if (!mute || !deafen) return;
+  const v = state.voice;
+  const inRoom = !!v.room;
+  const forcedMute = inRoom && (v.serverMuted || v.serverDeafened);
+  const forcedDeaf = inRoom && v.serverDeafened;
+  const micOff = v.muted || v.deafened || forcedMute;
+  const earsOff = v.deafened || forcedDeaf;
+  const set = (btn, icon, off, forced, title) => {
+    btn.className = `icon-btn me-vbtn${off ? " off" : ""}${forced ? " forced" : ""}`;
+    btn.innerHTML = selfVoiceSvg(icon, off);
+    btn.title = title;
+    btn.setAttribute("aria-label", title);
+    btn.setAttribute("aria-pressed", off ? "true" : "false");
+    btn.setAttribute("aria-disabled", forced ? "true" : "false");
+  };
+  set(mute, "mic", micOff, forcedMute, forcedMute ? "Muted by a moderator" : micOff ? "Unmute" : "Mute");
+  set(deafen, "headphones", earsOff, forcedDeaf, forcedDeaf ? "Deafened by a moderator" : earsOff ? "Undeafen" : "Deafen");
 }
 
 // Push-to-talk (works while Outhouse is the focused window; the desktop app
@@ -1742,6 +1807,7 @@ window.addEventListener("blur", () => {
 function renderVoicePanel() {
   const panel = $("voice-panel");
   const v = state.voice;
+  renderSelfVoiceButtons();
   if (!v.room && !v.connecting) { panel.hidden = true; return; }
   panel.hidden = false;
   const status = v.connecting ? "Connecting…" : v.listenOnly ? "Listening only" : v.serverMuted || v.serverDeafened ? "Muted by a moderator" : usingPtt() ? (v.pttDown ? "Talking" : `Push to talk: ${keyLabel(prefs.get("ptt_key", "Backquote"))}`) : "Voice connected";
@@ -1756,9 +1822,8 @@ function renderVoicePanel() {
           : el("button", { class: `vp-status${forcedMute ? " forced" : ""}`, title: "Connection details", onclick: (e) => openVoiceStats(e.currentTarget) }, status),
         el("div", { class: "vp-channel" }, v.connecting ? "" : `${v.channelName}${v.guildId !== state.guildId ? ` · ${state.guilds.find((g) => g.id === v.guildId)?.name ?? ""}` : ""}`)),
       el("button", { class: "icon-btn danger", title: "Leave voice", "aria-label": "Leave voice", onclick: () => leaveVoice(true) }, "📞")),
-    v.connecting ? null : el("div", { class: `vp-buttons${shareBtn ? " five" : ""}` },
-      el("button", { class: `vp-btn${v.muted || forcedMute ? " off" : ""}${forcedMute ? " forced" : ""}`, title: forcedMute ? "Muted by a moderator" : v.muted ? "Unmute" : "Mute", onclick: toggleMute }, v.muted || forcedMute ? "🔇" : "🎙"),
-      el("button", { class: `vp-btn${isDeafened() ? " off" : ""}${v.serverDeafened ? " forced" : ""}`, title: v.serverDeafened ? "Deafened by a moderator" : v.deafened ? "Undeafen" : "Deafen", onclick: toggleDeafen }, isDeafened() ? "🔕" : "🎧"),
+    // Mute and deafen live in the user bar now (renderSelfVoiceButtons).
+    v.connecting ? null : el("div", { class: `vp-buttons${shareBtn ? " three" : " two"}` },
       shareBtn,
       soundboardButton(),
       el("button", { class: "vp-btn", title: "Voice settings", onclick: (e) => openVoiceSettings(e.currentTarget) }, "⚙")),
@@ -2028,6 +2093,7 @@ async function voiceSettingsControls() {
         applyAllVolumes();
         if (micTest.outGain) micTest.outGain.gain.value = outputVolume();
       }),
+      soundboardVolumeRow(),
     ],
     mode: [el("label", { class: "field" }, "Input mode", mode), pttRow, vadRow],
     checks: [
@@ -2036,6 +2102,28 @@ async function voiceSettingsControls() {
       check("ptt_sounds", "Push-to-talk click (only you hear it)", true),
     ],
   };
+}
+
+// "Soundboard volume" slider + mute, shared with the soundboard popover.
+function soundboardVolumeRow() {
+  const pct = () => Math.round(soundboardLevel() * 100);
+  const value = el("span", { class: "vol-value" }, `${pct()}%`);
+  const slider = el("input", { type: "range", min: 0, max: 200, step: 5, value: pct(), "aria-label": "Soundboard volume", class: "sb-level" });
+  const mute = el("input", { type: "checkbox", checked: soundboardMuted(), "aria-label": "Mute the soundboard", class: "sb-level-mute" });
+  slider.addEventListener("input", () => { setSoundboardLevel(slider.value / 100); value.textContent = `${slider.value}%`; });
+  slider.addEventListener("dblclick", () => { slider.value = 100; slider.dispatchEvent(new Event("input")); });
+  mute.addEventListener("change", () => setSoundboardMuted(mute.checked));
+  const row = el("div", { class: "sb-level-wrap" },
+    el("div", { class: "vol-row", title: "Double-click to reset to 100%" }, el("span", {}, "Soundboard volume"), slider, value),
+    el("label", { class: "check-row" }, mute, "Mute the soundboard (previews still play for you)"),
+    el("p", { class: "muted small", style: "margin:0" }, "Separate from Output volume, so you can turn voices up and sounds down (or the other way round)."));
+  const sync = () => {
+    if (!row.isConnected) return window.removeEventListener("outhouse:soundboard-volume", sync);
+    if (document.activeElement !== slider) { slider.value = pct(); value.textContent = `${pct()}%`; }
+    mute.checked = soundboardMuted();
+  };
+  window.addEventListener("outhouse:soundboard-volume", sync);
+  return row;
 }
 
 async function openVoiceSettings(anchor) {
@@ -2306,12 +2394,67 @@ async function loadSounds() {
   if (state.guildId === id) state.sounds = sounds;
 }
 
+// Soundboard volume (0–200%, default 100%) is its own setting, separate
+// from Output volume (which is only for voices). Older versions kept a
+// 0–100% "soundboard_volume" that defaulted to 70% and was multiplied by
+// Output volume; it's carried over once, relative to that old default.
+const SB_LEVEL_KEY = "soundboard_level";
+function soundboardLevel() {
+  let v = prefs.get(SB_LEVEL_KEY, null);
+  if (v == null) {
+    const old = prefs.get("soundboard_volume", null);
+    v = typeof old === "number" ? Math.min(2, Math.round((old / 0.7) * 20) / 20) : 1;
+    prefs.set(SB_LEVEL_KEY, v);
+  }
+  return Math.max(0, Math.min(2, Number(v) || 0));
+}
+const soundboardMuted = () => !!prefs.get("soundboard_muted", false);
+// Both the Voice & audio page and the soundboard popover change these, and
+// each keeps itself in step with the other.
+function setSoundboardLevel(v) {
+  prefs.set(SB_LEVEL_KEY, Math.max(0, Math.min(2, v)));
+  window.dispatchEvent(new Event("outhouse:soundboard-volume"));
+}
+function setSoundboardMuted(muted) {
+  prefs.set("soundboard_muted", !!muted);
+  window.dispatchEvent(new Event("outhouse:soundboard-volume"));
+}
+// How loud a clip plays: its own volume (built-ins are mastered at 0.8)
+// times Soundboard volume. Output volume doesn't come into it.
+const soundboardGain = (clipVolume = 1) => Math.max(0, clipVolume * soundboardLevel());
+
 function playSound(url, volume = 1, preview = false) {
-  if (!preview && (isDeafened() || prefs.get("soundboard_muted", false))) return;
+  if (!preview && (isDeafened() || soundboardMuted())) return;
+  const gain = soundboardGain(volume);
+  state.voice.lastSoundGain = gain;
+  playClip(url, gain);
+}
+
+// Plays a short clip on your own speakers at `gain` (above 1 = louder than
+// the file, through Web Audio; only for our own files, since other sites'
+// audio would come out silent that way).
+let clipCtx = null;
+function playClip(url, gain) {
   const audio = new Audio(url);
-  audio.volume = Math.max(0, Math.min(1, volume * prefs.get("soundboard_volume", 0.7) * outputVolume()));
   const out = prefs.get("output_device", "");
-  if (out && audio.setSinkId) audio.setSinkId(out).catch(() => {});
+  let boosted = false;
+  let sameOrigin = false;
+  try { sameOrigin = new URL(url, location.href).origin === location.origin; } catch { /* bad URL */ }
+  if (gain > 1 && sameOrigin && window.AudioContext) {
+    try {
+      clipCtx = clipCtx || new AudioContext();
+      clipCtx.resume().catch(() => {});
+      if (out && clipCtx.setSinkId && clipCtx.sinkId !== out) clipCtx.setSinkId(out).catch(() => {});
+      const node = clipCtx.createGain();
+      node.gain.value = gain;
+      clipCtx.createMediaElementSource(audio).connect(node).connect(clipCtx.destination);
+      boosted = true;
+    } catch { /* fall back to plain playback */ }
+  }
+  if (!boosted) {
+    audio.volume = Math.max(0, Math.min(1, gain));
+    if (out && audio.setSinkId) audio.setSinkId(out).catch(() => {});
+  }
   audio.play().catch(() => {});
 }
 
@@ -2483,6 +2626,7 @@ const MENUS = {
         { label: "Mute for me", checked: isLocallyMuted(m.id), onClick: () => toggleLocalMute(m) }, "sep");
     }
     if (typeof voiceModerationItems === "function") items.push(...voiceModerationItems(m));
+    if (typeof nicknameMenuItems === "function") items.push(...nicknameMenuItems(m));
     if (can("manage_roles") && assignable.length) {
       items.push({
         label: "Roles",

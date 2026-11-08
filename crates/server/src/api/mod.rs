@@ -103,6 +103,10 @@ pub fn router(state: AppState) -> Router {
         // Members and moderation
         .route("/api/guilds/{id}/members", get(members::list))
         .route("/api/guilds/{id}/nickname", put(members::set_nickname))
+        .route(
+            "/api/guilds/{id}/members/{user}/nickname",
+            put(members::set_member_nickname),
+        )
         .route("/api/guilds/{id}/members/{user}", delete(members::kick))
         .route(
             "/api/guilds/{id}/members/{user}/timeout",

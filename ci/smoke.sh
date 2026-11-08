@@ -1073,6 +1073,64 @@ call PUT "/api/guilds/$GUILD/members/$BOB/roles/$AUDR" >/dev/null
 TOKEN=$TOKEN_B; call GET "/api/guilds/$GUILD/audit-log" | jq -e '.entries | length > 0' >/dev/null; TOKEN=$TOKEN_A
 call DELETE "/api/guilds/$GUILD/members/$BOB/roles/$AUDR" >/dev/null
 
+step "manage nicknames"
+TOKEN=$TOKEN_A
+call GET /api/permissions | jq -e 'any(.[]; .key == "manage_nicknames" and .bit == "1024") and ([.[].key] | index("manage_nicknames")) == ([.[].key] | index("change_nickname")) + 1' >/dev/null
+# @everyone doesn't get it.
+call GET "/api/guilds/$GUILD/roles" | jq -e --arg g "$GUILD" '.[] | select(.id == $g) | ((.permissions | tonumber) / 1024 | floor) % 2 == 0' >/dev/null
+TOKEN=$TOKEN_B
+fail_call PUT "/api/guilds/$GUILD/members/$CARL/nickname" '{"nickname":"Not allowed"}'
+# You can still do your own through the new path (Change nickname).
+call PUT "/api/guilds/$GUILD/members/$BOB/nickname" '{"nickname":"  Bobby  "}' | jq -e '.display_name == "Bobby"' >/dev/null
+call PUT "/api/guilds/$GUILD/nickname" '{"nickname":null}' | jq -e '.display_name == "Bob"' >/dev/null
+TOKEN=$TOKEN_A
+NICKR=$(call POST "/api/guilds/$GUILD/roles" '{"name":"Nick mod","permissions":"1024"}' | jq -r .id)
+call PATCH "/api/guilds/$GUILD/roles/$NICKR" '{"position":500}' >/dev/null
+call PUT "/api/guilds/$GUILD/members/$BOB/roles/$NICKR" >/dev/null
+TOKEN=$TOKEN_B; call GET "/api/guilds/$GUILD/permissions" | jq -e '((.guild | tonumber) / 1024 | floor) % 2 == 1' >/dev/null; TOKEN=$TOKEN_A
+# Carl's other clients hear about it live.
+node ci/gateway_probe.mjs "$BASE" "$TOKEN_C" /tmp/gw-nick.jsonl 15 &
+NPROBE=$!
+for i in $(seq 1 40); do grep -q '"READY"' /tmp/gw-nick.jsonl 2>/dev/null && break; sleep 0.25; done
+grep -q '"READY"' /tmp/gw-nick.jsonl || { echo "gateway probe never got READY"; cat /tmp/gw-nick.jsonl; exit 1; }
+TOKEN=$TOKEN_B
+call PUT "/api/guilds/$GUILD/members/$CARL/nickname" '{"nickname":"Carl the Brave and Extremely Long Named Warrior"}' \
+  | jq -e --arg c "$CARL" '.id == $c and .display_name == "Carl the Brave and Extremely Lon"' >/dev/null
+for i in $(seq 1 40); do grep -q '"GUILD_REFRESH"' /tmp/gw-nick.jsonl && break; sleep 0.25; done
+jq -s -e --arg g "$GUILD" 'any(.[]; .t == "GUILD_REFRESH" and .d.guild_id == $g)' /tmp/gw-nick.jsonl >/dev/null \
+  || { echo "no GUILD_REFRESH after a nickname change:"; cat /tmp/gw-nick.jsonl; exit 1; }
+kill $NPROBE 2>/dev/null || true
+call GET "/api/guilds/$GUILD/members" | jq -e --arg c "$CARL" '.[] | select(.id == $c) | .display_name == "Carl the Brave and Extremely Lon"' >/dev/null
+# The owner is off limits; so is anyone ranked the same or higher.
+fail_call PUT "/api/guilds/$GUILD/members/$ALICE/nickname" '{"nickname":"Boss"}'
+TOKEN=$TOKEN_A; call PUT "/api/guilds/$GUILD/members/$CARL/roles/$NICKR" >/dev/null; TOKEN=$TOKEN_B
+fail_call PUT "/api/guilds/$GUILD/members/$CARL/nickname" '{"nickname":"Equal rank"}'
+TOKEN=$TOKEN_A; call DELETE "/api/guilds/$GUILD/members/$CARL/roles/$NICKR" >/dev/null; TOKEN=$TOKEN_B
+fail_call PUT "/api/guilds/$GUILD/members/$OUTSIDER/nickname" '{"nickname":"Who"}'
+# Clearing it (null or blank) puts their display name back.
+call PUT "/api/guilds/$GUILD/members/$CARL/nickname" '{"nickname":"   "}' | jq -e '.display_name == "Carl"' >/dev/null
+call PUT "/api/guilds/$GUILD/members/$CARL/nickname" '{"nickname":"Carlos"}' >/dev/null
+call PUT "/api/guilds/$GUILD/members/$CARL/nickname" '{"nickname":null}' | jq -e '.display_name == "Carl"' >/dev/null
+TOKEN=$TOKEN_A
+# The owner can rename anyone (even a moderator); all of it lands in the audit log.
+call PUT "/api/guilds/$GUILD/members/$BOB/nickname" '{"nickname":"Bobsled"}' | jq -e '.display_name == "Bobsled"' >/dev/null
+NLOG=$(call GET "/api/guilds/$GUILD/audit-log?action=member_nickname&limit=20")
+jq -e --arg a "$ALICE" --arg b "$BOB" --arg c "$CARL" '
+  .entries[0].actor_id == $a and .entries[0].target_id == $b and .entries[0].target_kind == "member"
+    and .entries[0].target_name == "Bob" and .entries[0].details == "(none) → “Bobsled”"
+  and any(.entries[]; .actor_id == $b and .target_id == $c and .details == "(none) → “Carl the Brave and Extremely Lon”")
+  and any(.entries[]; .details == "“Carlos” → (none)")
+  and all(.entries[]; .target_id != .actor_id)
+  and any(.actions[]; .key == "member_nickname" and .label == "Changed nickname")' <<<"$NLOG" >/dev/null \
+  || { echo "bad nickname audit entries:"; echo "$NLOG" | jq '.entries'; exit 1; }
+# Setting the same nickname again isn't logged twice.
+call PUT "/api/guilds/$GUILD/members/$BOB/nickname" '{"nickname":"Bobsled"}' >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?action=member_nickname&user=$BOB&limit=50" | jq -e '[.entries[] | select(.details == "(none) → “Bobsled”")] | length == 1' >/dev/null
+call PUT "/api/guilds/$GUILD/members/$BOB/nickname" '{"nickname":null}' >/dev/null
+call DELETE "/api/guilds/$GUILD/members/$BOB/roles/$NICKR" >/dev/null
+TOKEN=$TOKEN_B; fail_call PUT "/api/guilds/$GUILD/members/$CARL/nickname" '{"nickname":"Not any more"}'; TOKEN=$TOKEN_A
+call DELETE "/api/guilds/$GUILD/roles/$NICKR" >/dev/null
+
 step "server status and health"
 call GET /api/health | jq -e '.status == "ok" and .db == true and .version == "smoke-test" and .uptime_seconds >= 0' >/dev/null
 call GET "/api/guilds/$GUILD/server-status" | jq -e '.version == "smoke-test" and .db_ok and .db_size_bytes > 0 and .push_enabled and .backup == null' >/dev/null

@@ -1481,3 +1481,33 @@ dialog.invite-dialog { width: min(500px, 94vw); max-height: 90vh; }
   .inv-row { flex-wrap: wrap; }
   .inv-row-actions { width: 100%; justify-content: flex-end; }
 }
+
+/* ---------- change someone's nickname ---------- */
+dialog.nick-dialog .row { flex-wrap: wrap; }
+dialog.nick-dialog .nick-reset { margin-right: auto; }
+dialog.nick-dialog .nick-reset:disabled { opacity: .45; cursor: default; }
+@media (max-width: 760px) {
+  dialog.nick-dialog .row button { flex: 1 1 auto; }
+  dialog.nick-dialog .nick-reset { flex-basis: 100%; margin-right: 0; }
+}
+.pc-actions { flex-wrap: wrap; }
+.pc-actions .pc-nick { height: 36px; padding: 0 12px; }
+
+/* ---------- mute / deafen in the user bar (always there) ---------- */
+.vp-buttons.two { grid-template-columns: repeat(2, 1fr); }
+.vp-buttons.three { grid-template-columns: repeat(3, 1fr); }
+.user-panel { gap: 6px; padding: 0 8px; }
+.user-panel .me { min-width: 0; }
+.user-panel .me-name, .user-panel .me-status { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.me-voice { display: flex; gap: 2px; flex: 0 0 auto; }
+.me-vbtn svg .slash { stroke: #ef4444; stroke-width: 2.5; }
+.me-vbtn.off { color: #f87171; }
+.me-vbtn.forced { background: #ef444440; box-shadow: inset 0 0 0 1px #ef4444; color: #f87171; cursor: not-allowed; }
+.me-vbtn:focus-visible, #user-settings:focus-visible, #logout:focus-visible { outline: 2px solid var(--ember); outline-offset: 1px; }
+/* Sign out lives in User settings (bottom of the list) so the bar fits. */
+.user-panel #logout { display: none; }
+@media (max-width: 760px) {
+  .user-panel { gap: 4px; }
+  .me-voice .icon-btn, .user-panel #user-settings { width: 36px; height: 36px; }
+}
+.sb-level-wrap { display: grid; gap: 6px; }

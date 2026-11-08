@@ -26,6 +26,7 @@ pub const MENTION_EVERYONE: u64 = 1 << 6;
 pub const MANAGE_MESSAGES: u64 = 1 << 7;
 pub const CREATE_INVITE: u64 = 1 << 8;
 pub const CHANGE_NICKNAME: u64 = 1 << 9;
+pub const MANAGE_NICKNAMES: u64 = 1 << 10;
 
 pub const CONNECT: u64 = 1 << 16;
 pub const SPEAK: u64 = 1 << 17;
@@ -142,6 +143,13 @@ pub fn all_permissions() -> Vec<PermissionInfo> {
         info!(
             "change_nickname",
             CHANGE_NICKNAME, "Change nickname", "Set their own nickname.", false
+        ),
+        info!(
+            "manage_nicknames",
+            MANAGE_NICKNAMES,
+            "Manage nicknames",
+            "Change other members' nicknames in this outhouse.",
+            false
         ),
         info!(
             "connect",
@@ -452,6 +460,14 @@ mod tests {
         // servers; 0011 adds Share screen (1 << 22) to their @everyone.
         assert_eq!(DEFAULT_EVERYONE, 459_583 | STREAM);
         assert_eq!(STREAM, 4_194_304);
+    }
+
+    #[test]
+    fn manage_nicknames_is_off_by_default_but_admins_get_it() {
+        assert_eq!(DEFAULT_EVERYONE & MANAGE_NICKNAMES, 0);
+        assert!(ALL & MANAGE_NICKNAMES != 0);
+        let admin = base_permissions(false, DEFAULT_EVERYONE, &[role(ADMINISTRATOR, 0, 1)]);
+        assert!(admin & MANAGE_NICKNAMES != 0);
     }
 
     #[test]

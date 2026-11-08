@@ -136,12 +136,10 @@ function onEntranceSound(d) {
   state.voice.lastEntrance.played = true;
 }
 
+// Entrance sounds have their own volume slider (not Output volume, which
+// is just for voices, nor Soundboard volume).
 function playEntrance(url) {
-  const audio = new Audio(url);
-  audio.volume = Math.max(0, Math.min(1, prefs.get("entrance_volume", 0.6) * outputVolume()));
-  const out = prefs.get("output_device", "");
-  if (out && audio.setSinkId) audio.setSinkId(out).catch(() => {});
-  audio.play().catch(() => {});
+  playClip(url, Math.max(0, Math.min(1, prefs.get("entrance_volume", 0.6))));
 }
 
 // Length of a sound file in seconds (0 if the browser can't tell).

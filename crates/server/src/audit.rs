@@ -108,6 +108,7 @@ pub const ACTIONS: &[(&str, &str)] = &[
     ("member_unban", "Unbanned someone"),
     ("member_timeout", "Timed someone out"),
     ("member_timeout_remove", "Ended a timeout"),
+    ("member_nickname", "Changed nickname"),
     ("message_delete", "Deleted someone's message"),
     ("message_pin", "Pinned a message"),
     ("message_unpin", "Unpinned a message"),

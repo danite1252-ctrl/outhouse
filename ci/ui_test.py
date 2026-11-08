@@ -1086,7 +1086,7 @@ with sync_playwright() as p:
     carolv.wait_for_selector(".menu .menu-slider input[max='200']")
     carolv.screenshot(path=f"{SHOTS}/85-voice-user-menu.png")
     carolv.click(".menu button:has-text('Server mute')")
-    davev.wait_for_selector("#voice-panel .vp-btn.forced", timeout=10000)
+    davev.wait_for_selector("#me-mute.forced", timeout=10000)
     davev.wait_for_selector(f"#voice-channels .voice-user[data-id='{DAVE}'] .vicon.server", timeout=10000)
     carolv.wait_for_selector(f"#voice-channels .voice-user[data-id='{DAVE}'] .vicon.server", timeout=10000)
     davev.wait_for_function("state.voice.serverMuted === true")
@@ -1096,11 +1096,11 @@ with sync_playwright() as p:
     davev.wait_for_selector("#voice-panel", state="hidden")
     join(davev, "Raid comms")
     davev.wait_for_function("state.voice.serverMuted === true", timeout=10000)
-    davev.wait_for_selector("#voice-panel .vp-btn.forced")
+    davev.wait_for_selector("#me-mute.forced")
     carolv.click(f"#voice-channels .voice-user[data-id='{DAVE}']", button="right")
     carolv.click(".menu button:has-text('Server mute')")
     davev.wait_for_function("state.voice.serverMuted === false", timeout=10000)
-    davev.wait_for_selector("#voice-panel .vp-btn.forced", state="detached")
+    davev.wait_for_selector("#me-mute.forced", state="detached")
     # Dave can talk again: his mic gets published.
     davev.wait_for_function("(() => { const p = state.voice.room.localParticipant.getTrackPublication(LivekitClient.Track.Source.Microphone); return !!p && !p.isMuted; })()", timeout=15000)
 
@@ -1108,7 +1108,7 @@ with sync_playwright() as p:
     carolv.click(f"#voice-channels .voice-user[data-id='{DAVE}']", button="right")
     carolv.click(".menu button:has-text('Server deafen')")
     davev.wait_for_function("state.voice.serverDeafened === true", timeout=10000)
-    davev.wait_for_selector("#voice-panel .vp-btn.forced")
+    davev.wait_for_selector("#me-mute.forced")
     carolv.wait_for_selector(f"#voice-channels .voice-user[data-id='{DAVE}'] .vicon.server")
     carolv.click(f"#voice-channels .voice-user[data-id='{DAVE}']", button="right")
     carolv.click(".menu button:has-text('Server deafen')")
@@ -1281,9 +1281,143 @@ with sync_playwright() as p:
     frankv.wait_for_timeout(300)
     frankv.screenshot(path=f"{SHOTS}/90-android-entrance-settings.png")
 
+
+    # ---- Mute / deafen live in the user bar (in voice and out of it) ----
+    for pg in (carolv, erinv, frankv):
+        assert pg.query_selector("#voice-panel #me-mute") is None, "mute still in the voice panel"
+        assert pg.query_selector(".user-panel #me-mute") and pg.query_selector(".user-panel #me-deafen"), "mute/deafen missing from the user bar"
+    assert carolv.eval_on_selector("#voice-panel .vp-buttons", "e => e.children.length") == 3  # share, soundboard, settings
+    assert frankv.eval_on_selector("#voice-panel .vp-buttons", "e => e.children.length") == 2  # no share on Android
+    # In voice: mute → the mic track is muted; deafen implies mute; undeafen restores the old mute.
+    carolv.click("#me-mute")
+    carolv.wait_for_selector("#me-mute.off[title='Unmute'][aria-pressed='true']")
+    carolv.wait_for_function("(() => { const p = state.voice.room.localParticipant.getTrackPublication(LivekitClient.Track.Source.Microphone); return !p || p.isMuted; })()", timeout=10000)
+    carolv.click("#me-deafen")
+    carolv.wait_for_selector("#me-deafen.off[title='Undeafen']")
+    carolv.click("#me-deafen")
+    carolv.wait_for_selector("#me-deafen:not(.off)[title='Deafen']")
+    carolv.wait_for_selector("#me-mute.off[title='Unmute']")
+    carolv.click("#me-deafen")
+    carolv.click("#me-mute")  # unmuting while deafened undeafens too
+    carolv.wait_for_selector("#me-mute:not(.off)[title='Mute']")
+    carolv.wait_for_selector("#me-deafen:not(.off)[title='Deafen']")
+    carolv.wait_for_function("(() => { const p = state.voice.room.localParticipant.getTrackPublication(LivekitClient.Track.Source.Microphone); return !!p && !p.isMuted; })()", timeout=15000)
+    # Keyboard: focus and Space toggles it.
+    carolv.focus("#me-mute")
+    carolv.keyboard.press("Space")
+    carolv.wait_for_selector("#me-mute.off")
+    carolv.wait_for_timeout(200)
+    carolv.screenshot(path=f"{SHOTS}/91a-desktop-userbar-in-voice.png")
+    carolv.keyboard.press("Space")
+    carolv.wait_for_selector("#me-mute:not(.off)")
+    for pg, label in ((erinv, "phone"), (frankv, "android")):
+        if not pg.evaluate("document.getElementById('app').classList.contains('show-nav')"):
+            pg.click("#nav-toggle")
+            pg.wait_for_timeout(400)
+        pg.tap("#me-deafen")
+        pg.wait_for_selector("#me-deafen.off")
+        box = pg.eval_on_selector(".user-panel", "e => { const r = e.getBoundingClientRect(); const b = [...e.querySelectorAll('button')].filter((x) => x.offsetParent).map((x) => x.getBoundingClientRect()); return [r.right, Math.max(...b.map((x) => x.right)), Math.min(...b.map((x) => x.width))]; }")
+        assert box[1] <= box[0] + 0.5 and box[2] >= 30, f"{label} user bar overflows: {box}"
+        pg.wait_for_timeout(200)
+        pg.screenshot(path=f"{SHOTS}/91{'b' if label == 'phone' else 'c'}-{label}-userbar-in-voice.png")
+        pg.tap("#me-deafen")
+        pg.wait_for_selector("#me-deafen:not(.off)")
+    # PTT mode: the mic button still blocks push to talk.
+    carolv.evaluate("prefs.set('voice_mode', 'ptt')")
+    carolv.click("#me-mute")
+    carolv.evaluate("setPtt(true)")
+    carolv.wait_for_timeout(500)
+    assert carolv.evaluate("(() => { const p = state.voice.room.localParticipant.getTrackPublication(LivekitClient.Track.Source.Microphone); return !p || p.isMuted; })()"), "PTT opened a muted mic"
+    carolv.evaluate("setPtt(false)")
+    carolv.click("#me-mute")
+    carolv.evaluate("setPtt(true)")
+    carolv.wait_for_function("(() => { const p = state.voice.room.localParticipant.getTrackPublication(LivekitClient.Track.Source.Microphone); return !!p && !p.isMuted; })()", timeout=15000)
+    carolv.evaluate("setPtt(false)")
+    carolv.evaluate("prefs.set('voice_mode', 'vad'); syncMic()")
+
+    # ---- Soundboard volume is separate from Output volume ----
+    ERIN = erin["user"]["id"]
+    carolv.wait_for_function(f"!!state.voice.room.remoteParticipants.get({json.dumps(ERIN)})", timeout=10000)
+    sbv = carolv.evaluate(f"""() => {{
+      const erin = state.voice.room.remoteParticipants.get({json.dumps(ERIN)});
+      const out = [];
+      setSoundboardLevel(1); prefs.set('output_volume', 1); applyAllVolumes();
+      out.push([soundboardGain(0.8), erin.getVolume()]);
+      prefs.set('output_volume', 1.6); applyAllVolumes();
+      out.push([soundboardGain(0.8), erin.getVolume()]);
+      setSoundboardLevel(0.25); applyAllVolumes();
+      out.push([soundboardGain(0.8), erin.getVolume()]);
+      playSound('/sounds/builtin/plop.mp3', 0.8, true);
+      out.push([state.voice.lastSoundGain, outputVolume()]);
+      prefs.set('output_volume', 1); setSoundboardLevel(1); applyAllVolumes();
+      return out;
+    }}""")
+    assert abs(sbv[0][0] - 0.8) < 1e-9 and abs(sbv[1][0] - 0.8) < 1e-9, f"output volume changed the soundboard: {sbv}"
+    if isinstance(sbv[0][1], (int, float)):  # LiveKit reports the volume once Erin's audio is subscribed
+        assert abs(sbv[1][1] - 1.6 * sbv[0][1]) < 1e-6, f"output volume didn't change voices: {sbv}"
+        assert abs(sbv[2][1] - sbv[1][1]) < 1e-9, f"soundboard volume changed voices: {sbv}"
+    assert abs(sbv[2][0] - 0.2) < 1e-9, f"soundboard volume didn't apply: {sbv}"
+    assert abs(sbv[3][0] - 0.2) < 1e-9 and sbv[3][1] == 1.6, sbv
+    # The settings slider and the popover slider are one setting.
+    carolv.evaluate("openUserSettings('voice')")
+    carolv.wait_for_selector("dialog.settings input.sb-level")
+    carolv.eval_on_selector("dialog.settings input.sb-level", "e => { e.value = 150; e.dispatchEvent(new Event('input')); }")
+    assert carolv.evaluate("soundboardLevel()") == 1.5
+    assert carolv.evaluate("prefs.get('output_volume', 1)") == 1, "soundboard slider moved output volume"
+    carolv.evaluate("document.querySelector('dialog.settings .sb-level-wrap').scrollIntoView({block: 'center'})")
+    carolv.wait_for_timeout(300)
+    carolv.screenshot(path=f"{SHOTS}/92a-voice-audio-soundboard-volume.png")
+    carolv.keyboard.press("Escape")
+    carolv.wait_for_selector("dialog.settings", state="detached")
+    carolv.click("#voice-panel .vp-btn.sb-open")
+    carolv.wait_for_selector(".sb-board")
+    if not carolv.query_selector(".sb-board .sb-volume"):
+        carolv.click(".sb-board .sb-vol-btn")
+    carolv.wait_for_selector(".sb-volume input[type=range][max='200']")
+    assert carolv.eval_on_selector(".sb-volume input[type=range]", "e => e.value") == "150"
+    carolv.eval_on_selector(".sb-volume input[type=range]", "e => { e.value = 60; e.dispatchEvent(new Event('input')); }")
+    assert carolv.evaluate("soundboardLevel()") == 0.6
+    carolv.keyboard.press("Escape")
+    carolv.evaluate("setSoundboardLevel(1)")
+    frankv.evaluate("openUserSettings('voice')")
+    frankv.wait_for_selector("dialog.settings .sb-level-wrap")
+    frankv.evaluate("document.querySelector('dialog.settings .sb-level-wrap').scrollIntoView({block: 'center'})")
+    frankv.wait_for_timeout(300)
+    frankv.screenshot(path=f"{SHOTS}/92b-android-voice-audio-soundboard-volume.png")
+    frankv.keyboard.press("Escape")
     for pg in (carolv, davev, erinv, frankv):
         pg.evaluate("leaveVoice(true)")
     carolv.wait_for_timeout(500)
+
+    # Out of voice: the buttons stay, and what you pick is kept for next time.
+    for pg in (carolv, erinv, frankv):
+        pg.wait_for_selector("#voice-panel", state="hidden", timeout=10000)
+        pg.wait_for_selector(".user-panel #me-mute:not(.forced)")
+    carolv.click("#me-mute")
+    carolv.wait_for_selector("#me-mute.off[title='Unmute']")
+    assert carolv.evaluate("localStorage.getItem('outhouse_self_muted')") == "true"
+    carolv.screenshot(path=f"{SHOTS}/91d-desktop-userbar-out-of-voice.png")
+    for pg, label in ((erinv, "phone"), (frankv, "android")):
+        if not pg.evaluate("document.getElementById('app').classList.contains('show-nav')"):
+            pg.click("#nav-toggle")
+            pg.wait_for_timeout(400)
+        pg.tap("#me-mute")
+        pg.wait_for_selector("#me-mute.off")
+        pg.wait_for_timeout(200)
+        pg.screenshot(path=f"{SHOTS}/91{'e' if label == 'phone' else 'f'}-{label}-userbar-out-of-voice.png")
+    # Reload: still muted, and joining voice keeps the mic off.
+    carolv.reload()
+    carolv.wait_for_selector("#voice-channels .channel.voice", timeout=15000)
+    carolv.wait_for_selector("#me-mute.off")
+    join(carolv, "Raid comms")
+    assert carolv.evaluate("state.voice.muted") is True
+    carolv.wait_for_timeout(800)
+    assert carolv.evaluate("(() => { const p = state.voice.room.localParticipant.getTrackPublication(LivekitClient.Track.Source.Microphone); return !p || p.isMuted; })()"), "mic live after joining muted"
+    carolv.wait_for_function(f"state.voiceStates.get({json.dumps(CAROL)})?.muted === true", timeout=10000)
+    carolv.click("#me-mute")
+    carolv.wait_for_function("(() => { const p = state.voice.room.localParticipant.getTrackPublication(LivekitClient.Track.Source.Microphone); return !!p && !p.isMuted; })()", timeout=15000)
+    carolv.evaluate("leaveVoice(true)")
+    carolv.wait_for_timeout(300)
     for pg in (carolv, davev, erinv, frankv):
         pg.close()
 
@@ -1737,6 +1871,90 @@ with sync_playwright() as p:
         pg.wait_for_selector("#messages article.msg.spoilered")
         pg.wait_for_timeout(200)
         pg.screenshot(path=f"{SHOTS}/{n + 6}-{label}-spoiler.png")
+        pg.close()
+
+
+    # ---- Manage nicknames: change someone else's from the menu or their card ----
+    nm = fresh(TOKEN, "nick-desktop", viewport={"width": 1280, "height": 800})
+    nm.wait_for_selector(f"#member-list .member[data-id='{DAVE}']", timeout=10000)
+    nm.click(f"#member-list .member[data-id='{DAVE}']", button="right")
+    nm.wait_for_selector(".menu button:has-text('Change nickname')")
+    nm.wait_for_timeout(150)
+    nm.screenshot(path=f"{SHOTS}/195-member-menu-change-nickname.png")
+    nm.click(".menu button:has-text('Change nickname')")
+    nm.wait_for_selector("dialog.nick-dialog[open] input[placeholder='Dave']")
+    assert nm.eval_on_selector("dialog.nick-dialog input", "e => e.value") == ""
+    assert nm.eval_on_selector("dialog.nick-dialog .nick-reset", "e => e.disabled")
+    nm.fill("dialog.nick-dialog input", "Tank Dave")
+    nm.wait_for_timeout(100)
+    nm.screenshot(path=f"{SHOTS}/196-change-nickname-dialog.png")
+    nm.click("dialog.nick-dialog .nick-save")
+    nm.wait_for_selector("dialog.nick-dialog", state="detached")
+    nm.wait_for_selector(f"#member-list .member[data-id='{DAVE}']:has-text('Tank Dave')", timeout=10000)
+    # Dave's own client updates live.
+    dv = fresh(dave["token"], "nick-dave", viewport={"width": 1280, "height": 800})
+    dv.wait_for_selector(f"#member-list .member[data-id='{DAVE}']:has-text('Tank Dave')", timeout=10000)
+    # Dave (no Manage nicknames) can't rename Carol; his own is still there for him.
+    dv.click(f"#member-list .member[data-id='{CAROL}']", button="right")
+    dv.wait_for_selector(".menu button:has-text('View profile')")
+    assert dv.query_selector(".menu button:has-text('Change nickname')") is None, "Change nickname shown without permission"
+    dv.keyboard.press("Escape")
+    dv.click(f"#member-list .member[data-id='{DAVE}']", button="right")
+    dv.wait_for_selector(".menu button:has-text('Change nickname')")
+    dv.keyboard.press("Escape")
+    # The profile card: open it, Change nickname, Reset.
+    nm.click(f"#member-list .member[data-id='{DAVE}'] .avatar-wrap")
+    nm.wait_for_selector(".profile-card .pc-nick")
+    nm.wait_for_timeout(300)
+    nm.screenshot(path=f"{SHOTS}/197-profile-card-change-nickname.png")
+    nm.click(".profile-card .pc-nick")
+    nm.wait_for_selector("dialog.nick-dialog[open]")
+    assert nm.eval_on_selector("dialog.nick-dialog input", "e => e.value") == "Tank Dave"
+    nm.click("dialog.nick-dialog .nick-reset")
+    nm.wait_for_selector("dialog.nick-dialog", state="detached")
+    nm.wait_for_selector(f"#member-list .member[data-id='{DAVE}']:not(:has-text('Tank Dave'))", timeout=10000)
+    dv.wait_for_selector(f"#member-list .member[data-id='{DAVE}']:not(:has-text('Tank Dave'))", timeout=10000)
+    # A moderator with Manage nicknames: fine on Dave, never on the owner.
+    nickrole = api("POST", f"/api/guilds/{G}/roles", {"name": "Nick mod", "permissions": "1024"}, TOKEN)
+    api("PATCH", f"/api/guilds/{G}/roles/{nickrole['id']}", {"position": 500}, TOKEN)
+    api("PUT", f"/api/guilds/{G}/members/{erin['user']['id']}/roles/{nickrole['id']}", None, TOKEN)
+    ev = fresh(erin["token"], "nick-erin", viewport={"width": 1280, "height": 800})
+    ev.wait_for_selector(f"#member-list .member[data-id='{DAVE}']", timeout=10000)
+    ev.click(f"#member-list .member[data-id='{DAVE}']", button="right")
+    ev.wait_for_selector(".menu button:has-text('Change nickname')")
+    ev.keyboard.press("Escape")
+    ev.click(f"#member-list .member[data-id='{CAROL}']", button="right")
+    ev.wait_for_selector(".menu button:has-text('View profile')")
+    assert ev.query_selector(".menu button:has-text('Change nickname')") is None, "moderator offered to rename the owner"
+    ev.keyboard.press("Escape")
+    ev.close()
+    dv.close()
+    # Role editor lists it right after Change nickname.
+    nm.evaluate("openSettings('roles')")
+    nm.wait_for_selector("dialog.settings :text('Manage nicknames')", timeout=10000)
+    order = nm.evaluate("state.permList.map((p) => p.key)")
+    assert order.index("manage_nicknames") == order.index("change_nickname") + 1, order
+    nm.keyboard.press("Escape")
+    nm.close()
+    # Phone width: long-press menu and the dialog.
+    for label, kw, n in (("nick-phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True}, 198),
+                         ("android-nick", {"viewport": {"width": 393, "height": 852}, "is_mobile": True, "has_touch": True}, 200)):
+        pg = fresh(TOKEN, label, **kw)
+        pg.click("#members-toggle")
+        pg.wait_for_timeout(400)
+        row = f"#member-list .member[data-id='{DAVE}']"
+        pg.wait_for_selector(row)
+        pg.eval_on_selector(row, "e => { const r = e.getBoundingClientRect(); e.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 40, clientY: r.top + r.height / 2 })); }")
+        pg.wait_for_selector(".menu button:has-text('Change nickname')")
+        pg.wait_for_timeout(200)
+        pg.screenshot(path=f"{SHOTS}/{n}-{label}-member-menu.png")
+        pg.click(".menu button:has-text('Change nickname')")
+        pg.wait_for_selector("dialog.nick-dialog[open]")
+        pg.fill("dialog.nick-dialog input", "Dave from the dunny")
+        pg.wait_for_timeout(200)
+        pg.screenshot(path=f"{SHOTS}/{n + 1}-{label}-nickname-dialog.png")
+        pg.keyboard.press("Escape")
+        pg.wait_for_selector("dialog.nick-dialog", state="detached")
         pg.close()
 
 

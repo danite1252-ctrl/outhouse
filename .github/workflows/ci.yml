@@ -58,6 +58,7 @@ jobs:
           node --check web/admin-extras.js
           node --check web/raid-admin.js
           node --check web/channel-settings.js
+          node --check web/nicknames.js
           node --check web/invites.js
           node --check web/invite-page.js
           node --check web/sw.js
