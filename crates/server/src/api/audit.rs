@@ -194,9 +194,12 @@ pub async fn server_status(
     AuthUser(user): AuthUser,
     Path(guild_id): Path<i64>,
 ) -> AppResult<Json<ServerStatus>> {
-    member_ctx(&st.db, guild_id, user.id)
-        .await?
-        .require(p::MANAGE_GUILD)?;
+    // Whole-server details: only the site owner sees them, not every
+    // outhouse's admins.
+    let _ = guild_id;
+    if !is_site_owner(&st.db, user.id).await? {
+        return Err(AppError::Forbidden);
+    }
     let db_size: Option<i64> = sqlx::query_scalar("SELECT pg_database_size(current_database())")
         .fetch_one(&st.db)
         .await
@@ -214,6 +217,46 @@ pub async fn server_status(
             && st.config.livekit_api_secret.is_some(),
         backup: read_backup_status().await,
     }))
+}
+
+/// The site owner: whoever `SITE_OWNER` names (comma-separated user names
+/// or ids), otherwise the first account ever made on this server.
+pub async fn is_site_owner(db: &sqlx::PgPool, user_id: i64) -> AppResult<bool> {
+    if let Ok(list) = std::env::var("SITE_OWNER") {
+        let list: Vec<String> = list
+            .split(',')
+            .map(|x| x.trim().to_lowercase())
+            .filter(|x| !x.is_empty())
+            .collect();
+        if !list.is_empty() {
+            let name: Option<String> =
+                sqlx::query_scalar("SELECT lower(username) FROM users WHERE id = $1")
+                    .bind(user_id)
+                    .fetch_optional(db)
+                    .await?;
+            return Ok(list.contains(&user_id.to_string())
+                || name.is_some_and(|n| list.contains(&n)));
+        }
+    }
+    let first: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM users WHERE NOT is_bot ORDER BY created_at, id LIMIT 1")
+            .fetch_optional(db)
+            .await?;
+    Ok(first == Some(user_id))
+}
+
+#[derive(Serialize)]
+pub struct SiteOwner {
+    pub site_owner: bool,
+}
+
+/// `GET /api/users/@me/site-owner`: lets the app decide whether to show the
+/// Server status page.
+pub async fn site_owner(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<SiteOwner>> {
+    Ok(Json(SiteOwner { site_owner: is_site_owner(&st.db, user.id).await? }))
 }
 
 /// `GET /api/health`: 200 with `{"status":"ok", ...}` when the database

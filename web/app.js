@@ -463,6 +463,7 @@ function handleEvent({ t, d }) {
       state.heartbeat = setInterval(() => state.ws.send(JSON.stringify({ op: "HEARTBEAT" })), 30000);
       state.me = d.user;
       state.guilds = d.guilds;
+      api("GET", "/api/users/@me/site-owner").then((r) => { state.siteOwner = !!r?.site_owner; }).catch(() => { state.siteOwner = false; });
       renderMe();
       renderGuilds();
       loadUnread();
@@ -2743,7 +2744,7 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
     if (canAudit) {
       nav.append(el("button", { class: activeTab === "audit" ? "active" : "", onclick: () => draw("audit") }, "Audit log"));
     }
-    if (can("manage_guild") && typeof drawServerStatus === "function") {
+    if (state.siteOwner && typeof drawServerStatus === "function") {
       nav.append(el("h3", {}, "SERVER"), el("button", { class: activeTab === "status" ? "active" : "", onclick: () => draw("status") }, "Server status"));
     }
     const page = settingsPage(main);

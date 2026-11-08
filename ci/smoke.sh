@@ -987,6 +987,11 @@ call GET "/api/guilds/$GUILD/server-status" | jq -e '.version == "smoke-test" an
 printf '{"time":"%s","ok":true,"file":"outhouse-test.tgz","size":"1.2M","offsite":"ok: smb","message":""}\n' "$(date -Iseconds)" > "$BACKUP_STATUS_FILE"
 call GET "/api/guilds/$GUILD/server-status" | jq -e '.backup.ok and .backup.file == "outhouse-test.tgz" and .backup.offsite == "ok: smb"' >/dev/null
 TOKEN=$TOKEN_B; fail_call GET "/api/guilds/$GUILD/server-status"; TOKEN=$TOKEN_A
+# Only the site owner (first account, Alice) gets server status, not other outhouse admins.
+call GET /api/users/@me/site-owner | jq -e '.site_owner == true' >/dev/null
+TOKEN=$TOKEN_B; call GET /api/users/@me/site-owner | jq -e '.site_owner == false' >/dev/null; TOKEN=$TOKEN_A
+BOBG=$(TOKEN=$TOKEN_B call POST /api/guilds '{"name":"Bob place"}' | jq -r .id)
+TOKEN=$TOKEN_B; fail_call GET "/api/guilds/$BOBG/server-status"; TOKEN=$TOKEN_A
 
 step "badges"
 BOT_ID=$(call POST "/api/guilds/$GUILD/bots" '{"name":"Badger"}' | jq -r .bot.id)

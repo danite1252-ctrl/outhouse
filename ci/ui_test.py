@@ -40,7 +40,7 @@ def wait_for_server():
 
 wait_for_server()
 suffix = str(int(time.time()))[-6:]
-carol = api("POST", "/api/auth/register", {"username": f"carol{suffix}", "password": "password123", "display_name": "Carol"})
+carol = api("POST", "/api/auth/register", {"username": "carolui", "password": "password123", "display_name": "Carol"})
 dave = api("POST", "/api/auth/register", {"username": f"dave{suffix}", "password": "password123", "display_name": "Dave"})
 TOKEN = carol["token"]
 guild = api("POST", "/api/guilds", {"name": "UI Test Guild"}, TOKEN)

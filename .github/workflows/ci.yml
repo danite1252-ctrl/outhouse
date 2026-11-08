@@ -86,6 +86,8 @@ jobs:
           WOWHEAD_TOOLTIP_URL: http://127.0.0.1:8099
           WOWHEAD_ICON_URL: http://127.0.0.1:8099/icons
           LINK_PREVIEWS_OFFLINE: "1"
+          # Carol is the site owner here (smoke-test users came first).
+          SITE_OWNER: carolui
           BNET_CLIENT_ID: mock-id
           BNET_CLIENT_SECRET: mock-secret
           BNET_OAUTH_URL: http://127.0.0.1:8099/oauth

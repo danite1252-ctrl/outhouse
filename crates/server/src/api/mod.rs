@@ -277,6 +277,7 @@ pub fn router(state: AppState) -> Router {
         // Audit log, server status, badges
         .route("/api/guilds/{id}/audit-log", get(audit::list))
         .route("/api/guilds/{id}/server-status", get(audit::server_status))
+        .route("/api/users/@me/site-owner", get(audit::site_owner))
         .route(
             "/api/guilds/{id}/badges",
             get(badges::list).post(badges::create),
