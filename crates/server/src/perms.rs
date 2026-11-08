@@ -174,7 +174,8 @@ pub async fn channel_perms(db: &PgPool, ctx: &MemberCtx, channel_id: i64) -> App
 pub async fn fetch_channel(db: &PgPool, channel_id: i64) -> AppResult<Channel> {
     sqlx::query_as::<_, Channel>(
         "SELECT id, COALESCE(guild_id, 0) AS guild_id, name, kind, position, last_message_id,
-                NULL::BIGINT AS last_read_id
+                NULL::BIGINT AS last_read_id, topic, slowmode_secs, content_mode,
+                FALSE AS nsfw_accepted
          FROM channels WHERE id = $1",
     )
     .bind(channel_id)
@@ -200,8 +201,76 @@ impl ChannelAccess {
     }
 }
 
-/// Loads a channel the user is allowed to see (otherwise NotFound).
+/// Loads a channel the user is allowed to see (otherwise NotFound), for
+/// reading or posting its content: age-restricted channels the user hasn't
+/// said they're 18+ for are refused with [`AppError::AgeRestricted`].
 pub async fn channel_access(
+    db: &PgPool,
+    channel_id: i64,
+    user_id: i64,
+) -> AppResult<ChannelAccess> {
+    let access = channel_access_meta(db, channel_id, user_id).await?;
+    if is_age_gated(&access.channel) && !content_allowed(db, access.channel.id, user_id).await {
+        return Err(AppError::AgeRestricted);
+    }
+    Ok(access)
+}
+
+/// An age-restricted text channel (DMs and voice channels never are).
+pub fn is_age_gated(channel: &Channel) -> bool {
+    channel.guild_id != DM_GUILD
+        && channel.kind == outhouse_common::models::channel_kind::TEXT
+        && channel.content_mode == outhouse_common::models::content_mode::NSFW
+}
+
+/// May this user see this channel's messages? False only for an
+/// age-restricted channel they haven't accepted (bots always may).
+/// Used for the gateway, push notifications and the API.
+pub async fn content_allowed(db: &PgPool, channel_id: i64, user_id: i64) -> bool {
+    let ok: Option<bool> = sqlx::query_scalar(
+        "SELECT c.content_mode <> 'nsfw' OR c.kind <> 0 OR c.guild_id IS NULL
+                OR EXISTS(SELECT 1 FROM users u WHERE u.id = $2 AND u.is_bot)
+                OR EXISTS(SELECT 1 FROM channel_age_accepts a
+                          WHERE a.channel_id = c.id AND a.user_id = $2)
+         FROM channels c WHERE c.id = $1",
+    )
+    .bind(channel_id)
+    .bind(user_id)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    ok.unwrap_or(false)
+}
+
+/// Drops age-restricted channels the user hasn't accepted from a list of
+/// channel IDs (one query).
+pub async fn drop_age_gated(
+    db: &PgPool,
+    user_id: i64,
+    channel_ids: &mut Vec<i64>,
+) -> AppResult<()> {
+    if channel_ids.is_empty() {
+        return Ok(());
+    }
+    let gated: Vec<i64> = sqlx::query_scalar(
+        "SELECT c.id FROM channels c
+         WHERE c.id = ANY($1) AND c.kind = 0 AND c.content_mode = 'nsfw'
+           AND NOT EXISTS(SELECT 1 FROM users u WHERE u.id = $2 AND u.is_bot)
+           AND NOT EXISTS(SELECT 1 FROM channel_age_accepts a
+                          WHERE a.channel_id = c.id AND a.user_id = $2)",
+    )
+    .bind(&channel_ids[..])
+    .bind(user_id)
+    .fetch_all(db)
+    .await?;
+    channel_ids.retain(|id| !gated.contains(id));
+    Ok(())
+}
+
+/// Like [`channel_access`] but without the age check: for channel settings,
+/// read markers, mutes and other things that don't show its messages.
+pub async fn channel_access_meta(
     db: &PgPool,
     channel_id: i64,
     user_id: i64,

@@ -11,7 +11,7 @@ use serde_json::json;
 
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
-use crate::perms::{channel_access, member_ctx};
+use crate::perms::{channel_access_meta as channel_access, member_ctx};
 use crate::push::{self, Level};
 use crate::state::AppState;
 

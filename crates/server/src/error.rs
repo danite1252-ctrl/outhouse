@@ -15,6 +15,9 @@ pub enum AppError {
     InvalidCredentials,
     #[error("You don't have permission to do that.")]
     Forbidden,
+    /// An age-restricted channel the member hasn't said they're 18+ for.
+    #[error("This channel is age-restricted. You must be 18+ to view it.")]
+    AgeRestricted,
     #[error("Not found.")]
     NotFound,
     #[error("{0}")]
@@ -30,7 +33,7 @@ impl IntoResponse for AppError {
         let status = match &self {
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Unauthorized | AppError::InvalidCredentials => StatusCode::UNAUTHORIZED,
-            AppError::Forbidden => StatusCode::FORBIDDEN,
+            AppError::Forbidden | AppError::AgeRestricted => StatusCode::FORBIDDEN,
             AppError::NotFound | AppError::Db(sqlx::Error::RowNotFound) => StatusCode::NOT_FOUND,
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::Db(_) | AppError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -43,6 +46,13 @@ impl IntoResponse for AppError {
         } else {
             self.to_string()
         };
+        if matches!(self, AppError::AgeRestricted) {
+            return (
+                status,
+                Json(json!({ "error": message, "code": "age_restricted" })),
+            )
+                .into_response();
+        }
         (status, Json(json!({ "error": message }))).into_response()
     }
 }

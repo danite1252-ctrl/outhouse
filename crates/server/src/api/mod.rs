@@ -63,7 +63,14 @@ pub fn router(state: AppState) -> Router {
             "/api/guilds/{id}/channels",
             get(channels::list).post(channels::create),
         )
-        .route("/api/channels/{id}", delete(channels::delete))
+        .route(
+            "/api/channels/{id}",
+            patch(channels::update).delete(channels::delete),
+        )
+        .route(
+            "/api/channels/{id}/age-gate",
+            put(channels::accept_age_gate).delete(channels::reset_age_gate),
+        )
         .route("/api/channels/{id}/ack", post(channels::ack))
         .route(
             "/api/channels/{id}/permissions",

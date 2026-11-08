@@ -135,6 +135,11 @@ async fn run(socket: WebSocket, st: AppState) -> anyhow::Result<()> {
                             Audience::Channel { guild_id, channel_id } => {
                                 (guild_id == DM_GUILD || guild_ids.contains(&guild_id))
                                     && perms::can_view(&st.db, guild_id, channel_id, user.id).await
+                                    // Nothing from an age-restricted channel until
+                                    // they've said they're 18+.
+                                    && (guild_id == DM_GUILD
+                                        || !carries_content(&d.event)
+                                        || perms::content_allowed(&st.db, channel_id, user.id).await)
                             }
                         };
                         if wanted {
@@ -176,6 +181,21 @@ async fn run(socket: WebSocket, st: AppState) -> anyhow::Result<()> {
         announce_presence(&st, &guild_ids, user.id, false);
     }
     outcome
+}
+
+/// Events that show what's in a channel (messages, reactions, threads,
+/// raids), held back from age-restricted channels until accepted.
+fn carries_content(event: &ServerEvent) -> bool {
+    matches!(
+        event,
+        ServerEvent::MessageCreate(_)
+            | ServerEvent::MessageUpdate(_)
+            | ServerEvent::ReactionAdd { .. }
+            | ServerEvent::ReactionRemove { .. }
+            | ServerEvent::ThreadUpdate(_)
+            | ServerEvent::EventUpdate(_)
+            | ServerEvent::TypingStart { .. }
+    )
 }
 
 fn announce_presence(st: &AppState, guild_ids: &HashSet<i64>, user_id: i64, online: bool) {

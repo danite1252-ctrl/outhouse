@@ -17,7 +17,7 @@ use super::messages::post_bot_message;
 use crate::auth::{self, AuthUser};
 use crate::embeds::clip;
 use crate::error::{AppError, AppResult};
-use crate::perms::{channel_access, member_ctx};
+use crate::perms::{channel_access_meta as channel_access, member_ctx};
 use crate::state::AppState;
 
 const TOKEN_ALPHABET: &[u8] = b"abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";

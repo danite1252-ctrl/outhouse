@@ -84,21 +84,27 @@ pub async fn create(
         .execute(&mut *tx)
         .await?;
     // Every new outhouse comes with a front porch and somewhere to talk.
-    for (position, (channel_name, kind)) in [
-        ("front-porch", channel_kind::TEXT),
-        ("The Long Drop", channel_kind::VOICE),
+    for (position, (channel_name, kind, topic)) in [
+        (
+            "front-porch",
+            channel_kind::TEXT,
+            "Leave it cleaner than you found it.",
+        ),
+        ("The Long Drop", channel_kind::VOICE, ""),
     ]
     .into_iter()
     .enumerate()
     {
         sqlx::query(
-            "INSERT INTO channels (id, guild_id, name, kind, position) VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO channels (id, guild_id, name, kind, position, topic)
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(st.ids.next_id())
         .bind(guild.id)
         .bind(channel_name)
         .bind(kind)
         .bind(position as i32)
+        .bind(topic)
         .execute(&mut *tx)
         .await?;
     }

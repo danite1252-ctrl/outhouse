@@ -10,7 +10,7 @@ use crate::auth::{self, AuthUser};
 use crate::embeds::clip;
 use crate::error::{AppError, AppResult};
 use crate::feeds::{self, FEED_SELECT};
-use crate::perms::{channel_access, member_ctx};
+use crate::perms::{channel_access_meta as channel_access, member_ctx};
 use crate::state::AppState;
 
 async fn fetch(st: &AppState, feed_id: i64) -> AppResult<Feed> {

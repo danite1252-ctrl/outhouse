@@ -113,6 +113,55 @@ pub struct Channel {
     /// The newest message this user has seen (only in your own channel list).
     #[serde(with = "option_as_string", default)]
     pub last_read_id: Option<i64>,
+    /// Shown in the channel header ("" = no topic). Up to
+    /// [`MAX_TOPIC_CHARS`] characters, rendered like a message.
+    #[serde(default)]
+    #[cfg_attr(feature = "sqlx", sqlx(default))]
+    pub topic: String,
+    /// Seconds between messages for each member (0 = off).
+    #[serde(default)]
+    #[cfg_attr(feature = "sqlx", sqlx(default))]
+    pub slowmode_secs: i32,
+    /// See [`content_mode`]: "default", "spoiler" or "nsfw".
+    #[serde(default = "default_content_mode")]
+    #[cfg_attr(feature = "sqlx", sqlx(default))]
+    pub content_mode: String,
+    /// You've said you're 18+ for this age-restricted channel (only in
+    /// your own channel list; gateway updates leave it false).
+    #[serde(default)]
+    #[cfg_attr(feature = "sqlx", sqlx(default))]
+    pub nsfw_accepted: bool,
+}
+
+/// How a channel's messages are shown.
+pub mod content_mode {
+    pub const DEFAULT: &str = "default";
+    /// Every message is blurred until it's clicked.
+    pub const SPOILER: &str = "spoiler";
+    /// Age-restricted: members see nothing until they say they're 18+.
+    pub const NSFW: &str = "nsfw";
+    pub const ALL: [&str; 3] = [DEFAULT, SPOILER, NSFW];
+}
+
+fn default_content_mode() -> String {
+    content_mode::DEFAULT.into()
+}
+
+/// Longest channel topic.
+pub const MAX_TOPIC_CHARS: usize = 1024;
+
+/// Slowmode choices (seconds), as in the Edit channel page.
+pub const SLOWMODE_CHOICES: [i32; 14] = [
+    0, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 21600,
+];
+
+/// `PATCH /api/channels/{id}`: anything left out stays as it is.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateChannelRequest {
+    pub name: Option<String>,
+    pub topic: Option<String>,
+    pub slowmode_secs: Option<i32>,
+    pub content_mode: Option<String>,
 }
 
 /// A channel permission overwrite as shown in settings.

@@ -618,6 +618,25 @@ async fn message_push(st: &AppState, guild_id: i64, message: &Message) -> anyhow
                 "message"
             }
         };
+        // Age-restricted channel they haven't said they're 18+ for: say
+        // something arrived, but not who or what.
+        if guild_id != DM_GUILD && !perms::content_allowed(&st.db, channel_id, c.user_id).await {
+            let payload = json!({
+                "title": format!(
+                    "New message in #{}",
+                    channel_name.as_deref().unwrap_or("chat")
+                ),
+                "body": "This channel is age-restricted. Open Outhouse to see it.",
+                "kind": kind,
+                "guild_id": guild_id.to_string(),
+                "channel_id": channel_id.to_string(),
+                "message_id": message.id.to_string(),
+                "tag": format!("ch-{channel_id}"),
+                "url": format!("/?guild={guild_id}&channel={channel_id}"),
+            });
+            send_to_user(st, c.user_id, &payload).await?;
+            continue;
+        }
         let title = match (kind, guild_id == DM_GUILD) {
             ("raid", true) => "🎉 You're off the bench!".to_string(),
             ("raid", false) => "⏰ Raid reminder".to_string(),

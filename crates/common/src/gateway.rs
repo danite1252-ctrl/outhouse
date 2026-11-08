@@ -49,6 +49,17 @@ pub enum ServerEvent {
         guild_id: i64,
     },
     ChannelCreate(Channel),
+    /// A channel's name, topic, slowmode or content setting changed.
+    ChannelUpdate(Channel),
+    /// You said you're 18+ for an age-restricted channel, or took it back
+    /// (sent to all of your own clients).
+    ChannelAgeGate {
+        #[serde(with = "as_string")]
+        guild_id: i64,
+        #[serde(with = "as_string")]
+        channel_id: i64,
+        accepted: bool,
+    },
     ChannelDelete {
         #[serde(with = "as_string")]
         id: i64,

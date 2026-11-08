@@ -168,6 +168,8 @@ pub async fn search(
         .await?;
         channel_ids.retain(|id| named.contains(id));
     }
+    // Age-restricted channels you haven't said you're 18+ for stay out.
+    crate::perms::drop_age_gated(&st.db, user.id, &mut channel_ids).await?;
     if channel_ids.is_empty() {
         return Ok(Json(empty(&parsed)));
     }

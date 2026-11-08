@@ -629,6 +629,8 @@ async fn create_message(
         }
     }
 
+    check_slowmode(st, access, user).await?;
+
     // Files go to disk first, so a failed write never leaves a broken message.
     if !files.is_empty() {
         tokio::fs::create_dir_all(&st.config.upload_dir)
@@ -714,6 +716,44 @@ async fn create_message(
         embeds::spawn_previews(st.clone(), guild_id, channel_id, id, content);
     }
     Ok(message)
+}
+
+/// Slowmode: one message per member every `slowmode_secs` (Manage
+/// Messages, Manage Channels and bots skip it). Claims the slot atomically,
+/// so two messages sent at once can't both get through.
+async fn check_slowmode(st: &AppState, access: &ChannelAccess, user: &User) -> AppResult<()> {
+    let secs = access.channel.slowmode_secs;
+    if secs <= 0 || user.bot || access.perms & (p::MANAGE_MESSAGES | p::MANAGE_CHANNELS) != 0 {
+        return Ok(());
+    }
+    let claimed: Option<i32> = sqlx::query_scalar(
+        "INSERT INTO slowmode_posts (channel_id, user_id, posted_at) VALUES ($1, $2, now())
+         ON CONFLICT (channel_id, user_id) DO UPDATE SET posted_at = now()
+         WHERE slowmode_posts.posted_at <= now() - ($3::INT * INTERVAL '1 second')
+         RETURNING 1",
+    )
+    .bind(access.channel.id)
+    .bind(user.id)
+    .bind(secs)
+    .fetch_optional(&st.db)
+    .await?;
+    if claimed.is_some() {
+        return Ok(());
+    }
+    let left: Option<i32> = sqlx::query_scalar(
+        "SELECT GREATEST(1, CEIL(EXTRACT(EPOCH FROM
+                    (posted_at + ($3::INT * INTERVAL '1 second') - now())))::INT)
+         FROM slowmode_posts WHERE channel_id = $1 AND user_id = $2",
+    )
+    .bind(access.channel.id)
+    .bind(user.id)
+    .bind(secs)
+    .fetch_optional(&st.db)
+    .await?;
+    Err(AppError::BadRequest(format!(
+        "Slowmode is on. You can post again in {}s.",
+        left.unwrap_or(secs)
+    )))
 }
 
 pub async fn send(
