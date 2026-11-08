@@ -365,6 +365,41 @@ TOKEN=$TOKEN_A
 call DELETE "/api/threads/$CT" >/dev/null
 fail_call GET "/api/threads/$CT"
 
+step "thread mentions and read state"
+NTM=$(call POST "/api/channels/$CHAN/messages" '{"content":"Thread for pings"}' | jq -r .id)
+NT=$(call POST "/api/channels/$CHAN/threads" '{"name":"Thread pings","message_id":"'"$NTM"'"}' | jq -r .id)
+TOKEN=$TOKEN_B
+call POST "/api/channels/$CHAN/ack" '{"message_id":"'"$NTM"'"}' >/dev/null
+TOKEN=$TOKEN_A
+CHLAST=$(call GET "/api/guilds/$GUILD/channels" | jq -r --arg c "$CHAN" '.[] | select(.id == $c) | .last_message_id')
+call POST "/api/channels/$CHAN/messages" '{"content":"plain reply","thread_id":"'"$NT"'"}' >/dev/null
+TOKEN=$TOKEN_B
+# A plain reply: the thread is unread, but the channel isn't.
+call GET /api/users/@me/unread | jq -e --arg t "$NT" --arg c "$CHAN" --arg g "$GUILD" '
+  (.threads[] | select(.thread_id == $t) | .channel_id == $c and .guild_id == $g and .mention_count == 0 and .last_read_id == null)
+  and (.channels[] | select(.channel_id == $c) | .mention_count == 0)' >/dev/null
+TOKEN=$TOKEN_A
+[ "$(call GET "/api/guilds/$GUILD/channels" | jq -r --arg c "$CHAN" '.[] | select(.id == $c) | .last_message_id')" = "$CHLAST" ]
+call POST "/api/channels/$CHAN/messages" '{"content":"<@'"$BOB"'> your turn","thread_id":"'"$NT"'"}' >/dev/null
+call POST "/api/channels/$CHAN/messages" '{"content":"@here pull timer","thread_id":"'"$NT"'"}' >/dev/null
+NTLAST=$(call POST "/api/channels/$CHAN/messages" '{"content":"<@&'"$ROLE"'> to the thread","thread_id":"'"$NT"'"}' | jq -r .id)
+TOKEN=$TOKEN_B
+call GET /api/users/@me/unread | jq -e --arg t "$NT" --arg l "$NTLAST" --arg c "$CHAN" '
+  (.threads[] | select(.thread_id == $t) | .mention_count == 3 and .last_message_id == $l)
+  and (.channels[] | select(.channel_id == $c) | .mention_count == 0)' >/dev/null
+# Opening the thread (ack) clears it.
+call POST "/api/threads/$NT/ack" '{"message_id":"'"$NTLAST"'"}' >/dev/null
+call GET /api/users/@me/unread | jq -e --arg t "$NT" 'all(.threads[]; .thread_id != $t)' >/dev/null
+# Your own reply counts as read; someone else's makes it unread again.
+call POST "/api/channels/$CHAN/messages" '{"content":"on it","thread_id":"'"$NT"'"}' >/dev/null
+call GET /api/users/@me/unread | jq -e --arg t "$NT" 'all(.threads[]; .thread_id != $t)' >/dev/null
+TOKEN=$TOKEN_A
+call GET /api/users/@me/unread | jq -e --arg t "$NT" '.threads[] | select(.thread_id == $t) | .mention_count == 0' >/dev/null
+call POST "/api/threads/$NT/ack" '{"message_id":"'"$NTLAST"'"}' >/dev/null
+call GET /api/users/@me/unread | jq -e --arg t "$NT" '.threads[] | select(.thread_id == $t) | .last_read_id != null' >/dev/null
+TOKEN=$OUT; fail_call POST "/api/threads/$NT/ack" '{"message_id":"'"$NTLAST"'"}'; TOKEN=$TOKEN_A
+fail_call POST "/api/threads/1/ack" '{"message_id":"1"}'
+
 step "polls"
 PM=$(call POST "/api/channels/$CHAN/polls" '{"question":"Which raid this week?","options":["MC","BWL","AQ40"],"duration_minutes":60}')
 POLL=$(jq -r .id <<<"$PM")
@@ -477,6 +512,73 @@ fail_call GET "/api/events/$S3"
 # Every second week, in UTC.
 E2W=$(call POST "/api/channels/$RX/events" '{"title":"Onyxia","starts_at":"'"$FIRST"'","repeat":{"weekdays":['"$D1"'],"every_weeks":2,"count":2,"time_zone":"UTC"}}' | jq -r .event.series_id)
 call GET "/api/guilds/$GUILD/events?from=$FROM&to=$TO" | jq -e --arg s "$E2W" '[.[] | select(.series_id == $s)] | length == 2 and ((.[1].starts_at | fromdate) - (.[0].starts_at | fromdate) == 14 * 86400) and .[1].message_id == null' >/dev/null
+
+step "repeating raids: changing the pattern from a raid on"
+PFIRST=$(date -u -d '+1 day' +%Y-%m-%dT20:00:00Z)
+PD=$(( $(date -u -d '+1 day' +%u) - 1 ))
+PS=$(call POST "/api/channels/$RX/events" '{"title":"Pattern raid","starts_at":"'"$PFIRST"'","post_rule":{"mode":"now"},"repeat":{"weekdays":['"$PD"'],"every_weeks":1,"count":8,"time_zone":"UTC"}}')
+PSER=$(jq -r .event.series_id <<<"$PS")
+PTO=$(date -u -d '+60 days' +%Y-%m-%dT%H:%M:%SZ); PFROM=$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)
+pevents() { call GET "/api/guilds/$GUILD/events?from=$PFROM&to=$PTO" | jq --arg s "$1" '[.[] | select(.series_id == $s)]'; }
+PN=$(pevents "$PSER" | jq length); [ "$PN" -ge 4 ] || { echo "only $PN raids made"; exit 1; }
+P0=$(pevents "$PSER" | jq -r '.[0].id'); P1=$(pevents "$PSER" | jq -r '.[1].id'); P2=$(pevents "$PSER" | jq -r '.[2].id'); P3=$(pevents "$PSER" | jq -r '.[3].id')
+P1START=$(pevents "$PSER" | jq -r '.[1].starts_at')
+# Sign-ups: Bob on the 2nd and 3rd raids, Carl on the 3rd.
+call PUT "/api/events/$P1/signup" '{"status":"yes","role":"tank","class":"Warrior","spec":"Protection","user_id":"'"$BOB"'"}' >/dev/null
+call PUT "/api/events/$P2/signup" '{"status":"yes","role":"tank","class":"Warrior","spec":"Protection","user_id":"'"$BOB"'"}' >/dev/null
+TOKEN=$TOKEN_C; call PUT "/api/events/$P2/signup" '{"status":"tentative","role":"healer","class":"Priest","spec":"Holy"}' >/dev/null; TOKEN=$TOKEN_A
+# The first raid is over, with attendance taken: it must not change.
+psql "$DATABASE_URL" -qc "UPDATE events SET starts_at = now() - interval '4 hours' WHERE id = $P0;
+  INSERT INTO event_attendance (event_id, user_id, status) VALUES ($P0, $BOB, 'present');
+  UPDATE events SET attendance_taken = true WHERE id = $P0"
+# The preview with no change: the current pattern, and what's left of its 8 raids from here.
+call POST "/api/events/$P1/repeat-preview" '{}' | jq -e '.remaining_count == 7 and .removed_raids == 0 and (.next | length == 4) and .label == "Weekly on '"$(date -u -d '+1 day' +%a)"'" and (.first_of_series | not)' >/dev/null
+# Every second week from the 2nd raid: the 3rd (Bob, Carl) goes, the 2nd and 4th stay.
+NEWPAT='"repeat":{"weekdays":['"$PD"'],"every_weeks":2,"count":3,"time_zone":"UTC"}'
+PV=$(call POST "/api/events/$P1/repeat-preview" '{"starts_at":"'"$P1START"'",'"$NEWPAT"'}')
+jq -e --arg s "$P1START" '.next[0] == $s and (.next | length == 3) and ((.next[1] | fromdate) - (.next[0] | fromdate) == 14 * 86400)
+  and .removed_raids >= 1 and .removed_signups == 2 and .kept_signups == 1 and .kept_raids >= 2 and .label == "Every 2 weeks on '"$(date -u -d '+1 day' +%a)"'"' <<<"$PV" >/dev/null \
+  || { echo "odd preview: $PV"; exit 1; }
+# Only raid leaders; only "this and future"; sensible patterns only.
+TOKEN=$TOKEN_B
+fail_call POST "/api/events/$P1/repeat-preview" '{'"$NEWPAT"'}'
+fail_call PATCH "/api/events/$P1" '{"scope":"future",'"$NEWPAT"'}'
+TOKEN=$TOKEN_A
+fail_call PATCH "/api/events/$P1" '{"scope":"one",'"$NEWPAT"'}'
+fail_call POST "/api/events/$P1/repeat-preview" '{"repeat":{"weekdays":['"$PD"'],"every_weeks":5,"time_zone":"UTC"}}'
+fail_call POST "/api/events/$P1/repeat-preview" '{"repeat":{"weekdays":[],"every_weeks":1,"time_zone":"UTC"}}'
+fail_call POST "/api/events/$P0/repeat-preview" '{}' # already over
+fail_call POST "/api/events/$EVENT/repeat-preview" '{}' # doesn't repeat
+TOKEN=$OUT; fail_call POST "/api/events/$P1/repeat-preview" '{}'; TOKEN=$TOKEN_A
+PR=$(call PATCH "/api/events/$P1" '{"scope":"future","starts_at":"'"$P1START"'",'"$NEWPAT"'}')
+NSER=$(jq -r .event.series_id <<<"$PR")
+jq -e --arg p "$P1" --arg old "$PSER" '.event.id == $p and .event.series_id != $old and .event.repeat.every_weeks == 2 and .event.repeat.count == 3 and (.event.signups | length == 1)' <<<"$PR" >/dev/null || { echo "odd reply: $PR"; exit 1; }
+[ "$NSER" != "$PSER" ]
+fail_call GET "/api/events/$P2"
+call GET "/api/events/$P3" | jq -e --arg n "$NSER" '.series_id == $n' >/dev/null
+pevents "$NSER" | jq -e --arg p "$P1" 'length >= 2 and length <= 3 and .[0].id == $p and ((.[1].starts_at | fromdate) - (.[0].starts_at | fromdate) == 14 * 86400)' >/dev/null
+# The finished raid is untouched: old series, attendance kept.
+call GET "/api/events/$P0" | jq -e --arg s "$PSER" '.series_id == $s and .attendance_taken and .repeat.every_weeks == 1' >/dev/null
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM event_attendance WHERE event_id = $P0")" = 1 ]
+[ "$(psql "$DATABASE_URL" -tAc "SELECT ended FROM event_series WHERE id = $PSER")" = t ]
+# (Tidy up so the attendance section further down starts clean.)
+psql "$DATABASE_URL" -qc "DELETE FROM event_attendance WHERE event_id = $P0; UPDATE events SET attendance_taken = false WHERE id = $P0"
+# Bob and Carl hear from the Outhouse Helper about the raid that went.
+for who in "$TOKEN_B" "$TOKEN_C"; do
+  TOKEN=$who
+  HD=$(call GET /api/dms | jq -r '[.[] | select(any(.recipients[]; .bot))][0].id')
+  call GET "/api/channels/$HD/messages" | jq -e '.[-1].content | contains("Pattern raid") and contains("moved or cancelled") and contains("every 2 weeks")' >/dev/null || { echo "no DM about the moved raid"; exit 1; }
+done
+TOKEN=$TOKEN_A
+call GET "/api/guilds/$GUILD/audit-log?action=raid_repeat_update" | jq -e '.entries[0] | .target_name == "Pattern raid" and (.details | contains("Weekly on") and contains("→ Every 2 weeks on") and contains("2 sign-ups dropped"))' >/dev/null
+# Changing from a series' very first raid changes it in place (DST-safe in Sydney).
+QF=$(date -u -d '+2 days' +%Y-%m-%dT09:00:00Z); QD=$(( $(date -u -d '+2 days' +%u) - 1 )); QD2=$(( (QD + 2) % 7 ))
+QS=$(call POST "/api/channels/$RX/events" '{"title":"In place","starts_at":"'"$QF"'","repeat":{"weekdays":['"$QD"'],"every_weeks":1,"count":4,"time_zone":"Australia/Sydney"}}')
+QSER=$(jq -r .event.series_id <<<"$QS"); QE=$(jq -r .event.id <<<"$QS")
+call POST "/api/events/$QE/repeat-preview" '{"repeat":{"weekdays":['"$QD"','"$QD2"'],"every_weeks":1,"count":8,"time_zone":"UTC"}}' | jq -e '.first_of_series and .removed_raids == 0 and .repeat.time_zone == "Australia/Sydney"' >/dev/null
+call PATCH "/api/events/$QE" '{"scope":"future","repeat":{"weekdays":['"$QD"','"$QD2"'],"every_weeks":1,"count":8,"time_zone":"UTC"}}' | jq -e --arg s "$QSER" --arg e "$QE" '.event.series_id == $s and .event.id == $e and (.event.repeat.weekdays | length == 2)' >/dev/null
+pevents "$QSER" | jq -e 'length == 8' >/dev/null
+[ "$(pevents "$QSER" | jq -r '.[].starts_at' | while read -r t; do TZ=Australia/Sydney date -d "$t" +%H:%M; done | sort -u | wc -l)" = 1 ]
 
 step "raid sign-up posting times, games and channel choice"
 PT=$(call POST "/api/guilds/$GUILD/channels" '{"name":"raid-signups"}' | jq -r .id)
@@ -1413,6 +1515,40 @@ call POST /api/push/subscriptions '{"endpoint":"'"$PUSH"'/push/gone","keys":'"$(
 call POST /api/push/test | jq -e '.sent == 1 and .removed == 1' >/dev/null
 call GET /api/users/@me/notifications | jq -e '.devices | length == 1' >/dev/null
 
+step "muting a DM (for a while or for good)"
+TOKEN=$TOKEN_B
+fail_call PUT "/api/users/@me/notifications/channels/$DMID" '{"muted":true,"minutes":0}'
+fail_call PUT "/api/users/@me/notifications/channels/$DMID" '{"muted":true,"minutes":999999}'
+call PUT "/api/users/@me/notifications/channels/$DMID" '{"muted":true,"minutes":15}' | jq -e '.muted and .until != null' >/dev/null
+call GET /api/users/@me/notifications | jq -e --arg d "$DMID" '(.muted[] | select(.channel_id == $d) | .guild_id == "0" and .kind == 1 and .until != null) and (.muted_channels | index($d) != null)' >/dev/null
+call POST "/api/channels/$DMID/ack" '{"message_id":"'"$(call GET "/api/channels/$DMID/messages?limit=1" | jq -r '.[0].id')"'"}' >/dev/null
+TOKEN=$TOKEN_A
+call POST "/api/channels/$DMID/messages" '{"content":"muted dm hello"}' >/dev/null
+call POST "/api/channels/$DMID/messages" '{"content":"<@'"$BOB"'> muted dm ping"}' >/dev/null
+TOKEN=$TOKEN_B
+# Both are unread; only the @mention still counts while it's muted.
+call GET /api/users/@me/unread | jq -e --arg d "$DMID" '.channels[] | select(.channel_id == $d) | .mention_count == 2 and .direct_count == 1' >/dev/null
+# Until you turn it back on, then off again.
+call PUT "/api/users/@me/notifications/channels/$DMID" '{"muted":true}' | jq -e '.until == null' >/dev/null
+call GET /api/users/@me/notifications | jq -e --arg d "$DMID" '.muted[] | select(.channel_id == $d) | .until == null' >/dev/null
+call PUT "/api/users/@me/notifications/channels/$DMID" '{"muted":false}' >/dev/null
+call GET /api/users/@me/notifications | jq -e --arg d "$DMID" 'all(.muted[]; .channel_id != $d)' >/dev/null
+# A timed mute wears off by itself.
+call PUT "/api/users/@me/notifications/channels/$DMID" '{"muted":true,"minutes":60}' >/dev/null
+TOKEN=$TOKEN_A
+call POST "/api/channels/$DMID/messages" '{"content":"still muted dm"}' >/dev/null
+sleep 1.5
+psql "$DATABASE_URL" -qc "UPDATE channel_mutes SET muted_until = now() - interval '1 minute' WHERE channel_id = $DMID AND user_id = $BOB"
+call POST "/api/channels/$DMID/messages" '{"content":"dm after the mute wore off"}' >/dev/null
+TOKEN=$TOKEN_B
+call GET /api/users/@me/notifications | jq -e --arg d "$DMID" 'all(.muted[]; .channel_id != $d) and (.muted_channels | index($d) == null)' >/dev/null
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM channel_mutes WHERE channel_id = $DMID")" = 0 ]
+# Channels take timed mutes too.
+call PUT "/api/users/@me/notifications/channels/$PINS" '{"muted":true,"minutes":480}' >/dev/null
+call GET /api/users/@me/notifications | jq -e --arg p "$PINS" '.muted[] | select(.channel_id == $p) | .until != null and .guild_id != "0"' >/dev/null
+call PUT "/api/users/@me/notifications/channels/$PINS" '{"muted":false}' >/dev/null
+TOKEN=$OUT; fail_call PUT "/api/users/@me/notifications/channels/$DMID" '{"muted":true,"minutes":15}'; TOKEN=$TOKEN_A
+
 step "raid sign-up card posted by the scheduler"
 for i in $(seq 1 120); do
   call GET "/api/events/$TICKID" | jq -e '.message_id != null' >/dev/null 2>&1 && break
@@ -1459,7 +1595,7 @@ fail_call PUT "/api/channels/$CHAN/lfg/$LX/join" '{"role":"dps"}'
 
 step "push notifications arrived (VAPID checked, payload decrypted)"
 for i in $(seq 1 20); do
-  curl -fsS "$PUSH/received/bob" | jq -e 'any(.[]; .payload.body == "last dm for bob")' >/dev/null 2>&1 && break
+  curl -fsS "$PUSH/received/bob" | jq -e 'any(.[]; .payload.body == "last dm for bob") and any(.[]; .payload.body == "dm after the mute wore off")' >/dev/null 2>&1 && break
   sleep 0.5
 done
 RB=$(curl -fsS "$PUSH/received/bob"); RA=$(curl -fsS "$PUSH/received/alice"); RC=$(curl -fsS "$PUSH/received/carl")
@@ -1481,6 +1617,9 @@ check_push "$RB" 'all(.[]; (.payload.body // "") | contains("officers only") | n
 check_push "$RB" 'all(.[]; (.payload.body // "") | contains("you set nothing") | not)' "bob: nothing when the level is nothing"
 check_push "$RB" 'all(.[]; (.payload.body // "") | contains("dms are off") | not)' "bob: no DMs when DMs are off"
 check_push "$RB" 'all(.[]; .payload.url | startswith("/"))' "bob: urls"
+check_push "$RB" 'any(.[]; .payload.kind == "mention" and (.payload.title | contains("🧵 Thread pings")) and (.payload.url | contains("&thread=")) and .payload.thread_id != null)' "bob: mention in a thread"
+check_push "$RB" 'all(.[]; (.payload.body // "") | contains("muted dm") | not)' "bob: nothing from a muted DM (not even an @mention)"
+check_push "$RB" 'any(.[]; .payload.kind == "dm" and .payload.body == "dm after the mute wore off")' "bob: DMs again once the mute wore off"
 check_push "$RC" 'any(.[]; .payload.kind == "dm")' "carl: DM"
 check_push "$RA" 'any(.[]; .payload.kind == "raid" and .payload.title == "⏰ Raid reminder" and (.payload.body | contains("Reminder test")))' "alice: raid reminder"
 

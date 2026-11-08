@@ -1562,3 +1562,48 @@ dialog.nick-dialog .nick-reset:disabled { opacity: .45; cursor: default; }
   .armory-box-row .armory-region { flex-basis: 84px; }
   .armory-box-row .armory-lookup { flex-basis: 0; white-space: nowrap; font-size: 14px; padding-inline: 8px; }
 }
+
+/* Scrollbars: thin, rounded and quiet, Discord-style. The thumb brightens
+   while you're over the scrolling area, and glows ember while dragged.
+   Chromium (Chrome, Edge, the Windows and Android apps) uses the
+   ::-webkit-scrollbar rules; setting scrollbar-width/-color there would
+   switch them off, so the standard properties are only for other browsers. */
+::-webkit-scrollbar { width: 10px; height: 10px; background: transparent; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+::-webkit-scrollbar-thumb { min-height: 36px; border: 3px solid transparent; border-radius: 10px; background-color: rgba(255, 255, 255, .1); background-clip: padding-box; }
+:hover::-webkit-scrollbar-thumb { background-color: rgba(255, 255, 255, .16); }
+::-webkit-scrollbar-thumb:hover { border-width: 2px; background-color: rgba(255, 255, 255, .26); }
+::-webkit-scrollbar-thumb:active { border-width: 2px; background-color: rgba(255, 107, 53, .55); }
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, .18) transparent; }
+}
+
+/* Thread unread dots and mention counts */
+.thread-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--text); box-shadow: 0 0 0 2px var(--panel); }
+.thread-link.unread { border-color: #3a3a40; }
+.thread-link.unread .tl-name { color: var(--text); font-weight: 700; }
+.thread-link .mention-badge.thread-badge { margin-left: 0; }
+.thread-card .tc-name { display: flex; align-items: center; gap: 6px; }
+.thread-card .tc-title { min-width: 0; flex: 1 1 auto; }
+.thread-card.unread .tc-name { color: var(--text); font-weight: 800; }
+.thread-card .thread-dot, .thread-card .thread-badge { margin-left: auto; }
+#threads-btn { position: relative; }
+#threads-btn .tool-badge { position: absolute; top: -2px; right: -4px; margin: 0; height: 16px; min-width: 16px; line-height: 16px; font-size: 10px; padding: 0 4px; border: 2px solid var(--panel); box-sizing: content-box; }
+#threads-btn .tool-dot { position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--text); box-shadow: 0 0 0 2px var(--panel); }
+
+/* Muted DMs: greyed out in the list */
+.dm-row.muted-dm { opacity: .5; }
+.dm-row.muted-dm:hover, .dm-row.muted-dm.active { opacity: .8; }
+.dm-row .mute-icon { margin-left: auto; font-size: 11px; opacity: .85; }
+.dm-row .mute-icon + .mention-badge { margin-left: 4px; }
+
+/* Changing a repeating raid's pattern: the preview */
+.pattern-preview { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--night); font-size: 13px; }
+.pattern-preview:empty { display: none; }
+.pattern-preview .pp-head { font-weight: 700; }
+.pattern-preview .pp-dates { margin: 0; padding-left: 20px; display: grid; gap: 2px; }
+.pattern-preview .pp-dates li::marker { color: var(--muted); }
+.pattern-preview .pattern-warn { margin: 0; padding: 8px 10px; border-radius: 8px; background: rgba(229, 72, 77, .12); border: 1px solid rgba(229, 72, 77, .45); color: #ffb4b6; }
+.pattern-preview .error { margin: 0; }
+.char-place .char-region select { width: 100%; }

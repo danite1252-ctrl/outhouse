@@ -51,10 +51,12 @@ const repliesLabel = (n) => (n ? `${n} ${n === 1 ? "reply" : "replies"}` : "No r
 
 // The "🧵 Name · 3 replies" link under a message that has a thread.
 function threadLink(t) {
-  return el("button", { class: "thread-link", title: "Open thread", onclick: () => openThread(t) },
+  const unread = typeof threadIsUnread === "function" && threadIsUnread(t.id);
+  return el("button", { class: `thread-link${unread ? " unread" : ""}`, title: "Open thread", "data-thread": t.id, onclick: () => openThread(t) },
     el("span", { class: "tl-icon", "aria-hidden": "true" }, "🧵"),
     el("span", { class: "tl-name" }, t.name),
     el("span", { class: "tl-count" }, repliesLabel(t.message_count)),
+    typeof threadBadge === "function" ? threadBadge(t.id) : null,
     el("span", { class: "tl-go", "aria-hidden": "true" }, "›"));
 }
 
@@ -291,8 +293,10 @@ async function drawThreadsList() {
   const list = await api("GET", `/api/channels/${channelId}/threads`).catch((err) => { toast(err.message); return null; });
   if (sidePanel.kind !== "threads" || sidePanel.body !== body || state.channelId !== channelId || !list) return;
   body.replaceChildren(...(list.length ? list.map((t) => {
-    const card = el("div", { class: "sp-card thread-card", role: "button", tabindex: "0", onclick: () => openThread(t) },
-      el("div", { class: "tc-name" }, "🧵 ", t.name),
+    const unread = typeof threadIsUnread === "function" && threadIsUnread(t.id);
+    const card = el("div", { class: `sp-card thread-card${unread ? " unread" : ""}`, role: "button", tabindex: "0", "data-thread": t.id, onclick: () => openThread(t) },
+      el("div", { class: "tc-name" }, "🧵 ", el("span", { class: "tc-title" }, t.name),
+        typeof threadBadge === "function" ? threadBadge(t.id) : null),
       el("div", { class: "tc-sub" }, repliesLabel(t.message_count), " · started ", timeLabel(t.created_at)));
     card.addEventListener("keydown", (e) => { if (e.key === "Enter") card.click(); });
     return card;

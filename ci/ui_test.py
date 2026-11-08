@@ -2188,8 +2188,189 @@ with sync_playwright() as p:
     tp.screenshot(path=f"{SHOTS}/2005-phone-calendar-raid-without-card.png")
     tp.close()
 
+    # ---- Changing a repeating raid's pattern, thread mention badges, muted DMs ----
+    CH = chan["id"]
+    pat_ch = api("POST", f"/api/guilds/{G}/channels", {"name": "pattern-raids"}, TOKEN)
+    pday = time.gmtime(time.time() + 86400)
+    pser = api("POST", f"/api/channels/{pat_ch['id']}/events", {
+        "title": "Naxx weekly", "description": "Naxxramas, spider and plague wings.", "starts_at": time.strftime("%Y-%m-%dT19:00:00Z", pday),
+        "post_rule": {"mode": "now"}, "repeat": {"weekdays": [pday.tm_wday], "every_weeks": 1, "count": 8, "time_zone": "UTC"},
+    }, TOKEN)
+    prange = f"from={iso(time.time() - 3600)}&to={iso(time.time() + 40 * 86400)}"
+    pevs = lambda sid: [e for e in api("GET", f"/api/guilds/{G}/events?{prange}", None, TOKEN) if e.get("series_id") == sid]
+    pids = [e["id"] for e in pevs(pser["event"]["series_id"])]
+    assert len(pids) >= 4, pids
+    for who in (DAVE, ERIN):
+        api("PUT", f"/api/events/{pids[2]}/signup", {"status": "yes", "role": "dps", "class": "Rogue", "spec": "Combat", "user_id": who}, TOKEN)
+    api("PUT", f"/api/events/{pids[1]}/signup", {"status": "yes", "role": "tank", "class": "Warrior", "spec": "Protection", "user_id": DAVE}, TOKEN)
+
+    def pattern_dialog(pg, label, shot):
+        pg.evaluate(f"api('GET', '/api/events/{pids[1]}').then((ev) => openRaidDialog(ev, {{ scope: 'future' }}))")
+        pg.wait_for_selector(".raid-dialog[open] h2:has-text('Edit this and future raids')")
+        pg.wait_for_selector(".raid-dialog .pattern-preview .pp-dates li >> nth=3", timeout=10000)
+        assert pg.input_value(".raid-dialog select[aria-label='Repeat']") == "1"
+        assert pg.eval_on_selector_all(".raid-dialog .day-chip.on", "els => els.length") == 1
+        pg.select_option(".raid-dialog select[aria-label='Repeat']", "2")
+        pg.wait_for_selector(".raid-dialog .pattern-preview .pattern-warn", timeout=10000)
+        warn = pg.text_content(".raid-dialog .pattern-warn")
+        assert "cancelled" in warn and "2 sign-ups" in warn and "Outhouse Helper" in warn, warn
+        assert "Every 2 weeks" in pg.text_content(".raid-dialog .pattern-preview .pp-head")
+        pg.eval_on_selector(".raid-dialog .pattern-preview", "e => e.scrollIntoView({block: 'center'})")
+        pg.wait_for_timeout(250)
+        pg.screenshot(path=f"{SHOTS}/{shot}-{label}-raid-pattern-edit.png")
+
+    pd = fresh(TOKEN, "pattern-desktop", viewport={"width": 1280, "height": 800})
+    pattern_dialog(pd, "desktop", 2100)
+    for label, kw in (("phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True}),
+                      ("android", {"viewport": {"width": 393, "height": 852}, "is_mobile": True, "has_touch": True})):
+        pp = fresh(TOKEN, f"pattern-{label}", **kw)
+        pattern_dialog(pp, label, 2101 if label == "phone" else 2102)
+        pp.keyboard.press("Escape")
+        pp.close()
+    # Save it on the desktop: the 3rd raid (Dave and Erin) goes, the 2nd keeps Dave.
+    pd.click(".raid-dialog button.primary:has-text('Save')")
+    pd.wait_for_selector(".raid-dialog", state="detached", timeout=10000)
+    for _ in range(40):
+        try:
+            api("GET", f"/api/events/{pids[2]}", None, TOKEN)
+        except urllib.error.HTTPError as e:
+            assert e.code == 404, e
+            break
+        pd.wait_for_timeout(250)
+    else:
+        raise AssertionError("the raid that no longer fits wasn't cancelled")
+    kept = api("GET", f"/api/events/{pids[1]}", None, TOKEN)
+    assert kept["repeat"]["every_weeks"] == 2 and kept["series_id"] != pser["event"]["series_id"] and len(kept["signups"]) == 1, kept
+    pd.close()
+
+    # Threads: a plain reply (dot) and @mentions (count) for Carol.
+    tmsg = api("POST", f"/api/channels/{CH}/messages", {"content": "Loot council for Naxx: who needs what?"}, dave["token"])
+    t_loot = api("POST", f"/api/channels/{CH}/threads", {"name": "Loot council", "message_id": tmsg["id"]}, dave["token"])
+    api("POST", f"/api/channels/{CH}/messages", {"content": "I'll take the shoulders if nobody else needs them", "thread_id": t_loot["id"]}, erin["token"])
+    t_pull = api("POST", f"/api/channels/{CH}/threads", {"name": "Pull timers"}, dave["token"])
+    api("POST", f"/api/channels/{CH}/messages", {"content": f"<@{CAROL}> can you call the pulls?", "thread_id": t_pull["id"]}, dave["token"])
+    api("POST", f"/api/channels/{CH}/messages", {"content": "@everyone 10 second pull timer from now on", "thread_id": t_pull["id"]}, dave["token"])
+    th = fresh(TOKEN, "threads-desktop", viewport={"width": 1280, "height": 800})
+    th.wait_for_selector("#threads-btn .tool-badge", timeout=10000)
+    assert th.text_content("#threads-btn .tool-badge") == "2"
+    th.wait_for_selector(".thread-link:has-text('Loot council') .thread-dot")
+    before = th.evaluate(f"guildMentions({json.dumps(G)})")
+    th.click("#threads-btn")
+    pull_card = ".threads-panel .thread-card:has-text('Pull timers')"
+    loot_card = ".threads-panel .thread-card:has-text('Loot council')"
+    th.wait_for_selector(f"{pull_card} .thread-badge", timeout=10000)
+    assert th.text_content(f"{pull_card} .thread-badge") == "2"
+    th.wait_for_selector(f"{loot_card}.unread .thread-dot")
+    th.wait_for_timeout(200)
+    th.screenshot(path=f"{SHOTS}/2103-desktop-thread-list-badges.png")
+    # Opening it reads it: its count leaves the thread, the channel and the outhouse.
+    th.click(pull_card)
+    th.wait_for_selector(".thread-panel .tmsg:has-text('pull timer')", timeout=10000)
+    th.wait_for_function(f"!state.threadUnread.has({json.dumps(t_pull['id'])})", timeout=10000)
+    assert th.evaluate(f"guildMentions({json.dumps(G)})") == before - 2
+    for _ in range(20):
+        if all(t["thread_id"] != t_pull["id"] for t in api("GET", "/api/users/@me/unread", None, TOKEN)["threads"]):
+            break
+        th.wait_for_timeout(250)
+    else:
+        raise AssertionError("opening the thread didn't mark it read on the server")
+    # A new @mention arrives live.
+    th.click("#threads-btn")
+    th.wait_for_selector(loot_card, timeout=10000)
+    api("POST", f"/api/channels/{CH}/messages", {"content": f"<@{CAROL}> you're on loot rolls", "thread_id": t_loot["id"]}, dave["token"])
+    th.wait_for_selector(f"{loot_card} .thread-badge", timeout=10000)
+    assert th.text_content(f"{loot_card} .thread-badge") == "1"
+    assert not th.query_selector(f"{pull_card} .thread-badge, {pull_card} .thread-dot")
+    th.screenshot(path=f"{SHOTS}/2104-desktop-thread-badge-live.png")
+    th.close()
+    for label, kw, shot in (("phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True}, 2105),
+                            ("android", {"viewport": {"width": 393, "height": 852}, "is_mobile": True, "has_touch": True}, 2106)):
+        tpg = fresh(TOKEN, f"threads-{label}", **kw)
+        tpg.wait_for_selector("#threads-btn .tool-badge", timeout=10000)
+        tpg.click("#threads-btn")
+        tpg.wait_for_selector(f"{loot_card} .thread-badge", timeout=10000)
+        tpg.wait_for_timeout(200)
+        tpg.screenshot(path=f"{SHOTS}/{shot}-{label}-thread-list-badges.png")
+        tpg.close()
+
+    # Muted DMs: greyed out, no Home count; mentions in a muted group DM still count.
+    ddm = api("POST", "/api/dms", {"user_ids": [CAROL]}, dave["token"])
+    api("POST", f"/api/channels/{ddm['id']}/messages", {"content": "did you see the loot list?"}, dave["token"])
+    edm = api("POST", "/api/dms", {"user_ids": [CAROL]}, erin["token"])
+    api("POST", f"/api/channels/{edm['id']}/messages", {"content": "heals or dps tonight?"}, erin["token"])
+    gdm = api("POST", "/api/dms", {"user_ids": [CAROL, ERIN], "name": "Naxx planning"}, dave["token"])
+    api("PUT", f"/api/users/@me/notifications/channels/{ddm['id']}", {"muted": True, "minutes": 480}, TOKEN)
+    api("PUT", f"/api/users/@me/notifications/channels/{gdm['id']}", {"muted": True}, TOKEN)
+    api("POST", f"/api/channels/{ddm['id']}/messages", {"content": "ping me when you're on"}, dave["token"])
+    api("POST", f"/api/channels/{gdm['id']}/messages", {"content": "chatter nobody needs to hear"}, dave["token"])
+    api("POST", f"/api/channels/{gdm['id']}/messages", {"content": f"<@{CAROL}> you're tanking Patchwerk"}, dave["token"])
+    dmp = fresh(TOKEN, "dm-mute-desktop", viewport={"width": 1280, "height": 800})
+    dmp.evaluate("openHome()")
+    drow = lambda i: f"#dm-list .dm-row[data-id='{i}']"
+    dmp.wait_for_selector(f"{drow(ddm['id'])}.muted-dm .mute-icon", timeout=10000)
+    dmp.wait_for_selector(f"{drow(gdm['id'])}.muted-dm .mention-badge", timeout=10000)
+    assert dmp.text_content(f"{drow(gdm['id'])} .mention-badge") == "1"
+    assert not dmp.query_selector(f"{drow(ddm['id'])} .mention-badge") and not dmp.query_selector(f"{drow(ddm['id'])}.unread")
+    counts = dmp.evaluate(f"""(() => {{ const u = state.unread.get({json.dumps(ddm['id'])}); const g = state.unread.get({json.dumps(gdm['id'])});
+        return {{ raw: u.mentions, counted: ownCount({json.dumps(ddm['id'])}, u), group: ownCount({json.dumps(gdm['id'])}, g) }}; }})()""")
+    assert counts["raw"] >= 2 and counts["counted"] == 0 and counts["group"] == 1, counts
+    dmp.click(drow(edm["id"]), button="right")
+    dmp.wait_for_selector(".menu button:has-text('Mute conversation')")
+    dmp.hover(".menu button:has-text('Mute conversation')")
+    dmp.wait_for_selector(".menu button:has-text('Until I turn it back on')")
+    dmp.wait_for_timeout(200)
+    dmp.screenshot(path=f"{SHOTS}/2107-desktop-dm-mute-menu.png")
+    dmp.click(".menu button:has-text('For 1 hour')")
+    dmp.wait_for_selector(f"{drow(edm['id'])}.muted-dm", timeout=10000)
+    mutes = api("GET", "/api/users/@me/notifications", None, TOKEN)["muted"]
+    assert any(m["channel_id"] == edm["id"] and m["until"] for m in mutes), mutes
+    dmp.wait_for_timeout(300)
+    dmp.screenshot(path=f"{SHOTS}/2108-desktop-muted-dms.png")
+    dmp.click(drow(edm["id"]), button="right")
+    dmp.click(".menu button:has-text('Unmute conversation')")
+    dmp.wait_for_selector(f"{drow(edm['id'])}:not(.muted-dm)", timeout=10000)
+    # The group DM's ⋯ menu in the header has it too.
+    dmp.click(drow(gdm["id"]))
+    dmp.wait_for_selector("#dm-tools:not([hidden])", timeout=10000)
+    dmp.click("#dm-tools")
+    dmp.wait_for_selector(".menu button:has-text('Unmute conversation')")
+    dmp.keyboard.press("Escape")
+    dmp.close()
+    for label, kw, shot in (("phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True}, 2109),
+                            ("android", {"viewport": {"width": 393, "height": 852}, "is_mobile": True, "has_touch": True}, 2110)):
+        mp = fresh(TOKEN, f"dm-mute-{label}", **kw)
+        mp.click("#nav-toggle")
+        mp.wait_for_timeout(400)
+        mp.click("#home-btn")
+        mp.wait_for_selector(f"{drow(ddm['id'])}.muted-dm .mute-icon", timeout=10000)
+        if not mp.evaluate("document.getElementById('app').classList.contains('show-nav')"):
+            mp.click("#nav-toggle")
+            mp.wait_for_timeout(400)
+        mp.wait_for_timeout(300)
+        mp.screenshot(path=f"{SHOTS}/{shot}-{label}-muted-dm-list.png")
+        mp.close()
+
 
     browser.close()
+
+    # Scrollbars (headless Chrome hides them unless asked): a long chat at
+    # desktop and phone widths, with the pointer over the messages.
+    sb_browser = p.chromium.launch(ignore_default_args=["--hide-scrollbars"])
+    for label, vp, shot in (("desktop", {"width": 1280, "height": 800}, 2111), ("phone", {"width": 390, "height": 844}, 2112)):
+        sb = sb_browser.new_page(viewport=vp, bypass_csp=True)
+        watch(sb, f"scrollbars-{label}")
+        sb.add_init_script(f"localStorage.setItem('outhouse_token', {json.dumps(TOKEN)}); localStorage.setItem('outhouse_guild', {json.dumps(guild['id'])}); localStorage.setItem('outhouse_channel_{guild['id']}', {json.dumps(general['id'])});")
+        sb.goto(BASE + "/")
+        sb.wait_for_selector("#messages .msg:has-text('filler chatter')", timeout=15000)
+        sb.wait_for_timeout(500)
+        box = sb.query_selector("#messages").bounding_box()
+        sb.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        sb.wait_for_timeout(200)
+        thumb = sb.evaluate("getComputedStyle(document.querySelector('#messages'), '::-webkit-scrollbar').width")
+        sb.screenshot(path=f"{SHOTS}/{shot}-{label}-scrollbars.png")
+        print(f"scrollbar width ({label}): {thumb}")
+        sb.close()
+    sb_browser.close()
 
 if errors:
     print("\n".join(errors))

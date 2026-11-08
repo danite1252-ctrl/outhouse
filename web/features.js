@@ -563,6 +563,76 @@ function openRaidDialog(existing = null, { scope = "one", date = null } = {}) {
     el("div", { class: "raid-row even" }, el("label", { class: "field" }, "Ends", ends), endsValue),
     el("p", { class: "muted small", style: "margin:0" }, "Each raid gets its own sign-ups. Raids are made four weeks ahead; each one's sign-up post goes up when you choose below."));
 
+  // "Edit this and future raids": the repeat pattern can change too (from
+  // this raid on). The server shows what that would do before saving.
+  const editPattern = !!(ev?.series_id && scope === "future" && ev.repeat);
+  let patternTouched = false;
+  let lastPreview = null;
+  const patternPreview = el("div", { class: "pattern-preview", "aria-live": "polite" });
+  if (editPattern) {
+    repeat.querySelector('option[value="0"]')?.remove();
+    if (![1, 2, 3, 4].includes(ev.repeat.every_weeks)) repeat.append(el("option", { value: ev.repeat.every_weeks }, `Every ${ev.repeat.every_weeks} weeks`));
+    repeat.value = String(ev.repeat.every_weeks);
+    days.clear();
+    for (const d of ev.repeat.weekdays) days.add(d);
+    daysTouched = true;
+    paintDays();
+    ends.value = ev.repeat.count ? "count" : ev.repeat.until ? "until" : "never";
+    if (ev.repeat.until) until.value = ev.repeat.until;
+    if (ev.repeat.count) count.value = ev.repeat.count;
+    ends.dispatchEvent(new Event("change"));
+    repeatBox.hidden = false;
+  }
+  const currentPattern = () => ({
+    weekdays: [...days].sort((a, b) => a - b),
+    every_weeks: Number(repeat.value),
+    count: ends.value === "count" ? Number(count.value) : null,
+    until: ends.value === "until" ? until.value : null,
+    time_zone: ev?.repeat?.time_zone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+  });
+  let previewTimer = null;
+  let previewSeq = 0;
+  const runPreview = () => {
+    if (!editPattern) return;
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(async () => {
+      const seq = ++previewSeq;
+      if (!days.size) { patternPreview.replaceChildren(el("p", { class: "error" }, "Pick at least one day for it to repeat on.")); return; }
+      const body = { starts_at: when.value ? new Date(when.value).toISOString() : ev.starts_at };
+      if (patternTouched) body.repeat = currentPattern();
+      let p;
+      try {
+        p = await api("POST", `/api/events/${ev.id}/repeat-preview`, body);
+      } catch (err) {
+        if (seq === previewSeq) { lastPreview = null; patternPreview.replaceChildren(el("p", { class: "error" }, err.message)); }
+        return;
+      }
+      if (seq !== previewSeq || !dialog.isConnected) return;
+      lastPreview = p;
+      // What's left of a counted series, from this raid on.
+      if (!patternTouched && p.remaining_count && ends.value === "count") count.value = p.remaining_count;
+      const warn = patternTouched && p.removed_raids
+        ? el("p", { class: "pattern-warn" }, `⚠️ ${p.removed_raids} upcoming raid${p.removed_raids === 1 ? "" : "s"} no longer fit${p.removed_raids === 1 ? "s" : ""} and will be cancelled`,
+          p.removed_signups ? `, dropping ${p.removed_signups} sign-up${p.removed_signups === 1 ? "" : "s"}. Everyone signed up gets a DM from the Outhouse Helper.` : " (nobody has signed up for them yet).")
+        : null;
+      const kept = patternTouched && p.kept_raids
+        ? el("p", { class: "muted small", style: "margin:0" }, `${p.kept_raids} raid${p.kept_raids === 1 ? "" : "s"} on the same day stay${p.kept_raids === 1 ? "s" : ""}${p.kept_signups ? `, keeping ${p.kept_signups} sign-up${p.kept_signups === 1 ? "" : "s"}` : ""}.`)
+        : null;
+      patternPreview.replaceChildren(
+        el("div", { class: "pp-head" }, `🔁 ${repeatLabel(p.repeat)}`, el("span", { class: "muted small" }, " · next raids:")),
+        el("ol", { class: "pp-dates" }, p.next.map((d) => el("li", {}, fullDay(new Date(d))))),
+        warn, kept,
+        patternTouched && !p.first_of_series ? el("p", { class: "muted small", style: "margin:0" }, "Raids before this one keep the old pattern (and their sign-ups and attendance).") : null);
+    }, 250);
+  };
+  if (editPattern) {
+    const touch = () => { patternTouched = true; runPreview(); };
+    dayChips.addEventListener("click", touch);
+    [repeat, ends, count, until].forEach((n) => { n.addEventListener("change", touch); n.addEventListener("input", touch); });
+    when.addEventListener("change", runPreview);
+    runPreview();
+  }
+
   // When the sign-up post goes up.
   const rule = ev?.post_rule ?? null;
   let postTouched = false;
@@ -644,7 +714,7 @@ function openRaidDialog(existing = null, { scope = "one", date = null } = {}) {
   const form = el("form", { method: "dialog" },
     el("h2", {}, heading),
     ev?.series_id ? el("p", { class: "muted small", style: "margin:0" }, scope === "future"
-      ? "Changes apply to this raid and every later one in the series. Moving the time moves them all by the same amount."
+      ? "Changes apply to this raid and every later one in the series. Moving the time moves them all by the same amount. Changing the days or how often it repeats starts the new pattern from this raid; earlier raids stay as they were."
       : "Only this raid changes; the rest of the series stays as it is.") : null,
     el("label", { class: "field" }, "Name", title),
     ev ? null : el("div", { class: "raid-row even" },
@@ -654,8 +724,9 @@ function openRaidDialog(existing = null, { scope = "one", date = null } = {}) {
     el("div", { class: "raid-row" },
       el("label", { class: "field" }, "Starts (your time)", when),
       el("label", { class: "field" }, "Length", hours)),
-    ev ? null : el("label", { class: "field" }, "Repeat", repeat),
-    ev ? null : repeatBox,
+    ev && !editPattern ? null : el("label", { class: "field" }, "Repeat", repeat),
+    ev && !editPattern ? null : repeatBox,
+    editPattern ? patternPreview : null,
     postField,
     cleanupField,
     el("div", { class: "raid-row even" },
@@ -672,7 +743,7 @@ function openRaidDialog(existing = null, { scope = "one", date = null } = {}) {
       el("button", { type: "submit", class: "primary", value: "ok" }, ev ? "Save" : "Post raid")),
   );
   form.addEventListener("submit", (e) => {
-    if (!ev && repeat.value !== "0" && !days.size) { e.preventDefault(); toast("Pick at least one day for it to repeat on."); }
+    if ((!ev || editPattern) && repeat.value !== "0" && !days.size) { e.preventDefault(); toast("Pick at least one day for it to repeat on."); }
   });
   const dialog = el("dialog", { class: "raid-dialog" }, form);
   dialog.addEventListener("close", async () => {
@@ -693,7 +764,14 @@ function openRaidDialog(existing = null, { scope = "one", date = null } = {}) {
     if (!cardGone && (!ev || cleanupTouched)) body.card_cleanup = cleanup.value;
     if (ev) {
       body.scope = scope;
-      applyEventReply(await tryApi("PATCH", `/api/events/${ev.id}`, body).catch(() => null));
+      if (editPattern && patternTouched) body.repeat = currentPattern();
+      const reply = await tryApi("PATCH", `/api/events/${ev.id}`, body).catch(() => null);
+      applyEventReply(reply);
+      if (reply && body.repeat) {
+        const ev2 = reply.event;
+        const gone = lastPreview?.removed_raids ?? 0;
+        toast(`Repeating raid changed: ${repeatLabel(ev2?.repeat ?? body.repeat)}.${gone ? ` ${gone} raid${gone === 1 ? "" : "s"} cancelled.` : ""}`);
+      }
       return;
     }
     if (repeat.value !== "0") {

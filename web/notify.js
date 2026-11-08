@@ -5,8 +5,8 @@
 
 const notify = {
   levels: new Map(),   // guild ID ("0" = DMs) → "all" | "mentions" | "nothing"
-  muted: new Set(),    // channel IDs
-  mutedInfo: [],       // [{channel_id, guild_id, name}]
+  muted: new Map(),    // channel ID (or DM) → when the mute wears off (ms; null: until unmuted)
+  mutedInfo: [],       // [{channel_id, guild_id, name, kind, until}]
   devices: [],
   publicKey: null,
   loaded: false,
@@ -14,13 +14,38 @@ const notify = {
 
 const LEVEL_LABELS = { all: "All messages", mentions: "Only @mentions and replies", nothing: "Nothing" };
 const notifyLevel = (guildId) => notify.levels.get(String(guildId)) || (String(guildId) === "0" ? "all" : "mentions");
-const notifyMuted = (channelId) => notify.muted.has(channelId);
+// Muted right now (timed mutes wear off by themselves).
+function notifyMuted(channelId) {
+  if (!notify.muted.has(channelId)) return false;
+  const until = notify.muted.get(channelId);
+  return until == null || until > Date.now();
+}
+
+// "Muted until 3:45 pm" / "Muted until you turn it back on".
+function muteLabel(channelId) {
+  const until = notify.muted.get(channelId);
+  if (until == null) return "Muted until you turn it back on";
+  const d = new Date(until);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return `Muted until ${sameDay ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : d.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`;
+}
+
+const MUTE_CHOICES = [[15, "For 15 minutes"], [60, "For 1 hour"], [480, "For 8 hours"], [1440, "For 24 hours"], [null, "Until I turn it back on"]];
+
+function setMuteLocal(channelId, muted, until) {
+  if (muted) notify.muted.set(channelId, until ? Date.parse(until) : null);
+  else notify.muted.delete(channelId);
+  if (!muted) notify.mutedInfo = notify.mutedInfo.filter((m) => m.channel_id !== channelId);
+  renderChannels();
+  if (typeof refreshUnreadUi === "function") refreshUnreadUi();
+}
 
 async function loadNotifySettings() {
   const s = await api("GET", "/api/users/@me/notifications").catch(() => null);
   if (!s) return null;
   notify.levels = new Map(s.levels.map((l) => [l.guild_id, l.level]));
-  notify.muted = new Set(s.muted_channels);
+  notify.muted = new Map((s.muted ?? []).map((m) => [m.channel_id, m.until ? Date.parse(m.until) : null]));
+  for (const id of s.muted_channels ?? []) if (!notify.muted.has(id)) notify.muted.set(id, null);
   notify.mutedInfo = s.muted ?? [];
   notify.devices = s.devices;
   notify.publicKey = s.vapid_public_key;
@@ -34,22 +59,39 @@ async function setNotifyLevel(guildId, level) {
   return ok;
 }
 
-async function setChannelMuted(channelId, muted) {
-  const ok = await tryApi("PUT", `/api/users/@me/notifications/channels/${channelId}`, { muted }).then(() => true, () => false);
-  if (!ok) return false;
-  if (muted) notify.muted.add(channelId); else notify.muted.delete(channelId);
-  renderChannels();
+// Mutes a channel or DM (for `minutes`, or until unmuted) or unmutes it.
+async function setChannelMuted(channelId, muted, minutes = null) {
+  const body = muted && minutes ? { muted, minutes } : { muted };
+  const res = await tryApi("PUT", `/api/users/@me/notifications/channels/${channelId}`, body).catch(() => null);
+  if (!res) return false;
+  setMuteLocal(channelId, muted, res.until ?? null);
   return true;
+}
+
+// "Mute …" (with how long) or "Unmute …" for a channel or DM's menu.
+// `noun`: "channel" or "conversation".
+function muteMenuItems(channelId, name, noun) {
+  const shown = noun === "channel" ? `#${name}` : name;
+  if (notifyMuted(channelId)) {
+    return [{ label: `Unmute ${noun}`, title: muteLabel(channelId), onClick: async () => {
+      if (await setChannelMuted(channelId, false)) toast(`${shown} unmuted.`);
+    } }];
+  }
+  return [{
+    label: `Mute ${noun}`,
+    submenu: MUTE_CHOICES.map(([minutes, label]) => ({
+      label, keepOpen: false,
+      onClick: async () => {
+        if (!(await setChannelMuted(channelId, true, minutes))) return;
+        toast(`${shown} muted ${minutes ? label.toLowerCase().replace(/^for /, "for ") : "until you turn it back on"}: no notifications from it.`);
+      },
+    })),
+  }];
 }
 
 // Right-click menu items (app.js adds them to the channel and outhouse menus).
 function notifyMenuItems(kind, obj) {
-  if (kind === "channel") {
-    const muted = notifyMuted(obj.id);
-    return [{ label: muted ? "Unmute channel" : "Mute channel", onClick: async () => {
-      if (await setChannelMuted(obj.id, !muted)) toast(muted ? `#${obj.name} unmuted.` : `#${obj.name} muted: no notifications from it.`);
-    } }];
-  }
+  if (kind === "channel") return muteMenuItems(obj.id, obj.name, "channel");
   if (kind === "guild") {
     const current = notifyLevel(obj.id);
     return [{
@@ -70,7 +112,7 @@ renderChannels = function () {
   for (const node of document.querySelectorAll("#text-channels .channel[data-id]")) {
     const muted = notifyMuted(node.dataset.id);
     node.classList.toggle("muted-channel", muted);
-    if (muted && !node.querySelector(".mute-icon")) node.append(el("span", { class: "mute-icon", title: "Muted" }, "🔕"));
+    if (muted && !node.querySelector(".mute-icon")) node.append(el("span", { class: "mute-icon", title: muteLabel(node.dataset.id) }, "🔕"));
   }
 };
 
@@ -146,17 +188,37 @@ handleEvent = function (ev) {
   if (ev.t === "READY") {
     idle.sent = false; // a new connection starts out active
     syncIdle();
-    loadNotifySettings().then(() => { renderChannels(); refreshPushSubscription(); });
+    loadNotifySettings().then(() => { renderChannels(); refreshUnreadUi(); refreshPushSubscription(); });
+  }
+  // You muted or unmuted something on another device.
+  if (ev.t === "CHANNEL_MUTE_UPDATE") {
+    setMuteLocal(ev.d.channel_id, ev.d.muted, ev.d.until ?? null);
+    if (ev.d.muted) loadNotifySettings();
   }
 };
+
+// Timed mutes wear off: bring the channel or DM back when they do.
+setInterval(() => {
+  let changed = false;
+  for (const [id, until] of notify.muted) {
+    if (until != null && until <= Date.now()) { notify.muted.delete(id); changed = true; }
+  }
+  if (changed) {
+    notify.mutedInfo = notify.mutedInfo.filter((m) => notify.muted.has(m.channel_id));
+    renderChannels();
+    refreshUnreadUi();
+  }
+}, 15_000);
 
 // ---------- opening a channel from a notification ----------
 
 // A notification opened Outhouse at /?guild=…&channel=…: start there.
 (() => {
   const q = new URLSearchParams(location.search);
-  const guild = q.get("guild"), channel = q.get("channel");
+  const guild = q.get("guild"), channel = q.get("channel"), threadId = q.get("thread");
   if (!guild || !/^\d+$/.test(guild) || (channel && !/^\d+$/.test(channel))) return;
+  // A thread reply's notification opens the thread once the channel is up.
+  if (threadId && /^\d+$/.test(threadId)) state.pendingThread = threadId;
   history.replaceState(null, "", location.pathname);
   try {
     if (guild === "0") {
@@ -169,8 +231,14 @@ handleEvent = function (ev) {
   } catch { /* storage unavailable */ }
 })();
 
-function openTarget({ guild_id, channel_id }) {
+function openTarget({ guild_id, channel_id, thread_id }) {
   if (!guild_id || !state.me) return;
+  if (thread_id && typeof openThread === "function" && guild_id !== "0") {
+    return (async () => {
+      if (state.guildId !== guild_id && state.guilds.some((g) => g.id === guild_id)) await selectGuild(guild_id, channel_id || undefined);
+      openThread(String(thread_id));
+    })();
+  }
   document.getElementById("app")?.classList.remove("show-nav", "show-members");
   if (guild_id === "0") return openHome(channel_id || undefined);
   if (!state.guilds.some((g) => g.id === guild_id)) return;
@@ -350,15 +418,20 @@ async function drawNotificationsPage(main) {
       el("span", { class: "level-name" }, g.name), levelSelect(g.id, ["all", "mentions", "nothing"]))),
   );
 
-  const mutedRows = notify.mutedInfo.length ? notify.mutedInfo : [...notify.muted].map((id) => ({ channel_id: id, name: state.channels.find((c) => c.id === id)?.name ?? "a channel", guild_id: state.guildId }));
+  const dmLabel = (id) => {
+    const dm = (state.dms ?? []).find((d) => d.id === id);
+    return dm && typeof dmName === "function" ? dmName(dm) : "A direct message";
+  };
+  const mutedRows = (notify.mutedInfo.length ? notify.mutedInfo : [...notify.muted.keys()].map((id) => ({ channel_id: id, name: state.channels.find((c) => c.id === id)?.name ?? "a channel", guild_id: state.guildId })))
+    .filter((m) => notifyMuted(m.channel_id));
   const muted = el("div", { class: "notify-box" },
-    el("h3", {}, "Muted channels"),
-    mutedRows.length ? null : el("p", { class: "muted small" }, "None. Right-click a channel → Mute channel to silence it."),
+    el("h3", {}, "Muted channels and conversations"),
+    mutedRows.length ? null : el("p", { class: "muted small" }, "None. Right-click a channel or DM → Mute to silence it for a while or for good."),
     ...mutedRows.map((m) => el("div", { class: "device-row" },
       el("span", { class: "device-icon" }, "🔕"),
       el("div", { class: "int-info" },
-        el("div", { class: "name" }, m.guild_id === "0" ? m.name || "A direct message" : `#${m.name}`),
-        el("div", { class: "muted small" }, m.guild_id === "0" ? "Direct messages" : state.guilds.find((g) => g.id === m.guild_id)?.name ?? "")),
+        el("div", { class: "name" }, m.guild_id === "0" ? m.name || dmLabel(m.channel_id) : `#${m.name}`),
+        el("div", { class: "muted small" }, `${m.guild_id === "0" ? "Direct messages" : state.guilds.find((g) => g.id === m.guild_id)?.name ?? ""} · ${muteLabel(m.channel_id).replace(/^Muted u/, "u")}`)),
       el("button", { class: "ghost small-btn", onclick: async () => { if (await setChannelMuted(m.channel_id, false)) redraw(); } }, "Unmute"))),
   );
 

@@ -55,6 +55,7 @@ jobs:
           node --check web/wow.js
           node --check web/voice-extras.js
           node --check web/notify.js
+          node --check web/thread-unread.js
           node --check web/admin-extras.js
           node --check web/raid-admin.js
           node --check web/channel-settings.js

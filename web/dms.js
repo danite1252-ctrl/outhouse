@@ -122,7 +122,7 @@ function renderHomeBadge() {
   home.classList.toggle("active", state.home);
   home.querySelector(".mention-badge")?.remove();
   let n = 0;
-  for (const u of state.unread.values()) if (u.guild_id === "0") n += u.mentions;
+  for (const [id, u] of state.unread) if (u.guild_id === "0") n += ownCount(id, u);
   if (n) home.append(el("span", { class: "mention-badge rail-badge", title: `${n} unread direct message${n === 1 ? "" : "s"}` }, countLabel(n)));
 }
 
@@ -136,15 +136,18 @@ function renderDmList() {
     const others = dmOthers(dm);
     const active = dm.id === state.channelId;
     const sub = dm.kind === GROUP_DM ? `${dm.recipients.length} members` : others[0]?.online ? "Online" : null;
+    // Muted conversations sit greyed out and don't light up for new messages.
+    const muted = typeof notifyMuted === "function" && notifyMuted(dm.id);
     return el("button", {
-      class: `channel dm-row${active ? " active" : ""}${!active && dmUnread(dm) ? " unread" : ""}`,
+      class: `channel dm-row${active ? " active" : ""}${!active && !muted && dmUnread(dm) ? " unread" : ""}${muted ? " muted-dm" : ""}`,
       "data-menu": "dm",
       "data-id": dm.id,
       title: dmName(dm),
       onclick: () => selectDm(dm.id),
     }, dmIcon(dm, 32),
     el("span", { class: "dm-text" }, el("span", { class: "cname" }, dmName(dm)), sub ? el("span", { class: `dm-sub${sub === "Online" ? " online" : ""}` }, sub) : null),
-    n ? el("span", { class: "mention-badge", title: `${n} unread` }, countLabel(n)) : null);
+    muted ? el("span", { class: "mute-icon", title: typeof muteLabel === "function" ? muteLabel(dm.id) : "Muted" }, "🔕") : null,
+    n ? el("span", { class: "mention-badge", title: muted ? `${n} unread mention${n === 1 ? "" : "s"}` : `${n} unread` }, countLabel(n)) : null);
   };
   box.replaceChildren(
     el("div", { class: "section-label" }, "DIRECT MESSAGES",
@@ -378,6 +381,7 @@ MENUS.dm = (e, node) => {
   const group = dm.kind === GROUP_DM;
   openMenu(e.clientX, e.clientY, [
     { label: "Mark as read", disabled: !dmUnread(dm), onClick: () => markDmRead(dm) },
+    ...(typeof muteMenuItems === "function" ? muteMenuItems(dm.id, dmName(dm), "conversation") : []),
     !group && other ? { label: "View profile", onClick: () => openProfile(other.id, node.closest?.(".dm-row") || $("channel-name")) } : null,
     group ? { label: "Rename group", onClick: () => renameGroup(dm) } : null,
     group ? { label: "Add people", disabled: dm.recipients.length >= MAX_GROUP, onClick: () => addPeople(dm) } : null,

@@ -6,7 +6,9 @@
 // Unread markers and mention counts
 // ======================================================================
 
-state.unread = new Map(); // channelId -> { guild_id, last_message_id, last_read_id, mentions }
+state.unread = new Map(); // channelId -> { guild_id, last_message_id, last_read_id, mentions, direct }
+// Threads with replies you haven't read: threadId -> { channel_id, guild_id, last_message_id, last_read_id, mentions }
+state.threadUnread = new Map();
 state.myRoles = new Map(); // guildId -> [roleId] (for spotting role mentions in other outhouses)
 state.detached = false; // looking at older messages (from search or pins)
 state.flashId = null; // message to highlight after jumping to it
@@ -23,6 +25,14 @@ function loadUnread() {
       last_message_id: c.last_message_id,
       last_read_id: c.last_read_id,
       mentions: c.mention_count,
+      direct: c.direct_count ?? 0,
+    }]));
+    state.threadUnread = new Map((res.threads ?? []).map((t) => [t.thread_id, {
+      channel_id: t.channel_id,
+      guild_id: t.guild_id,
+      last_message_id: t.last_message_id,
+      last_read_id: t.last_read_id,
+      mentions: t.mention_count,
     }]));
     state.myRoles = new Map(res.roles.map((r) => [r.guild_id, r.role_ids]));
     // Keep the open outhouse's channel list in step (another device may have read things).
@@ -47,13 +57,27 @@ function noteUnreadMessage(m) {
   const u = state.unread.get(m.channel_id);
   if (!u) { loadUnread(); return; } // a channel we haven't heard of yet
   u.last_message_id = m.id;
+  const looking = m.channel_id === state.channelId && document.hasFocus() && !state.detached;
   if (m.author_id === state.me.id) {
     u.last_read_id = m.id;
     u.mentions = 0;
-  } else if (mentionsMeIn(m, u.guild_id) && !(m.channel_id === state.channelId && document.hasFocus() && !state.detached)) {
+    u.direct = 0;
+  } else if (mentionsMeIn(m, u.guild_id) && !looking) {
     u.mentions += 1;
+    // In a DM: does it @mention you (what still counts while it's muted)?
+    if (u.guild_id === "0" && pingsMe(m, u.guild_id)) u.direct = (u.direct ?? 0) + 1;
   }
   refreshUnreadUi();
+}
+
+// An @mention of you, your roles, @everyone/@here, or a reply to you
+// (for thread replies and muted DMs, where mentionsMeIn doesn't apply).
+function pingsMe(m, guildId) {
+  if (m.author_id === state.me.id) return false;
+  if (m.reply_to?.author_id === state.me.id) return true;
+  if (m.content.includes(`<@${state.me.id}>`) || /(^|\s)@(everyone|here)\b/.test(m.content)) return true;
+  const roles = state.myRoles.get(guildId) ?? (guildId === state.guildId ? memberById(state.me.id)?.role_ids : null) ?? [];
+  return roles.some((id) => m.content.includes(`<@&${id}>`));
 }
 
 // This client read a channel up to a message.
@@ -61,7 +85,7 @@ function noteChannelRead(channelId, lastId) {
   const u = state.unread.get(channelId);
   if (!u) return;
   if (!u.last_read_id || idGt(lastId, u.last_read_id)) u.last_read_id = lastId;
-  if (!u.last_message_id || !idGt(u.last_message_id, u.last_read_id)) u.mentions = 0;
+  if (!u.last_message_id || !idGt(u.last_message_id, u.last_read_id)) { u.mentions = 0; u.direct = 0; }
   refreshUnreadUi();
 }
 
@@ -73,15 +97,32 @@ function onChannelAck(d) {
   if (!u) return;
   if (!u.last_read_id || idGt(d.last_read_id, u.last_read_id)) u.last_read_id = d.last_read_id;
   if (u.last_message_id && idGt(u.last_message_id, u.last_read_id) && u.mentions) loadUnread(); // only partly read: recount
-  else u.mentions = 0;
+  else { u.mentions = 0; u.direct = 0; }
   refreshUnreadUi();
 }
 
-const channelMentions = (channelId) => state.unread.get(channelId)?.mentions ?? 0;
+// What a channel's own unread count adds up to: a muted DM only counts
+// messages that @mention you (they still badge, but never notify).
+function ownCount(channelId, u) {
+  if (!u) return 0;
+  if (u.guild_id === "0" && typeof notifyMuted === "function" && notifyMuted(channelId)) return u.direct ?? 0;
+  return u.mentions;
+}
+
+// Unread thread replies that mention you, in one channel.
+function threadMentionsIn(channelId) {
+  let n = 0;
+  for (const t of state.threadUnread.values()) if (t.channel_id === channelId) n += t.mentions;
+  return n;
+}
+
+// A channel's badge: its own mentions plus those in its threads.
+const channelMentions = (channelId) => ownCount(channelId, state.unread.get(channelId)) + threadMentionsIn(channelId);
 
 function guildMentions(guildId) {
   let n = 0;
-  for (const u of state.unread.values()) if (u.guild_id === guildId) n += u.mentions;
+  for (const [id, u] of state.unread) if (u.guild_id === guildId) n += ownCount(id, u);
+  for (const t of state.threadUnread.values()) if (t.guild_id === guildId) n += t.mentions;
   return n;
 }
 
@@ -111,7 +152,8 @@ function channelBadge(channelId) {
 
 function updateTitle() {
   let total = 0;
-  for (const u of state.unread.values()) total += u.mentions;
+  for (const [id, u] of state.unread) total += ownCount(id, u);
+  for (const t of state.threadUnread.values()) total += t.mentions;
   const title = total ? `(${countLabel(total)}) Outhouse` : "Outhouse";
   if (document.title !== title) document.title = title;
   // On phones the outhouse list is tucked away, so the ☰ button gets a red dot.

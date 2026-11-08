@@ -84,3 +84,19 @@ html.in-app #inv-open-app, html.in-app #inv-noapp, html.in-app #inv-download { d
   .inv-card, .inv-noapp { animation: none; }
   .inv-bg .embers { display: none; }
 }
+
+/* Scrollbars: thin, rounded and quiet, Discord-style. The thumb brightens
+   while you're over the scrolling area, and glows ember while dragged.
+   Chromium (Chrome, Edge, the Windows and Android apps) uses the
+   ::-webkit-scrollbar rules; setting scrollbar-width/-color there would
+   switch them off, so the standard properties are only for other browsers. */
+::-webkit-scrollbar { width: 10px; height: 10px; background: transparent; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+::-webkit-scrollbar-thumb { min-height: 36px; border: 3px solid transparent; border-radius: 10px; background-color: rgba(255, 255, 255, .1); background-clip: padding-box; }
+:hover::-webkit-scrollbar-thumb { background-color: rgba(255, 255, 255, .16); }
+::-webkit-scrollbar-thumb:hover { border-width: 2px; background-color: rgba(255, 255, 255, .26); }
+::-webkit-scrollbar-thumb:active { border-width: 2px; background-color: rgba(255, 107, 53, .55); }
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, .18) transparent; }
+}
