@@ -19,7 +19,10 @@ use std::net::SocketAddr;
 
 use anyhow::Context;
 use sqlx::postgres::PgPoolOptions;
-use tower_http::{services::ServeDir, trace::TraceLayer};
+use tower_http::{
+    services::{ServeDir, ServeFile},
+    trace::TraceLayer,
+};
 use tracing_subscriber::EnvFilter;
 
 use crate::state::{AppState, Config};
@@ -69,7 +72,15 @@ async fn main() -> anyhow::Result<()> {
     api::polls::spawn_closer(state.clone());
     api::lfg::spawn_expirer(state.clone());
     audit::spawn_pruner(state.clone());
+    // `/` is the welcome page (it sends signed-in people and the apps on to
+    // `/app`); `/app` and `/login` are the web client. Everything else is a
+    // plain file from the web folder.
+    let web_path = std::path::Path::new(&web_dir);
+    let client = web_path.join("index.html");
     let app = api::router(state)
+        .route_service("/", ServeFile::new(web_path.join("landing.html")))
+        .route_service("/app", ServeFile::new(&client))
+        .route_service("/login", ServeFile::new(&client))
         .fallback_service(ServeDir::new(&web_dir))
         .layer(axum::middleware::map_response(no_stale_files))
         .layer(TraceLayer::new_for_http());

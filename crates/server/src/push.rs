@@ -646,7 +646,7 @@ async fn message_push(st: &AppState, guild_id: i64, message: &Message) -> anyhow
             "channel_id": channel_id.to_string(),
             "message_id": message.id.to_string(),
             "tag": format!("ch-{channel_id}"),
-            "url": format!("/?guild={guild_id}&channel={channel_id}"),
+            "url": format!("/app?guild={guild_id}&channel={channel_id}"),
         });
         send_to_user(st, c.user_id, &payload).await?;
     }

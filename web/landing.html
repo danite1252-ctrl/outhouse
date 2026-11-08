@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en-AU" class="no-js">
+<head>
+<meta charset="utf-8">
+<script>
+  // Signed in already, opened from a notification, or inside the Windows /
+  // Android app (or the installed web app)? Skip the welcome mat and go
+  // straight in. Runs before anything is drawn, so there's no flash.
+  (function () {
+    var token = null;
+    try { token = localStorage.getItem("outhouse_token"); } catch (e) { /* storage blocked */ }
+    var inApp = !!(window.__OUTHOUSE_DESKTOP__ || window.__OUTHOUSE_PLATFORM__);
+    var installed = false;
+    try { installed = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true; } catch (e) { /* old browser */ }
+    var deepLink = /[?&](guild|channel|login|register)(=|&|$)/.test(location.search);
+    if (inApp || token || installed || deepLink) {
+      document.documentElement.style.display = "none";
+      location.replace("/app" + location.search + location.hash);
+    } else {
+      document.documentElement.className = "js";
+    }
+  })();
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Outhouse · Chat out the back.</title>
+<meta name="description" content="Outhouse is a private, self-hosted place for your family, friends and guild: text chat, voice with push to talk, screen share and a proper WoW raid planner. Chat out the back.">
+<meta name="theme-color" content="#121214">
+<meta name="color-scheme" content="dark">
+<meta property="og:title" content="Outhouse · Chat out the back.">
+<meta property="og:description" content="Text, voice, screen share and raid sign-ups for your crew, on a server you run yourself.">
+<meta property="og:image" content="/icons/icon-512.png">
+<meta property="og:type" content="website">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="preload" href="fonts/inter-400.woff" as="font" type="font/woff" crossorigin>
+<link rel="preload" href="fonts/inter-display-800.woff" as="font" type="font/woff" crossorigin>
+<link rel="stylesheet" href="landing.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav" id="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="/" aria-label="Outhouse home">
+      <img src="favicon.svg" alt="" width="34" height="34">
+      <span class="wordmark">OUTHOUSE</span>
+    </a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#chat">Chat</a>
+      <a href="#voice">Voice</a>
+      <a href="#raids">Raids</a>
+      <a href="#download">Download</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn ghost sm" href="/app" data-signin>Sign in</a>
+      <a class="btn sm hide-sm" href="/app">Open Outhouse</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ============ Hero ============ -->
+<section class="hero" aria-labelledby="hero-title">
+  <div class="hero-bg" aria-hidden="true"><div class="grid-glow"></div></div>
+  <div class="wrap hero-in">
+    <div class="hero-copy">
+      <p class="eyebrow"><span class="dot vacant"></span> Vacant · come on in</p>
+      <h1 id="hero-title">Chat out<br>the back.</h1>
+      <p class="lede">Outhouse is a private hangout for your family, mates and guild. Text chat, voice with push to talk, screen sharing and a proper WoW raid planner, all on a server you run yourself.</p>
+      <div class="cta-row">
+        <a class="btn lg" href="/app?register" data-cta="register">Pull up a seat
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </a>
+        <a class="btn ghost lg" href="#download">Get the apps</a>
+      </div>
+      <p class="hero-note">Already a regular? <a href="/app">Sign in</a>. Works in your browser, on Windows and on Android.</p>
+    </div>
+
+    <div class="stage" id="stage" aria-hidden="true">
+      <div class="stage-glow"></div>
+      <div class="hills"></div>
+      <div class="hut">
+        <svg class="hut-body" viewBox="0 0 240 320" focusable="false">
+          <defs>
+            <radialGradient id="inside" cx="50%" cy="62%" r="70%">
+              <stop offset="0" stop-color="#FFE2B0"/>
+              <stop offset=".35" stop-color="#FFB347"/>
+              <stop offset=".75" stop-color="#C2521F"/>
+              <stop offset="1" stop-color="#3A190C"/>
+            </radialGradient>
+            <linearGradient id="spill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#FFB347" stop-opacity=".55"/>
+              <stop offset="1" stop-color="#FF6B35" stop-opacity="0"/>
+            </linearGradient>
+            <clipPath id="walls"><path d="M44 112 L120 44 L196 112 V286 H44Z"/></clipPath>
+          </defs>
+          <ellipse cx="120" cy="290" rx="104" ry="10" fill="#000" opacity=".45"/>
+          <path class="spill" d="M86 286 H154 L214 318 H26Z" fill="url(#spill)"/>
+          <g class="wisps" fill="none" stroke="#A1A1AA" stroke-width="2" stroke-linecap="round">
+            <path class="wisp w1" d="M114 60 c-6 -8 6 -12 0 -20 s6 -12 0 -20"/>
+            <path class="wisp w2" d="M124 60 c-6 -8 6 -12 0 -20 s6 -12 0 -20"/>
+            <path class="wisp w3" d="M119 60 c-6 -8 6 -12 0 -20 s6 -12 0 -20"/>
+          </g>
+          <path d="M44 112 L120 44 L196 112 V286 H44Z" fill="#1C1C1F"/>
+          <g clip-path="url(#walls)" stroke="#FF6B35" stroke-width="1.6" stroke-linecap="round" opacity=".9">
+            <path d="M58 40V286M72 40V286M86 40V286M100 40V286M114 40V286M128 40V286M142 40V286M156 40V286M170 40V286M184 40V286"/>
+          </g>
+          <g clip-path="url(#walls)" stroke="#7A3216" stroke-width=".9" fill="none" opacity=".9">
+            <path d="M64 120 q2 60 -1 150M92 96 q-2 50 1 90M151 104 q2 70 -1 160M178 130 q-2 50 1 120M107 70 q1 30 -1 50"/>
+          </g>
+          <path d="M44 112 V286 H196 V112" fill="none" stroke="#FF6B35" stroke-width="2.6" stroke-linejoin="round"/>
+          <rect x="111" y="72" width="18" height="12" rx="2" fill="#0E0E10" stroke="#FFB347" stroke-width="2"/>
+          <rect x="86" y="130" width="68" height="156" fill="url(#inside)"/>
+          <g class="loo" opacity=".85">
+            <path d="M98 286 v-30 h44 v30" fill="#2A120A"/>
+            <ellipse cx="120" cy="256" rx="24" ry="5" fill="#4A1F0E"/>
+            <rect x="140" y="200" width="10" height="12" rx="3" fill="#FFF4E0"/>
+            <ellipse cx="145" cy="200" rx="5" ry="2" fill="#E9D6B5"/>
+          </g>
+          <rect x="86" y="130" width="68" height="156" fill="none" stroke="#FFB347" stroke-width="3" stroke-linejoin="round"/>
+          <path d="M30 118 L120 38 L210 118" fill="none" stroke="#FFB347" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M42 108 L120 40 L198 108" fill="none" stroke="#B84A22" stroke-width="2" stroke-dasharray="6 7" opacity=".8"/>
+          <path d="M34 286 H206" stroke="#B84A22" stroke-width="3" stroke-linecap="round"/>
+        </svg>
+        <div class="sign"><span class="occ">Occupied</span><span class="vac">Vacant</span></div>
+        <div class="door-frame">
+          <div class="door">
+            <svg viewBox="0 0 68 156" preserveAspectRatio="none" focusable="false">
+              <rect x="1" y="1" width="66" height="154" rx="2" fill="#1C1C1F" stroke="#FF6B35" stroke-width="2"/>
+              <path d="M17 2V154M34 2V154M51 2V154" stroke="#FF6B35" stroke-width="1.3"/>
+              <path d="M24 30 q2 40 -1 80M44 70 q-2 30 1 70" stroke="#7A3216" stroke-width=".8" fill="none"/>
+              <path d="M4 34H64M4 124H64M8 120L60 38" stroke="#B84A22" stroke-width="4.5" stroke-linecap="round"/>
+              <path class="handset" transform="translate(33 64) rotate(-45) scale(1.15) translate(-12 -5.75)" d="M2 7C2 3 6 1 12 1S22 3 22 7V9C22 10 21 10.5 20 10.5H17C16 10.5 15.5 10 15.5 9V7.5C14 6.8 10 6.8 8.5 7.5V9C8.5 10 8 10.5 7 10.5H4C3 10.5 2 10 2 9Z" fill="#FFB347"/>
+              <rect x="-1" y="28" width="20" height="8" rx="2" fill="#2A2A2E" stroke="#A1A1AA" stroke-width="1"/>
+              <rect x="-1" y="118" width="20" height="8" rx="2" fill="#2A2A2E" stroke="#A1A1AA" stroke-width="1"/>
+              <circle cx="58" cy="86" r="3.2" fill="#FFB347"/>
+            </svg>
+          </div>
+        </div>
+        <div class="bubbles">
+          <div class="bubble b1"><i style="--c:#4ADE80">D</i><span><b>Dave</b>Raid's at 8. Bring flasks.</span></div>
+          <div class="bubble b2"><i style="--c:#FFB347">G</i><span><b>Gran</b>Who used all the loo roll? 🧻</span></div>
+          <div class="bubble b3"><i style="--c:#60A5FA">E</i><span><b>Erin</b>Snags after? 🌭 ×4</span></div>
+          <div class="bubble b4"><i style="--c:#F87171">🔊</i><span><b>The Long Drop</b>4 in voice</span></div>
+        </div>
+        <svg class="fly" viewBox="0 0 20 14" focusable="false">
+          <ellipse class="wing wl" cx="7" cy="4" rx="5" ry="3" fill="#EDEDED" opacity=".55"/>
+          <ellipse class="wing wr" cx="13" cy="4" rx="5" ry="3" fill="#EDEDED" opacity=".55"/>
+          <ellipse cx="10" cy="9" rx="4" ry="3.4" fill="#0E0E10" stroke="#A1A1AA" stroke-width=".6"/>
+        </svg>
+      </div>
+      <div class="embers" id="embers"></div>
+    </div>
+  </div>
+  <a class="scroll-cue" href="#peek" aria-label="See inside">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+  </a>
+</section>
+
+<!-- ============ App peek ============ -->
+<section class="peek" id="peek" aria-labelledby="peek-title">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="kicker">Have a look inside</p>
+      <h2 id="peek-title">Everything your crew needs. Nothing it doesn't.</h2>
+      <p class="sub">Channels, voice rooms and who's around, in one tidy window. If you've used Discord you already know your way around. It just smells a bit different.</p>
+    </div>
+    <div class="window reveal" aria-hidden="true">
+      <div class="win-bar"><span></span><span></span><span></span><em>oh.hartspace.cc</em></div>
+      <div class="win-body">
+        <nav class="m-rail">
+          <div class="m-guild home"><img src="favicon.svg" alt=""></div>
+          <div class="m-sep"></div>
+          <div class="m-guild active">FB</div>
+          <div class="m-guild">Fam</div>
+          <div class="m-guild add">+</div>
+        </nav>
+        <aside class="m-side">
+          <div class="m-guildname">Firebrand Guild <span>▾</span></div>
+          <div class="m-label">Text channels</div>
+          <div class="m-chan"># front-porch</div>
+          <div class="m-chan active"># the-thunderbox</div>
+          <div class="m-chan"># raid-signups <b>3</b></div>
+          <div class="m-label">Voice</div>
+          <div class="m-chan voice">🔊 The Long Drop</div>
+          <div class="m-vuser speaking"><i style="--c:#4ADE80">D</i>Dave</div>
+          <div class="m-vuser"><i style="--c:#60A5FA">E</i>Erin</div>
+          <div class="m-vuser"><i style="--c:#C084FC">K</i>Kev <small>🔇</small></div>
+          <div class="m-chan voice">🔊 The Woodshed</div>
+          <div class="m-me"><i style="--c:#FF6B35">C</i><div><b>Carol</b><small><span class="dot vacant"></span>Vacant</small></div></div>
+        </aside>
+        <div class="m-chat">
+          <div class="m-head"><b># the-thunderbox</b><span>Leave it cleaner than you found it.</span></div>
+          <div class="m-msgs">
+            <div class="m-msg"><i style="--c:#4ADE80">D</i><div><p class="m-who">Dave <time>Today at 6:42 pm</time></p><p>Raid's at 8 tonight. Flasks, food, and for the love of all that is holy, fire resist.</p><div class="m-reacts"><span class="on">🔥 5</span><span>🧪 3</span></div></div></div>
+            <div class="m-msg"><i style="--c:#FFB347">G</i><div><p class="m-who">Gran <time>Today at 6:45 pm</time></p><p>Is this the right room for the family chat? 👵</p></div></div>
+            <div class="m-msg"><i style="--c:#60A5FA">E</i><div><p class="m-who">Erin <time>Today at 6:46 pm</time></p><p><span class="mention">@Gran</span> that's <span class="chan">#front-porch</span>, love. This one's the thunderbox.</p><div class="m-thread">🧵 4 replies · last one 2m ago</div></div></div>
+          </div>
+          <div class="m-compose"><span>+</span><em>Write on the wall in #the-thunderbox</em><span class="gif">GIF</span><span>☺</span></div>
+          <div class="m-typing"><span class="dots"><i></i><i></i><i></i></span> Kev is scribbling on the wall…</div>
+        </div>
+        <aside class="m-members">
+          <div class="m-label">Around the back — 4</div>
+          <div class="m-member"><i style="--c:#FF6B35">C</i><div><b>Carol</b><small><span class="dot vacant"></span>Vacant</small></div></div>
+          <div class="m-member"><i style="--c:#4ADE80">D</i><div><b>Dave</b><small><span class="dot occupied"></span>Occupied · in voice</small></div></div>
+          <div class="m-member"><i style="--c:#60A5FA">E</i><div><b>Erin</b><small><span class="dot vacant"></span>Vacant</small></div></div>
+          <div class="m-member"><i style="--c:#C084FC">K</i><div><b>Kev</b><small><span class="dot away"></span>Gone for a walk</small></div></div>
+          <div class="m-label">Gone home — 2</div>
+          <div class="m-member off"><i style="--c:#FFB347">G</i><div><b>Gran</b></div></div>
+          <div class="m-member off"><i style="--c:#F472B6">M</i><div><b>Mel</b></div></div>
+        </aside>
+      </div>
+    </div>
+    <ul class="pill-row reveal" aria-label="Highlights">
+      <li>No ads</li><li>No tracking</li><li>No queue for the dunny</li><li>Family friendly</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ Chat ============ -->
+<section class="feature" id="chat" aria-labelledby="chat-title">
+  <div class="wrap split">
+    <div class="copy reveal">
+      <p class="kicker">Text chat</p>
+      <h2 id="chat-title">Write on the wall.</h2>
+      <p>Channels for every corner of the yard, from <span class="chan">#front-porch</span> to <span class="chan">#the-thunderbox</span>. Messages land instantly for everyone, on every device.</p>
+      <ul class="ticks">
+        <li>GIFs, emoji and your own custom emoji</li>
+        <li>Replies, threads, polls and pins</li>
+        <li>Search that actually finds the thing</li>
+        <li>DMs and group chats for the side-goss</li>
+        <li>Link previews, file and picture uploads</li>
+      </ul>
+    </div>
+    <div class="mock chatmock reveal" aria-hidden="true">
+      <div class="mc-msg"><i style="--c:#60A5FA">E</i><div><p class="m-who">Erin</p><div class="gif-tile"><span class="gif-roll">🧻</span><em>GIF</em></div></div></div>
+      <div class="poll">
+        <p class="poll-q">📊 What's for tea after raid?</p>
+        <div class="poll-opt" style="--p:68%"><span>Snags on the barbie</span><b>68%</b></div>
+        <div class="poll-opt" style="--p:24%"><span>Pizza</span><b>24%</b></div>
+        <div class="poll-opt" style="--p:8%"><span>Gran's casserole</span><b>8%</b></div>
+        <p class="poll-foot">25 votes · closes in 2 hours</p>
+      </div>
+      <div class="mc-msg"><i style="--c:#C084FC">K</i><div><p class="m-who">Kev</p><p>Pinned the loot rules so nobody can say they didn't see them 📌</p><div class="m-thread">🧵 Loot rules · 12 replies</div></div></div>
+      <div class="m-typing"><span class="dots"><i></i><i></i><i></i></span> Gran is scribbling on the wall…</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ Voice ============ -->
+<section class="feature alt" id="voice" aria-labelledby="voice-title">
+  <div class="wrap split rev">
+    <div class="copy reveal">
+      <p class="kicker">Voice and screen share</p>
+      <h2 id="voice-title">Push to talk. <span class="muted-h">Not that kind of push.</span></h2>
+      <p>Drop into <strong>The Long Drop</strong> and have a yarn. In the Windows app your push-to-talk key or mouse button works even while WoW has focus, and the key still reaches the game.</p>
+      <ul class="ticks">
+        <li>Push to talk or voice activity, with noise suppression</li>
+        <li>Turn anyone up or down, just for you</li>
+        <li>Soundboard and entrance sounds, so everyone knows you've arrived</li>
+        <li>Share your screen in up to 1080p at 60 fps</li>
+      </ul>
+    </div>
+    <div class="mock voicemock reveal" aria-hidden="true">
+      <div class="vm-head">🔊 The Long Drop <span class="live">Connected</span></div>
+      <div class="vm-grid">
+        <div class="vm-user talk"><i style="--c:#4ADE80">D</i><b>Dave</b></div>
+        <div class="vm-user"><i style="--c:#60A5FA">E</i><b>Erin</b></div>
+        <div class="vm-user talk2"><i style="--c:#FF6B35">C</i><b>Carol</b></div>
+        <div class="vm-user muted"><i style="--c:#C084FC">K</i><b>Kev</b><small>🔇</small></div>
+      </div>
+      <div class="vm-row">
+        <div class="share">
+          <div class="share-screen"><span class="hp"></span><span class="boss"></span></div>
+          <span class="share-badge">LIVE · 1080p60</span>
+          <span class="share-who">Dave's screen</span>
+        </div>
+        <div class="ptt">
+          <kbd class="key">Mouse 4</kbd>
+          <span class="ptt-label">Hold to talk</span>
+        </div>
+      </div>
+      <div class="sb">
+        <span>📯 Air horn</span><span class="hit">🚽 Flush</span><span>🦆 Quack</span><span>👏 Golf clap</span><span>🥁 Ba-dum-tss</span><span>🐔 Leeroy!</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ Raids ============ -->
+<section class="feature" id="raids" aria-labelledby="raids-title">
+  <div class="wrap split">
+    <div class="copy reveal">
+      <p class="kicker">WoW raid planner</p>
+      <h2 id="raids-title">Raid night, sorted.</h2>
+      <p>Post a raid and people sign up by class and role with their own characters. No spreadsheets, no "who's coming?" pings, no excuses.</p>
+      <ul class="ticks">
+        <li>Sign-ups by class, spec and role, with caps</li>
+        <li>Repeating raids, deadlines and a calendar</li>
+        <li>A bench, so nobody's left in the cold</li>
+        <li>Attendance taken in a couple of taps</li>
+        <li>Invite list export for MRT in one click</li>
+      </ul>
+    </div>
+    <div class="mock raidmock reveal" aria-hidden="true">
+      <div class="rc-top">
+        <div><p class="rc-title">Molten Core</p><p class="rc-when">Fri 8:00 pm · repeats weekly</p></div>
+        <span class="rc-chip">Sign-ups open</span>
+      </div>
+      <div class="rc-cols">
+        <div class="rc-col"><p class="rc-role">🛡 Tanks <b>2/2</b></p><span style="--c:#C69B6D">Grumbletusk</span><span style="--c:#F48CBA">Dawnhammer</span></div>
+        <div class="rc-col"><p class="rc-role">✚ Healers <b>4/5</b></p><span style="--c:#FFFFFF">Lightwell</span><span style="--c:#0070DD">Tidecaller</span><span style="--c:#FF7C0A">Mossbark</span><span style="--c:#F48CBA">Brightvow</span></div>
+        <div class="rc-col"><p class="rc-role">⚔ DPS <b>12/13</b></p><span style="--c:#3FC7EB">Frostnip</span><span style="--c:#8788EE">Gloomwick</span><span style="--c:#FFF468">Shivvy</span><span style="--c:#AAD372">Longshot</span><span class="more">+8 more</span></div>
+      </div>
+      <div class="rc-bench">Bench: <span style="--c:#C69B6D">Bonkers</span> <span style="--c:#3FC7EB">Sparkle</span></div>
+      <div class="rc-actions"><span class="rc-btn primary">Sign up</span><span class="rc-btn">Bench me</span><span class="rc-btn">Export · MRT</span></div>
+      <div class="cal">
+        <p class="cal-h">November</p>
+        <div class="cal-grid"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ WoW extras ============ -->
+<section class="feature alt" id="wow" aria-labelledby="wow-title">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="kicker">Made for WoW: Forever</p>
+      <h2 id="wow-title">Built by raiders, for raiders.</h2>
+      <p class="sub">Little things that make guild life easier, for every game your crew plays, including the nine classes of WoW: Forever.</p>
+    </div>
+    <div class="cards3">
+      <article class="card reveal">
+        <div class="card-art" aria-hidden="true">
+          <div class="lfg"><p><b>LFG</b> Scholomance</p><p class="lfg-need">Need: ✚ Healer</p><div class="lfg-slots"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="fill"></i></div><span class="rc-btn primary">Join</span></div>
+        </div>
+        <h3>Looking for group</h3>
+        <p>Post what you need and people join with one tap. Full groups tidy themselves away.</p>
+      </article>
+      <article class="card reveal">
+        <div class="card-art" aria-hidden="true">
+          <div class="item"><p class="item-name">Thunderfury, Blessed Blade of the Windseeker</p><p>Binds when picked up</p><p>One-Hand · Sword</p><p class="item-g">Chance on hit: blasts your enemy with lightning.</p></div>
+        </div>
+        <h3>/item tooltips</h3>
+        <p>Type <code>/item</code> and a name to drop a proper tooltip into chat. Bragging made easy.</p>
+      </article>
+      <article class="card reveal">
+        <div class="card-art" aria-hidden="true">
+          <div class="chars">
+            <p><i style="--c:#F48CBA"></i><b>Dawnhammer</b><span>60 Paladin</span></p>
+            <p><i style="--c:#3FC7EB"></i><b>Frostnip</b><span>60 Mage</span></p>
+            <p><i style="--c:#FF7C0A"></i><b>Mossbark</b><span>58 Druid</span></p>
+          </div>
+        </div>
+        <h3>Characters on your profile</h3>
+        <p>Link them from Battle.net or add them by hand. They show up on raid sign-ups automatically.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============ More ============ -->
+<section class="feature" id="more" aria-labelledby="more-title">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="kicker">And the rest of the dunny</p>
+      <h2 id="more-title">Small place. Lots inside.</h2>
+    </div>
+    <div class="grid4">
+      <article class="tile reveal">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2l8 4v6c0 5-3.5 9-8 10-4.5-1-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
+        <h3>Your dunny, your rules</h3>
+        <p>Self-hosted on your own box. Your messages never leave it. No ads, no tracking, no data sold to anyone.</p>
+      </article>
+      <article class="tile reveal">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="2" width="14" height="20" rx="3"/><path d="M11 18h2"/><path d="M15 6.5a3 3 0 0 0-6 0c0 3.5-1.5 4.5-1.5 4.5h9S15 10 15 6.5"/></svg>
+        <h3>Phone and desktop apps</h3>
+        <p>Windows and Android apps, plus a web app for iPhone. Push notifications for DMs, mentions and raid reminders.</p>
+      </article>
+      <article class="tile reveal">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 3v4M9 12h.01M15 12h.01M9 16h6"/></svg>
+        <h3>Bots and webhooks</h3>
+        <p>Plug in bots, post from scripts with webhooks, and pipe in news feeds. A dice bot comes in the box.</p>
+      </article>
+      <article class="tile reveal">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21v-2a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        <h3>Roles and permissions</h3>
+        <p>Raid leaders, officers, family. Decide who can do what, with an audit log for peace of mind.</p>
+      </article>
+      <article class="tile reveal">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/><path d="M2 2l20 20"/></svg>
+        <h3>Flush your notifications</h3>
+        <p>Mute a channel, a whole outhouse or just the chatty one. Mentions still get through.</p>
+      </article>
+      <article class="tile reveal">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="5"/><path d="M8.5 12.5L7 22l5-3 5 3-1.5-9.5"/></svg>
+        <h3>Profiles and badges</h3>
+        <p>Banners, themes, an about-me and badges for your legends. Bragging rights, sorted.</p>
+      </article>
+      <article class="tile reveal">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
+        <h3>Backed up nightly</h3>
+        <p>The server kit backs itself up and keeps the apps updated, so you can get on with your day.</p>
+      </article>
+      <article class="tile reveal">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 21h18M5 21V10l7-6 7 6v11"/><path d="M10 21v-6h4v6"/></svg>
+        <h3>Build a new outhouse</h3>
+        <p>One for the guild, one for the family, one for the footy tipping. Invite people with a code.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============ Download ============ -->
+<section class="download" id="download" aria-labelledby="download-title">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="kicker">Download</p>
+      <h2 id="download-title">Take Outhouse with you.</h2>
+      <p class="sub">Straight from this server, no app store, no account with anyone else. Use the same sign-in everywhere.</p>
+    </div>
+    <div class="dl-grid">
+      <article class="dl-card reveal" data-platform="windows">
+        <div class="dl-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M3 5.5l7.5-1v7H3zM11.5 4.3L21 3v8.5h-9.5zM3 12.5h7.5v7l-7.5-1zM11.5 12.5H21V21l-9.5-1.3z" fill="currentColor"/></svg>
+        </div>
+        <h3>Windows</h3>
+        <p class="dl-meta" data-version="windows">Windows 10 and 11, 64-bit</p>
+        <p>Push to talk that works in game, tray icon, notifications and automatic updates.</p>
+        <a class="btn block" data-download="windows" href="#download" aria-disabled="true">Checking…</a>
+        <p class="fine">Windows may say it "protected your PC" because the app isn't code-signed. Click <b>More info → Run anyway</b>.</p>
+      </article>
+      <article class="dl-card reveal" data-platform="android">
+        <div class="dl-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M2.5 18.5a9.5 9.5 0 0 1 19 0z" fill="currentColor"/><path d="M6.2 8.6L4.4 5.6M17.8 8.6l1.8-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="8.2" cy="14.4" r="1.2" fill="#161618"/><circle cx="15.8" cy="14.4" r="1.2" fill="#161618"/></svg>
+        </div>
+        <h3>Android</h3>
+        <p class="dl-meta" data-version="android">Android 7 and newer</p>
+        <p>Tap the download, then open it. If Android asks, <b>allow installs from this source</b> (your browser) once.</p>
+        <a class="btn block" data-download="android" href="#download" aria-disabled="true">Checking…</a>
+        <p class="fine">Got a very old test build and Android says "App not installed"? Uninstall Outhouse once, then install this one. Updates install over the top after that.</p>
+      </article>
+      <article class="dl-card reveal" data-platform="web">
+        <div class="dl-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
+        </div>
+        <h3>iPhone, Mac and everything else</h3>
+        <p class="dl-meta">Any modern browser</p>
+        <p>Outhouse runs right in your browser. On iPhone or iPad, open it in Safari, tap <b>Share → Add to Home Screen</b> and it behaves like an app, notifications and all.</p>
+        <a class="btn ghost block" href="/app">Open in browser</a>
+        <button class="btn ghost block" type="button" id="install-btn" hidden>Install as an app</button>
+        <p class="fine">On Android, Chrome's <b>⋮ → Install app</b> works too.</p>
+      </article>
+    </div>
+    <noscript><p class="fine center">All downloads live at <a href="/updates/">/updates/</a>.</p></noscript>
+  </div>
+</section>
+
+<!-- ============ Final CTA ============ -->
+<section class="final" aria-labelledby="final-title">
+  <div class="wrap final-in reveal">
+    <img src="favicon.svg" alt="" width="72" height="72">
+    <h2 id="final-title">The door's open.</h2>
+    <p>Grab a seat, say g'day in <span class="chan">#front-porch</span>, and leave it cleaner than you found it.</p>
+    <div class="cta-row center">
+      <a class="btn lg" href="/app?register">Create an account</a>
+      <a class="btn ghost lg" href="/app">Sign in</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <a class="brand" href="/" aria-label="Outhouse home"><img src="favicon.svg" alt="" width="28" height="28"><span class="wordmark">OUTHOUSE</span></a>
+    <p class="foot-line">Self-hosted with <span class="heart" aria-label="love">❤</span> out the back.</p>
+    <nav class="foot-links" aria-label="Footer">
+      <a href="/app">Sign in</a>
+      <a href="#download">Download</a>
+      <a href="#raids">Raid planner</a>
+    </nav>
+  </div>
+  <p class="wrap foot-small">Please wash your hands. Not affiliated with Discord or Blizzard Entertainment. World of Warcraft is a trademark of Blizzard Entertainment, Inc.</p>
+</footer>
+
+<script src="landing.js"></script>
+</body>
+</html>

@@ -12,3 +12,4 @@
 __pycache__/
 /deploy/status
 /VERSION
+/web/updates
