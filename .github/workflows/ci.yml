@@ -10,6 +10,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # The Outhouse server the Windows and Android apps open (see desktop/README.md).
+  OUTHOUSE_SERVER_URL: https://oh.hartspace.cc
 
 jobs:
   server:
@@ -56,6 +58,8 @@ jobs:
           node --check web/admin-extras.js
           node --check web/raid-admin.js
           node --check web/sw.js
+          node --check web/landing.js
+          node --check web/entry.js
           node --check web/bots/dice-bot.mjs
       - name: Deploy scripts check (bash -n + shellcheck)
         run: |
@@ -102,6 +106,7 @@ jobs:
           python3 ci/wow_mock.py 8099 > /tmp/wow-mock-ui.log 2>&1 &
           ./target/debug/outhouse-server > /tmp/ui-server.log 2>&1 &
           python ci/ui_test.py
+          python ci/landing_test.py
       - name: Screenshots (base64, for review)
         if: always()
         run: |
