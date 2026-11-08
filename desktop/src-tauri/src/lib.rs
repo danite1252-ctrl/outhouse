@@ -13,7 +13,7 @@ mod updates;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 #[cfg(desktop)]
@@ -28,10 +28,26 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 
-/// Saved in %APPDATA%\cc.hartspace.outhouse\settings.json
+/// The Outhouse server these apps show. To move to another domain, change
+/// this (or set `OUTHOUSE_SERVER_URL` when building, as CI does) and rebuild.
+/// The window only shows pages from here, the updater checks
+/// `<server>/updates/latest.json`, and only this site may use the app bridge.
+const DEFAULT_SERVER: &str = "https://oh.hartspace.cc";
+
+/// The server's origin, e.g. `https://oh.hartspace.cc` (no trailing slash).
+pub(crate) fn server_origin() -> String {
+    option_env!("OUTHOUSE_SERVER_URL")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(origin_of)
+        .unwrap_or_else(|| DEFAULT_SERVER.to_string())
+}
+
+/// Saved in %APPDATA%\cc.hartspace.outhouse\settings.json. Older versions
+/// also saved a chosen `server` there; it's ignored now (and dropped the
+/// next time the file is saved).
 #[derive(Default, Clone, Serialize, Deserialize)]
 struct Settings {
-    server: Option<String>,
     #[serde(default)]
     tray_tip_shown: bool,
 }
@@ -39,9 +55,6 @@ struct Settings {
 pub(crate) struct AppState {
     settings: Mutex<Settings>,
     path: PathBuf,
-    /// Origin of the chosen server (e.g. https://oh.hartspace.cc). The window
-    /// only shows pages from here; any other link opens in your browser.
-    pub(crate) origin: Arc<Mutex<Option<String>>>,
 }
 
 impl AppState {
@@ -61,16 +74,6 @@ fn origin_of(address: &str) -> Option<String> {
     matches!(url.scheme(), "http" | "https").then(|| url.origin().ascii_serialization())
 }
 
-/// The app's own "choose a server" page.
-#[cfg(desktop)]
-fn local_page(query: &str) -> String {
-    if cfg!(windows) {
-        format!("http://tauri.localhost/index.html{query}")
-    } else {
-        format!("tauri://localhost/index.html{query}")
-    }
-}
-
 #[cfg(desktop)]
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -82,24 +85,10 @@ fn show_main(app: &AppHandle) {
 
 // ---------- commands the pages can call ----------
 
+/// The built-in "Connecting to Outhouse…" page asks where to go.
 #[tauri::command]
-fn get_server(state: State<AppState>) -> Option<String> {
-    state.settings.lock().unwrap().server.clone()
-}
-
-#[tauri::command]
-fn set_server(address: String, state: State<AppState>) -> Result<String, String> {
-    let address = address.trim().trim_end_matches('/');
-    let full = if address.contains("://") {
-        address.to_string()
-    } else {
-        format!("https://{address}")
-    };
-    let origin = origin_of(&full).ok_or("That doesn't look like a web address.")?;
-    state.settings.lock().unwrap().server = Some(origin.clone());
-    *state.origin.lock().unwrap() = Some(origin.clone());
-    state.save();
-    Ok(origin)
+fn get_server() -> String {
+    server_origin()
 }
 
 /// Which key or mouse button is push to talk right now, or none (not in
@@ -132,12 +121,12 @@ fn open_external(app: AppHandle, url: String) {
 
 /// The website talks to the app by fetching http://outhouse.localhost/...
 /// (Windows routes that straight to this handler, nothing goes on the
-/// network). Only the server you chose may use it.
+/// network). Only the Outhouse server may use it.
 fn bridge(
     app: &AppHandle,
     request: &tauri::http::Request<Vec<u8>>,
 ) -> tauri::http::Response<Vec<u8>> {
-    let allowed = app.state::<AppState>().origin.lock().unwrap().clone();
+    let allowed = Some(server_origin());
     let origin = request
         .headers()
         .get("origin")
@@ -183,12 +172,14 @@ fn bridge(
     }
 }
 
-/// Tells the website it's inside the app, which kind, and which version.
+/// Tells the website it's inside the app, which kind, which version, and
+/// (for the built-in "Connecting…" page) which server to open.
 fn init_script(version: &str) -> String {
     let platform = if cfg!(mobile) { "android" } else { "desktop" };
+    let server = serde_json::to_string(&server_origin()).unwrap_or_else(|_| "\"\"".into());
     format!(
         "window.__OUTHOUSE_DESKTOP__ = true; window.__OUTHOUSE_PLATFORM__ = '{platform}'; \
-         window.__OUTHOUSE_APP_VERSION__ = '{version}';"
+         window.__OUTHOUSE_APP_VERSION__ = '{version}'; window.__OUTHOUSE_SERVER__ = {server};"
     )
 }
 
@@ -245,7 +236,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_server,
-            set_server,
             set_ptt,
             notify,
             open_external
@@ -256,14 +246,14 @@ pub fn run() {
                 .ok()
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_default();
-            let origin = Arc::new(Mutex::new(settings.server.as_deref().and_then(origin_of)));
             app.manage(AppState {
                 settings: Mutex::new(settings),
                 path,
-                origin: origin.clone(),
             });
+            let origin = server_origin();
 
-            // The window. Links to anywhere but your server open in your browser.
+            // The window starts on the built-in "Connecting…" page, which moves
+            // on to the server. Links anywhere else open in your browser.
             let handle = app.handle().clone();
             let version = app.package_info().version.to_string();
             let window =
@@ -277,7 +267,7 @@ pub fn run() {
                             return true;
                         }
                         let here = url.origin().ascii_serialization();
-                        if origin.lock().unwrap().as_deref() == Some(here.as_str()) {
+                        if here == origin {
                             return true;
                         }
                         if matches!(url.scheme(), "http" | "https") {
@@ -309,7 +299,6 @@ pub fn run() {
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     // Tray icon and menu.
     let open = MenuItem::with_id(app, "open", "Open Outhouse", true, None::<&str>)?;
-    let server = MenuItem::with_id(app, "server", "Change server…", true, None::<&str>)?;
     let autostart = CheckMenuItem::with_id(
         app,
         "autostart",
@@ -323,7 +312,6 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         app,
         &[
             &open,
-            &server,
             &PredefinedMenuItem::separator(app)?,
             &autostart,
             &PredefinedMenuItem::separator(app)?,
@@ -338,14 +326,6 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "open" => show_main(app),
-            "server" => {
-                show_main(app);
-                if let Some(w) = app.get_webview_window("main") {
-                    if let Ok(url) = local_page("?change=1").parse() {
-                        let _ = w.navigate(url);
-                    }
-                }
-            }
             "autostart" => {
                 let launcher = app.autolaunch();
                 let on = launcher.is_enabled().unwrap_or(false);

@@ -4,12 +4,15 @@ The Outhouse app for your PC. It shows your Outhouse server in its own window an
 
 - **Push to talk that works in game.** Your key or mouse button (middle, back, forward) works while WoW or anything else is focused. The key still reaches the game as normal.
 - **Notifications** when someone @mentions you, @everyone, one of your roles, or replies to you while Outhouse isn't in front. The taskbar icon flashes too.
-- **Tray icon:** closing the window keeps Outhouse running (so push to talk keeps working). Right-click the tray icon for *Change server…*, *Start with Windows* and *Quit*.
+- **Tray icon:** closing the window keeps Outhouse running (so push to talk keeps working). Right-click the tray icon for *Start with Windows* and *Quit*.
 - Links to other websites open in your normal browser.
 
 ## Get the installer
-Every push to GitHub builds it and publishes it under the repo's **Releases**
-→ **Outhouse (latest build)** → `Outhouse-Windows-Setup.exe`. Or build it yourself:
+The easiest way: open https://oh.hartspace.cc/ and use the **Download** section
+(the files come straight from your own server's `/updates/` folder). Every push
+to GitHub builds the apps and publishes them under the repo's **Releases** →
+**Outhouse (latest build)**; `deploy/fetch-updates.py` copies them to the
+server within 10 minutes. Or build it yourself:
 
 ## Build the installer yourself
 You already have Rust and the C++ build tools from building the server.
@@ -29,7 +32,7 @@ You already have Rust and the C++ build tools from building the server.
 For a quick try without installing: `cargo tauri dev` in the same folder.
 
 ## Using it
-- First launch asks for the server: `oh.hartspace.cc` is filled in already.
+- The apps always open **https://oh.hartspace.cc** (there's no server picker). If the server can't be reached you get a "Can't reach Outhouse" screen that keeps retrying.
 - Set your push-to-talk key in **User settings → Voice & audio** as usual. The app watches that one key only while you're in voice with push to talk on.
 - Windows will ask once to let Outhouse use the microphone.
 
@@ -63,3 +66,32 @@ push notifications**. The APK only notifies you while it's open or recently
 in the background, because Android's built-in web view can't receive Web Push
 (that would need Google's Firebase inside the app). If you want both, use the
 web app for notifications.
+
+## Moving to a different domain
+The server address is in **one place**: `DEFAULT_SERVER` at the top of
+`desktop/src-tauri/src/lib.rs`. A build can also override it with the
+`OUTHOUSE_SERVER_URL` environment variable (CI sets it in
+`.github/workflows/ci.yml`, in the top-level `env:`).
+Everything else follows from it: the page the window opens, which site may
+use the app bridge (push to talk, notifications), which links stay in the
+window, and where automatic updates come from (`<server>/updates/latest.json`).
+
+To move:
+1. Point the new domain at the server (see `deploy/README.md`).
+2. Change `OUTHOUSE_SERVER_URL` at the top of the workflow (and `DEFAULT_SERVER` for local builds), push,
+   and let CI build new apps.
+3. **Important:** existing Windows installs check the *old* address for
+   updates, so keep the old domain working until everyone has updated (or ask
+   people to reinstall from the new site). Android installs are updated by
+   hand, so they need the new APK either way.
+
+Older versions let you pick a server and saved it in `settings.json`; that
+choice is now ignored.
+
+## Where the download links live
+The landing page (`web/landing.html`) gets its Windows and Android download
+links from the `DOWNLOADS` setting at the top of `web/landing.js`
+(`/updates/Outhouse-Windows-Setup.exe` and `/updates/Outhouse-Android.apk`,
+with versions from `/updates/latest.json` and `/updates/android.json`). If a
+file isn't there yet, its button says *Coming soon*. Change `DOWNLOADS` if
+the files ever move.

@@ -2,7 +2,7 @@
 //!
 //! Builds are published on GitHub; your Outhouse server copies them to
 //! `/updates/` (see deploy/fetch-updates.py). The app checks
-//! `<server>/updates/latest.json`, and only installs an update signed with
+//! `<server>/updates/latest.json` (the server is `DEFAULT_SERVER` in lib.rs), and only installs an update signed with
 //! the Outhouse signing key, so a tampered download is refused.
 //!
 //! - At start-up: if there's an update, install it straight away (you're not
@@ -12,11 +12,9 @@
 
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Runtime};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::UpdaterExt;
-
-use crate::AppState;
 
 /// Public half of the signing key, baked in at build time by CI. Without it
 /// (local builds) updates are switched off.
@@ -53,9 +51,7 @@ pub fn start(app: AppHandle) {
 }
 
 async fn check(app: &AppHandle, install_now: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(server) = app.state::<AppState>().origin.lock().unwrap().clone() else {
-        return Ok(()); // no server chosen yet
-    };
+    let server = crate::server_origin();
     let url = format!("{server}/updates/latest.json").parse()?;
     let updater = app.updater_builder().endpoints(vec![url])?.build()?;
     let Some(update) = updater.check().await? else {

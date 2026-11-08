@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The built-in 'choose a server' page.",
+  "description": "The built-in 'Connecting to Outhouse…' page.",
   "windows": ["main"],
   "permissions": ["core:default"]
 }

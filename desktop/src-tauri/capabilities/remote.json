@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/remote-schema.json",
   "identifier": "outhouse-server",
-  "description": "Lets the Outhouse site (wherever it's hosted) talk to the desktop app: push to talk, notifications, opening links. The window only ever shows the chosen server; other links open in your browser.",
+  "description": "Lets the Outhouse site (wherever it's hosted) talk to the desktop app: push to talk, notifications, opening links. The window only ever shows the Outhouse server (DEFAULT_SERVER in src/lib.rs); other links open in your browser.",
   "windows": ["main"],
   "remote": {
     "urls": ["https://*", "http://localhost:*"]
