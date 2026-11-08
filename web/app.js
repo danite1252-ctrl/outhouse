@@ -1754,7 +1754,7 @@ function pttBlip(down) {
     osc.frequency.setValueAtTime(down ? 620 : 520, t);
     osc.frequency.linearRampToValueAtTime(down ? 820 : 400, t + 0.05);
     gain.gain.setValueAtTime(0.0001, t);
-    gain.gain.exponentialRampToValueAtTime(0.035 * Math.min(outputVolume(), 1.5), t + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.09 * Math.min(outputVolume(), 1.5), t + 0.008);
     gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
     osc.connect(gain).connect(chimeCtx.destination);
     osc.start(t);
@@ -2419,9 +2419,12 @@ function setSoundboardMuted(muted) {
   prefs.set("soundboard_muted", !!muted);
   window.dispatchEvent(new Event("outhouse:soundboard-volume"));
 }
+// Clips are mastered far louder than voices, so 100% on the slider plays
+// them at this fraction of their file level (people can still go to 200%).
+const CLIP_TRIM = 0.4;
 // How loud a clip plays: its own volume (built-ins are mastered at 0.8)
-// times Soundboard volume. Output volume doesn't come into it.
-const soundboardGain = (clipVolume = 1) => Math.max(0, clipVolume * soundboardLevel());
+// times Soundboard volume, trimmed. Output volume doesn't come into it.
+const soundboardGain = (clipVolume = 1) => Math.max(0, clipVolume * soundboardLevel() * CLIP_TRIM);
 
 function playSound(url, volume = 1, preview = false) {
   if (!preview && (isDeafened() || soundboardMuted())) return;

@@ -139,7 +139,7 @@ function onEntranceSound(d) {
 // Entrance sounds have their own volume slider (not Output volume, which
 // is just for voices, nor Soundboard volume).
 function playEntrance(url) {
-  playClip(url, Math.max(0, Math.min(1, prefs.get("entrance_volume", 0.6))));
+  playClip(url, Math.max(0, Math.min(1, prefs.get("entrance_volume", 0.6))) * CLIP_TRIM);
 }
 
 // Length of a sound file in seconds (0 if the browser can't tell).

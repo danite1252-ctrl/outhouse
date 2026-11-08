@@ -1354,12 +1354,12 @@ with sync_playwright() as p:
       prefs.set('output_volume', 1); setSoundboardLevel(1); applyAllVolumes();
       return out;
     }}""")
-    assert abs(sbv[0][0] - 0.8) < 1e-9 and abs(sbv[1][0] - 0.8) < 1e-9, f"output volume changed the soundboard: {sbv}"
+    assert abs(sbv[0][0] - 0.32) < 1e-9 and abs(sbv[1][0] - 0.32) < 1e-9, f"output volume changed the soundboard: {sbv}"
     if isinstance(sbv[0][1], (int, float)):  # LiveKit reports the volume once Erin's audio is subscribed
         assert abs(sbv[1][1] - 1.6 * sbv[0][1]) < 1e-6, f"output volume didn't change voices: {sbv}"
         assert abs(sbv[2][1] - sbv[1][1]) < 1e-9, f"soundboard volume changed voices: {sbv}"
-    assert abs(sbv[2][0] - 0.2) < 1e-9, f"soundboard volume didn't apply: {sbv}"
-    assert abs(sbv[3][0] - 0.2) < 1e-9 and sbv[3][1] == 1.6, sbv
+    assert abs(sbv[2][0] - 0.08) < 1e-9, f"soundboard volume didn't apply: {sbv}"
+    assert abs(sbv[3][0] - 0.08) < 1e-9 and sbv[3][1] == 1.6, sbv
     # The settings slider and the popover slider are one setting.
     carolv.evaluate("openUserSettings('voice')")
     carolv.wait_for_selector("dialog.settings input.sb-level")
