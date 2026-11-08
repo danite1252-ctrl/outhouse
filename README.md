@@ -6,7 +6,8 @@ A small, self-hosted Discord-style chat app for our WoW group and family, writte
 
 ## What works right now (v0.5)
 - **Accounts:** sign up, sign in, sign out (Argon2 password hashing, 30-day login tokens)
-- **Outhouses (servers):** create, invite with a 7-day code, join, leave, delete (owner)
+- **Outhouses (servers):** create, invite, join, leave, delete (owner)
+- **Invite links:** **Invite people** gives a link (`https://<your server>/invite/<code>`) with **Copy link**, lasting 30 minutes to 7 days or forever, for 1–100 people or unlimited; the link opens a page showing the outhouse, who invited you and who's online (plus a preview card in Discord, Messenger and WhatsApp). Signed in, **Join** puts you straight in; signed out, **Accept invite** signs you up or in and then joins. On Windows and Android, **Open in the Outhouse app** opens it in the app (Android opens invite links in the app automatically). Outhouse settings → **Invites** lists and revokes them; the join box takes links too
 - **Channels:** text channels with unread markers; owner/managers can create and delete them
 - **Live chat:** messages, edits, deletes, replies, reactions, typing indicator, @mentions highlighted
 - **Uploads:** images, video, audio and files (up to 10 × 25 MB) via the + button, drag and drop, or paste
@@ -94,8 +95,8 @@ Restart the server.
 ### 5. Try it
 1. Create an account, then press **+** to build an outhouse.
 2. Open a second browser (or a private window), create another account.
-3. In the first window press the invite icon next to the server name, copy the code.
-4. In the second window press the join icon (under **+**) and paste the code.
+3. In the first window press the invite icon next to the server name and **Copy link**.
+4. Open the link in the second window (or press the join icon under **+** and paste it).
 5. Chat between the two windows.
 
 To let family on your home network try it, they can open `http://<your-PC's-IP>:8080`.

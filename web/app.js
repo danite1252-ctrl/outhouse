@@ -2516,6 +2516,7 @@ const MENUS = {
 // ---------- outhouse / channel / member actions ----------
 
 async function invitePeople() {
+  if (typeof openInviteDialog === "function") return openInviteDialog();
   const res = await tryApi("POST", `/api/guilds/${state.guildId}/invites`).catch(() => null);
   if (res) await ask("Invite code (lasts 7 days)", { value: res.code, readOnly: true });
 }
@@ -2644,6 +2645,9 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
     if (can("ban_members")) {
       nav.append(el("button", { class: activeTab === "bans" ? "active" : "", onclick: () => draw("bans") }, "Bans"));
     }
+    if (can("manage_guild") && typeof drawInviteSettings === "function") {
+      nav.append(el("button", { class: activeTab === "invites" ? "active" : "", onclick: () => draw("invites") }, "Invites"));
+    }
     if (canAudit) {
       nav.append(el("button", { class: activeTab === "audit" ? "active" : "", onclick: () => draw("audit") }, "Audit log"));
     }
@@ -2653,6 +2657,7 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
     const page = settingsPage(main);
     if (activeTab === "bans") return drawBans(page);
     if (activeTab === "audit") return drawAuditLog(page);
+    if (activeTab === "invites") return drawInviteSettings(page);
     if (activeTab === "badges") return drawBadgeSettings(page);
     if (activeTab === "raids") return drawRaidSettings(page);
     if (activeTab === "status") return drawServerStatus(page);
@@ -2974,7 +2979,8 @@ $("new-guild").addEventListener("click", async () => {
 });
 
 $("join-guild").addEventListener("click", async () => {
-  const code = await ask("Join an outhouse", { placeholder: "Invite code", confirm: "Join" });
+  const typed = await ask("Join an outhouse", { placeholder: "Invite link or code", confirm: "Join" });
+  const code = typed && (typeof inviteCodeFrom === "function" ? inviteCodeFrom(typed) : typed);
   if (!code) return;
   const g = await tryApi("POST", `/api/invites/${encodeURIComponent(code)}`).catch(() => null);
   if (g) {
@@ -2983,7 +2989,7 @@ $("join-guild").addEventListener("click", async () => {
   }
 });
 
-$("invite-btn").addEventListener("click", invitePeople);
+$("invite-btn").addEventListener("click", () => invitePeople());
 $("new-channel").addEventListener("click", () => createChannel(TEXT));
 $("guild-name").addEventListener("click", (e) => {
   if (!state.guildId) return;

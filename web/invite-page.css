@@ -1,0 +1,86 @@
+/* The /invite/<code> page. Builds on landing.css (colours, fonts, buttons). */
+
+body { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }
+.inv-bg { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; container-type: size; }
+.inv-bg .grid-glow {
+  transform: none;
+  background:
+    radial-gradient(55% 45% at 50% 38%, #ff6b352e, transparent 70%),
+    radial-gradient(35% 35% at 15% 85%, #ffb34712, transparent 70%),
+    linear-gradient(#ffffff08 1px, transparent 1px) 0 0 / 44px 44px,
+    linear-gradient(90deg, #ffffff08 1px, transparent 1px) 0 0 / 44px 44px;
+  -webkit-mask-image: radial-gradient(75% 70% at 50% 40%, #000 30%, transparent 80%);
+  mask-image: radial-gradient(75% 70% at 50% 40%, #000 30%, transparent 80%);
+}
+.inv-bg .embers { transform: none; }
+.inv-bg .embers span { bottom: 0; }
+
+.inv-top { display: flex; justify-content: center; padding: max(env(safe-area-inset-top, 0px), 22px) 20px 0; }
+.inv-top .brand .wordmark { font-size: 16px; }
+html.android-app .inv-top { padding-top: max(env(safe-area-inset-top, 0px), 40px); }
+
+.inv-main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 24px 16px max(env(safe-area-inset-bottom, 0px), 32px); }
+html.android-app .inv-main { padding-bottom: max(env(safe-area-inset-bottom, 0px), 56px); }
+
+body[data-state="valid"] .only-invalid,
+body[data-state="invalid"] .only-valid { display: none !important; }
+
+.inv-card {
+  position: relative; width: min(440px, 100%); text-align: center;
+  padding: 34px 28px 26px; border-radius: 24px;
+  background: linear-gradient(180deg, #1b1b1ef2, #151517f2);
+  border: 1px solid var(--line);
+  box-shadow: 0 30px 80px -30px #000, 0 0 0 1px #ff6b3512, 0 1px 0 #ffffff0d inset;
+  animation: inv-in .6s var(--ease) both;
+}
+.inv-card::before {
+  content: ""; position: absolute; left: 50%; top: -1px; width: 46%; height: 2px; transform: translateX(-50%);
+  background: linear-gradient(90deg, transparent, var(--ember), var(--glow), transparent); border-radius: 2px; opacity: .85;
+}
+@keyframes inv-in { from { opacity: 0; transform: translateY(14px) scale(.985); } to { opacity: 1; transform: none; } }
+
+.inv-kicker { color: var(--glow); font-size: 12.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.inv-tile {
+  position: relative; width: 92px; height: 92px; margin: 20px auto 16px; border-radius: 28px;
+  display: grid; place-items: center;
+  background: radial-gradient(120% 120% at 30% 20%, #ff9a5c, var(--ember) 45%, #c2410c);
+  box-shadow: 0 18px 40px -14px #ff6b35b0, 0 1px 0 #ffffff55 inset;
+  color: #1a0d06; font: 800 34px/1 var(--display); letter-spacing: -.02em;
+}
+.inv-tile-dot { position: absolute; right: -4px; bottom: -4px; width: 22px; height: 22px; border-radius: 50%; background: var(--vacant); border: 4px solid #19191c; }
+.inv-tile.dead { background: var(--raised); box-shadow: 0 0 0 1px var(--line) inset; filter: grayscale(.4); }
+.inv-tile.dead img { opacity: .8; transform: rotate(-12deg); }
+.inv-name { font-size: clamp(25px, 6.4vw, 32px); line-height: 1.12; font-weight: 800; overflow-wrap: anywhere; }
+.inv-dead .inv-name { font-size: clamp(23px, 5.8vw, 28px); }
+.inv-from { display: inline-flex; align-items: center; gap: 8px; margin-top: 10px; color: #c9c9cf; font-size: 15px; }
+.inv-from b { color: #fff; font-weight: 600; }
+.inv-avatar { flex: none; width: 24px; height: 24px; border-radius: 50%; background: var(--raised) center / cover; display: grid; place-items: center; font: 700 11px/1 Inter, sans-serif; color: #121214; }
+.inv-avatar:empty { display: none; }
+.inv-stats { display: flex; justify-content: center; flex-wrap: wrap; gap: 6px 18px; margin-top: 12px; color: var(--muted); font-size: 14px; }
+.inv-stats > span { display: inline-flex; align-items: center; gap: 7px; }
+.inv-quip { margin: 16px auto 0; max-width: 30em; color: var(--muted); font-size: 14.5px; font-style: italic; }
+.inv-dead .inv-quip { font-style: normal; }
+
+.inv-actions { display: grid; gap: 10px; margin-top: 24px; }
+.inv-actions .btn { width: 100%; }
+.btn.busy { opacity: .7; pointer-events: none; }
+.inv-error { color: #fca5a5; font-size: 14px; background: #f8717114; border: 1px solid #f8717140; border-radius: 10px; padding: 8px 12px; }
+.inv-noapp { text-align: left; font-size: 14px; color: #c9c9cf; background: #ffffff06; border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; line-height: 1.5; animation: inv-in .3s var(--ease) both; }
+.inv-noapp b { color: #fff; }
+.inv-noapp span { display: block; }
+.inv-who { margin-top: 14px; color: var(--muted); font-size: 13.5px; }
+.inv-who b { color: var(--text); font-weight: 600; }
+.inv-alt { margin-top: 14px; font-size: 14px; }
+.inv-download { color: var(--muted); font-size: 14px; text-align: center; }
+
+/* Inside the Windows / Android app: no "open in the app" or downloads. */
+html.in-app #inv-open-app, html.in-app #inv-noapp, html.in-app #inv-download { display: none !important; }
+
+@media (max-width: 420px) {
+  .inv-card { padding: 28px 20px 22px; border-radius: 20px; }
+  .inv-tile { width: 80px; height: 80px; border-radius: 24px; font-size: 30px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .inv-card, .inv-noapp { animation: none; }
+  .inv-bg .embers { display: none; }
+}

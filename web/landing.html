@@ -12,8 +12,10 @@
     var inApp = !!(window.__OUTHOUSE_DESKTOP__ || window.__OUTHOUSE_PLATFORM__);
     var installed = false;
     try { installed = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true; } catch (e) { /* old browser */ }
-    var deepLink = /[?&](guild|channel|login|register)(=|&|$)/.test(location.search);
-    if (inApp || token || installed || deepLink) {
+    var deepLink = /[?&](guild|channel|login|register|invite)(=|&|$)/.test(location.search);
+    // Someone sent here for the downloads (e.g. from an invite page) stays here.
+    var wantsDownload = location.hash === "#download" && !deepLink;
+    if (inApp || ((token || installed || deepLink) && !wantsDownload)) {
       document.documentElement.style.display = "none";
       location.replace("/app" + location.search + location.hash);
     } else {

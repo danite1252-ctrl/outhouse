@@ -225,6 +225,11 @@ try:
                 assert not pg.query_selector("#stage")
                 pg.wait_for_timeout(1200)
                 shot(pg, f"{n}-signed-in-{label}-redirect")
+                # "Download the app" from an invite page: stay for the downloads.
+                pg.goto(BASE + "/#download")
+                pg.wait_for_selector("#download")
+                pg.wait_for_timeout(800)
+                assert path_of(pg) == "/", f"signed in, /#download went to {pg.url}"
                 ctx.close()
 
         browser.close()

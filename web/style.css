@@ -1441,3 +1441,42 @@ dialog.sb-manage p { margin: 0 0 8px; }
 .entrance-classics { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .entrance-classics button { height: 32px; padding: 0 12px; border: 1px solid var(--line); border-radius: 16px; background: var(--raised); font-size: 13px; }
 .entrance-classics button.on { border-color: var(--ember); background: color-mix(in srgb, var(--ember) 18%, var(--raised)); color: var(--glow); }
+/* ---------- Invite links (invites.js) ---------- */
+dialog.invite-dialog { width: min(500px, 94vw); max-height: 90vh; }
+.invite-dialog h2 { overflow-wrap: anywhere; }
+.invite-dialog .inv-guild { color: var(--glow); }
+.inv-link-row { display: flex; gap: 8px; align-items: stretch; padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--night); }
+.inv-link-row input.inv-link { flex: 1; min-width: 0; height: 40px; border: 0; background: none; padding: 0 8px; font: 500 14px/1 "JetBrains Mono", ui-monospace, monospace; color: var(--text); text-overflow: ellipsis; }
+.inv-link-row .inv-copy { flex: none; height: 40px; min-width: 104px; transition: background .2s, color .2s; }
+.inv-copy.copied, .inv-row-copy.copied { background: var(--vacant); color: var(--night); border-color: var(--vacant); }
+.inv-copy:disabled { opacity: .5; cursor: default; }
+.inv-meta { margin: -4px 0 0; }
+.inv-options { border: 1px solid var(--line); border-radius: 10px; padding: 0 12px; }
+.inv-options[open] { padding-bottom: 12px; }
+.inv-options summary { cursor: pointer; padding: 10px 0; font-size: 14px; font-weight: 600; color: var(--muted); }
+.inv-options summary:hover { color: var(--text); }
+.inv-option-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+.inv-option-grid select { width: 100%; }
+.inv-options .inv-new { width: 100%; }
+.inv-list-head { display: flex; justify-content: space-between; margin-top: 4px; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.inv-list { display: grid; gap: 6px; max-height: 240px; overflow-y: auto; }
+.settings-inv-list { max-height: none; }
+.inv-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); }
+.inv-row-main { flex: 1; min-width: 0; }
+.inv-row-code { font: 500 13px/1.4 "JetBrains Mono", ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inv-row-meta { display: flex; flex-wrap: wrap; gap: 2px 12px; margin-top: 2px; }
+.inv-row-by { display: inline-flex; align-items: center; gap: 5px; }
+.inv-row-by .avatar { font-size: 9px; }
+.inv-row-actions { display: flex; gap: 6px; flex: none; }
+.inv-row-actions .small-btn { min-width: 62px; }
+.auth-invite { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid #ff6b3555; border-radius: 12px; background: #ff6b3512; font-size: 14px; line-height: 1.35; }
+.auth-invite > span:last-child { display: grid; gap: 1px; min-width: 0; }
+.auth-invite b { color: #fff; font-size: 15px; overflow-wrap: anywhere; }
+.auth-invite.dead { display: block; border-color: #f8717150; background: #f8717112; }
+.auth-invite-tile { flex: none; width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: radial-gradient(120% 120% at 30% 20%, #ff9a5c, var(--ember) 45%, #c2410c); color: #1a0d06; font-weight: 800; font-size: 15px; }
+@media (max-width: 760px) {
+  dialog.invite-dialog { padding: 18px; }
+  .inv-option-grid { grid-template-columns: 1fr; }
+  .inv-row { flex-wrap: wrap; }
+  .inv-row-actions { width: 100%; justify-content: flex-end; }
+}
