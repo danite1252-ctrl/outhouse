@@ -85,6 +85,19 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+// append() and friends turn null into the text "null" (and false into
+// "false"): leave out empty bits, like el() does, so `cond ? node : null`
+// is always safe.
+for (const proto of [Element.prototype, DocumentFragment.prototype]) {
+  for (const name of ["append", "prepend", "replaceChildren", "before", "after"]) {
+    const orig = proto[name];
+    if (typeof orig !== "function") continue;
+    proto[name] = function (...nodes) {
+      return orig.apply(this, nodes.filter((n) => n != null && n !== false));
+    };
+  }
+}
+
 const big = (s) => BigInt(s || 0);
 const idGt = (a, b) => big(a) > big(b);
 

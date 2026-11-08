@@ -214,6 +214,37 @@ def scroll_to_card(pg, title):
 
 errors = []
 
+# Every screenshot also checks nothing on screen reads just "null" or "undefined"
+# (a `cond ? node : null` that ended up as text).
+from playwright.sync_api import Page
+
+STRAY_JS = """() => {
+  const out = [];
+  const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+    const t = n.nodeValue.trim();
+    if (t !== "null" && t !== "undefined" && t !== "false") continue;
+    const p = n.parentElement;
+    if (!p || !p.getClientRects().length || getComputedStyle(p).visibility === "hidden") continue;
+    out.push(`${t} in <${p.tagName.toLowerCase()} class="${p.className}">`);
+  }
+  return out;
+}"""
+_page_screenshot = Page.screenshot
+
+
+def _checked_screenshot(self, *args, **kwargs):
+    try:
+        stray = self.evaluate(STRAY_JS)
+    except Exception:
+        stray = []
+    if stray:
+        errors.append(f"stray text on {os.path.basename(kwargs.get('path', '?'))}: {stray}")
+    return _page_screenshot(self, *args, **kwargs)
+
+
+Page.screenshot = _checked_screenshot
+
 
 def check_settings_tabs(pg, opener, label):
     """Clicks through every tab of a settings window, forwards then backwards, and checks
@@ -1356,6 +1387,7 @@ with sync_playwright() as p:
     # Export / invite list.
     rm.click(f"{naxx_card} .ev-btn.export")
     rm.wait_for_selector(".export-dialog .exp-text")
+    assert rm.inner_text(".export-dialog .exp-tab.on") == "Method Raid Tools (Invite by list)"
     names = rm.input_value(".export-dialog .exp-text")
     assert names == "Shieldwall Ironfoe\nLightwell Dawnstar\nSparkles Fizzwick\nGus", names
     rm.wait_for_selector(".export-dialog .exp-flag:has-text('Gus')")
@@ -1366,14 +1398,12 @@ with sync_playwright() as p:
     rm.click(".export-dialog .exp-tab:has-text('MRT')")
     mrt = rm.input_value(".export-dialog .exp-text")
     assert mrt == "Group 1\nShieldwall Ironfoe\nLightwell Dawnstar\nSparkles Fizzwick\nGus", mrt
-    rm.select_option(".export-dialog select[aria-label='Name format']", "dash")
     rm.click(".export-dialog .exp-tab:has-text('/invite')")
     macro = rm.input_value(".export-dialog .exp-text")
-    assert macro.startswith("/invite Shieldwall-Ironfoe\n/invite Lightwell-Dawnstar"), macro
+    assert macro == "/invite Shieldwall Ironfoe\n/invite Lightwell Dawnstar\n/invite Sparkles Fizzwick\n/invite Gus", macro
     rm.uncheck(".export-dialog .check-row:has-text('Tentative') input")
     assert "Gus" not in rm.input_value(".export-dialog .exp-text")
     rm.check(".export-dialog .check-row:has-text('Tentative') input")
-    rm.select_option(".export-dialog select[aria-label='Name format']", "full")
     rm.wait_for_timeout(200)
     rm.screenshot(path=f"{SHOTS}/134-export-macros.png")
     rm.keyboard.press("Escape")

@@ -214,14 +214,12 @@ async function openAddToRaid(ev, existing = null) {
 
 // ---------- Export / invite list ----------
 
-// In-game names for an export entry. Forever characters have a first and a
-// last name, and we don't know yet which form /invite wants.
-function exportName(e, format) {
+// In-game names for an export entry. WoW: Forever characters go as
+// "First Last" (what /invite wants there, e.g. /invite Golgoroth Ironmaw).
+function exportName(e) {
   const c = e.character;
   if (!c) return { name: e.display_name, flagged: true };
-  if (!c.last_name) return { name: c.name, flagged: false };
-  const name = format === "first" ? c.name : format === "dash" ? `${c.name}-${c.last_name}` : `${c.name} ${c.last_name}`;
-  return { name, flagged: false };
+  return { name: c.last_name ? `${c.name} ${c.last_name}` : c.name, flagged: false };
 }
 
 // "/invite A\n/invite B" split into macros of under 255 characters.
@@ -255,19 +253,16 @@ async function openRaidExport(ev) {
   if (!data) return;
   const dialog = raidWindow("export-dialog");
   const forever = data.game === "forever" || data.entries.some((e) => e.character?.last_name);
-  let format = prefs.get("export_format", "lines");
-  let nameFormat = prefs.get("export_name_format", "full");
+  let format = "lines";
   const bench = el("input", { type: "checkbox", checked: prefs.get("export_bench", false) });
   const maybe = el("input", { type: "checkbox", checked: prefs.get("export_maybe", true) });
-  const nameSel = el("select", { class: "select", "aria-label": "Name format" },
-    [["full", "First Last"], ["dash", "First-Last"], ["first", "First only"]].map(([v, l]) => el("option", { value: v, selected: v === nameFormat }, l)));
   const tabs = el("div", { class: "exp-tabs", role: "tablist" });
   const out = el("div", { class: "exp-out" });
   const summary = el("div", { class: "muted small exp-summary" });
   const flags = el("div", { class: "exp-flags" });
-  const FORMATS = [["lines", "One per line"], ["comma", "Comma-separated"], ["mrt", "MRT raid groups"], ["macro", "/invite macros"]];
+  const FORMATS = [["lines", "Method Raid Tools (Invite by list)"], ["comma", "Comma-separated"], ["mrt", "MRT raid groups"], ["macro", "/invite macros"]];
   const HELP = {
-    lines: "Paste into Method Raid Tools (Raid groups or invite list), VortexInviter, RInvite and most invite addons.",
+    lines: "One name per line. In game: Method Raid Tools → Invite tools → Invite by list (or /rt invlist 1), paste into a list and invite. Works in VortexInviter, RInvite and most invite addons too.",
     comma: "For addons and sites that want one line of names.",
     mrt: "Groups of five (Group 1 to 8): tanks, then healers, then DPS. Paste into MRT's raid groups.",
     macro: "Each block is one macro (under 255 characters). Make a macro in game (/macro), paste a block in and click it.",
@@ -277,16 +272,16 @@ async function openRaidExport(ev) {
     area.value = text;
     return el("div", { class: "exp-block" },
       el("div", { class: "exp-block-head" }, el("strong", {}, label),
-        el("button", { type: "button", class: "primary small-btn exp-copy", onclick: () => copy(text, `${label} copied`) }, "Copy")),
+        el("button", { type: "button", class: "primary exp-copy", onclick: () => copy(text, `${label} copied`) }, "Copy")),
       area);
   };
   const draw = () => {
     const wanted = data.entries.filter((e) => e.status === "yes" || (maybe.checked && (e.status === "late" || e.status === "tentative")) || (bench.checked && e.status === "bench"));
-    const picked = wanted.map((e) => exportName(e, nameFormat));
+    const picked = wanted.map((e) => exportName(e));
     const names = picked.map((p) => p.name);
     tabs.replaceChildren(...FORMATS.map(([v, l]) => el("button", {
       type: "button", role: "tab", class: `exp-tab${format === v ? " on" : ""}`, "aria-selected": format === v ? "true" : "false",
-      onclick: () => { format = v; prefs.set("export_format", v); draw(); },
+      onclick: () => { format = v; draw(); },
     }, l)));
     const blocks = !names.length ? [el("p", { class: "muted" }, "Nobody to invite with these options.")]
       : format === "comma" ? [block(names.join(","), "Names")]
@@ -302,7 +297,6 @@ async function openRaidExport(ev) {
       el("div", { class: "muted small" }, "They're listed by their outhouse name, which may not be their name in game. Use “Change character or role…” on their name in the raid card, or ask them to sign up again with a character."))] : []));
   };
   [bench, maybe].forEach((b) => b.addEventListener("change", () => { prefs.set("export_bench", bench.checked); prefs.set("export_maybe", maybe.checked); draw(); }));
-  nameSel.addEventListener("change", () => { nameFormat = nameSel.value; prefs.set("export_name_format", nameFormat); draw(); });
 
   dialog.append(
     el("div", { class: "att-head" },
@@ -310,9 +304,8 @@ async function openRaidExport(ev) {
       closeX(dialog)),
     el("div", { class: "exp-options" },
       el("label", { class: "check-row" }, maybe, "Tentative & running late"),
-      el("label", { class: "check-row" }, bench, "Bench"),
-      forever ? el("label", { class: "field exp-name" }, "WoW: Forever names", nameSel) : null),
-    forever ? el("p", { class: "muted small", style: "margin:0" }, "We're not sure yet which form WoW: Forever's /invite wants for first and last names. Try First Last; if it doesn't work, switch to First-Last or First only.") : null,
+      el("label", { class: "check-row" }, bench, "Bench")),
+    forever ? el("p", { class: "muted small", style: "margin:0" }, "WoW: Forever names go as First Last, the way /invite wants them (e.g. /invite Golgoroth Ironmaw).") : null,
     summary,
     flags,
     tabs,
