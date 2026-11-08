@@ -762,7 +762,7 @@ with sync_playwright() as p:
     page.wait_for_selector(".chars-settings .char-row:has-text('Lightwell') .char-avatar img", timeout=10000)
     page.wait_for_selector(".chars-settings .char-row:has-text('Lightwell') .char-armory:has-text('ilvl 66'):has-text('Forever Flush')")
     href = page.get_attribute(".chars-settings .char-row:has-text('Lightwell') .armory-links a >> nth=0", "href")
-    assert href == "https://worldofwarcraft.blizzard.com/en-us/character/forever-us/lightwell-dawnstar", href
+    assert href == "https://worldofwarcraft.blizzard.com/en-us/forever/us/armory/character/lightwell-dawnstar", href
     page.evaluate("document.querySelector('.chars-settings .char-row').scrollIntoView({block: 'start'})")
     page.wait_for_timeout(300)
     page.screenshot(path=f"{SHOTS}/130-armory-character-cards.png")

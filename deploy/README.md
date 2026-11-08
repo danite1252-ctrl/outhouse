@@ -286,7 +286,7 @@ in `.env` if Blizzard moves things (defaults are what players found in November 
 | `BNET_NAMESPACE_GAMES` | (worked out from the name: `forever` → WoW: Forever, `classic1x` → Classic Era, `classic` → TBC) | Which game each list's characters are from, e.g. `profile-classic-{region}=tbc` |
 | `BNET_FOREVER_PROFILE_NAMESPACE` | `profile-forever-{region}` | Where Armory look-ups find characters |
 | `BNET_FOREVER_STATIC_NAMESPACE` | `static-forever-{region}` | WoW: Forever item data for `/item` |
-| `ARMORY_URL_TEMPLATE` | `https://worldofwarcraft.blizzard.com/en-us/character/forever-{region}/{slug}` | "View on Armory" link (Blizzard's address for Forever isn't confirmed; fix it here). `{region}`, `{slug}` (`name-surname`), `{name}`, `{surname}`, `{Name}`, `{Surname}` are filled in. `off` hides it |
+| `ARMORY_URL_TEMPLATE` | `https://worldofwarcraft.blizzard.com/en-us/forever/{region}/armory/character/{slug}` | "View on Armory" link (Blizzard's Forever armory address). `{region}`, `{slug}` (`name-surname`), `{name}`, `{surname}`, `{Name}`, `{Surname}` are filled in. `off` hides it |
 | `ARMORY_COMMUNITY_URL_TEMPLATE` | `https://www.aotc.gg/forever/character/{region}/{slug}` | Second link (a community armory). `off` hides it |
 | `ARMORY_REFRESH_HOURS` | `6` | How often characters going to upcoming raids are refreshed (`0` = only when someone presses Refresh) |
 

@@ -970,8 +970,8 @@ TOKEN=$TOKEN_A
 call POST "/api/channels/$CHAN/wow/char" '{"query":"Mockadin"}' | jq -e '.embeds[0] | .title == "Mockadin Lightforge"
   and (.thumbnail_url | startswith("/api/wow/avatars/us-mockadin-lightforge"))
   and (.fields[] | select(.name == "Guild") | .value == "<Forever Flush>") and (.fields[] | select(.name == "Item level") | .value == "63")
-  and (.fields[] | select(.name == "Armory") | .value | contains("Armory: https://worldofwarcraft.blizzard.com/en-us/character/forever-us/mockadin-lightforge") and contains("AoTC.gg: https://www.aotc.gg/forever/character/us/mockadin-lightforge"))
-  and .url == "https://worldofwarcraft.blizzard.com/en-us/character/forever-us/mockadin-lightforge" and (.footer | startswith("From the Armory"))' >/dev/null
+  and (.fields[] | select(.name == "Armory") | .value | contains("Armory: https://worldofwarcraft.blizzard.com/en-us/forever/us/armory/character/mockadin-lightforge") and contains("AoTC.gg: https://www.aotc.gg/forever/character/us/mockadin-lightforge"))
+  and .url == "https://worldofwarcraft.blizzard.com/en-us/forever/us/armory/character/mockadin-lightforge" and (.footer | startswith("From the Armory"))' >/dev/null
 call GET "/api/profiles/$ALICE" | jq -e '.characters[] | select(.name == "Breezy") | .item_level == 42 and .guild_name == "Throne Room" and (.avatar | length > 0)' >/dev/null
 # Raid rosters show what the Armory says about the character someone brings.
 AR=$(call POST "/api/channels/$CHAN/events" '{"title":"Armory raid","starts_at":"'"$START"'","game":"forever"}' | jq -r .event.id)

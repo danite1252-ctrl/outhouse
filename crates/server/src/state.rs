@@ -288,7 +288,7 @@ impl Config {
 /// Blizzard's character page for WoW: Forever (the address isn't confirmed
 /// yet, so it can be changed with `ARMORY_URL_TEMPLATE`).
 pub const DEFAULT_ARMORY_URL_TEMPLATE: &str =
-    "https://worldofwarcraft.blizzard.com/en-us/character/forever-{region}/{slug}";
+    "https://worldofwarcraft.blizzard.com/en-us/forever/{region}/armory/character/{slug}";
 /// A community armory that lists WoW: Forever characters.
 pub const DEFAULT_COMMUNITY_ARMORY_URL_TEMPLATE: &str =
     "https://www.aotc.gg/forever/character/{region}/{slug}";
