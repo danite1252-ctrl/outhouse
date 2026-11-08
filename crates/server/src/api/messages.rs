@@ -846,7 +846,9 @@ pub async fn upload(
     while let Some(field) = form.next_field().await.map_err(upload_error)? {
         let name = field.name().unwrap_or_default().to_string();
         match name.as_str() {
-            "content" => content = field.text().await.map_err(upload_error)?,
+            // Postgres can't store NUL characters (JSON bodies are checked
+            // in security::reject_nul; this is a form).
+            "content" => content = field.text().await.map_err(upload_error)?.replace('\0', ""),
             "reply_to_id" => {
                 let text = field.text().await.map_err(upload_error)?;
                 let text = text.trim();

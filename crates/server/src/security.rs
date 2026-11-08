@@ -337,6 +337,75 @@ pub async fn headers(req: Request, next: Next) -> Response {
     res
 }
 
+/// Does this JSON text contain a NUL character (`\u0000`, or a raw zero
+/// byte)? Postgres can't store one in text, so such a request would only
+/// end in a server error.
+pub fn json_has_nul(body: &[u8]) -> bool {
+    if body.contains(&0) {
+        return true;
+    }
+    let mut i = 0;
+    while i < body.len() {
+        if body[i] == b'\\' {
+            if body.len() >= i + 6
+                && body[i + 1] == b'u'
+                && body[i + 2..i + 6].iter().all(|b| *b == b'0')
+            {
+                return true;
+            }
+            i += 2; // skip the escaped character (an escaped backslash then u0000 is just text)
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+/// The most JSON a request may carry (the API's own limit is 2 MB).
+const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
+
+/// Middleware: refuses NUL characters in JSON bodies and in the URL with a
+/// clear 400 (they'd otherwise reach Postgres and fail with a 500).
+pub async fn reject_nul(req: Request, next: Next) -> Response {
+    use axum::response::IntoResponse;
+    let bad = || {
+        crate::error::AppError::BadRequest("Text can't contain NUL characters.".into())
+            .into_response()
+    };
+    let uri = req.uri().to_string().to_ascii_lowercase();
+    if uri.contains("%00") {
+        return bad();
+    }
+    let is_json = req
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| {
+            v.trim_start()
+                .to_ascii_lowercase()
+                .starts_with("application/json")
+        });
+    if !is_json {
+        return next.run(req).await;
+    }
+    let (parts, body) = req.into_parts();
+    let bytes = match axum::body::to_bytes(body, MAX_JSON_BYTES).await {
+        Ok(b) => b,
+        Err(_) => {
+            return (
+                axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                axum::Json(serde_json::json!({ "error": "That request is too big." })),
+            )
+                .into_response()
+        }
+    };
+    if json_has_nul(&bytes) {
+        return bad();
+    }
+    next.run(Request::from_parts(parts, axum::body::Body::from(bytes)))
+        .await
+}
+
 // ---------- the client's address ----------
 
 /// The address of whoever made the request: the connecting address, or,
@@ -698,6 +767,16 @@ mod tests {
             page.contains(&format!("<script>{BNET_PAGE_SCRIPT}</script>")),
             "api/bnet.rs's page script no longer matches security::BNET_PAGE_SCRIPT"
         );
+    }
+
+    #[test]
+    fn nul_characters_in_json() {
+        assert!(json_has_nul(br#"{"content":"a\u0000b"}"#));
+        assert!(json_has_nul(b"{\"content\":\"a\0b\"}"));
+        assert!(!json_has_nul(br#"{"content":"a\\u0000b"}"#));
+        assert!(json_has_nul(br#"{"content":"a\\\u0000b"}"#));
+        assert!(!json_has_nul(br#"{"content":"\u0001 \n \"x\""}"#));
+        assert!(!json_has_nul(br#"{"content":"trailing \"#));
     }
 
     #[test]

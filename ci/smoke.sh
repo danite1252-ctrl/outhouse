@@ -1805,6 +1805,14 @@ grep -q 'src="vendor/livekit-client.umd.js"' web/index.html
 curl -fsS -o /dev/null "$BASE/vendor/livekit-client.umd.js"
 if grep -rq "cdn.jsdelivr" web/*.html; then echo "a page still loads scripts from a CDN"; exit 1; fi
 
+step "security: NUL characters get a 400, not a server error"
+TOKEN=$TOKEN_A
+fail_call POST "/api/channels/$CHAN/messages" '{"content":"nul \u0000 here"}'
+grep -q "NUL" /tmp/body
+fail_call PATCH /api/users/@me '{"display_name":"a\u0000b"}'
+fail_call GET "/api/guilds/$GUILD/search?q=a%00b"
+call POST "/api/channels/$CHAN/messages" '{"content":"an escaped backslash: \\u0000 is fine"}' | jq -e '.content == "an escaped backslash: \\u0000 is fine"' >/dev/null
+
 step "security: no CORS, no cookies"
 curl -sS -D /tmp/sec-c -o /dev/null -H "Origin: https://evil.example" -H "Authorization: Bearer $TOKEN_A" "$BASE/api/users/@me"
 if grep -qi "^access-control-allow-origin" /tmp/sec-c; then echo "API answers cross-origin reads:"; cat /tmp/sec-c; exit 1; fi

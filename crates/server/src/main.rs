@@ -87,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
         .route_service("/login", ServeFile::new(&client))
         .fallback_service(ServeDir::new(&web_dir))
         .layer(axum::middleware::map_response(no_stale_files))
+        .layer(axum::middleware::from_fn(security::reject_nul))
         .layer(axum::middleware::from_fn(security::headers))
         .layer(TraceLayer::new_for_http());
 

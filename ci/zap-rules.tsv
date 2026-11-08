@@ -9,3 +9,8 @@
 10109	INFO	Yes, it's a modern web app
 10049	INFO	Static files are cacheable by design (Cache-Control: no-cache revalidates them)
 10015	INFO	Static files use no-cache (revalidate); API answers aren't shared caches' business behind Apache
+90003	WARN	Google Fonts' stylesheet (/app) can't carry SRI (Google varies it per browser); it's CSS from a host the CSP names, and can't run script
+40014	INFO	Stored text comes back in JSON (that's the API); the client always renders it as text, never HTML
+10024	INFO	ZAP's spider submits the sign-in form without JavaScript; the form is method=post so a password never lands in a URL
+10111	INFO	Yes, /api/auth/login is a sign-in request
+100001	INFO	ZAP expected JSON from HTML pages and the reverse in its API pass

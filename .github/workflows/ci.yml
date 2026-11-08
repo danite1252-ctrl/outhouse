@@ -112,6 +112,7 @@ jobs:
           python ci/landing_test.py
           python ci/invite_test.py
           python ci/ui_test.py
+          python ci/csp_test.py
       - name: Screenshots (base64, for review)
         if: always()
         run: |

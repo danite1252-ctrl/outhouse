@@ -93,6 +93,15 @@ def wait_in_app(pg, name):
 with sync_playwright() as p:
     browser = p.chromium.launch()
 
+    # The real Content-Security-Policy blocks eval, and Playwright's
+    # wait_for_function compiles its expression with new Function(), so these
+    # functional tests bypass CSP. ci/csp_test.py checks the app under the
+    # real policy.
+    def _bypass_csp(make):
+        return lambda *a, **kw: make(*a, **{"bypass_csp": True, **kw})
+    browser.new_page = _bypass_csp(browser.new_page)
+    browser.new_context = _bypass_csp(browser.new_context)
+
     # ---- the Invite people dialog ----
     ctx, pg = page_for(browser, "invite-dialog", dict(DESKTOP, permissions=["clipboard-read", "clipboard-write"]), OWNER,
                        f"localStorage.setItem('outhouse_guild', {json.dumps(G)});")

@@ -5,7 +5,7 @@
 #   2. API scan (active: injection, XSS, traversal...) of the main API
 #      endpoints with a signed-in user's token (ci/zap-openapi.json).
 # High-risk alerts fail the job unless ci/zap-rules.tsv says why they're
-# false positives. Everything found is printed as a table.
+# false positives, and so does any request ZAP makes the server fail (500). Everything found is printed as a table.
 #   BASE=http://127.0.0.1:8080 bash ci/zap.sh
 set -euo pipefail
 BASE=${BASE:-http://127.0.0.1:8080}
@@ -73,6 +73,9 @@ for name in ("baseline.json", "api.json"):
         print(f"{risk.get(code, code):7} {pid:>6}  {alert} x{count}{note}")
         if code == "3" and pid not in accepted:
             failed.append(f"{pid} {alert}")
+        # ZAP's fuzzing made the server fail (500): a bug, whatever the risk level.
+        if alert.startswith("A Server Error response code"):
+            failed.append(f"{pid} {alert} (see the server log)")
     if not rows:
         print("no alerts")
 if failed:
