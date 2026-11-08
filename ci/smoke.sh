@@ -1140,4 +1140,150 @@ hc "$BASE/api/health" "$PUSH/ok"
 curl -fsS "$PUSH/alerts/ntfy" | jq -e 'any(.[]; .body | contains("mounted"))' >/dev/null || { echo "no off-site copy alert"; exit 1; }
 bash -n deploy/backup.sh deploy/setup.sh deploy/healthcheck.sh deploy/restore.sh
 
+step "edit channel: name, topic and limits"
+TOKEN=$TOKEN_A
+# New outhouses: only the front porch gets the old default topic.
+NG=$(call POST /api/guilds '{"name":"Topic Test"}' | jq -r .id)
+call GET "/api/guilds/$NG/channels" | jq -e '(.[] | select(.name == "front-porch") | .topic == "Leave it cleaner than you found it.") and (.[] | select(.kind == 2) | .topic == "")' >/dev/null
+call DELETE "/api/guilds/$NG" >/dev/null
+EC=$(call POST "/api/guilds/$GUILD/channels" '{"name":"Edit Me"}' | jq -r .id)
+call GET "/api/guilds/$GUILD/channels" | jq -e --arg c "$EC" '.[] | select(.id == $c) | .topic == "" and .slowmode_secs == 0 and .content_mode == "default" and (.nsfw_accepted | not)' >/dev/null
+call PATCH "/api/channels/$EC" '{"name":"Raid Talk","topic":"  Strats and `loot`: https://example.com <@'"$BOB"'>  "}' \
+  | jq -e --arg b "$BOB" '.name == "raid-talk" and .topic == "Strats and `loot`: https://example.com <@\($b)>"' >/dev/null
+LONG=$(python3 -c 'print("x" * 1024)')
+call PATCH "/api/channels/$EC" "{\"topic\":\"$LONG\"}" | jq -e '.topic | length == 1024' >/dev/null
+fail_call PATCH "/api/channels/$EC" "{\"topic\":\"${LONG}y\"}"
+grep -q "1024" /tmp/body
+call PATCH "/api/channels/$EC" '{"topic":""}' | jq -e '.topic == ""' >/dev/null
+call PATCH "/api/channels/$EC" '{"topic":"Raid strats only"}' >/dev/null
+call GET "/api/guilds/$GUILD/channels" | jq -e --arg c "$EC" '.[] | select(.id == $c) | .topic == "Raid strats only"' >/dev/null
+fail_call PATCH "/api/channels/$EC" '{"name":"   "}'
+fail_call PATCH "/api/channels/$EC" '{"slowmode_secs":-1}'
+fail_call PATCH "/api/channels/$EC" '{"slowmode_secs":21601}'
+fail_call PATCH "/api/channels/$EC" '{"content_mode":"spicy"}'
+VC=$(call POST "/api/guilds/$GUILD/channels" '{"name":"Edit Voice","kind":2}' | jq -r .id)
+call PATCH "/api/channels/$VC" '{"name":"Raid Comms"}' | jq -e '.name == "Raid Comms" and .kind == 2' >/dev/null
+fail_call PATCH "/api/channels/$VC" '{"topic":"voice has no topic"}'
+fail_call PATCH "/api/channels/$VC" '{"content_mode":"nsfw"}'
+fail_call PATCH "/api/channels/$VC" '{"slowmode_secs":5}'
+# Needs Manage Channels; strangers don't even see the channel.
+TOKEN=$TOKEN_B; fail_call PATCH "/api/channels/$EC" '{"topic":"bob was here"}'; TOKEN=$TOKEN_A
+TOKEN=$OUT; fail_call PATCH "/api/channels/$EC" '{"topic":"stranger"}'; TOKEN=$TOKEN_A
+call GET "/api/guilds/$GUILD/channels" | jq -e --arg c "$EC" '.[] | select(.id == $c) | .topic == "Raid strats only"' >/dev/null
+
+step "slowmode"
+call PATCH "/api/channels/$EC" '{"slowmode_secs":5}' | jq -e '.slowmode_secs == 5' >/dev/null
+TOKEN=$TOKEN_B
+SLOW1=$(call POST "/api/channels/$EC/messages" '{"content":"first!"}' | jq -r .id)
+fail_call POST "/api/channels/$EC/messages" '{"content":"second, too soon"}'
+grep -q "Slowmode is on. You can post again in [1-5]s." /tmp/body || { echo "wrong slowmode reply:"; cat /tmp/body; exit 1; }
+# Deleting your message doesn't reset the wait; uploads wait too.
+call DELETE "/api/channels/$EC/messages/$SLOW1" >/dev/null
+fail_call POST "/api/channels/$EC/messages" '{"content":"deleted it, try again"}'
+code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $TOKEN" -F "content=upload too soon" -F "files=@/tmp/short.wav" "$BASE/api/channels/$EC/messages/upload")
+[[ "$code" == 400 ]] && grep -q "Slowmode" /tmp/body || { echo "upload skipped slowmode -> $code"; cat /tmp/body; exit 1; }
+TOKEN=$TOKEN_A
+# Manage Channels (Alice owns the place) skips it...
+call POST "/api/channels/$EC/messages" '{"content":"mods skip slowmode 1"}' >/dev/null
+call POST "/api/channels/$EC/messages" '{"content":"mods skip slowmode 2"}' >/dev/null
+# ...and so does Manage Messages in just this channel.
+call PUT "/api/channels/$EC/permissions/$BOB" '{"kind":"member","allow":"128","deny":"0"}' >/dev/null
+TOKEN=$TOKEN_B
+call POST "/api/channels/$EC/messages" '{"content":"bob can manage messages here 1"}' >/dev/null
+call POST "/api/channels/$EC/messages" '{"content":"bob can manage messages here 2"}' >/dev/null
+TOKEN=$TOKEN_A
+call DELETE "/api/channels/$EC/permissions/$BOB" >/dev/null
+sleep 5.3
+TOKEN=$TOKEN_B; call POST "/api/channels/$EC/messages" '{"content":"after the wait"}' >/dev/null; TOKEN=$TOKEN_A
+call PATCH "/api/channels/$EC" '{"slowmode_secs":0}' >/dev/null
+TOKEN=$TOKEN_B; call POST "/api/channels/$EC/messages" '{"content":"slowmode off again"}' >/dev/null; TOKEN=$TOKEN_A
+
+step "spoiler and age-restricted (18+) channels"
+call PATCH "/api/channels/$EC" '{"content_mode":"spoiler"}' | jq -e '.content_mode == "spoiler"' >/dev/null
+TOKEN=$TOKEN_B; call GET "/api/channels/$EC/messages" | jq -e 'length > 0' >/dev/null; TOKEN=$TOKEN_A
+NS=$(call POST "/api/guilds/$GUILD/channels" '{"name":"after-dark"}' | jq -r .id)
+call POST "/api/channels/$NS/messages" '{"content":"before it was restricted"}' >/dev/null
+call PATCH "/api/channels/$NS" '{"content_mode":"nsfw","topic":"Grown-ups only"}' | jq -e '.content_mode == "nsfw" and (.nsfw_accepted | not)' >/dev/null
+# Everyone answers the gate, owner included.
+fail_call GET "/api/channels/$NS/messages"
+jq -e '.code == "age_restricted" and (.error | contains("18+"))' /tmp/body >/dev/null
+call PUT "/api/channels/$NS/age-gate" >/dev/null
+call PUT "/api/channels/$NS/age-gate" >/dev/null   # twice is fine
+call GET "/api/guilds/$GUILD/channels" | jq -e --arg c "$NS" '.[] | select(.id == $c) | .nsfw_accepted' >/dev/null
+# Bob is offline: his push says something arrived, but not what.
+NM=$(call POST "/api/channels/$NS/messages" '{"content":"zebrafinch secret for <@'"$BOB"'>"}' | jq -r .id)
+call PUT "/api/channels/$NS/pins/$NM" >/dev/null
+call GET "/api/guilds/$GUILD/search?q=zebrafinch" | jq -e '.total == 1' >/dev/null
+for i in $(seq 1 20); do
+  curl -fsS "$PUSH/received/bob" | jq -e 'any(.[]; .payload.title == "New message in #after-dark")' >/dev/null 2>&1 && break
+  sleep 0.5
+done
+RB=$(curl -fsS "$PUSH/received/bob")
+check_push "$RB" 'any(.[]; .payload.title == "New message in #after-dark" and (.payload.body | contains("age-restricted")))' "bob: content-free push from an 18+ channel"
+check_push "$RB" 'all(.[]; ((.payload.body // "") + (.payload.title // "")) | contains("zebrafinch") | not)' "bob: no 18+ content in pushes"
+# Bob hasn't said he's 18+: no messages, pins, threads, search results, posting or reacting.
+TOKEN=$TOKEN_B
+call GET "/api/guilds/$GUILD/channels" | jq -e --arg c "$NS" '.[] | select(.id == $c) | .content_mode == "nsfw" and .topic == "Grown-ups only" and (.nsfw_accepted | not)' >/dev/null
+fail_call GET "/api/channels/$NS/messages"; jq -e '.code == "age_restricted"' /tmp/body >/dev/null
+fail_call GET "/api/channels/$NS/messages?around=$NM"
+fail_call GET "/api/channels/$NS/pins"
+fail_call GET "/api/channels/$NS/threads"
+fail_call POST "/api/channels/$NS/messages" '{"content":"let me in"}'
+fail_call PUT "/api/channels/$NS/messages/$NM/reactions/%F0%9F%91%8D"
+fail_call POST "/api/channels/$NS/polls" '{"question":"in?","options":["yes","no"]}'
+call GET "/api/guilds/$GUILD/search?q=zebrafinch" | jq -e '.total == 0 and .messages == []' >/dev/null
+call GET "/api/guilds/$GUILD/search?q=$(enc 'in:#after-dark')" | jq -e '.total == 0' >/dev/null
+# The gateway holds back its messages too (but still says the channel changed).
+node ci/gateway_probe.mjs "$BASE" "$TOKEN_B" /tmp/gw-bob.jsonl 25 &
+PROBE=$!
+for i in $(seq 1 40); do grep -q '"READY"' /tmp/gw-bob.jsonl 2>/dev/null && break; sleep 0.25; done
+grep -q '"READY"' /tmp/gw-bob.jsonl || { echo "gateway probe never got READY"; cat /tmp/gw-bob.jsonl; exit 1; }
+TOKEN=$TOKEN_A
+call POST "/api/channels/$NS/messages" '{"content":"gatewaycheck hidden quokka"}' >/dev/null
+call PUT "/api/channels/$NS/messages/$NM/reactions/%F0%9F%94%A5" >/dev/null
+call PATCH "/api/channels/$NS" '{"topic":"Grown-ups only, mind"}' >/dev/null
+call POST "/api/channels/$CHAN/messages" '{"content":"gatewaycheck visible wombat"}' >/dev/null
+for i in $(seq 1 40); do grep -q "visible wombat" /tmp/gw-bob.jsonl && break; sleep 0.25; done
+sleep 0.5
+jq -s -e --arg ns "$NS" '
+  any(.[]; .t == "MESSAGE_CREATE" and (.d.content | contains("visible wombat")))
+  and any(.[]; .t == "CHANNEL_UPDATE" and .d.id == $ns and .d.topic == "Grown-ups only, mind")
+  and all(.[]; (.t | IN("MESSAGE_CREATE", "MESSAGE_UPDATE", "REACTION_ADD", "TYPING_START", "THREAD_UPDATE")) and .d.channel_id == $ns | not)
+  and all(.[]; tostring | contains("quokka") | not)' /tmp/gw-bob.jsonl >/dev/null \
+  || { echo "gateway leaked an 18+ channel (or missed events):"; cat /tmp/gw-bob.jsonl; exit 1; }
+# Bob says he's 18+: everything shows up, on every device (and live).
+TOKEN=$TOKEN_B
+call PUT "/api/channels/$NS/age-gate" >/dev/null
+call GET "/api/channels/$NS/messages" | jq -e 'any(.[]; .content | contains("zebrafinch")) and any(.[]; .content | contains("quokka"))' >/dev/null
+call GET "/api/channels/$NS/pins" | jq -e 'length == 1' >/dev/null
+call GET "/api/guilds/$GUILD/search?q=zebrafinch" | jq -e '.total == 1' >/dev/null
+call GET "/api/guilds/$GUILD/channels" | jq -e --arg c "$NS" '.[] | select(.id == $c) | .nsfw_accepted' >/dev/null
+TOKEN=$TOKEN_A
+call POST "/api/channels/$NS/messages" '{"content":"gatewaycheck now visible platypus"}' >/dev/null
+for i in $(seq 1 40); do grep -q "platypus" /tmp/gw-bob.jsonl && break; sleep 0.25; done
+kill $PROBE 2>/dev/null || true
+jq -s -e --arg ns "$NS" '
+  any(.[]; .t == "CHANNEL_AGE_GATE" and .d.channel_id == $ns and .d.accepted)
+  and any(.[]; .t == "MESSAGE_CREATE" and .d.channel_id == $ns and (.d.content | contains("platypus")))' /tmp/gw-bob.jsonl >/dev/null \
+  || { echo "no 18+ messages after accepting:"; cat /tmp/gw-bob.jsonl; exit 1; }
+# Taking it back closes the gate again.
+TOKEN=$TOKEN_B
+call DELETE "/api/channels/$NS/age-gate" >/dev/null
+fail_call GET "/api/channels/$NS/messages"
+call GET "/api/guilds/$GUILD/channels" | jq -e --arg c "$NS" '.[] | select(.id == $c) | .nsfw_accepted | not' >/dev/null
+TOKEN=$OUT; fail_call PUT "/api/channels/$NS/age-gate"; TOKEN=$TOKEN_A
+# Back to default: open to all again.
+call PATCH "/api/channels/$NS" '{"content_mode":"default"}' >/dev/null
+TOKEN=$TOKEN_B; call GET "/api/channels/$NS/messages" | jq -e 'length >= 3' >/dev/null; TOKEN=$TOKEN_A
+# Every change is in the audit log.
+AUDC=$(call GET "/api/guilds/$GUILD/audit-log?action=channel_update&limit=100")
+jq -e '
+  any(.entries[]; .details | contains("Name: edit-me → raid-talk"))
+  and any(.entries[]; .details | contains("Topic: (none) → “Raid strats only”"))
+  and any(.entries[]; .details | contains("Slowmode: Off → 5s"))
+  and any(.entries[]; .details | contains("Content: Default → Spoiler channel"))
+  and any(.entries[]; .details | contains("Content: Default → Age-restricted"))
+  and any(.entries[]; .details | contains("Name: Edit Voice → Raid Comms"))
+  and all(.entries[]; .target_kind == "channel")' <<<"$AUDC" >/dev/null || { echo "channel changes missing from the audit log:"; jq '.entries[] | .details' <<<"$AUDC"; exit 1; }
+
 echo "Smoke test passed."

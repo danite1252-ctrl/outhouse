@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 
 from playwright.sync_api import sync_playwright
@@ -1476,6 +1477,143 @@ with sync_playwright() as p:
         pg.wait_for_timeout(200)
         pg.screenshot(path=f"{SHOTS}/{n + 3}-{label}-export-mrt.png")
         pg.keyboard.press("Escape")
+        pg.close()
+
+
+    # ---- Edit channel: topics, slowmode, spoiler and age-restricted channels ----
+    api("PATCH", f"/api/channels/{chan['id']}", {
+        "topic": f"Raid nights Wed & Sun 8pm server time. Sign up on the cards, ask <@{DAVE}> about loot, strats at https://example.com/strats and `/raid` for a new one."}, TOKEN)
+    spoil = api("POST", f"/api/guilds/{G}/channels", {"name": "naxx-spoilers"}, TOKEN)
+    api("PATCH", f"/api/channels/{spoil['id']}", {"content_mode": "spoiler", "slowmode_secs": 30,
+                                                   "topic": "New raid talk. Everything is blurred until you click it."}, TOKEN)
+    for text in ("Kel'Thuzad drops the Frostmourne-looking sword now??", "Phase 3 adds Guardians of Icecrown, save your cooldowns",
+                 "Sapphiron has a new frost breath pattern, hide behind the ice blocks"):
+        api("POST", f"/api/channels/{spoil['id']}/messages", {"content": text}, dave["token"])
+    dark = api("POST", f"/api/guilds/{G}/channels", {"name": "after-dark"}, TOKEN)
+    api("PATCH", f"/api/channels/{dark['id']}", {"content_mode": "nsfw", "topic": "Grown-ups only. Keep it legal."}, TOKEN)
+    api("PUT", f"/api/channels/{dark['id']}/age-gate", None, TOKEN)
+    api("POST", f"/api/channels/{dark['id']}/messages", {"content": "Late night banter lives here."}, TOKEN)
+    api("DELETE", f"/api/channels/{dark['id']}/age-gate", None, TOKEN)
+    # Dave can't read it until he says he's 18+.
+    try:
+        api("GET", f"/api/channels/{dark['id']}/messages", None, dave["token"])
+        raise AssertionError("18+ channel readable before accepting")
+    except urllib.error.HTTPError as e:
+        assert e.code == 403, e.code
+
+    ec = fresh(TOKEN, "channels-desktop", viewport={"width": 1280, "height": 800})
+    ec.wait_for_selector(".chat-head .topic.has-topic:has-text('Raid nights')", timeout=10000)
+    assert ec.evaluate("document.querySelector('.chat-head').textContent.includes('Leave it cleaner')") is False
+    ec.screenshot(path=f"{SHOTS}/160-channel-topic-header.png")
+    ec.click("#channel-name")
+    ec.wait_for_selector(".topic-dialog .topic-full a")
+    ec.screenshot(path=f"{SHOTS}/161-topic-dialog.png")
+    ec.click(".topic-dialog button:has-text('Edit channel')")
+    ec.wait_for_selector("dialog.edit-channel .ec-modes")
+    ec.wait_for_timeout(300)
+    ec.screenshot(path=f"{SHOTS}/162-edit-channel-overview.png")
+    ec.fill("dialog.edit-channel textarea", "Raid nights Wed & Sun 8pm. Bring flasks, <@" + DAVE + "> runs loot.")
+    ec.wait_for_selector(".ec-savebar.show")
+    ec.screenshot(path=f"{SHOTS}/163-edit-channel-unsaved.png")
+    ec.click(".ec-savebar button:has-text('Save changes')")
+    ec.wait_for_selector(".ec-savebar.show", state="hidden")
+    ec.wait_for_selector(".chat-head .topic:has-text('Bring flasks')", timeout=10000)
+    ec.click("dialog.edit-channel .settings-nav button[data-tab='permissions']")
+    ec.wait_for_selector("dialog.edit-channel .ec-perms .perm-row", timeout=10000)
+    ec.wait_for_timeout(300)
+    ec.screenshot(path=f"{SHOTS}/164-edit-channel-permissions.png")
+    ec.click("dialog.edit-channel .settings-nav button[data-tab='delete']")
+    ec.wait_for_selector("dialog.edit-channel .ec-danger")
+    ec.screenshot(path=f"{SHOTS}/165-edit-channel-delete.png")
+    ec.keyboard.press("Escape")
+    ec.wait_for_selector("dialog.settings", state="detached")
+    # The ⚙ on hover and the right-click menu both open it.
+    ec.hover(f"#text-channels .channel[data-id='{spoil['id']}']")
+    ec.click(f"#text-channels .channel[data-id='{spoil['id']}'] .ch-gear")
+    ec.wait_for_selector("dialog.edit-channel .ec-mode-spoiler input:checked")
+    assert ec.evaluate("document.querySelector('.ec-slow-value').textContent") == "30 seconds"
+    ec.keyboard.press("Escape")
+    ec.wait_for_selector("dialog.settings", state="detached")
+    ec.click(f"#text-channels .channel[data-id='{dark['id']}']", button="right")
+    ec.wait_for_selector(".menu button:has-text('Edit channel')")
+    ec.screenshot(path=f"{SHOTS}/166-channel-menu.png")
+    ec.keyboard.press("Escape")
+    # Age-restricted: the gate, then the messages once you say yes.
+    ec.click(f"#text-channels .channel[data-id='{dark['id']}']")
+    ec.wait_for_selector(".age-gate .ag-continue")
+    assert ec.evaluate(f"!!document.querySelector(\"#text-channels .channel[data-id='{dark['id']}'] .nsfw-badge\")")
+    assert ec.evaluate("getComputedStyle(document.querySelector('#composer')).display") == "none"
+    ec.screenshot(path=f"{SHOTS}/167-nsfw-gate.png")
+    ec.click(".age-gate .ag-continue")
+    ec.wait_for_selector("#messages .msg-text:has-text('Late night banter')", timeout=10000)
+    ec.screenshot(path=f"{SHOTS}/168-nsfw-accepted.png")
+    # Spoiler channel: blurred until clicked.
+    ec.click(f"#text-channels .channel[data-id='{spoil['id']}']")
+    ec.wait_for_selector("#messages article.msg.spoilered")
+    ec.wait_for_selector(".spoiler-bar")
+    ec.screenshot(path=f"{SHOTS}/169-spoiler-channel.png")
+    before = ec.evaluate("document.querySelectorAll('#messages article.msg.spoilered').length")
+    ec.click("#messages article.msg.spoilered .spoiler-cover >> nth=0")
+    ec.wait_for_function(f"document.querySelectorAll('#messages article.msg.spoilered').length === {before - 1}")
+    ec.click(".spoiler-bar button:has-text('Show all')")
+    ec.wait_for_function("document.querySelectorAll('#messages article.msg.spoilered').length === 0")
+    ec.screenshot(path=f"{SHOTS}/170-spoiler-shown.png")
+    ec.close()
+
+    # Slowmode countdown for someone who doesn't skip it.
+    sd = fresh(dave["token"], "slowmode-desktop", viewport={"width": 1280, "height": 800})
+    sd.click(f"#text-channels .channel[data-id='{spoil['id']}']")
+    sd.wait_for_selector("#slowmode-note")
+    sd.fill("#composer-input", "Who's got the frost resist gear?")
+    sd.keyboard.press("Enter")
+    sd.wait_for_selector("#slowmode-note.cooling", timeout=10000)
+    sd.wait_for_timeout(1200)
+    sd.screenshot(path=f"{SHOTS}/171-slowmode-countdown.png")
+    sd.fill("#composer-input", "too quick")
+    sd.keyboard.press("Enter")
+    sd.wait_for_selector(".toast:has-text('Slowmode')", timeout=5000)
+    assert sd.evaluate("document.querySelector('#composer-input').value") == "too quick"
+    # Dave sees the 18+ gate (Carol's yes doesn't count for him).
+    sd.click(f"#text-channels .channel[data-id='{dark['id']}']")
+    sd.wait_for_selector(".age-gate")
+    sd.close()
+
+    # Phone and Android app.
+    api("DELETE", f"/api/channels/{dark['id']}/age-gate", None, TOKEN)
+    for label, kw, n in (("channels-phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True}, 175),
+                         ("android-channels", {"viewport": {"width": 393, "height": 852}, "is_mobile": True, "has_touch": True}, 185)):
+        pg = fresh(TOKEN, label, **kw)
+        pg.wait_for_selector("#channel-name.has-topic")
+        pg.screenshot(path=f"{SHOTS}/{n}-{label}-header.png")
+        pg.click("#channel-name")
+        pg.wait_for_selector(".topic-dialog")
+        pg.wait_for_timeout(200)
+        pg.screenshot(path=f"{SHOTS}/{n + 1}-{label}-topic.png")
+        pg.click(".topic-dialog button:has-text('Done')")
+        pg.evaluate(f"openEditChannel(chById('{chan['id']}'))")
+        pg.wait_for_selector("dialog.edit-channel .ec-modes")
+        pg.wait_for_timeout(300)
+        pg.screenshot(path=f"{SHOTS}/{n + 2}-{label}-edit-channel.png")
+        pg.evaluate("document.querySelector('dialog.edit-channel .ec-modes').scrollIntoView({block: 'end'})")
+        pg.click("dialog.edit-channel .ec-mode-spoiler")
+        pg.wait_for_selector(".ec-savebar.show")
+        pg.wait_for_timeout(300)
+        pg.screenshot(path=f"{SHOTS}/{n + 3}-{label}-edit-visibility.png")
+        pg.click(".ec-savebar button:has-text('Reset')")
+        pg.click("dialog.edit-channel .settings-nav button[data-tab='permissions']")
+        pg.wait_for_selector("dialog.edit-channel .ec-perms .perm-row", timeout=10000)
+        pg.wait_for_timeout(300)
+        pg.screenshot(path=f"{SHOTS}/{n + 4}-{label}-edit-permissions.png")
+        pg.keyboard.press("Escape")
+        pg.wait_for_selector("dialog.settings", state="detached")
+        pg.evaluate(f"selectChannel('{dark['id']}')")
+        pg.wait_for_selector(".age-gate .ag-continue")
+        pg.wait_for_timeout(200)
+        pg.screenshot(path=f"{SHOTS}/{n + 5}-{label}-nsfw-gate.png")
+        pg.evaluate(f"selectChannel('{spoil['id']}')")
+        pg.wait_for_selector("#messages article.msg.spoilered")
+        pg.wait_for_timeout(200)
+        pg.screenshot(path=f"{SHOTS}/{n + 6}-{label}-spoiler.png")
         pg.close()
 
 
