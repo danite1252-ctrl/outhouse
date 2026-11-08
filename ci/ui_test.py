@@ -1335,7 +1335,7 @@ with sync_playwright() as p:
     carolv.evaluate("setPtt(true)")
     carolv.wait_for_function("(() => { const p = state.voice.room.localParticipant.getTrackPublication(LivekitClient.Track.Source.Microphone); return !!p && !p.isMuted; })()", timeout=15000)
     carolv.evaluate("setPtt(false)")
-    carolv.evaluate("prefs.set('voice_mode', 'vad'); syncMic()")
+    carolv.evaluate("prefs.set('voice_mode', 'vad'); syncMic(); renderVoicePanel()")
 
     # ---- Soundboard volume is separate from Output volume ----
     ERIN = erin["user"]["id"]
@@ -1939,8 +1939,8 @@ with sync_playwright() as p:
     nm.keyboard.press("Escape")
     nm.close()
     # Phone width: long-press menu and the dialog.
-    for label, kw, n in (("nick-phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True}, 198),
-                         ("android-nick", {"viewport": {"width": 393, "height": 852}, "is_mobile": True, "has_touch": True}, 200)):
+    for label, kw, n in (("nick-phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True}, 1960),
+                         ("android-nick", {"viewport": {"width": 393, "height": 852}, "is_mobile": True, "has_touch": True}, 1980)):
         pg = fresh(TOKEN, label, **kw)
         pg.click("#members-toggle")
         pg.wait_for_timeout(400)

@@ -1483,6 +1483,7 @@ dialog.invite-dialog { width: min(500px, 94vw); max-height: 90vh; }
 }
 
 /* ---------- change someone's nickname ---------- */
+dialog.nick-dialog { width: min(420px, 92vw); }
 dialog.nick-dialog .row { flex-wrap: wrap; }
 dialog.nick-dialog .nick-reset { margin-right: auto; }
 dialog.nick-dialog .nick-reset:disabled { opacity: .45; cursor: default; }
