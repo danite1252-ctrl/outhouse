@@ -1283,6 +1283,8 @@ with sync_playwright() as p:
 
 
     # ---- Mute / deafen live in the user bar (in voice and out of it) ----
+    frankv.keyboard.press("Escape")
+    frankv.wait_for_selector("dialog.settings", state="detached")
     for pg in (carolv, erinv, frankv):
         assert pg.query_selector("#voice-panel #me-mute") is None, "mute still in the voice panel"
         assert pg.query_selector(".user-panel #me-mute") and pg.query_selector(".user-panel #me-deafen"), "mute/deafen missing from the user bar"
