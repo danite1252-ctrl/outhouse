@@ -219,33 +219,80 @@ link. Optional settings, added to `~/outhouse/deploy/.env` (then
 | `WOWHEAD_DATA_ENV` | `4` | Wowhead's data set number (4 = Classic era) |
 | `LINK_PREVIEWS_OFFLINE` | off | `1` = never fetch pages for link previews (WoW links still get a basic card) |
 
-### Battle.net linking (optional)
-With these set, Settings → Profile & picture shows **Link Battle.net**, which
-imports the Classic characters Blizzard lists for that account (people can
-still add and edit characters by hand; if Blizzard's API doesn't list WoW:
-Forever characters, nothing is imported and nothing breaks). Without them the
-button is hidden.
+### Battle.net and the Armory (optional)
+With Battle.net API keys set, Outhouse can:
 
-1. Sign in at https://develop.battle.net/access/clients and **Create Client**.
-2. Name it "Outhouse", and add the **Redirect URL**
-   `https://outhouse.chat/api/bnet/callback` (your domain). Tick nothing else.
-3. Copy the client ID and secret into `~/outhouse/deploy/.env`:
-   ```
-   BNET_CLIENT_ID=...
-   BNET_CLIENT_SECRET=...
-   BNET_REGION=us        # or eu, kr, tw
-   ```
-4. `docker compose up -d` in `~/outhouse/deploy`.
+- **Link Battle.net** (Settings → Profile & picture): imports your WoW: Forever
+  characters (first and last name, class, race including Skyborne, faction,
+  level, ruleset), plus any Classic Era / TBC ones. Linking again updates them
+  instead of adding them twice. The sign-in token is used once and not kept.
+- **Look up on the Armory** in the *Add a character* form: type the first and
+  last name, pick the region, and it fills in class, race, level, ruleset,
+  guild, item level and the portrait. Nobody has to link anything for this.
+- **Refresh** each WoW: Forever character, and refresh characters signed up for
+  raids in the next two weeks every 6 hours by itself (slowly, a few at a time).
+- Show portraits, item level and guild on character cards, profile cards, raid
+  rosters (hover a name) and `/char`, and use Blizzard's WoW: Forever item data
+  for `/item` when Wowhead doesn't have an item.
 
-The server sends people back to `https://<your DOMAIN>/api/bnet/callback`,
-so that's the redirect URL to register. (Running it on your PC instead? Set
-`PUBLIC_URL=http://localhost:8080` in `.env` and register
-`http://localhost:8080/api/bnet/callback`.) Advanced: `BNET_PROFILE_NAMESPACES` (default
-`profile-classic1x-{region},profile-classic-{region}`) picks which Blizzard
-character lists to try; imported characters count as WoW: Forever (as TBC if the
-namespace mentions tbc/anniversary) unless you map them, e.g.
-`BNET_NAMESPACE_GAMES=profile-classic1x-{region}=era,profile-classic-{region}=tbc`. The Battle.net sign-in token is only used once and
-isn't stored.
+Without the keys all of that is hidden, everything else works, and Settings →
+Profile & picture says an admin can switch it on. "View on Armory" links work
+either way.
+
+**Switching it on (about 5 minutes):**
+
+1. Go to https://develop.battle.net and sign in with your Battle.net account
+   (any account works; you may need to accept the developer terms and verify
+   your email).
+2. Open **API Access** (https://develop.battle.net/access/clients) and click
+   **Create Client**.
+3. Fill in:
+   - **Client name:** `Outhouse`
+   - **Redirect URLs:** `https://oh.hartspace.cc/api/bnet/callback`
+     (exactly that: your domain + `/api/bnet/callback`)
+   - **Service URL:** `https://oh.hartspace.cc`
+   - **Intended use:** something like "Guild chat site: imports our members'
+     WoW characters and shows them from the Armory."
+   - Leave everything else as it is, then **Save**.
+4. On the client's page, copy the **Client ID**, and click to show and copy the
+   **Client Secret**. (The secret is like a password: don't paste it in chat or
+   anywhere public. If it ever leaks, use "Generate new secret" there.)
+5. On the server, edit `~/outhouse/deploy/.env` and add:
+   ```
+   BNET_CLIENT_ID=paste-the-client-id
+   BNET_CLIENT_SECRET=paste-the-client-secret
+   BNET_REGION=us
+   ```
+   `BNET_REGION` is where your characters are: `us` (the Americas *and*
+   Oceania, so Australian players on the Oceanic servers are `us`), `eu`, `kr`
+   or `tw`. It's only the default: people can pick another region when they
+   look a character up.
+6. Redeploy: in `~/outhouse/deploy` run `docker compose up -d` (or use
+   `push.ps1` from your PC as usual).
+7. Check it: Settings → Profile & picture should show **Link Battle.net**, and
+   *Add character* should show **Look up on the Armory**.
+   `docker compose logs outhouse | grep -i battle.net` shows any problems
+   (the secret and tokens are never written to the log).
+
+Running it on your PC instead? Set `PUBLIC_URL=http://localhost:8080` in `.env`
+and also add `http://localhost:8080/api/bnet/callback` as a redirect URL.
+
+**Blizzard hasn't documented WoW: Forever's API yet**, so these can be changed
+in `.env` if Blizzard moves things (defaults are what players found in November 2026):
+
+| Setting | Default | What it does |
+|---|---|---|
+| `BNET_PROFILE_NAMESPACES` | `profile-forever-{region},profile-classic1x-{region},profile-classic-{region}` | Character lists tried by **Link Battle.net**, in order |
+| `BNET_NAMESPACE_GAMES` | (worked out from the name: `forever` → WoW: Forever, `classic1x` → Classic Era, `classic` → TBC) | Which game each list's characters are from, e.g. `profile-classic-{region}=tbc` |
+| `BNET_FOREVER_PROFILE_NAMESPACE` | `profile-forever-{region}` | Where Armory look-ups find characters |
+| `BNET_FOREVER_STATIC_NAMESPACE` | `static-forever-{region}` | WoW: Forever item data for `/item` |
+| `ARMORY_URL_TEMPLATE` | `https://worldofwarcraft.blizzard.com/en-us/character/forever-{region}/{slug}` | "View on Armory" link (Blizzard's address for Forever isn't confirmed; fix it here). `{region}`, `{slug}` (`name-surname`), `{name}`, `{surname}`, `{Name}`, `{Surname}` are filled in. `off` hides it |
+| `ARMORY_COMMUNITY_URL_TEMPLATE` | `https://www.aotc.gg/forever/character/{region}/{slug}` | Second link (a community armory). `off` hides it |
+| `ARMORY_REFRESH_HOURS` | `6` | How often characters going to upcoming raids are refreshed (`0` = only when someone presses Refresh) |
+
+If the Armory doesn't know a character (Blizzard's EU Forever data started
+late, and brand-new characters can take a while), people see a friendly note
+and can still save the character by hand.
 
 ## If something's off
 - **Certificate errors / site won't load from outside:** port 80 or 443 isn't
