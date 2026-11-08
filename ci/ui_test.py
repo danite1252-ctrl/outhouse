@@ -1962,20 +1962,26 @@ with sync_playwright() as p:
 
 
     # ---- Old raid cards removed from chat after the raid ----
-    # A weekly raid whose first raid ended 5 minutes ago: every card goes up
-    # straight away, so the first one's card leaves chat at once.
+    # A weekly raid that's on now (every card goes up straight away). Then it
+    # finishes, after the next raid's card went up, so its card leaves chat.
     tidy_ch = api("POST", f"/api/guilds/{G}/channels", {"name": "weekly-raids"}, TOKEN)
-    tstart = time.time() - 20 * 60
+    tstart = time.time() - 10 * 60
     tidy = api("POST", f"/api/channels/{tidy_ch['id']}/events", {
         "title": "AQ20 weekly", "description": "Ruins of Ahn'Qiraj, bring nature resist.", "starts_at": iso(tstart), "duration_minutes": 15,
         "post_rule": {"mode": "now"}, "repeat": {"weekdays": [time.gmtime(tstart).tm_wday], "every_weeks": 1, "count": 3, "time_zone": "UTC"},
     }, TOKEN)
-    assert tidy["event"]["card_removed"] and tidy["event"]["message_id"] is None and tidy["event"]["card_cleanup"] == "next", tidy
+    assert tidy["event"]["message_id"] and tidy["event"]["card_cleanup"] == "next", tidy
     TID = tidy["event"]["id"]
-    api("PUT", f"/api/events/{TID}/signup", {"status": "yes", "role": "tank", "class": "Warrior", "spec": "Protection", "user_id": DAVE}, TOKEN)
-    api("PUT", f"/api/events/{TID}/signup", {"status": "yes", "role": "dps", "class": "Mage", "spec": "Frost", "user_id": ERIN}, TOKEN)
+    import subprocess
+    subprocess.run(["psql", os.environ["DATABASE_URL"], "-qc", f"UPDATE events SET starts_at = starts_at - interval '20 minutes' WHERE id = {TID}"], check=True)
+    tstart -= 20 * 60
     later_ids = [e["id"] for e in api("GET", f"/api/guilds/{G}/events", None, TOKEN) if e.get("series_id") == tidy["event"]["series_id"]]
     assert len(later_ids) == 2, later_ids
+    api("PATCH", f"/api/events/{later_ids[0]}", {"description": "Ruins of Ahn'Qiraj, bring nature resist. Week 2."}, TOKEN)  # runs the clean-up now
+    gone = api("GET", f"/api/events/{TID}", None, TOKEN)
+    assert gone["card_removed"] and gone["message_id"] is None, gone
+    api("PUT", f"/api/events/{TID}/signup", {"status": "yes", "role": "tank", "class": "Warrior", "spec": "Protection", "user_id": DAVE}, TOKEN)
+    api("PUT", f"/api/events/{TID}/signup", {"status": "yes", "role": "dps", "class": "Mage", "spec": "Frost", "user_id": ERIN}, TOKEN)
     cleanup_sel = ".raid-dialog select[aria-label='Remove the chat card after the raid']"
     cleanup_opts = "s => [...s.options].map((o) => o.value)"
     td = fresh(TOKEN, "tidy-desktop", viewport={"width": 1280, "height": 800})

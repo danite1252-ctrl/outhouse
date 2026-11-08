@@ -753,18 +753,25 @@ call GET "/api/guilds/$GUILD/raid-settings" | jq -e '.card_cleanup_series == "ne
 fail_call POST "/api/channels/$CC/events" '{"title":"Bad","starts_at":"'"$LATER"'","card_cleanup":"next"}' # one-off raids have no next raid
 fail_call POST "/api/channels/$CC/events" '{"title":"Bad","starts_at":"'"$LATER"'","card_cleanup":"sometime"}'
 cards_in() { call GET "/api/channels/$1/messages?limit=100" | jq '[.[] | select(.event != null) | .event.id]'; }
-# A weekly raid (the default: "when the next raid's sign-ups go up") whose first raid ended
-# 10 minutes ago. Every card goes up straight away, so the first one's card goes at once.
-WSTART=$(date -u -d '-25 minutes' +%Y-%m-%dT%H:%M:%SZ)
+# A weekly raid (the default: "when the next raid's sign-ups go up"), on now; every card goes up
+# straight away. Its card stays while it's on.
+WSTART=$(date -u -d '-10 minutes' +%Y-%m-%dT%H:%M:%SZ)
 WD=$(( $(date -u -d "$WSTART" +%u) - 1 ))
 CW=$(call POST "/api/channels/$CC/events" '{"title":"Weekly tidy","starts_at":"'"$WSTART"'","duration_minutes":15,"post_rule":{"mode":"now"},"repeat":{"weekdays":['"$WD"'],"every_weeks":1,"count":3,"time_zone":"UTC"}}')
-jq -e '.event.card_cleanup == "next" and .event.card_removed and .event.message_id == null and .event.signups_open_at == null' <<<"$CW" >/dev/null
-CWS=$(jq -r .event.series_id <<<"$CW"); C1=$(jq -r .event.id <<<"$CW")
+jq -e '.event.card_cleanup == "next" and (.event.card_removed | not) and .event.message_id != null' <<<"$CW" >/dev/null
+CWS=$(jq -r .event.series_id <<<"$CW"); C1=$(jq -r .event.id <<<"$CW"); C1M=$(jq -r .id <<<"$CW")
 CFROM=$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ); CTO=$(date -u -d '+30 days' +%Y-%m-%dT%H:%M:%SZ)
 tidy() { call GET "/api/guilds/$GUILD/events?from=$CFROM&to=$CTO" | jq --arg s "$CWS" '[.[] | select(.series_id == $s)]'; }
-tidy | jq -e 'length == 3 and all(.[]; .card_cleanup == "next") and (.[0].card_removed) and ([.[1:][] | select(.message_id != null and (.card_removed | not))] | length == 2)' >/dev/null
+tidy | jq -e 'length == 3 and all(.[]; .card_cleanup == "next" and .message_id != null)' >/dev/null
 C2=$(tidy | jq -r '.[1].id')
+call PATCH "/api/events/$C2" '{"description":"Next week"}' >/dev/null # runs the clean-up: nothing to do yet
+call GET "/api/events/$C1" | jq -e '.message_id != null' >/dev/null
+# It finishes (ended 20 minutes ago, after the next card went up): its card goes.
+psql "$DATABASE_URL" -qc "UPDATE events SET starts_at = starts_at - interval '25 minutes' WHERE id = $C1"
+call PATCH "/api/events/$C2" '{"description":"Next week!"}' >/dev/null
+tidy | jq -e '(.[0] | .card_removed and .message_id == null and .signups_open_at == null) and ([.[1:][] | select(.message_id != null and (.card_removed | not))] | length == 2)' >/dev/null
 cards_in "$CC" | jq -e --arg a "$C1" 'length == 2 and (index($a) | not)' >/dev/null
+call GET "/api/channels/$CC/messages?limit=100" | jq -e --arg m "$C1M" 'all(.[]; .id != $m)' >/dev/null
 # The raid is all still there: a raid leader adds people, takes attendance and exports it.
 call PUT "/api/events/$C1/signup" '{"status":"yes","role":"tank","class":"Warrior","spec":"Protection"}' | jq -e '.event.signups | length == 1 and (.event.message_id == null)' >/dev/null
 call PUT "/api/events/$C1/signup" '{"status":"yes","role":"dps","class":"Mage","spec":"Frost","user_id":"'"$BOB"'"}' >/dev/null
