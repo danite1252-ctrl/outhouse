@@ -333,6 +333,7 @@ pub(crate) async fn build(db: &PgPool, rows: Vec<EventRow>) -> AppResult<Vec<Rai
                 reserve_lock: r.reserve_lock,
                 reserve_lock_override: r.reserve_lock_override,
                 reserves_locked,
+                loot_instance_name: outhouse_common::raidplan::instance_name(&r.loot_instance),
                 loot_instance: r.loot_instance,
                 reserves: reserves.remove(&r.id).unwrap_or_default(),
             }

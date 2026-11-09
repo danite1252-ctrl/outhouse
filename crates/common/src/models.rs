@@ -525,6 +525,9 @@ pub struct RaidEvent {
     /// own name for it ("" = none picked).
     #[serde(default)]
     pub loot_instance: String,
+    /// Its name ("Molten Core"; your own name for an unlisted raid).
+    #[serde(default)]
+    pub loot_instance_name: String,
     #[serde(default)]
     pub reserves: Vec<crate::raidplan::RaidReserve>,
 }

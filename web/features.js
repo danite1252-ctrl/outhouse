@@ -347,9 +347,12 @@ function renderEventCard(m) {
     ev.description ? el("p", { class: "ev-desc" }, renderText(ev.description)) : null,
     opens,
     deadline,
+    typeof raidNeedsLine === "function" ? raidNeedsLine(ev) : null,
     el("div", { class: "ev-cols" }, column("tank", ev.max_tanks), column("healer", ev.max_healers), column("dps", ev.max_dps)),
     benchBox,
     list("tentative", "Tentative"), list("no", "Can't make it"),
+    typeof raidCompSection === "function" ? raidCompSection(ev) : null,
+    typeof raidLootRow === "function" ? raidLootRow(ev) : null,
     canSign || attendanceBtn || exportBtn ? el("div", { class: "ev-actions" },
       canSign ? [
         quick("yes", mine && mine.status !== "no" ? "Change sign-up" : "Sign up"),
@@ -714,6 +717,9 @@ function openRaidDialog(existing = null, { scope = "one", date = null } = {}) {
     : el("div", { class: "field cleanup-field" },
       el("label", { class: "cleanup-label" }, "Remove the chat card after the raid", cleanup), cleanupHint);
 
+  // Loot list and soft reserves (loot.js).
+  const lootFields = typeof raidLootFields === "function" ? raidLootFields(ev, title, game) : null;
+
   const heading = !ev ? "Plan a raid" : !ev.series_id ? "Edit raid" : scope === "future" ? "Edit this and future raids" : "Edit this raid";
   const form = el("form", { method: "dialog" },
     el("h2", {}, heading),
@@ -740,6 +746,7 @@ function openRaidDialog(existing = null, { scope = "one", date = null } = {}) {
       el("label", { class: "field" }, "🛡️ Tanks", tanks),
       el("label", { class: "field" }, "✚ Healers", healers),
       el("label", { class: "field" }, "⚔️ DPS", dps)),
+    lootFields?.node,
     el("label", { class: "field" }, "Details", desc),
     el("p", { class: "muted small", style: "margin:0" }, "When a role fills up, extra sign-ups go on the bench and move up automatically. Everyone signed up gets an @mention 15 minutes before it starts."),
     el("div", { class: "row" },
@@ -766,6 +773,7 @@ function openRaidDialog(existing = null, { scope = "one", date = null } = {}) {
     };
     if (postField && (!ev || postTouched)) body.post_rule = { ...currentRule(), time_zone: tz };
     if (!cardGone && (!ev || cleanupTouched)) body.card_cleanup = cleanup.value;
+    if (lootFields) Object.assign(body, lootFields.changes());
     if (ev) {
       body.scope = scope;
       if (editPattern && patternTouched) body.repeat = currentPattern();
@@ -836,7 +844,8 @@ async function openRaidList(anchor) {
     el("div", { class: "rl-head" }, el("h3", {}, "Upcoming raids"),
       el("div", { class: "rl-tools" },
         el("button", { type: "button", class: "rl-tool", onclick: () => { closePopover(); openCalendar(); } }, "📅 Calendar"),
-        el("button", { type: "button", class: "rl-tool", onclick: () => { closePopover(); openAttendanceTable(); } }, "📊 Attendance"))),
+        el("button", { type: "button", class: "rl-tool", onclick: () => { closePopover(); openAttendanceTable(); } }, "📊 Attendance"),
+        typeof openLootLog === "function" ? el("button", { type: "button", class: "rl-tool", onclick: () => { closePopover(); openLootLog(); } }, "📜 Loot") : null)),
     rows.length ? el("div", { class: "rl-rows" }, rows) : el("p", { class: "muted small" }, "Nothing planned yet."),
     ...[
       events.length > rows.length ? el("button", { type: "button", class: "link", onclick: () => { closePopover(); openCalendar(); } }, `+${events.length - rows.length} more in the calendar`) : null,

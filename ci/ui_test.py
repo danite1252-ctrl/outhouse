@@ -2373,6 +2373,196 @@ with sync_playwright() as p:
     ar.close()
 
 
+    # ---- Raid composition, soft reserves and the loot log (loot.js) ----
+    lg = api("POST", "/api/guilds", {"name": "Loot Hall"}, TOKEN)
+    lchan = api("POST", f"/api/guilds/{lg['id']}/channels", {"name": "raid-loot"}, TOKEN)
+    lcode = api("POST", f"/api/guilds/{lg['id']}/invites", None, TOKEN)["code"]
+    for t in (dave["token"], erin["token"]):
+        api("POST", f"/api/invites/{lcode}", None, t)
+    sr_raid = api("POST", f"/api/channels/{lchan['id']}/events", {
+        "title": "Molten Core reserves", "starts_at": time.strftime("%Y-%m-%dT20:00:00Z", time.gmtime(time.time() + 3 * 86400)),
+        "game": "forever", "max_tanks": 1, "max_healers": 2, "max_dps": 3,
+        "soft_reserves": 2, "reserve_lock": "manual", "loot_instance": "mc",
+    }, TOKEN)["event"]
+    SRID = sr_raid["id"]
+    api("PUT", f"/api/events/{SRID}/signup", {"status": "yes", "role": "tank", "class": "Warrior", "spec": "Protection"}, TOKEN)
+    api("PUT", f"/api/events/{SRID}/signup", {"status": "yes", "role": "healer", "class": "Priest", "spec": "Holy"}, dave["token"])
+    api("PUT", f"/api/events/{SRID}/signup", {"status": "tentative", "role": "dps", "class": "Mage", "spec": "Frost"}, erin["token"])
+    api("PUT", f"/api/events/{SRID}/reserves", {"item_id": 17076}, dave["token"])
+    api("PUT", f"/api/events/{SRID}/reserves", {"item_id": 17076}, erin["token"])
+    api("PUT", f"/api/events/{SRID}/reserves", {"item_id": 18814}, erin["token"])
+    api("PUT", f"/api/events/{SRID}/reserves", {"item_id": 16922}, TOKEN)
+    past_raid = api("POST", f"/api/channels/{lchan['id']}/events", {
+        "title": "Onyxia last night", "starts_at": iso(time.time() - 30 * 60), "max_tanks": 1, "max_healers": 2, "max_dps": 5,
+        "soft_reserves": 1, "reserve_lock": "manual", "loot_instance": "ony",
+    }, TOKEN)["event"]
+    PRID = past_raid["id"]
+    api("PUT", f"/api/events/{PRID}/signup", {"status": "yes", "role": "healer", "class": "Priest", "spec": "Holy"}, dave["token"])
+    api("PUT", f"/api/events/{PRID}/signup", {"status": "yes", "role": "dps", "class": "Mage", "spec": "Fire"}, erin["token"])
+    api("PUT", f"/api/events/{PRID}/reserves", {"item_id": 17078}, dave["token"])
+    api("POST", f"/api/events/{PRID}/loot", {"user_id": DAVE, "item_id": 17078}, TOKEN)
+    api("POST", f"/api/events/{PRID}/loot", {"user_id": ERIN, "item_id": 18205, "note": "off-spec"}, TOKEN)
+    need_line = api("GET", f"/api/events/{SRID}/composition", None, TOKEN)["missing_line"]
+    assert need_line.startswith("Need: 1 healer · 3 DPS"), need_line
+
+    def loot_page(token, label, **kw):
+        pg = browser.new_page(**kw)
+        watch(pg, label)
+        extra = "window.__OUTHOUSE_DESKTOP__ = true; window.__OUTHOUSE_PLATFORM__ = 'android'; window.__OUTHOUSE_APP_VERSION__ = '0.2.1';" if label.startswith("android") else ""
+        pg.add_init_script(extra + f"localStorage.setItem('outhouse_token', {json.dumps(token)}); localStorage.setItem('outhouse_guild', {json.dumps(lg['id'])}); localStorage.setItem('outhouse_channel_{lg['id']}', {json.dumps(lchan['id'])});")
+        pg.goto(BASE + "/")
+        pg.wait_for_selector(".event-card .ev-loot", timeout=15000)
+        return pg
+
+    def sr_card(pg):
+        scroll_to_card(pg, "Molten Core reserves")
+        return f".event-card[data-event='{SRID}']"
+
+    lp = loot_page(TOKEN, "loot-desktop", viewport={"width": 1280, "height": 900})
+    card = sr_card(lp)
+    # Raid leaders get "what's missing" at the top, the same as the server works out.
+    lp.wait_for_selector(f"{card} .ev-needs:not([hidden])", timeout=10000)
+    shown = lp.inner_text(f"{card} .ev-needs").replace("⚠️", "").strip()
+    assert shown == need_line, (shown, need_line)
+    lp.wait_for_selector(f"{card} .ev-loot-head:has-text('2 each')")
+    lp.wait_for_selector(f"{card} .ev-loot-mine .item-name:has-text('Leggings of Transcendence')")
+    lp.screenshot(path=f"{SHOTS}/150-desktop-raid-card-loot.png")
+    # Composition: Erin's tentative Mage doesn't count until you ask.
+    lp.click(f"{card} .ev-comp > summary")
+    lp.wait_for_selector(f"{card} .comp-buff[data-buff='fortitude'].yes", timeout=10000)
+    lp.wait_for_selector(f"{card} .comp-buff[data-buff='arcane_intellect'].no")
+    lp.wait_for_selector(f"{card} .comp-role.short:has-text('Healers 1/2')")
+    assert "Dave" in lp.get_attribute(f"{card} .comp-buff[data-buff='fortitude']", "title")
+    lp.evaluate("s => document.querySelector(s)?.scrollIntoView({block: 'start'})", f"{card} .ev-comp")
+    lp.wait_for_timeout(250)
+    lp.screenshot(path=f"{SHOTS}/151-desktop-composition.png")
+    lp.click(f"{card} .comp-extra input")
+    lp.wait_for_selector(f"{card} .comp-buff[data-buff='arcane_intellect'].yes", timeout=10000)
+    lp.wait_for_selector(f"{card} .comp-buff[data-buff='decurse'].yes")
+    lp.wait_for_selector(f"{card} .ev-comp-sum:has-text('incl. tentative')")
+    lp.hover(f"{card} .comp-buff[data-buff='winters_chill']")
+    lp.wait_for_timeout(200)
+    lp.screenshot(path=f"{SHOTS}/152-desktop-composition-with-tentative.png")
+    # The raid leader's reserves table.
+    lp.click(f"{card} .ev-loot button:has-text('Reserves table')")
+    lp.wait_for_selector("dialog.loot-dialog .sr-trow[data-item='17076'].contested", timeout=10000)
+    lp.wait_for_selector("dialog.loot-dialog .sr-trow[data-item='17076'] .sr-count:has-text('2 SR')")
+    lp.wait_for_selector("dialog.loot-dialog .loot-tab.on:has-text(\"Everyone's (4)\")")
+    lp.wait_for_timeout(200)
+    lp.screenshot(path=f"{SHOTS}/153-desktop-sr-table-by-item.png")
+    lp.click("dialog.loot-dialog .seg-btn:has-text('By player')")
+    lp.wait_for_selector(f"dialog.loot-dialog .sr-trow[data-user='{ERIN}'] .sr-chip >> nth=1")
+    lp.screenshot(path=f"{SHOTS}/154-desktop-sr-table-by-player.png")
+    lp.click("dialog.loot-dialog .loot-tools button:has-text('Lock reserves')")
+    lp.wait_for_selector("dialog.loot-dialog .loot-tools button:has-text('Unlock')", timeout=10000)
+    assert api("GET", f"/api/events/{SRID}", None, TOKEN)["reserves_locked"]
+    # Taking Erin's Choker away (she reserved two).
+    lp.click(f"dialog.loot-dialog .sr-trow[data-user='{ERIN}'] .sr-chip:has-text('Choker') .sr-x")
+    lp.click("dialog[open]:not(.loot-dialog) button.primary:has-text('Remove')")
+    lp.wait_for_function(f"!document.querySelector(\"dialog.loot-dialog .sr-trow[data-user='{ERIN}']\")?.textContent.includes('Choker')", timeout=10000)
+    lp.click("dialog.loot-dialog .loot-tools button:has-text('Unlock')")
+    lp.wait_for_selector("dialog.loot-dialog .loot-tools button:has-text('Lock reserves')", timeout=10000)
+    # Picking: search the list, reserve, hover for the tooltip.
+    lp.click("dialog.loot-dialog .loot-tab:has-text('Reserve')")
+    lp.fill("dialog.loot-dialog .loot-search", "bone")
+    lp.wait_for_selector("dialog.loot-dialog .loot-row[data-item='17076'] .sr-count:has-text('2 SR')")
+    lp.click("dialog.loot-dialog .loot-row[data-item='17076'] .sr-pick")
+    lp.wait_for_selector("dialog.loot-dialog .loot-row[data-item='17076'].mine", timeout=10000)
+    mine = [r["item_id"] for r in api("GET", f"/api/events/{SRID}", None, TOKEN)["reserves"] if r["user_id"] == CAROL]
+    assert sorted(mine) == [16922, 17076], mine
+    lp.fill("dialog.loot-dialog .loot-search", "")
+    lp.hover("dialog.loot-dialog .loot-mine .item-name:has-text('Leggings')")
+    lp.wait_for_selector("dialog.loot-dialog .item-tip:has-text('Classes: Priest')", timeout=10000)
+    lp.wait_for_timeout(150)
+    lp.screenshot(path=f"{SHOTS}/155-desktop-sr-picker-tooltip.png")
+    lp.mouse.move(5, 5)
+    lp.fill("dialog.loot-dialog .loot-search", "thunderfury")
+    lp.press("dialog.loot-dialog .loot-search", "Enter")
+    lp.wait_for_selector("dialog.loot-dialog .loot-group.found .item-name:has-text('Thunderfury')", timeout=10000)
+    lp.wait_for_selector("dialog.loot-dialog .loot-group.found button:has-text('Add to the Molten Core list')")
+    lp.screenshot(path=f"{SHOTS}/156-desktop-sr-lookup.png")
+    lp.click("dialog.loot-dialog .loot-group.found button:has-text('Add to the Molten Core list')")
+    lp.wait_for_selector("dialog.loot-dialog .loot-group-head:has-text('Added by your raid leaders')", timeout=10000)
+    lp.click("dialog.loot-dialog .raid-close")
+    # Loot won on last night's raid: log Thunderfury for Erin.
+    scroll_to_card(lp, "Onyxia last night")
+    lp.click(f".event-card[data-event='{PRID}'] .ev-loot button:has-text('Loot won')")
+    lp.wait_for_selector("dialog.loot-dialog .won-row", timeout=10000)
+    lp.fill("dialog.loot-dialog .loot-give input[aria-label='Item']", "Thunderfury")
+    lp.select_option("dialog.loot-dialog .loot-give select", ERIN)
+    lp.click("dialog.loot-dialog .loot-give button:has-text('Log it')")
+    lp.wait_for_selector("dialog.loot-dialog .won-row .item-name:has-text('Thunderfury')", timeout=10000)
+    lp.screenshot(path=f"{SHOTS}/157-desktop-loot-won.png")
+    lp.click("dialog.loot-dialog .loot-won .link")
+    lp.wait_for_selector("dialog.loot-log-dialog .loot-log-table tbody tr >> nth=2", timeout=10000)
+    lp.screenshot(path=f"{SHOTS}/158-desktop-loot-log.png")
+    lp.select_option("dialog.loot-log-dialog select[aria-label='Player']", DAVE)
+    lp.wait_for_function("document.querySelectorAll('dialog.loot-log-dialog tbody tr').length === 1", timeout=10000)
+    lp.keyboard.press("Escape")
+    lp.wait_for_timeout(300)
+    for d in lp.query_selector_all("dialog[open]"):
+        lp.keyboard.press("Escape")
+    # Dave's profile card lists what he won.
+    lp.evaluate(f"openProfile({json.dumps(DAVE)}, document.querySelector('#messages'))")
+    lp.wait_for_selector(".profile-pop .pc-loot .item-name:has-text('Sapphiron Drape')", timeout=10000)
+    lp.screenshot(path=f"{SHOTS}/159-desktop-profile-loot.png")
+    lp.keyboard.press("Escape")
+    # Plan a raid: the loot list is guessed from the name, soft reserves off by default.
+    lp.evaluate("openRaidDialog()")
+    lp.wait_for_selector(".raid-dialog .loot-fields select[aria-label='Loot list'] option[value='naxx']", state="attached", timeout=10000)
+    lp.fill(".raid-dialog input[placeholder^='Raid night']", "Naxx clear")
+    lp.wait_for_function("document.querySelector(\".raid-dialog select[aria-label='Loot list']\").value === 'naxx'", timeout=5000)
+    lp.select_option(".raid-dialog select[aria-label='Soft reserves']", "1")
+    lp.wait_for_selector(".raid-dialog select[aria-label='Reserves lock']:visible")
+    lp.evaluate("document.querySelector('.raid-dialog .loot-fields').scrollIntoView({block: 'center'})")
+    lp.wait_for_timeout(200)
+    lp.screenshot(path=f"{SHOTS}/160-desktop-plan-raid-loot.png")
+    lp.click(".raid-dialog button:has-text('Post raid')")
+    lp.wait_for_selector(".event-card:has(.ev-title:has-text('Naxx clear')) .ev-loot-head:has-text('Naxxramas')", timeout=10000)
+    lp.close()
+
+    # Dave on a phone: the composition and picking his reserves.
+    for label, kw, n in (("phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True}, 161),
+                         ("android", {"viewport": {"width": 393, "height": 852}, "is_mobile": True, "has_touch": True}, 165)):
+        mp = loot_page(dave["token"] if label == "phone" else TOKEN, f"loot-{label}", **kw)
+        card = sr_card(mp)
+        mp.click(f"{card} .ev-comp > summary")
+        mp.wait_for_selector(f"{card} .comp-buff[data-buff='fortitude'].yes", timeout=10000)
+        mp.evaluate("s => document.querySelector(s)?.scrollIntoView({block: 'start'})", f"{card} .ev-comp")
+        mp.wait_for_timeout(250)
+        mp.screenshot(path=f"{SHOTS}/{n}-{label}-composition.png")
+        if label == "phone":
+            mp.click(f"{card} .ev-loot button:has-text('Change reserves')")
+            mp.wait_for_selector("dialog.loot-dialog .loot-row[data-item='17076']", timeout=10000)
+            mp.wait_for_timeout(250)
+            mp.screenshot(path=f"{SHOTS}/{n + 1}-{label}-sr-picker.png")
+            # Bonereaver's Edge is his already; one more (two each).
+            mp.click("dialog.loot-dialog .loot-row[data-item='17204'] .sr-pick")
+            mp.wait_for_selector("dialog.loot-dialog .loot-row[data-item='17204'].mine", timeout=10000)
+            mp.wait_for_selector("dialog.loot-dialog .loot-row[data-item='18814'] .sr-pick[disabled]")
+            mp.click("dialog.loot-dialog .loot-tab:has-text(\"Everyone's\")")
+            mp.wait_for_selector("dialog.loot-dialog .sr-trow[data-item='17076']")
+            assert not mp.query_selector("dialog.loot-dialog .loot-tools"), "members don't get the leader's tools"
+            mp.screenshot(path=f"{SHOTS}/{n + 2}-{label}-sr-everyone.png")
+            mp.click("dialog.loot-dialog .raid-close")
+            mp.evaluate("openLootLog()")
+        else:
+            mp.click(f"{card} .ev-loot button:has-text('Reserves table')")
+            mp.wait_for_selector("dialog.loot-dialog .sr-trow[data-item='17076']", timeout=10000)
+            mp.wait_for_timeout(250)
+            mp.screenshot(path=f"{SHOTS}/{n + 1}-{label}-sr-table.png")
+            mp.click("dialog.loot-dialog .loot-tab:has-text('Reserve')")
+            mp.wait_for_selector("dialog.loot-dialog .loot-row[data-item='17076']")
+            mp.screenshot(path=f"{SHOTS}/{n + 2}-{label}-sr-picker.png")
+            mp.click("dialog.loot-dialog .raid-close")
+            mp.evaluate("openLootLog()")
+        mp.wait_for_selector("dialog.loot-log-dialog .loot-log-table tbody tr", timeout=10000)
+        mp.wait_for_timeout(200)
+        mp.screenshot(path=f"{SHOTS}/{n + 3}-{label}-loot-log.png")
+        mp.close()
+    dave_res = [r["item_id"] for r in api("GET", f"/api/events/{SRID}", None, TOKEN)["reserves"] if r["user_id"] == DAVE]
+    assert sorted(dave_res) == [17076, 17204], dave_res
+
     browser.close()
 
     # Scrollbars (headless Chrome hides them unless asked): a long chat at

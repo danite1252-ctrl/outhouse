@@ -46,6 +46,11 @@ chan = api("POST", f"/api/guilds/{guild['id']}/channels", {"name": "chat"}, TOKE
 api("POST", f"/api/guilds/{guild['id']}/channels", {"name": "CSP Voice", "kind": 2}, TOKEN)
 api("POST", f"/api/channels/{chan['id']}/messages", {"content": "hello https://example.com <:nope:1>"}, TOKEN)
 code = api("POST", f"/api/guilds/{guild['id']}/invites", None, TOKEN)["code"]
+# A raid with soft reserves: its composition and the loot window run under the policy too.
+csp_raid = api("POST", f"/api/channels/{chan['id']}/events", {
+    "title": "CSP raid", "starts_at": time.strftime("%Y-%m-%dT20:00:00Z", time.gmtime(time.time() + 2 * 86400)),
+    "soft_reserves": 1, "loot_instance": "mc"}, TOKEN)["event"]
+api("PUT", f"/api/events/{csp_raid['id']}/signup", {"status": "yes", "role": "tank", "class": "Warrior", "spec": "Protection"}, TOKEN)
 
 problems = []
 COLLECT = """
@@ -123,6 +128,15 @@ with sync_playwright() as p:
     pg.wait_for_selector("dialog.settings", timeout=10000)
     pg.wait_for_timeout(500)
     pg.keyboard.press("Escape")
+    pg.click(".event-card .ev-comp > summary")
+    pg.wait_for_selector(".event-card .comp-buff[data-buff='battle_shout'].yes", timeout=10000)
+    pg.click(".event-card .ev-loot button:has-text('Reserve loot')")
+    pg.wait_for_selector("dialog.loot-dialog .loot-row[data-item='16922']", timeout=10000)
+    pg.click("dialog.loot-dialog .loot-row[data-item='16922'] .sr-pick")
+    pg.wait_for_selector("dialog.loot-dialog .loot-row[data-item='16922'].mine", timeout=10000)
+    pg.hover("dialog.loot-dialog .loot-row[data-item='16922'] .item-name")
+    pg.wait_for_selector("dialog.loot-dialog .item-tip:has-text('Classes: Priest')", timeout=10000)
+    pg.keyboard.press("Escape")
     violations(pg, "app")
     ctx.close()
     browser.close()
@@ -132,4 +146,4 @@ if problems:
     for line in problems:
         print("  " + line)
     sys.exit(1)
-print("CSP test passed: landing, sign-in, invite page, chat, voice and settings work under the real policy.")
+print("CSP test passed: landing, sign-in, invite page, chat, voice, settings and soft reserves work under the real policy.")
