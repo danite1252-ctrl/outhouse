@@ -2163,7 +2163,7 @@ img.mc-emoji { width: 18px; height: 18px; object-fit: contain; }
 .loot-tab { white-space: nowrap; flex: none; }
 @media (max-width: 760px) { .loot-tab { padding: 8px 10px; } }
 /* ---------- Raid sign-up card (calm, dense, roster by class) ---------- */
-.event-card.rc { gap: 8px; padding: 12px 14px 10px; border-left-width: 3px; max-width: 660px;
+.event-card.rc { width: 100%; gap: 8px; padding: 12px 14px 10px; border-left-width: 3px; max-width: 660px;
   background: linear-gradient(180deg, rgba(255, 107, 53, .045), transparent 90px), var(--panel); }
 .event-card.rc.live { background: linear-gradient(180deg, rgba(74, 222, 128, .05), transparent 90px), var(--panel); }
 .event-card.rc.not-open { background: linear-gradient(180deg, rgba(79, 127, 208, .07), transparent 90px), var(--panel); }
