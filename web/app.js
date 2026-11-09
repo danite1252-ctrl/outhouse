@@ -1008,7 +1008,7 @@ function renderMessages() {
     }
     if (m.reply_to) {
       nodes.push(el("div", { class: "reply-ref", onclick: () => jumpTo(m.reply_to.id) },
-        "↱ ", el("strong", {}, m.reply_to.author_display_name), " ", plainMentions(m.reply_to.content) || "(attachment)"));
+        "↱ ", el("strong", {}, m.reply_to.author_display_name), " ", plainMentions(m.reply_to.content).replace(/\*\*(.+?)\*\*/g, "$1") || "(attachment)"));
     }
     nodes.push(article);
     prev = m;
