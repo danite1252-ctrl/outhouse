@@ -171,7 +171,7 @@ with sync_playwright() as p:
     pg.keyboard.press("Escape")
     pg.click(".event-card .ev-comp > summary")
     pg.wait_for_selector(".event-card .comp-buff[data-buff='battle_shout'].yes", timeout=10000)
-    pg.click(".event-card .ev-loot button:has-text('Reserve loot')")
+    pg.click(".event-card .ev-link.sr")
     # Boss sections start closed; open Ragnaros's (icons come through our own server).
     pg.wait_for_selector("dialog.loot-dialog .loot-boss[data-boss='Ragnaros']", timeout=15000)
     pg.click("dialog.loot-dialog .loot-boss[data-boss='Ragnaros'] > summary")

@@ -111,9 +111,8 @@ function renderComp(ev, c, extra, rerender) {
   return el("div", { class: "comp-inner" },
     el("div", { class: "comp-top" }, roles, toggle),
     ...classes, armour,
-    // Raid leaders already have this line at the top of the card.
-    c.missing.length && (extra || !canManageEvent(ev) || eventWhen(ev).over)
-      ? el("div", { class: "comp-missing" }, el("strong", {}, "Missing: "), c.missing.join(" · ")) : null,
+    // What's missing lives here (the card only shows a "gaps" chip).
+    c.missing.length ? el("div", { class: "comp-missing" }, el("strong", {}, "Need: "), c.missing.join(" · ")) : null,
     el("div", { class: "comp-groups" }, groups),
     el("p", { class: "muted small comp-foot" }, c.era === "tbc" ? "The Burning Crusade buffs. Hover or tap one to see who brings it." : "Classic-era buffs (WoW: Forever and Classic Era). Hover or tap one to see who brings it."));
 }

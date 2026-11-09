@@ -339,7 +339,7 @@ with sync_playwright() as p:
     page.click(".su-spec:has-text('Holy')")
     page.screenshot(path=f"{SHOTS}/02-signup-popover.png")
     page.click(".signup-pop button.primary")
-    page.wait_for_selector(".ev-col.healer .su-name.me", timeout=10000)
+    page.wait_for_selector(".rc-entry[data-role='healer'] .su-name.me", timeout=10000)
 
     # Profile card.
     page.click(".msg-author >> nth=0")
@@ -585,9 +585,9 @@ with sync_playwright() as p:
     page.wait_for_selector("#app:not(.home-mode)")
     page.click(".channel:has-text('raids')")
     bench_card = ".event-card:has-text('Bench raid')"
-    page.wait_for_selector(f"{bench_card} .ev-bench li:has-text('Erin')", timeout=10000)
+    page.wait_for_selector(f"{bench_card} .ev-bench .su-name:has-text('Erin')", timeout=10000)
     page.wait_for_timeout(800)  # let the channel finish settling at the bottom first
-    assert "Dave" in page.inner_text(f"{bench_card} .ev-col.tank")
+    assert "Dave" in page.inner_text(f"{bench_card} .rc-entry[data-role='tank']")
     scroll_to_card(page, "Bench raid")
     page.screenshot(path=f"{SHOTS}/40-bench-card.png")
     locked_card = ".event-card:has-text('sign-ups closed')"
@@ -637,7 +637,7 @@ with sync_playwright() as p:
     page.click(".calendar-dialog .su-class:has-text('Mage')")
     page.click(".calendar-dialog .su-spec:has-text('Frost')")
     page.click(".calendar-dialog .signup-pop button.primary")
-    page.wait_for_selector(".calendar-dialog .cal-daypanel .ev-col.dps .su-name.me", timeout=10000)
+    page.wait_for_selector(".calendar-dialog .cal-daypanel .rc-entry[data-role='dps'] .su-name.me", timeout=10000)
     page.click(".calendar-dialog button[title='Next month']")
     page.wait_for_function("!document.querySelector('.calendar-dialog .cal-tz').textContent.includes('Loading')")
     page.click(".calendar-dialog button[title='Close']")
@@ -676,7 +676,7 @@ with sync_playwright() as p:
     # Take attendance after the raid starts.
     past_card = ".event-card:has-text('Molten Core run')"
     scroll_to_card(page, "Molten Core run")
-    page.click(f"{past_card} .ev-btn.attendance")
+    page.click(f"{past_card} .ev-link.attendance")
     page.wait_for_selector(".attendance-dialog .att-row:has-text('Erin')")
     page.click(".attendance-dialog .att-all")
     page.click(".attendance-dialog .att-row:has-text('Erin') .att-choice.late")
@@ -684,7 +684,7 @@ with sync_playwright() as p:
     page.screenshot(path=f"{SHOTS}/47-take-attendance.png")
     page.click(".attendance-dialog button:has-text('Save attendance')")
     page.wait_for_selector(".attendance-dialog", state="detached")
-    page.wait_for_selector(f"{past_card} .ev-btn.attendance.done", timeout=10000)
+    page.wait_for_selector(f"{past_card} .ev-link.attendance.done", timeout=10000)
     # The outhouse's attendance table.
     page.click("#raid-btn")
     page.click(".raid-list .rl-tool:has-text('Attendance')")
@@ -943,7 +943,7 @@ with sync_playwright() as p:
     phone.screenshot(path=f"{SHOTS}/54-phone-attendance-table.png")
     phone.click(".attendance-table-dialog button[title='Close']")
     scroll_to_card(phone, "Molten Core run")
-    phone.click(".event-card:has-text('Molten Core run') .ev-btn.attendance")
+    phone.click(".event-card:has-text('Molten Core run') .ev-link.attendance")
     phone.wait_for_selector(".attendance-dialog .att-row")
     phone.screenshot(path=f"{SHOTS}/55-phone-take-attendance.png")
     phone.click(".attendance-dialog button[title='Close']")
@@ -1759,14 +1759,15 @@ with sync_playwright() as p:
     rm.click(".signup-pop .su-spec:has-text('Holy') >> nth=0")
     rm.screenshot(path=f"{SHOTS}/131-signup-with-character.png")
     rm.click(".signup-pop button.primary")
-    rm.wait_for_selector(f"{naxx_card} .ev-col.healer .su-name.me:has-text('Lightwell Dawnstar')", timeout=10000)
-    rm.wait_for_selector(f"{naxx_card} .ev-col.tank .su-name:has-text('Shieldwall Ironfoe')")
-    rm.wait_for_selector(f"{naxx_card} .ev-col.tank .ev-owner:has-text('Dave')")
-    rm.wait_for_selector(f"{naxx_card} .ev-col.dps .su-name:has-text('Gus')")
+    rm.wait_for_selector(f"{naxx_card} .rc-entry[data-role='healer'] .su-name.me:has-text('Lightwell Dawnstar')", timeout=10000)
+    rm.wait_for_selector(f"{naxx_card} .rc-entry[data-role='tank'] .su-name:has-text('Shieldwall Ironfoe')")
+    # The roster shows the character; who's playing it is in the tooltip.
+    assert "Dave" in rm.get_attribute(f"{naxx_card} .rc-entry[data-role='tank'] .su-name:has-text('Shieldwall Ironfoe')", "title")
+    rm.wait_for_selector(f"{naxx_card} .rc-entry[data-role='dps'] .su-name:has-text('Gus')")
     scroll_to_card(rm, "Naxx invite test")
     rm.screenshot(path=f"{SHOTS}/132-roster-characters.png")
     # Export / invite list.
-    rm.click(f"{naxx_card} .ev-btn.export")
+    rm.click(f"{naxx_card} .ev-link.export")
     rm.wait_for_selector(".export-dialog .exp-text")
     assert rm.inner_text(".export-dialog .exp-tab.on") == "Method Raid Tools (Invite by list)"
     names = rm.input_value(".export-dialog .exp-text")
@@ -1795,7 +1796,7 @@ with sync_playwright() as p:
     dv = fresh(dave["token"], "raids-dave", viewport={"width": 1280, "height": 800})
     open_card(dv)
     dv.wait_for_selector(f"{naxx_card} button[title='Raid options']", timeout=10000)
-    dv.wait_for_selector(f"{naxx_card} .ev-btn.export")
+    dv.wait_for_selector(f"{naxx_card} .ev-link.export")
     dv.click(f"{naxx_card} button[title='Raid options']")
     dv.click(".menu button:has-text('Add someone')")
     dv.wait_for_selector(".add-raid-dialog select[aria-label='Who']")
@@ -1811,7 +1812,7 @@ with sync_playwright() as p:
     hank_entry = next(e for e in ex["entries"] if e["user_id"] == hank["user"]["id"])
     assert hank_entry["status"] == "bench" and hank_entry["character"]["id"] == hammer["id"], hank_entry
     # Change Gus's role from the roster menu (he has no characters).
-    dv.click(f"{naxx_card} .ev-col.dps .su-name:has-text('Gus')")
+    dv.click(f"{naxx_card} .rc-entry[data-role='dps'] .su-name:has-text('Gus')")
     dv.click(".menu button:has-text('Change character or role')")
     dv.wait_for_selector(".add-raid-dialog .char-chips:has-text('No WoW: Forever characters')")
     dv.keyboard.press("Escape")
@@ -1823,7 +1824,7 @@ with sync_playwright() as p:
     iv = fresh(ivy["token"], "raids-ivy", viewport={"width": 1280, "height": 800})
     open_card(iv)
     assert not iv.query_selector(f"{naxx_card} button[title='Raid options']"), "Ivy got raid options"
-    assert not iv.query_selector(f"{naxx_card} .ev-btn.export"), "Ivy got the invite list"
+    assert not iv.query_selector(f"{naxx_card} .ev-link.export"), "Ivy got the invite list"
     # A Skyborne character in the form, with the Forever combo note.
     iv.evaluate("openUserSettings('look')")
     iv.wait_for_selector(".chars-settings .char-row:has-text('Windy Skysong')", timeout=10000)
@@ -1849,7 +1850,7 @@ with sync_playwright() as p:
         open_card(pg)
         pg.wait_for_selector(f"{naxx_card} .su-name:has-text('Lightwell Dawnstar')")
         pg.screenshot(path=f"{SHOTS}/{n + 1}-{label}-roster.png")
-        pg.click(f"{naxx_card} .ev-btn.export")
+        pg.click(f"{naxx_card} .ev-link.export")
         pg.wait_for_selector(".export-dialog .exp-text")
         pg.wait_for_timeout(300)
         pg.screenshot(path=f"{SHOTS}/{n + 2}-{label}-export.png")
@@ -2142,13 +2143,13 @@ with sync_playwright() as p:
     td.wait_for_selector(".calendar-dialog .cal-tz")
     td.wait_for_function("!document.querySelector('.calendar-dialog .cal-tz').textContent.includes('Loading')")
     tcard = ".calendar-dialog .cal-daypanel .event-card:has-text('AQ20 weekly')"
-    td.wait_for_selector(f"{tcard} .ev-btn.attendance:has-text('Take attendance')", timeout=10000)
-    td.wait_for_selector(f"{tcard} .ev-btn.export")
-    td.wait_for_selector(f"{tcard} .ev-col.tank .su-name")
+    td.wait_for_selector(f"{tcard} .ev-link.attendance:has-text('Take attendance')", timeout=10000)
+    td.wait_for_selector(f"{tcard} .ev-link.export")
+    td.wait_for_selector(f"{tcard} .rc-entry[data-role='tank'] .su-name")
     td.eval_on_selector(tcard, "e => e.scrollIntoView({block: 'center'})")
     td.wait_for_timeout(200)
     td.screenshot(path=f"{SHOTS}/2001-calendar-raid-without-card.png")
-    td.click(f"{tcard} .ev-btn.attendance")
+    td.click(f"{tcard} .ev-link.attendance")
     td.wait_for_selector(".attendance-dialog .att-row", timeout=10000)
     td.click(".attendance-dialog .att-all")
     td.wait_for_timeout(200)
@@ -2166,7 +2167,7 @@ with sync_playwright() as p:
     td.evaluate(f"api('GET', '/api/events/{TID}').then(openRaid)")
     td.wait_for_selector(".raid-card-dialog .event-card:has-text('AQ20 weekly')", timeout=10000)
     td.wait_for_selector(".raid-card-dialog .raid-card-head:has-text('chat card was removed')")
-    td.wait_for_selector(".raid-card-dialog .ev-btn.attendance:has-text('Attendance ✓')")
+    td.wait_for_selector(".raid-card-dialog .ev-link.attendance:has-text('Attendance ✓')")
     td.screenshot(path=f"{SHOTS}/2003-raid-window-without-card.png")
     td.keyboard.press("Escape")
     td.close()
@@ -2185,7 +2186,7 @@ with sync_playwright() as p:
     tp.wait_for_selector(".calendar-dialog .cal-tz")
     tp.wait_for_function("!document.querySelector('.calendar-dialog .cal-tz').textContent.includes('Loading')")
     tp.click(".calendar-dialog .cal-agenda-row:has-text('AQ20 weekly') >> nth=0")
-    tp.wait_for_selector(".calendar-dialog .cal-agenda-item.open .event-card .ev-btn.attendance", timeout=10000)
+    tp.wait_for_selector(".calendar-dialog .cal-agenda-item.open .event-card .ev-link.attendance", timeout=10000)
     tp.eval_on_selector(".calendar-dialog .cal-agenda-item.open .event-card", "e => e.scrollIntoView({block: 'start'})")
     tp.wait_for_timeout(200)
     tp.screenshot(path=f"{SHOTS}/2005-phone-calendar-raid-without-card.png")
@@ -2871,7 +2872,7 @@ with sync_playwright() as p:
         extra = "window.__OUTHOUSE_DESKTOP__ = true; window.__OUTHOUSE_PLATFORM__ = 'android'; window.__OUTHOUSE_APP_VERSION__ = '0.2.1';" if label.startswith("android") else ""
         pg.add_init_script(extra + f"localStorage.setItem('outhouse_token', {json.dumps(token)}); localStorage.setItem('outhouse_guild', {json.dumps(lg['id'])}); localStorage.setItem('outhouse_channel_{lg['id']}', {json.dumps(lchan['id'])});")
         pg.goto(BASE + "/")
-        pg.wait_for_selector(".event-card .ev-loot", timeout=15000)
+        pg.wait_for_selector(".event-card .ev-link.sr", timeout=15000)
         return pg
 
     def sr_card(pg):
@@ -2880,16 +2881,23 @@ with sync_playwright() as p:
 
     lp = loot_page(TOKEN, "loot-desktop", viewport={"width": 1280, "height": 900})
     card = sr_card(lp)
-    # Raid leaders get "what's missing" at the top, the same as the server works out.
-    lp.wait_for_selector(f"{card} .ev-needs:not([hidden])", timeout=10000)
-    shown = lp.inner_text(f"{card} .ev-needs").replace("⚠️", "").strip()
+    # Raid leaders get a small "gaps" chip; its tooltip is what the server works out.
+    lp.wait_for_selector(f"{card} .ev-gaps:not([hidden])", timeout=10000)
+    shown = lp.get_attribute(f"{card} .ev-gaps", "title")
     assert shown == need_line, (shown, need_line)
-    lp.wait_for_selector(f"{card} .ev-loot-head:has-text('2 each')")
-    lp.wait_for_selector(f"{card} .ev-loot-mine .item-name:has-text('Leggings of Transcendence')")
+    assert "gaps" in lp.inner_text(f"{card} .ev-gaps")
+    lp.wait_for_selector(f"{card} .ev-link.sr[title*='2 each']")
+    lp.wait_for_selector(f"{card} .ev-link.sr:has-text('Soft reserves (4)')")
+    # Who has reserved shows as an SR tag on the roster; the items stay in the window.
+    lp.wait_for_selector(f"{card} .rc-entry[data-user='{CAROL}'] .rc-sr:not(.none)")
+    lp.wait_for_selector(f"{card} .rc-entry[data-user='{ERIN}'].st-tentative .rc-sr:not(.none)")
+    assert not lp.query_selector(f"{card} .item-name"), "reserved items shouldn't be on the card"
     lp.screenshot(path=f"{SHOTS}/150-desktop-raid-card-loot.png")
     # Composition: Erin's tentative Mage doesn't count until you ask.
-    lp.click(f"{card} .ev-comp > summary")
+    # The gaps chip opens the composition, which spells out what's needed.
+    lp.click(f"{card} .ev-gaps")
     lp.wait_for_selector(f"{card} .comp-buff[data-buff='fortitude'].yes", timeout=10000)
+    assert need_line.split("Need: ", 1)[1] in lp.inner_text(f"{card} .comp-missing")
     lp.wait_for_selector(f"{card} .comp-buff[data-buff='arcane_intellect'].no")
     lp.wait_for_selector(f"{card} .comp-role.short:has-text('Healers 1/2')")
     assert "Dave" in lp.get_attribute(f"{card} .comp-buff[data-buff='fortitude']", "title")
@@ -2904,7 +2912,7 @@ with sync_playwright() as p:
     lp.wait_for_timeout(200)
     lp.screenshot(path=f"{SHOTS}/152-desktop-composition-with-tentative.png")
     # The raid leader's reserves table.
-    lp.click(f"{card} .ev-loot button:has-text('Reserves table')")
+    lp.click(f"{card} .ev-link.sr")
     lp.wait_for_selector("dialog.loot-dialog .sr-trow[data-item='17076'].contested", timeout=10000)
     lp.wait_for_selector("dialog.loot-dialog .sr-trow[data-item='17076'] .sr-count:has-text('2 SR')")
     lp.wait_for_selector("dialog.loot-dialog .loot-tab.on:has-text(\"Everyone's (4)\")")
@@ -3010,7 +3018,7 @@ with sync_playwright() as p:
     lp.click("dialog.loot-dialog .raid-close")
     # Loot won on last night's raid: log Thunderfury for Erin.
     scroll_to_card(lp, "Onyxia last night")
-    lp.click(f".event-card[data-event='{PRID}'] .ev-loot button:has-text('Loot won')")
+    lp.click(f".event-card[data-event='{PRID}'] .ev-link.loot")
     lp.wait_for_selector("dialog.loot-dialog .won-row", timeout=10000)
     lp.fill("dialog.loot-dialog .loot-give input[aria-label='Item']", "Thunderfury")
     lp.select_option("dialog.loot-dialog .loot-give select", ERIN)
@@ -3042,7 +3050,7 @@ with sync_playwright() as p:
     lp.wait_for_timeout(200)
     lp.screenshot(path=f"{SHOTS}/160-desktop-plan-raid-loot.png")
     lp.click(".raid-dialog button:has-text('Post raid')")
-    lp.wait_for_selector(".event-card:has(.ev-title:has-text('Naxx clear')) .ev-loot-head:has-text('Naxxramas')", timeout=10000)
+    lp.wait_for_selector(".event-card:has(.ev-title:has-text('Naxx clear')) .ev-link.sr[title*='Naxxramas']", timeout=10000)
     lp.close()
 
     # Dave on a phone: the composition and picking his reserves.
@@ -3056,7 +3064,7 @@ with sync_playwright() as p:
         mp.wait_for_timeout(250)
         mp.screenshot(path=f"{SHOTS}/{n}-{label}-composition.png")
         if label == "phone":
-            mp.click(f"{card} .ev-loot button:has-text('Change reserves')")
+            mp.click(f"{card} .ev-link.sr")
             mp.wait_for_selector("dialog.loot-dialog .loot-row[data-item='17076']", timeout=10000)
             mp.wait_for_function("[...document.querySelectorAll(\"dialog.loot-dialog .loot-boss[open] img.item-icon\")].some(i => i.complete && i.naturalWidth > 0)", timeout=10000)
             mp.wait_for_timeout(250)
@@ -3080,7 +3088,7 @@ with sync_playwright() as p:
             mp.click("dialog.loot-dialog .raid-close")
             mp.evaluate("openLootLog()")
         else:
-            mp.click(f"{card} .ev-loot button:has-text('Reserves table')")
+            mp.click(f"{card} .ev-link.sr")
             mp.wait_for_selector("dialog.loot-dialog .sr-trow[data-item='17076']", timeout=10000)
             mp.wait_for_timeout(250)
             mp.screenshot(path=f"{SHOTS}/{n + 1}-{label}-sr-table.png")
@@ -3100,6 +3108,212 @@ with sync_playwright() as p:
         mp.close()
     dave_res = [r["item_id"] for r in api("GET", f"/api/events/{SRID}", None, TOKEN)["reserves"] if r["user_id"] == DAVE]
     assert sorted(dave_res) == [17076, 17204], dave_res
+
+    # ---- The raid sign-up card: a full 25-man roster, a 40-man, an empty one ----
+    def api_from(ip, method, path, body=None, token=None):
+        """Like api(), as if from another address (sign-ups are limited per address)."""
+        req = urllib.request.Request(BASE + path, method=method)
+        req.add_header("Content-Type", "application/json")
+        req.add_header("X-Forwarded-For", ip)
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        data = json.dumps(body).encode() if body is not None else None
+        with urllib.request.urlopen(req, data) as res:
+            text = res.read().decode()
+            return json.loads(text) if text else None
+
+    rg = api("POST", "/api/guilds", {"name": "Raid Card Hall"}, TOKEN)
+    rchan = api("POST", f"/api/guilds/{rg['id']}/channels", {"name": "raid-signups"}, TOKEN)
+    rcode = api("POST", f"/api/guilds/{rg['id']}/invites", None, TOKEN)["code"]
+    # (name, character "First Last" or None, class, spec, role)
+    RC_PEOPLE = [
+        ("Golgoroth", "Golgoroth Ironmaw", "Warrior", "Protection", "tank"),
+        ("Brisk", None, "Warrior", "Protection", "tank"),
+        ("Mossheart", "Mossheart Thornfield", "Druid", "Feral (Bear)", "tank"),
+        ("Kaelith", None, "Priest", "Holy", "healer"),
+        ("Gorvash", "Gorvash Emberfist", "Priest", "Discipline", "healer"),
+        ("Lunessa", None, "Paladin", "Holy", "healer"),
+        ("Ironjaw", None, "Paladin", "Holy", "healer"),
+        ("Pyrella", "Pyrella Dawnbrook", "Druid", "Restoration", "healer"),
+        ("Tidecall", None, "Shaman", "Restoration", "healer"),
+        ("Shadowmend", None, "Warrior", "Fury", "dps"),
+        ("Vexx", "Vexx Nightbloom", "Warrior", "Arms", "dps"),
+        ("Hollowpine", None, "Rogue", "Combat", "dps"),
+        ("Brakka", None, "Rogue", "Combat", "dps"),
+        ("Seraphine", "Seraphine Vale", "Rogue", "Assassination", "dps"),
+        ("Duskwhisper", None, "Mage", "Frost", "dps"),
+        ("Grimtooth", None, "Mage", "Fire", "dps"),
+        ("Emberly", "Emberly Ashgrove", "Mage", "Arcane", "dps"),
+        ("Frostnova", None, "Warlock", "Destruction", "dps"),
+        ("Quillon", None, "Warlock", "Affliction", "dps"),
+        ("Ragna", "Ragna Stormhide", "Hunter", "Marksmanship", "dps"),
+        ("Stoneroot", None, "Hunter", "Survival", "dps"),
+        ("Velaria", None, "Shaman", "Enhancement", "dps"),
+        ("Zuljin", None, "Priest", "Shadow", "dps"),
+        ("Ashka", None, "Paladin", "Retribution", "dps"),
+        ("Morrow", None, "Druid", "Balance", "dps"),
+        ("Nettle", None, "Rogue", "Combat", "dps"),
+        ("Oakhide", None, "Warrior", "Fury", "dps"),
+        ("Pellwyn", None, "Mage", "Frost", "dps"),
+        ("Rook", None, "Hunter", "Beast Mastery", "dps"),
+        ("Sable", None, "Warlock", "Demonology", "dps"),
+        ("Tamsin", None, "Priest", "Holy", "healer"),
+        ("Wren", None, "Shaman", "Restoration", "healer"),
+    ]
+    rc_users = []
+    for i, (name, char, cls, spec, role) in enumerate(RC_PEOPLE):
+        ip = f"198.18.{1 + i // 12}.{10 + i}"
+        u = api_from(ip, "POST", "/api/auth/register", {"username": f"rc{i}x{suffix}", "password": "password123", "display_name": name})
+        api_from(ip, "POST", f"/api/invites/{rcode}", None, u["token"])
+        cid = None
+        if char:
+            first, last = char.split(" ", 1)
+            cid = api("POST", "/api/users/@me/characters", {"name": first, "last_name": last, "class": cls, "level": 60}, u["token"])["id"]
+        rc_users.append({"token": u["token"], "id": u["user"]["id"], "cls": cls, "spec": spec, "role": role, "char": cid})
+    for t in (dave["token"], erin["token"]):
+        api("POST", f"/api/invites/{rcode}", None, t)
+
+    def rc_sign(ev_id, u, status="yes"):
+        body = {"status": status, "role": u["role"], "class": u["cls"], "spec": u["spec"]}
+        if u["char"]:
+            body["character_id"] = u["char"]
+        api("PUT", f"/api/events/{ev_id}/signup", body, u["token"])
+
+    later = lambda days: time.strftime("%Y-%m-%dT19:30:00Z", time.gmtime(time.time() + days * 86400))
+    # 25-man with soft reserves: 25 on the roster (one late, two tentative),
+    # two benched when DPS filled up, three can't make it; about 2/3 reserved.
+    r25 = api("POST", f"/api/channels/{rchan['id']}/events", {
+        "title": "Molten Core: full clear", "description": "Fire resist for Rag, flasks and food. Meet at the Blackrock Mountain stone 15 minutes early.\nVent: Raid comms. Soft reserves 2 each, lock when sign-ups close.",
+        "starts_at": later(3), "duration_minutes": 180, "game": "forever", "max_tanks": 3, "max_healers": 6, "max_dps": 16,
+        "soft_reserves": 2, "reserve_lock": "deadline", "loot_instance": "mc", "signup_deadline_minutes": 120,
+    }, TOKEN)["event"]
+    R25 = r25["id"]
+    for i, u in enumerate(rc_users[:25]):
+        rc_sign(R25, u, "late" if i == 6 else "tentative" if i == 13 else "yes")
+    for u in rc_users[25:28]:                   # the last DPS spot, then two on the bench
+        rc_sign(R25, u)
+    rc_sign(R25, rc_users[28], "tentative")
+    for u in rc_users[29:32]:
+        rc_sign(R25, u, "no")
+    items = [17204, 18814, 17076, 17106, 16922, 17069, 17103, 18842]
+    for i, u in enumerate(rc_users[:28]):
+        if i % 3 == 2:
+            continue
+        try:
+            api("PUT", f"/api/events/{R25}/reserves", {"item_id": items[i % len(items)]}, u["token"])
+        except urllib.error.HTTPError as e:
+            print("reserve skipped:", e.code, e.read()[:200])
+    # 40-man: ~30 across all nine classes, two benched by the leader, three absences.
+    r40 = api("POST", f"/api/channels/{rchan['id']}/events", {
+        "title": "Naxxramas 40", "description": "Spider and Plague wings.", "starts_at": later(5), "duration_minutes": 240,
+        "game": "forever", "max_tanks": 5, "max_healers": 10, "max_dps": 25,
+    }, TOKEN)["event"]
+    R40 = r40["id"]
+    for u in rc_users[:29]:
+        rc_sign(R40, u)
+    api("PUT", f"/api/events/{R40}/signup", {"status": "yes", "role": "healer", "class": "Priest", "spec": "Holy"}, TOKEN)
+    for u in rc_users[29:31]:
+        api("PUT", f"/api/events/{R40}/signup", {"user_id": u["id"], "status": "bench", "role": u["role"], "class": u["cls"], "spec": u["spec"]}, TOKEN)
+    for t in (dave["token"], erin["token"]):
+        api("PUT", f"/api/events/{R40}/signup", {"status": "no"}, t)
+    rc_sign(R40, rc_users[31], "no")
+    # A brand-new 10-man nobody has signed up to yet.
+    r10 = api("POST", f"/api/channels/{rchan['id']}/events", {
+        "title": "Zul'Gurub", "description": "Quick run for the Edge of Madness.", "starts_at": later(6),
+        "game": "forever", "max_tanks": 2, "max_healers": 3, "max_dps": 5,
+    }, TOKEN)["event"]
+    R10 = r10["id"]
+
+    def rc_page(token, label, **kw):
+        pg = browser.new_page(**kw)
+        watch(pg, label)
+        extra = "window.__OUTHOUSE_DESKTOP__ = true; window.__OUTHOUSE_PLATFORM__ = 'android'; window.__OUTHOUSE_APP_VERSION__ = '0.2.1';" if label.startswith("android") else ""
+        pg.add_init_script(extra + f"localStorage.setItem('outhouse_token', {json.dumps(token)}); localStorage.setItem('outhouse_guild', {json.dumps(rg['id'])}); localStorage.setItem('outhouse_channel_{rg['id']}', {json.dumps(rchan['id'])});")
+        pg.goto(BASE + "/")
+        pg.wait_for_selector(f".event-card[data-event='{R25}'] .rc-roster", timeout=15000)
+        return pg
+
+    def rc_card(pg, ev_id):
+        sel = f"#messages .event-card[data-event='{ev_id}']"
+        pg.evaluate("s => document.querySelector(s)?.scrollIntoView({block: 'start'})", sel)
+        pg.wait_for_timeout(300)
+        return sel
+
+    member = rc_users[3]  # Kaelith, an ordinary raider
+    # Desktop, as a raider sees it.
+    dp = rc_page(member["token"], "raidcard-desktop", viewport={"width": 1280, "height": 900})
+    c25 = rc_card(dp, R25)
+    assert dp.inner_text(f"{c25} .rc-count") == "25/25 (+2)", dp.inner_text(f"{c25} .rc-count")
+    assert dp.query_selector_all(f"{c25} .rc-class").__len__() == 9
+    dp.wait_for_selector(f"{c25} .rc-entry.st-late .rc-mark.late")
+    dp.wait_for_selector(f"{c25} .rc-entry.st-tentative .rc-mark.maybe")
+    dp.wait_for_selector(f"{c25} .rc-class[data-class='Warrior'] .rc-class-head:has-text('Warrior')")
+    dp.wait_for_selector(f"{c25} .su-name:has-text('Golgoroth Ironmaw')")
+    assert "Golgoroth" in dp.get_attribute(f"{c25} .su-name:has-text('Golgoroth Ironmaw')", "title")
+    dp.wait_for_selector(f"{c25} .ev-bench:has-text('Bench (2)')")
+    dp.wait_for_selector(f"{c25} .ev-absent:has-text('Absence (3)')")
+    dp.wait_for_selector(f"{c25} .rc-roles .rc-role.ranged")
+    n_sr = len(dp.query_selector_all(f"{c25} .rc-roster .rc-sr:not(.none)"))
+    assert 12 <= n_sr <= 22, n_sr
+    assert not dp.query_selector(f"{c25} .rc-sr.none"), "only raid leaders see who hasn't reserved"
+    assert not dp.query_selector(f"{c25} .ev-gaps"), "the gaps chip is for raid leaders"
+    assert not dp.query_selector(f"{c25} button[title='Raid options']")
+    dp.screenshot(path=f"{SHOTS}/300-desktop-raidcard-25.png")
+    dp.locator(c25).screenshot(path=f"{SHOTS}/301-raidcard-25-card.png")
+    # The status menu (late / tentative / can't make it / withdraw).
+    dp.click(f"{c25} .rc-status")
+    dp.wait_for_selector(".menu button:has-text('Tentative')")
+    dp.wait_for_selector(".menu button:has-text('Withdraw')")
+    dp.screenshot(path=f"{SHOTS}/302-desktop-raidcard-status-menu.png")
+    dp.click(".menu button:has-text('Running late')")
+    dp.wait_for_selector(".signup-pop")
+    dp.click(".signup-pop button.primary")
+    dp.wait_for_selector(f"{c25} .rc-entry[data-user='{member['id']}'].st-late", timeout=10000)
+    dp.wait_for_selector(f"{c25} .rc-status:has-text('Running late')")
+    # Soft reserves open in their own window.
+    dp.click(f"{c25} .ev-link.sr")
+    dp.wait_for_selector("dialog.loot-dialog[open]", timeout=10000)
+    dp.screenshot(path=f"{SHOTS}/303-desktop-raidcard-sr-window.png")
+    dp.click("dialog.loot-dialog .raid-close")
+    c40 = rc_card(dp, R40)
+    assert dp.inner_text(f"{c40} .rc-count") == "30/40 (+2)", dp.inner_text(f"{c40} .rc-count")
+    dp.locator(c40).screenshot(path=f"{SHOTS}/304-raidcard-40-card.png")
+    c10 = rc_card(dp, R10)
+    dp.wait_for_selector(f"{c10} .rc-empty")
+    dp.locator(c10).screenshot(path=f"{SHOTS}/305-raidcard-empty-card.png")
+    # The calendar's day panel reuses the card.
+    dp.evaluate(f"openCalendar(new Date({json.dumps(later(3))}))")
+    dp.wait_for_selector(f".calendar-dialog .cal-daypanel .event-card[data-event='{R25}'] .rc-roster", timeout=10000)
+    dp.wait_for_timeout(300)
+    dp.screenshot(path=f"{SHOTS}/306-desktop-calendar-raidcard.png")
+    dp.close()
+
+    # The raid leader: the gaps chip, then the composition it opens.
+    ld = rc_page(TOKEN, "raidcard-leader", viewport={"width": 1280, "height": 1000})
+    c25 = rc_card(ld, R25)
+    ld.wait_for_selector(f"{c25} .ev-gaps:not([hidden])", timeout=10000)
+    ld.wait_for_selector(f"{c25} .rc-sr.none")
+    ld.wait_for_selector(f"{c25} .ev-link.export:has-text('Invite list')")
+    ld.locator(c25).screenshot(path=f"{SHOTS}/307-raidcard-leader-card.png")
+    ld.click(f"{c25} .ev-gaps")
+    ld.wait_for_selector(f"{c25} details.ev-comp[open] .comp-missing", timeout=10000)
+    ld.wait_for_timeout(300)
+    ld.locator(c25).screenshot(path=f"{SHOTS}/308-raidcard-leader-comp-open.png")
+    # Keyboard: a leader can open a roster name's menu with Enter.
+    ld.focus(f"{c25} .rc-entry .su-name.manageable >> nth=2")
+    ld.keyboard.press("Enter")
+    ld.wait_for_selector(".menu button:has-text('Move to bench')")
+    ld.keyboard.press("Escape")
+    ld.close()
+
+    # Phone and Android widths.
+    for label, kw, shot in (("phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True, "device_scale_factor": 2}, 310),
+                            ("android", {"viewport": {"width": 393, "height": 852}, "is_mobile": True, "has_touch": True, "device_scale_factor": 2}, 312)):
+        mp = rc_page(member["token"], f"raidcard-{label}", **kw)
+        c25 = rc_card(mp, R25)
+        mp.screenshot(path=f"{SHOTS}/{shot}-{label}-raidcard-25.png")
+        mp.locator(c25).screenshot(path=f"{SHOTS}/{shot + 1}-{label}-raidcard-25-card.png")
+        mp.close()
 
     browser.close()
 

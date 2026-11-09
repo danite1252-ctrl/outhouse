@@ -234,15 +234,20 @@ const signupLabel = (s) => s.character?.full_name || signupPerson(s);
 function signupName(s, ev) {
   const colour = classColour(s.class);
   const person = signupPerson(s);
+  const manage = canManageEvent(ev);
   const node = el("span", {
     class: `su-name${s.user_id === state.me.id ? " me" : ""}${s.character ? " has-char" : ""}`,
     style: colour ? `color:${colour}` : "",
-    title: [s.character ? `${person} in the outhouse` : null, s.class && `${s.spec} ${s.class}`.trim(), s.note].filter(Boolean).join(" — ") || STATUS_LABEL[s.status],
-  }, signupLabel(s), s.status === "late" ? " ⏱" : "", s.note ? " 💬" : "");
-  if (canManageEvent(ev)) {
+    title: [s.character ? `${person} in the outhouse` : person, s.class && `${s.spec} ${s.class}`.trim(),
+      s.status !== "yes" ? STATUS_LABEL[s.status] : null, s.note ? `“${s.note}”` : null].filter(Boolean).join(" · "),
+  }, signupLabel(s));
+  if (manage) {
     node.classList.add("manageable");
-    node.addEventListener("click", (e) => {
-      const r = e.currentTarget.getBoundingClientRect();
+    node.tabIndex = 0;
+    node.setAttribute("role", "button");
+    node.setAttribute("aria-haspopup", "menu");
+    const open = (target) => {
+      const r = target.getBoundingClientRect();
       const set = (status) => setSignup(ev, { status, role: s.role, class: s.class, spec: s.spec, note: s.note, user_id: s.user_id, keep_character: true });
       const onRoster = s.status === "yes" || s.status === "late";
       openMenu(r.left, r.bottom + 4, [
@@ -253,6 +258,10 @@ function signupName(s, ev) {
         "sep",
         { label: "Remove from raid", danger: true, onClick: () => tryApi("DELETE", `/api/events/${ev.id}/signups/${s.user_id}`).then(applyEventReply, () => {}) },
       ]);
+    };
+    node.addEventListener("click", (e) => open(e.currentTarget));
+    node.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(e.currentTarget); }
     });
   }
   return node;
@@ -269,100 +278,274 @@ function cancelRaid(ev, scope) {
   });
 }
 
+// ---------- The raid card ----------
+// Calm and dense, in the spirit of the Discord raid bots: title, one meta
+// row, one line of role counts, then the roster grouped by class.
+
+// Small original line icons (16×16), coloured by CSS.
+const RC_ICONS = {
+  leader: '<path d="M2.5 12.5h11M3 12.5 2 5.5l3.5 2.8L8 3.5l2.5 4.8L14 5.5l-1 7"/>',
+  date: '<rect x="2" y="3.5" width="12" height="10.5" rx="2"/><path d="M2 7h12M5.5 2v3M10.5 2v3"/>',
+  time: '<circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/>',
+  soon: '<path d="M4 2h8M4 14h8M5 2c0 3.5 6 3.5 6 6s-6 2.5-6 6M11 2c0 3.5-6 3.5-6 6s6 2.5 6 6"/>',
+  people: '<circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 13.5c.5-2.6 2.2-4 4.5-4s4 1.4 4.5 4"/><path d="M10.5 3.2a2.5 2.5 0 0 1 0 4.6M12 9.8c1.3.5 2.2 1.7 2.5 3.7"/>',
+  repeat: '<path d="M3 7V6a2.5 2.5 0 0 1 2.5-2.5H12M10 1.5l2 2-2 2M13 9v1a2.5 2.5 0 0 1-2.5 2.5H4M6 14.5l-2-2 2-2"/>',
+  lock: '<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>',
+  mail: '<rect x="2" y="3.5" width="12" height="9" rx="1.5"/><path d="m2.5 4.5 5.5 4 5.5-4"/>',
+  warn: '<path d="M8 2 1.5 13.5h13z"/><path d="M8 6.5v3.2M8 11.6v.1"/>',
+  late: '<circle cx="8" cy="8" r="5.5"/><path d="M8 5v3h2.5"/>',
+  maybe: '<path d="M5.8 6a2.3 2.3 0 1 1 3.3 2.1c-.7.4-1.1.9-1.1 1.7M8 12v.1"/>',
+  note: '<path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/>',
+  more: '<path d="m4.5 6.5 3.5 3.5 3.5-3.5"/>',
+  tank: '<path class="fill" d="M8 1.6 2.8 3.4v4.1c0 3 2.1 5.3 5.2 6.8 3.1-1.5 5.2-3.8 5.2-6.8V3.4z"/>',
+  healer: '<path class="fill" d="M6.3 2h3.4v4.3H14v3.4H9.7V14H6.3V9.7H2V6.3h4.3z"/>',
+  melee: '<path d="M13.5 2.5 6.8 9.2M10.3 2.5h3.2v3.2M4.4 6.8l4.8 4.8M5.6 10.4 2.5 13.5"/>',
+  ranged: '<circle cx="8" cy="8" r="5.6"/><circle cx="8" cy="8" r="2.2"/><circle class="fill" cx="8" cy="8" r=".9"/>',
+};
+function rcIcon(name, cls = "") {
+  const span = el("span", { class: `rc-ic ic-${name}${cls ? ` ${cls}` : ""}`, "aria-hidden": "true" });
+  span.innerHTML = `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${RC_ICONS[name]}</svg>`;
+  return span;
+}
+
+// Damage dealers who fight up close; everyone else on DPS is ranged.
+const MELEE_SPECS = { Warrior: null, Rogue: null, Paladin: null, Shaman: ["Enhancement"], Druid: ["Feral (Cat)", "Feral"] };
+function dpsKind(s) {
+  if (!(s.class in MELEE_SPECS)) return "ranged";
+  const specs = MELEE_SPECS[s.class];
+  if (!specs) return "melee";
+  return specs.includes(s.spec) ? "melee" : s.spec ? "ranged" : (s.class === "Shaman" ? "melee" : "ranged");
+}
+// tank / healer / melee / ranged
+const fightRole = (s) => s.role === "dps" ? dpsKind(s) : s.role || "ranged";
+const FIGHT_LABEL = { tank: "Tank", healer: "Healer", melee: "Melee DPS", ranged: "Ranged DPS" };
+
+const rcDescOpen = new Set();
+const rcPlural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
 function renderEventCard(m) {
   const ev = m.event;
+  const inChat = !!m.id;
   const when = eventWhen(ev);
   const manager = canManageEvent(ev);
   const locked = signupsLocked(ev);
-  const mine = ev.signups.find((s) => s.user_id === state.me.id);
-  const active = ev.signups.filter((s) => s.status === "yes" || s.status === "late");
-  const column = (role, max) => {
-    const people = active.filter((s) => s.role === role);
-    return el("div", { class: `ev-col ${role}` },
-      el("div", { class: "ev-col-head" }, `${ROLE_INFO[role].icon} ${ROLE_INFO[role].label}`,
-        el("span", { class: `ev-count${people.length >= max && max > 0 ? " full" : ""}` }, `${people.length}/${max}`)),
-      people.length ? people.map((s, i) => el("div", { class: `ev-person${i >= max ? " over" : ""}` }, signupName(s, ev),
-        s.character && s.character.full_name !== signupPerson(s) ? el("span", { class: "ev-owner", title: `${signupPerson(s)} in the outhouse` }, signupPerson(s)) : el("span", { class: "ev-owner" }),
-        s.spec ? el("span", { class: "ev-spec" }, s.spec) : null)) : el("div", { class: "ev-empty" }, "—"));
-  };
-  const list = (status, label) => {
-    const people = ev.signups.filter((s) => s.status === status);
-    return people.length ? el("div", { class: "ev-line" }, el("strong", {}, `${label} (${people.length}): `), ...people.flatMap((s, i) => [i ? ", " : "", signupName(s, ev)])) : null;
-  };
-  const bench = benchOf(ev);
-  const benchBox = bench.length ? el("div", { class: "ev-bench" },
-    el("div", { class: "ev-bench-head" }, el("strong", {}, `🪑 Bench (${bench.length})`),
-      bench.some((s) => s.auto_bench) && !when.over ? el("span", { class: "muted small" }, "First in moves up when a spot opens") : null),
-    el("ol", {}, bench.map((s) => el("li", {},
-      signupName(s, ev),
-      el("span", { class: "ev-spec" }, ` ${ROLE_INFO[s.role]?.icon ?? ""} ${s.spec || ""}`.trimEnd(), s.auto_bench ? "" : " · by leader"))))) : null;
-  const quick = (status, label) => el("button", {
-    class: `ev-btn${mine?.status === status || (status === "yes" && mine?.status === "bench") ? " on" : ""}`,
-    onclick: (e) => status === "no" ? setSignup(ev, { status: "no" }) : openSignup(ev, e.currentTarget, status),
-  }, label);
-  const total = active.length;
-  const slots = ev.max_tanks + ev.max_healers + ev.max_dps;
-  const closes = ev.signups_close_at ? new Date(ev.signups_close_at) : null;
-  const deadline = closes && !when.over ? el("div", { class: `ev-deadline${locked ? " locked" : ""}` },
-    locked
-      ? `🔒 Sign-ups closed${manager ? " · as raid leader you can still make changes" : ""}`
-      : `⏳ Sign-ups close ${relativeTime(closes)} (${closes.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })})`) : null;
-  const exportBtn = manager && typeof openRaidExport === "function" && ev.signups.some((s) => s.status !== "no") ? el("button", {
-    class: "ev-btn export", title: "Names to paste into Method Raid Tools or an /invite macro", onclick: () => openRaidExport(ev),
-  }, "📨 Invite list") : null;
-  const attendanceBtn = manager && when.started ? el("button", {
-    class: `ev-btn attendance${ev.attendance_taken ? " done" : ""}`,
-    onclick: () => openAttendanceDialog(ev),
-  }, ev.attendance_taken ? "📋 Attendance ✓" : "📋 Take attendance") : null;
   const notOpen = signupsNotOpen(ev);
-  const canSign = !when.over && (!locked || manager) && (!notOpen || manager);
-  const opens = notOpen && !when.over ? el("div", { class: "ev-deadline ev-opens" },
-    `📬 ${opensText(ev)}${manager ? " · as raid leader you can already add people" : ""}`) : null;
+  const mine = ev.signups.find((s) => s.user_id === state.me.id);
+  const isActive = (s) => s.status === "yes" || s.status === "late";
+  const active = ev.signups.filter(isActive);
+  const bench = benchOf(ev);
+  const absent = ev.signups.filter((s) => s.status === "no");
+  const slots = ev.max_tanks + ev.max_healers + ev.max_dps;
+  const sr = ev.soft_reserves > 0;
+  const reserved = new Set((ev.reserves ?? []).map((r) => r.user_id));
+  const start = new Date(ev.starts_at);
+  const end = new Date(start.getTime() + ev.duration_minutes * 60000);
+  const hm = (d) => d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
-  return el("div", { class: `event-card${when.live ? " live" : ""}${when.over ? " over" : ""}${locked ? " locked" : ""}${notOpen ? " not-open" : ""}`, "data-event": ev.id },
-    el("div", { class: "ev-head" },
-      el("div", {},
-        el("div", { class: "ev-kicker" }, when.live ? "● HAPPENING NOW" : when.over ? "FINISHED" : notOpen ? "COMING UP" : "RAID SIGN-UP",
-          ev.game ? el("span", { class: `ev-game g-${ev.game}`, title: GAME_LABEL[ev.game] ?? ev.game }, GAME_SHORT[ev.game] ?? ev.game) : null,
-          ev.repeat ? el("span", { class: "ev-repeat", title: "Repeating raid: each one has its own sign-ups" }, `🔁 ${repeatLabel(ev.repeat)}`) : null,
-          locked && !when.over ? el("span", { class: "ev-lock", title: "Sign-ups are closed" }, "🔒") : null),
-        el("div", { class: "ev-title" }, ev.title),
-        el("div", { class: "ev-when" }, `🗓 ${when.text}`, el("span", { class: "ev-rel" }, ` (${when.status})`))),
-      el("div", { class: "ev-total", title: "Signed up / slots" }, el("strong", {}, total), `/${slots}`),
-      manager ? el("button", { class: "icon-btn small", title: "Raid options", onclick: (e) => {
-        const r = e.currentTarget.getBoundingClientRect();
-        const series = !!ev.series_id;
-        openMenu(r.left, r.bottom + 4, [
-          { label: series ? "Edit this raid" : "Edit raid", onClick: () => openRaidDialog(ev) },
-          series ? { label: "Edit this and future raids", onClick: () => openRaidDialog(ev, { scope: "future" }) } : null,
-          { label: "Copy roster", onClick: () => copy(rosterText(ev), "Roster copied") },
-          typeof openRaidExport === "function" ? { label: "Export / invite list", onClick: () => openRaidExport(ev) } : null,
-          typeof openAddToRaid === "function" && !when.over ? { label: "Add someone…", onClick: () => openAddToRaid(ev) } : null,
-          when.started ? { label: "Take attendance", onClick: () => openAttendanceDialog(ev) } : null,
-          "sep",
-          { label: series ? "Cancel this raid" : "Delete raid", danger: true, onClick: () => cancelRaid(ev, "one") },
-          series ? { label: "Cancel this and future raids", danger: true, onClick: () => cancelRaid(ev, "future") } : null,
-        ]);
-      } }, "⋯") : null),
-    ev.description ? el("p", { class: "ev-desc" }, renderText(ev.description)) : null,
-    opens,
-    deadline,
-    typeof raidNeedsLine === "function" ? raidNeedsLine(ev) : null,
-    el("div", { class: "ev-cols" }, column("tank", ev.max_tanks), column("healer", ev.max_healers), column("dps", ev.max_dps)),
-    benchBox,
-    list("tentative", "Tentative"), list("no", "Can't make it"),
-    typeof raidCompSection === "function" ? raidCompSection(ev) : null,
-    typeof raidLootRow === "function" ? raidLootRow(ev) : null,
-    canSign || attendanceBtn || exportBtn ? el("div", { class: "ev-actions" },
-      canSign ? [
-        quick("yes", mine && mine.status !== "no" ? "Change sign-up" : "Sign up"),
-        quick("late", "Late"),
-        quick("tentative", "Tentative"),
-        quick("no", "Can't make it"),
-        mine ? el("button", { class: "ev-btn ghost", onclick: () => tryApi("DELETE", `/api/events/${ev.id}/signups/${state.me.id}`).then(applyEventReply, () => {}) }, "Withdraw") : null,
-      ] : null,
-      attendanceBtn, exportBtn) : null,
-  );
+  // Sign-up order, like the raid bots number them.
+  const order = new Map([...ev.signups].sort((a, b) => new Date(a.signed_at) - new Date(b.signed_at)).map((s, i) => [s.user_id, i + 1]));
+
+  // ---- Header ----
+  const leader = memberById(ev.creator_id)?.display_name;
+  const meta = (icon, text, attrs = {}) => el("span", { class: "rc-meta-item", ...attrs }, rcIcon(icon), el("span", {}, text));
+  const metaRow = el("div", { class: "rc-meta" },
+    leader ? meta("leader", leader, { title: "Raid leader" }) : null,
+    meta("date", start.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }), { title: start.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long", year: "numeric" }) }),
+    meta("time", `${hm(start)} – ${hm(end)}`, { title: `Your time (${Intl.DateTimeFormat().resolvedOptions().timeZone || "local"})` }),
+    meta("soon", when.status, { class: `rc-meta-item ev-rel${when.live ? " live" : ""}${when.over ? " over" : ""}` }),
+    meta("people", `${active.length}/${slots}${bench.length ? ` (+${bench.length})` : ""}`, {
+      class: "rc-meta-item rc-count",
+      title: `${active.length} signed up of ${slots}${bench.length ? `, ${bench.length} on the bench` : ""}`,
+    }));
+
+  const closes = ev.signups_close_at ? new Date(ev.signups_close_at) : null;
+  const chips = [];
+  if (notOpen && !when.over) {
+    chips.push(el("span", { class: "rc-chip ev-deadline ev-opens", title: manager ? "As raid leader you can already add people" : "" }, rcIcon("mail"), opensText(ev)));
+  } else if (closes && !when.over) {
+    chips.push(locked
+      ? el("span", { class: "rc-chip ev-deadline locked", title: manager ? "As raid leader you can still make changes" : "" }, rcIcon("lock"), "Sign-ups closed")
+      : el("span", { class: "rc-chip ev-deadline", title: closes.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }) }, rcIcon("lock"), `Closes ${relativeTime(closes)}`));
+  }
+  if (manager && !when.over) {
+    const key = `${ev.id}|0`;
+    const gaps = el("button", { type: "button", class: "rc-chip ev-gaps warn", "data-comp-key": key, hidden: true });
+    gaps.compFill = () => {
+      const c = typeof comp !== "undefined" ? comp.cache.get(key)?.data : null;
+      gaps.hidden = !c || !c.missing.length;
+      if (!c || !c.missing.length) return;
+      gaps.title = `Need: ${c.missing.join(" · ")}`;
+      gaps.setAttribute("aria-label", `${rcPlural(c.missing.length, "gap")} in the composition. Show composition`);
+      gaps.replaceChildren(rcIcon("warn"), rcPlural(c.missing.length, "gap"));
+    };
+    gaps.addEventListener("click", () => {
+      const d = gaps.closest(".event-card")?.querySelector("details.ev-comp");
+      if (!d) return;
+      d.open = true;
+      d.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      d.querySelector("summary")?.focus({ preventScroll: true });
+    });
+    if (typeof loadComp === "function") { loadComp(ev, false); gaps.compFill(); }
+    chips.push(gaps);
+  }
+
+  const descText = (ev.description || "").trim();
+  const descLong = descText.includes("\n") || descText.length > 110;
+  const descOpen = rcDescOpen.has(ev.id);
+  const desc = descText ? el("div", { class: `rc-desc${descLong && !descOpen ? " clamped" : ""}` },
+    el("div", { class: "ev-desc" }, renderText(descOpen || !descLong ? descText : descText.split("\n")[0])),
+    descLong ? el("button", { type: "button", class: "rc-more", "aria-expanded": descOpen ? "true" : "false", onclick: () => {
+      if (rcDescOpen.has(ev.id)) rcDescOpen.delete(ev.id); else rcDescOpen.add(ev.id);
+      redrawEvent(ev);
+    } }, descOpen ? "less" : "more") : null) : null;
+
+  const series = !!ev.series_id;
+  const menuBtn = manager ? el("button", { class: "icon-btn small rc-menu", title: "Raid options", "aria-label": "Raid options", "aria-haspopup": "menu", onclick: (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    openMenu(r.left, r.bottom + 4, [
+      { label: series ? "Edit this raid" : "Edit raid", onClick: () => openRaidDialog(ev) },
+      series ? { label: "Edit this and future raids", onClick: () => openRaidDialog(ev, { scope: "future" }) } : null,
+      typeof openAddToRaid === "function" && !when.over ? { label: "Add someone…", onClick: () => openAddToRaid(ev) } : null,
+      { label: "Copy roster", onClick: () => copy(rosterText(ev), "Roster copied") },
+      typeof openRaidExport === "function" ? { label: "Export / invite list", onClick: () => openRaidExport(ev) } : null,
+      when.started ? { label: "Take attendance", onClick: () => openAttendanceDialog(ev) } : null,
+      "sep",
+      { label: series ? "Cancel this raid" : "Delete raid", danger: true, onClick: () => cancelRaid(ev, "one") },
+      series ? { label: "Cancel this and future raids", danger: true, onClick: () => cancelRaid(ev, "future") } : null,
+    ]);
+  } }, "⋯") : null;
+
+  const head = el("div", { class: "rc-head" },
+    el("div", { class: "rc-titlebar" },
+      el("div", { class: "ev-title" }, ev.title),
+      ev.game ? el("span", { class: `ev-game g-${ev.game}`, title: GAME_LABEL[ev.game] ?? ev.game }, GAME_SHORT[ev.game] ?? ev.game) : null,
+      ev.repeat ? el("span", { class: "ev-repeat", title: `Repeating raid (${repeatLabel(ev.repeat)}): each one has its own sign-ups` }, rcIcon("repeat"), repeatLabel(ev.repeat)) : null),
+    menuBtn);
+
+  // ---- Roles ----
+  const by = (pred) => active.filter(pred).length;
+  const roleChip = (cls, icon, label, n, max) => el("span", {
+    class: `rc-role ${cls}${max != null && n < max && !when.over ? " short" : ""}${max != null && n >= max && max > 0 ? " full" : ""}`,
+    title: max != null ? `${label}: ${n} of ${max}${n < max ? `, ${max - n} to go` : ""}` : `${label}: ${n}`,
+  }, rcIcon(icon), `${label} `, el("strong", {}, max != null ? `${n}/${max}` : n));
+  const dps = by((s) => s.role === "dps");
+  const roles = el("div", { class: "rc-roles", "aria-label": "Roles" },
+    roleChip("tank", "tank", "Tanks", by((s) => s.role === "tank"), ev.max_tanks),
+    roleChip("healer", "healer", "Healers", by((s) => s.role === "healer"), ev.max_healers),
+    roleChip("ranged", "ranged", "Ranged", by((s) => s.role === "dps" && dpsKind(s) === "ranged")),
+    roleChip("melee", "melee", "Melee", by((s) => s.role === "dps" && dpsKind(s) === "melee")),
+    el("span", { class: `rc-role dps-total${dps < ev.max_dps && !when.over ? " short" : ""}`, title: `DPS: ${dps} of ${ev.max_dps}` }, "DPS ", el("strong", {}, `${dps}/${ev.max_dps}`)));
+
+  // ---- Roster, grouped by class ----
+  const srTag = (s) => {
+    if (!sr) return null;
+    if (reserved.has(s.user_id)) return el("span", { class: "rc-sr", title: "Has soft-reserved" }, "SR");
+    return manager ? el("span", { class: "rc-sr none", title: "No soft reserve yet" }) : null;
+  };
+  const entry = (s) => {
+    const fr = fightRole(s);
+    return el("div", {
+      class: `rc-entry st-${s.status}${s.user_id === state.me.id ? " mine" : ""}`,
+      "data-role": s.role || "none", "data-user": s.user_id, style: `--cc:${classColour(s.class) ?? "#9a9a9a"}`,
+    },
+    el("span", { class: `rc-glyph r-${fr}`, title: `${s.spec ? `${s.spec} · ` : ""}${FIGHT_LABEL[fr]}` }, rcIcon(fr), el("span", { class: "sr-only" }, FIGHT_LABEL[fr])),
+    el("span", { class: "rc-num", title: `Signed up #${order.get(s.user_id)}` }, order.get(s.user_id)),
+    signupName(s, ev),
+    s.status === "late" ? el("span", { class: "rc-mark late", title: "Running late" }, rcIcon("late"), el("span", { class: "sr-only" }, " (late)")) : null,
+    s.status === "tentative" ? el("span", { class: "rc-mark maybe", title: "Tentative" }, rcIcon("maybe"), el("span", { class: "sr-only" }, " (tentative)")) : null,
+    s.note ? el("span", { class: "rc-mark note", title: s.note }, rcIcon("note")) : null,
+    srTag(s));
+  };
+  const listed = ev.signups.filter((s) => isActive(s) || s.status === "tentative")
+    .sort((a, b) => order.get(a.user_id) - order.get(b.user_id));
+  const classNames = [...WOW_CLASSES.map((c) => c.name), ""];
+  const groups = classNames.map((name) => {
+    const people = listed.filter((s) => (classNames.includes(s.class) ? s.class : "") === name);
+    if (!people.length) return null;
+    const colour = classColour(name) ?? "#9a9a9a";
+    return el("section", { class: "rc-class", style: `--cc:${colour}`, "data-class": name || "other" },
+      el("h4", { class: "rc-class-head" }, el("span", { class: "rc-badge", "aria-hidden": "true" }, (name || "?")[0]),
+        `${name || "Other"} `, el("span", { class: "rc-class-n" }, `(${people.length})`)),
+      people.map(entry));
+  }).filter(Boolean);
+  const roster = groups.length ? el("div", { class: "rc-roster ev-roster" }, groups)
+    : el("div", { class: "rc-empty" }, when.over ? "Nobody signed up." : notOpen ? "Sign-ups aren't open yet." : "No sign-ups yet. Be the first!");
+
+  const line = (cls, label, people, hint = "", tags = true) => people.length ? el("div", { class: `rc-line ${cls}` },
+    el("span", { class: "rc-line-label", title: hint }, `${label} (${people.length}):`), " ",
+    ...people.flatMap((s, i) => [i ? el("span", { class: "rc-sep" }, ", ") : null, signupName(s, ev), tags && reserved.has(s.user_id) ? srTag(s) : null])) : null;
+  const benchHint = bench.some((s) => s.auto_bench) && !when.over ? "In sign-up order: the first in moves up when a spot opens" : "";
+
+  // ---- Composition (closed by default) ----
+  const compSection = typeof raidCompSection === "function" ? raidCompSection(ev) : null;
+
+  // ---- Actions and links ----
+  const canSign = !when.over && (!locked || manager) && (!notOpen || manager);
+  const signedUp = mine && mine.status !== "no";
+  const primary = canSign ? el("button", {
+    class: `ev-btn rc-primary${signedUp ? "" : " go"}`,
+    onclick: (e) => openSignup(ev, e.currentTarget, mine && mine.status !== "no" && mine.status !== "bench" ? mine.status : "yes"),
+  }, signedUp ? "Change sign-up" : "Sign up") : null;
+  const moreBtn = canSign ? el("button", {
+    class: "ev-btn rc-status", "aria-haspopup": "menu", "aria-label": "Other sign-up options: late, tentative, can't make it",
+    title: "Late, tentative, can't make it…",
+    onclick: (e) => {
+      const btn = e.currentTarget;
+      const r = btn.getBoundingClientRect();
+      openMenu(r.left, r.bottom + 4, [
+        { label: "Running late", checked: mine?.status === "late", onClick: () => openSignup(ev, btn, "late") },
+        { label: "Tentative", checked: mine?.status === "tentative", onClick: () => openSignup(ev, btn, "tentative") },
+        { label: "Can't make it", checked: mine?.status === "no", onClick: () => setSignup(ev, { status: "no" }) },
+        mine ? "sep" : null,
+        mine ? { label: "Withdraw", danger: true, onClick: () => tryApi("DELETE", `/api/events/${ev.id}/signups/${state.me.id}`).then(applyEventReply, () => {}) } : null,
+      ]);
+    },
+  }, mine && mine.status !== "yes" ? STATUS_LABEL[mine.status] : "Status", rcIcon("more")) : null;
+  const you = !canSign && mine ? el("span", { class: "rc-you" }, `You: ${STATUS_LABEL[mine.status]}`) : null;
+
+  const link = (cls, text, onclick, attrs = {}) => el("button", { type: "button", class: `ev-link ${cls}`, onclick, ...attrs }, text);
+  const myRes = (ev.reserves ?? []).filter((r) => r.user_id === state.me.id);
+  const srLink = sr && typeof openLoot === "function" ? link(`sr${signedUp && !myRes.length && !ev.reserves_locked ? " want" : ""}`,
+    [`Soft reserves (${(ev.reserves ?? []).length})`, signedUp && !myRes.length && !ev.reserves_locked ? el("span", { class: "rc-dot", title: "You haven't reserved yet" }) : null],
+    // Your own picks first if you haven't any yet; raid leaders otherwise land on the table.
+    () => openLoot(ev, signedUp && !ev.reserves_locked && (!myRes.length || !manager) ? "reserve" : "all"),
+    { title: [`Soft reserves: ${[ev.loot_instance_name, `${ev.soft_reserves} each`, typeof lockText === "function" ? lockText(ev) : null].filter(Boolean).join(" · ")}`,
+      "The SR tag on the roster marks who has reserved."].join("\n") }) : null;
+  const links = [
+    srLink,
+    manager && when.started && typeof openLoot === "function" ? link("loot", "Loot won", () => openLoot(ev, "won")) : null,
+    manager && when.started ? link(`attendance${ev.attendance_taken ? " done" : ""}`, ev.attendance_taken ? "Attendance ✓" : "Take attendance", () => openAttendanceDialog(ev)) : null,
+    manager && typeof openRaidExport === "function" && ev.signups.some((s) => s.status !== "no")
+      ? link("export", "Invite list", () => openRaidExport(ev), { title: "Names to paste into Method Raid Tools or an /invite macro" }) : null,
+    inChat && typeof openCalendar === "function" ? link("calendar-link", "Calendar", () => openCalendar(start)) : null,
+  ].filter(Boolean);
+
+  const foot = primary || you || links.length ? el("div", { class: "rc-foot" },
+    primary || you ? el("div", { class: "rc-actions ev-actions" }, primary, moreBtn, you) : null,
+    links.length ? el("nav", { class: "rc-links", "aria-label": "Raid links" }, links) : null) : null;
+
+  return el("div", {
+    class: `event-card rc${when.live ? " live" : ""}${when.over ? " over" : ""}${locked ? " locked" : ""}${notOpen ? " not-open" : ""}${sr ? " sr-on" : ""}`,
+    "data-event": ev.id, "data-size": slots,
+  },
+  head,
+  desc,
+  metaRow,
+  chips.length ? el("div", { class: "rc-chips" }, chips) : null,
+  roles,
+  roster,
+  bench.length || absent.length ? el("div", { class: "rc-lines" },
+    line("ev-bench", "Bench", bench, benchHint),
+    line("ev-absent", "Absence", absent, "", false)) : null,
+  compSection,
+  foot);
+}
+
+// Redraw one raid wherever it shows (chat card, calendar, raid window).
+function redrawEvent(ev) {
+  const msg = state.messages.find((x) => x.event?.id === ev.id);
+  if (msg) renderMessages();
+  if (typeof onEventChanged === "function") onEventChanged(ev);
 }
 
 function rosterText(ev) {
