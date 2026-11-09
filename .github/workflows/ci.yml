@@ -3,6 +3,9 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  # Nightly security scans (cargo audit + ZAP) instead of on every push.
+  schedule:
+    - cron: "30 16 * * *"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -14,8 +17,49 @@ env:
   OUTHOUSE_SERVER_URL: https://oh.hartspace.cc
 
 jobs:
+  # Which parts changed, so the expensive jobs only run when they matter
+  # (saves GitHub Actions minutes on a private repo).
+  changes:
+    name: What changed
+    runs-on: ubuntu-latest
+    outputs:
+      apps: ${{ steps.f.outputs.apps }}
+      server: ${{ steps.f.outputs.server }}
+      deps: ${{ steps.f.outputs.deps }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: f
+        env:
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ] || [ "$EVENT" = schedule ]; then
+            echo "apps=$([ "$EVENT" = workflow_dispatch ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+            echo "server=true" >> "$GITHUB_OUTPUT"; echo "deps=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          FROM="${BASE:-$BEFORE}"
+          if [ -z "$FROM" ] || ! git cat-file -e "$FROM^{commit}" 2>/dev/null; then
+            # New branch or unknown base: compare with main.
+            FROM=$(git merge-base HEAD origin/main 2>/dev/null || echo "")
+          fi
+          if [ -z "$FROM" ] || [ "$FROM" = "$(git rev-parse HEAD)" ]; then
+            CHANGED=$(git ls-files)
+          else
+            CHANGED=$(git diff --name-only "$FROM" HEAD)
+          fi
+          echo "$CHANGED" | sed 's/^/changed: /' | head -50
+          has() { echo "$CHANGED" | grep -qE "$1" && echo true || echo false; }
+          echo "apps=$(has '^(desktop/|\.github/workflows/ci\.yml$)')" >> "$GITHUB_OUTPUT"
+          echo "server=$(has '^(crates/|web/|ci/|Cargo\.|Dockerfile|deploy/|\.github/)')" >> "$GITHUB_OUTPUT"
+          echo "deps=$(has '(Cargo\.lock|Cargo\.toml|web/vendor/|package(-lock)?\.json)')" >> "$GITHUB_OUTPUT"
+
   server:
     name: Server (build, tests, smoke test)
+    needs: changes
+    if: needs.changes.outputs.server == 'true' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -146,6 +190,10 @@ jobs:
 
   desktop:
     name: Desktop app (Windows installer)
+    needs: changes
+    # Only when the app itself (desktop/) or this workflow changed; the apps
+    # load the web client from the server, so web changes don't need them.
+    if: needs.changes.outputs.apps == 'true'
     runs-on: windows-latest
     env:
       VERSION: 0.2.${{ github.run_number }}
@@ -215,6 +263,8 @@ jobs:
 
   android:
     name: Android app (APK)
+    needs: changes
+    if: needs.changes.outputs.apps == 'true'
     runs-on: ubuntu-latest
     env:
       VERSION: 0.2.${{ github.run_number }}
@@ -365,6 +415,9 @@ jobs:
 
   dast:
     name: DAST (OWASP ZAP against a test server)
+    needs: changes
+    # Nightly, by hand, or on main when server code changed.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.ref == 'refs/heads/main' && needs.changes.outputs.server == 'true')
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -403,6 +456,9 @@ jobs:
 
   security:
     name: Security (cargo audit, vendored scripts)
+    needs: changes
+    # Nightly, by hand, or when dependencies / vendored scripts change.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.deps == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
