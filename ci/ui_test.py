@@ -3527,7 +3527,9 @@ with sync_playwright() as p:
     hm.wait_for_selector("#update-btn:not([hidden])", timeout=10000)
     hm.wait_for_timeout(800)
     box = hm.query_selector("#update-btn").bounding_box()
-    assert box and box["x"] > 1000 and box["y"] < 56, f"update button not at the top right on Home: {box}"
+    head = hm.query_selector(".chat-head").bounding_box()
+    # Right-hand end of the header (only the connection dot and phone toggles come after it).
+    assert box and box["y"] < 56 and head["x"] + head["width"] - (box["x"] + box["width"]) < 80, f"update button not at the top right on Home: {box} in {head}"
     hm.screenshot(path=f"{SHOTS}/3441-home-update-available.png")
     hm.close()
 
