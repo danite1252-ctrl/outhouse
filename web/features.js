@@ -370,6 +370,11 @@ function renderEventCard(m) {
   if (manager && !when.over) {
     const key = `${ev.id}|0`;
     const gaps = el("button", { type: "button", class: "rc-chip ev-gaps warn", "data-comp-key": key, hidden: true });
+    const ok = el("span", { class: "rc-chip ev-comp-ok", "data-comp-key": key, hidden: true, title: "Every role filled and the key raid buffs covered" }, "✓ Comp complete");
+    ok.compFill = () => {
+      const c = typeof comp !== "undefined" ? comp.cache.get(key)?.data : null;
+      ok.hidden = !c || !!c.missing.length;
+    };
     gaps.compFill = () => {
       const c = typeof comp !== "undefined" ? comp.cache.get(key)?.data : null;
       gaps.hidden = !c || !c.missing.length;
@@ -385,8 +390,8 @@ function renderEventCard(m) {
       d.scrollIntoView({ block: "nearest", behavior: "smooth" });
       d.querySelector("summary")?.focus({ preventScroll: true });
     });
-    if (typeof loadComp === "function") { loadComp(ev, false); gaps.compFill(); }
-    chips.push(gaps);
+    if (typeof loadComp === "function") { loadComp(ev, false); gaps.compFill(); ok.compFill(); }
+    chips.push(gaps, ok);
   }
 
   const descText = (ev.description || "").trim();

@@ -3258,13 +3258,13 @@ with sync_playwright() as p:
     assert not dp.query_selector(f"{c25} .rc-sr.none"), "only raid leaders see who hasn't reserved"
     assert not dp.query_selector(f"{c25} .ev-gaps"), "the gaps chip is for raid leaders"
     assert not dp.query_selector(f"{c25} button[title='Raid options']")
-    dp.screenshot(path=f"{SHOTS}/300-desktop-raidcard-25.png")
-    dp.locator(c25).screenshot(path=f"{SHOTS}/301-raidcard-25-card.png")
+    dp.screenshot(path=f"{SHOTS}/3300-desktop-raidcard-25.png")
+    dp.locator(c25).screenshot(path=f"{SHOTS}/3301-raidcard-25-card.png")
     # The status menu (late / tentative / can't make it / withdraw).
     dp.click(f"{c25} .rc-status")
     dp.wait_for_selector(".menu button:has-text('Tentative')")
     dp.wait_for_selector(".menu button:has-text('Withdraw')")
-    dp.screenshot(path=f"{SHOTS}/302-desktop-raidcard-status-menu.png")
+    dp.screenshot(path=f"{SHOTS}/3302-desktop-raidcard-status-menu.png")
     dp.click(".menu button:has-text('Running late')")
     dp.wait_for_selector(".signup-pop")
     dp.click(".signup-pop button.primary")
@@ -3273,32 +3273,38 @@ with sync_playwright() as p:
     # Soft reserves open in their own window.
     dp.click(f"{c25} .ev-link.sr")
     dp.wait_for_selector("dialog.loot-dialog[open]", timeout=10000)
-    dp.screenshot(path=f"{SHOTS}/303-desktop-raidcard-sr-window.png")
+    dp.screenshot(path=f"{SHOTS}/3303-desktop-raidcard-sr-window.png")
     dp.click("dialog.loot-dialog .raid-close")
     c40 = rc_card(dp, R40)
     assert dp.inner_text(f"{c40} .rc-count") == "30/40 (+2)", dp.inner_text(f"{c40} .rc-count")
-    dp.locator(c40).screenshot(path=f"{SHOTS}/304-raidcard-40-card.png")
+    dp.locator(c40).screenshot(path=f"{SHOTS}/3304-raidcard-40-card.png")
     c10 = rc_card(dp, R10)
     dp.wait_for_selector(f"{c10} .rc-empty")
-    dp.locator(c10).screenshot(path=f"{SHOTS}/305-raidcard-empty-card.png")
+    dp.locator(c10).screenshot(path=f"{SHOTS}/3305-raidcard-empty-card.png")
     # The calendar's day panel reuses the card.
     dp.evaluate(f"openCalendar(new Date({json.dumps(later(3))}))")
     dp.wait_for_selector(f".calendar-dialog .cal-daypanel .event-card[data-event='{R25}'] .rc-roster", timeout=10000)
     dp.wait_for_timeout(300)
-    dp.screenshot(path=f"{SHOTS}/306-desktop-calendar-raidcard.png")
+    dp.screenshot(path=f"{SHOTS}/3306-desktop-calendar-raidcard.png")
     dp.close()
 
     # The raid leader: the gaps chip, then the composition it opens.
     ld = rc_page(TOKEN, "raidcard-leader", viewport={"width": 1280, "height": 1000})
     c25 = rc_card(ld, R25)
-    ld.wait_for_selector(f"{c25} .ev-gaps:not([hidden])", timeout=10000)
-    ld.wait_for_selector(f"{c25} .rc-sr.none")
+    ld.wait_for_selector(f"{c25} .rc-sr.none")  # leaders see who hasn't reserved yet
     ld.wait_for_selector(f"{c25} .ev-link.export:has-text('Invite list')")
-    ld.locator(c25).screenshot(path=f"{SHOTS}/307-raidcard-leader-card.png")
-    ld.click(f"{c25} .ev-gaps")
-    ld.wait_for_selector(f"{c25} details.ev-comp[open] .comp-missing", timeout=10000)
-    ld.wait_for_timeout(300)
-    ld.locator(c25).screenshot(path=f"{SHOTS}/308-raidcard-leader-comp-open.png")
+    ld.wait_for_selector(f"{c25} .ev-gaps:not([hidden]), {c25} .ev-comp-ok:not([hidden])", timeout=10000)
+    ld.locator(c25).screenshot(path=f"{SHOTS}/3307-raidcard-leader-card.png")
+    # The 40-man is short of tanks and healers: a gaps chip that opens the composition.
+    c40 = rc_card(ld, R40)
+    ld.wait_for_selector(f"{c40} .ev-gaps:not([hidden])", timeout=10000)
+    need40 = api("GET", f"/api/events/{R40}/composition", None, TOKEN)["missing_line"]
+    assert ld.get_attribute(f"{c40} .ev-gaps", "title") == need40
+    ld.locator(c40).screenshot(path=f"{SHOTS}/3308-raidcard-leader-gaps.png")
+    ld.click(f"{c40} .ev-gaps")
+    ld.wait_for_selector(f"{c40} details.ev-comp[open] .comp-missing", timeout=10000)
+    ld.wait_for_timeout(400)
+    ld.locator(c40).screenshot(path=f"{SHOTS}/3309-raidcard-leader-comp-open.png")
     # Keyboard: a leader can open a roster name's menu with Enter.
     ld.focus(f"{c25} .rc-entry .su-name.manageable >> nth=2")
     ld.keyboard.press("Enter")
@@ -3307,7 +3313,7 @@ with sync_playwright() as p:
     ld.close()
 
     # Phone and Android widths.
-    for label, kw, shot in (("phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True, "device_scale_factor": 2}, 310),
+    for label, kw, shot in (("phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True, "device_scale_factor": 2}, 3310),
                             ("android", {"viewport": {"width": 393, "height": 852}, "is_mobile": True, "has_touch": True, "device_scale_factor": 2}, 312)):
         mp = rc_page(member["token"], f"raidcard-{label}", **kw)
         c25 = rc_card(mp, R25)
