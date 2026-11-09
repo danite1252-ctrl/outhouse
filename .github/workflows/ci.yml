@@ -41,6 +41,10 @@ jobs:
         run: cargo build -p outhouse-server
       - name: Unit tests
         run: cargo test --workspace
+      - name: Desktop app update-state tests (plain Rust, no Tauri needed)
+        run: |
+          rustc --edition 2021 --test desktop/src-tauri/src/update_state.rs -o /tmp/update_state_tests
+          /tmp/update_state_tests
       - name: Clippy (advice only)
         run: cargo clippy --workspace --all-targets
         continue-on-error: true
@@ -68,6 +72,7 @@ jobs:
           node --check web/sw.js
           node --check web/landing.js
           node --check web/entry.js
+          node --check web/updates.js
           node --check web/bots/dice-bot.mjs
       - name: Deploy scripts check (bash -n + shellcheck)
         run: |

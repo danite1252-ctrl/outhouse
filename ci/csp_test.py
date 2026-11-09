@@ -189,6 +189,42 @@ with sync_playwright() as p:
     pg.keyboard.press("Escape")
     violations(pg, "app")
     ctx.close()
+
+    # The orange update button in the Windows app (a stand-in app bridge),
+    # and "Refresh to update" in a browser, under the real policy.
+    status = {"available": True, "version": "0.2.41", "notes": "Faster voice.", "date": "2026-11-09"}
+
+    def fake_bridge(route):
+        headers = {"Access-Control-Allow-Origin": BASE}
+        if "/update-status" in route.request.url:
+            route.fulfill(status=200, headers=headers, content_type="application/json", body=json.dumps(status))
+        elif "/update-install" in route.request.url:
+            status.update({"downloading": True, "progress": 0.3})
+            route.fulfill(status=200, headers=headers, body="ok")
+        else:
+            route.fulfill(status=200, headers=headers, body="ok")
+    ctx = browser.new_context(viewport={"width": 1280, "height": 800})
+    ctx.add_init_script(COLLECT + "window.__OUTHOUSE_DESKTOP__ = true; window.__OUTHOUSE_PLATFORM__ = 'desktop'; window.__OUTHOUSE_APP_VERSION__ = '0.2.40';"
+                        + f"localStorage.setItem('outhouse_token', {json.dumps(TOKEN)}); localStorage.setItem('outhouse_guild', {json.dumps(guild['id'])}); localStorage.setItem('outhouse_channel_{guild['id']}', {json.dumps(chan['id'])});")
+    ctx.route("http://outhouse.localhost/**", fake_bridge)
+    pg = ctx.new_page()
+    watch(pg, "update button")
+    pg.goto(BASE + "/app")
+    pg.wait_for_selector("#messages .msg", timeout=15000)
+    pg.wait_for_selector("#update-btn:not([hidden])", timeout=10000)
+    pg.click("#update-btn")
+    pg.wait_for_selector(".upd-pop #update-now")
+    pg.click(".upd-pop #update-now")
+    pg.wait_for_selector(".upd-pop .upd-progress", timeout=10000)
+    pg.wait_for_timeout(800)
+    pg.screenshot(path=f"{SHOTS}/csp-update-button.png")
+    # The web client check: /api/health's web_build, then a changed one.
+    until(pg, "!!updates.state.webBuild")
+    pg.evaluate("updates.state.webBuild = 'something-older'")
+    pg.evaluate("checkForUpdates()")
+    until(pg, "!!updates.state.webNew")
+    violations(pg, "update button")
+    ctx.close()
     browser.close()
 
 if problems:
@@ -196,4 +232,4 @@ if problems:
     for line in problems:
         print("  " + line)
     sys.exit(1)
-print("CSP test passed: landing, sign-in, invite page, chat, voice, voice messages, stickers, forwarding, friends, settings and soft reserves work under the real policy.")
+print("CSP test passed: landing, sign-in, invite page, chat, voice, voice messages, stickers, forwarding, friends, settings, soft reserves and the update button work under the real policy.")

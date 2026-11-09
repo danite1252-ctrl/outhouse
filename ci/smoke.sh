@@ -1767,6 +1767,10 @@ call DELETE "/api/guilds/$GUILD/roles/$NICKR" >/dev/null
 
 step "server status and health"
 call GET /api/health | jq -e '.status == "ok" and .db == true and .version == "smoke-test" and .uptime_seconds >= 0' >/dev/null
+# The web client's fingerprint (open pages offer "Refresh to update" when it changes): stable, no sign-in needed.
+WB1=$(curl -fsS "$BASE/api/health" | jq -r '.web_build')
+WB2=$(curl -fsS "$BASE/api/health" | jq -r '.web_build')
+[[ "$WB1" =~ ^[0-9a-f]{16}$ && "$WB1" == "$WB2" ]] || { echo "web_build not a stable fingerprint: $WB1 / $WB2"; exit 1; }
 call GET "/api/guilds/$GUILD/server-status" | jq -e '.version == "smoke-test" and .db_ok and .db_size_bytes > 0 and .push_enabled and .backup == null' >/dev/null
 printf '{"time":"%s","ok":true,"file":"outhouse-test.tgz","size":"1.2M","offsite":"ok: smb","message":""}\n' "$(date -Iseconds)" > "$BACKUP_STATUS_FILE"
 call GET "/api/guilds/$GUILD/server-status" | jq -e '.backup.ok and .backup.file == "outhouse-test.tgz" and .backup.offsite == "ok: smb"' >/dev/null

@@ -498,9 +498,6 @@ html.android-app { --safe-top: max(env(safe-area-inset-top, 0px), 32px); --safe-
   dialog:not(.settings) { max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 16px); overflow-y: auto; }
   .popover { max-width: calc(100vw - 16px); max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 16px); overflow-y: auto; }
 }
-.update-bar { position: fixed; left: 8px; right: 8px; bottom: calc(var(--safe-bottom) + 76px); z-index: 50; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 12px; background: var(--raised); border: 1px solid var(--ember); box-shadow: 0 8px 24px #0008; }
-.update-bar span { flex: 1; font-size: 14px; }
-.update-bar .primary { height: 36px; padding: 0 14px; }
 
 /* ---------- Pins, search, unread mention counts ---------- */
 .channel .cname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2293,3 +2290,47 @@ img.mc-emoji { width: 18px; height: 18px; object-fit: contain; }
 .rc-roster { container-type: inline-size; }
 @container (max-width: 420px) { .rc-roster .nm-last { display: none; } }
 .msg-body:has(> .event-card.rc) { flex: 1; }
+
+/* ---------- The orange update button (updates.js) ---------- */
+.update-btn { position: relative; flex: 0 0 auto; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--ember) 16%, transparent); color: var(--ember); }
+.update-btn svg { filter: drop-shadow(0 0 3px color-mix(in srgb, var(--ember) 80%, transparent)); }
+.update-btn:hover, .update-btn:focus-visible { background: color-mix(in srgb, var(--ember) 28%, transparent); color: var(--glow); outline: none; }
+.update-btn:focus-visible { box-shadow: 0 0 0 2px var(--glow); }
+.update-btn::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; animation: upd-pulse 2.6s ease-out infinite; }
+.update-btn svg { animation: upd-glow 2.6s ease-in-out infinite; }
+.update-btn.busy svg { animation: upd-drop 1.1s ease-in-out infinite; }
+@keyframes upd-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ember) 55%, transparent); }
+  70%, 100% { box-shadow: 0 0 0 9px color-mix(in srgb, var(--ember) 0%, transparent); }
+}
+@keyframes upd-glow {
+  0%, 100% { filter: drop-shadow(0 0 2px color-mix(in srgb, var(--ember) 70%, transparent)); }
+  50% { filter: drop-shadow(0 0 7px var(--ember)); }
+}
+@keyframes upd-drop { 0%, 100% { transform: translateY(-2px); } 50% { transform: translateY(2px); } }
+@media (prefers-reduced-motion: reduce) {
+  .update-btn::after, .update-btn svg, .update-btn.busy svg { animation: none; }
+  .update-btn::after { box-shadow: 0 0 0 2px color-mix(in srgb, var(--ember) 35%, transparent); }
+  .update-btn svg { filter: drop-shadow(0 0 5px var(--ember)); }
+  .upd-progress.indeterminate .upd-fill { animation: none; width: 100%; opacity: .5; }
+}
+#app.friends-mode .update-btn { margin-left: auto; }
+
+.popover.upd-pop { width: min(320px, calc(100vw - 16px)); padding: 14px; border-color: color-mix(in srgb, var(--ember) 45%, var(--line)); }
+.upd-head { display: flex; align-items: center; gap: 10px; }
+.upd-icon { flex: 0 0 36px; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; color: var(--ember);
+  background: color-mix(in srgb, var(--ember) 16%, transparent); }
+.upd-title { font-weight: 700; font-size: 15px; }
+.upd-sub { font-size: 13px; }
+.upd-notes { margin: 10px 0 0; font-size: 13px; line-height: 1.45; white-space: pre-line; overflow-wrap: anywhere; max-height: 140px; overflow-y: auto; color: var(--text); }
+.upd-warn, .upd-error { margin: 10px 0 0; padding: 8px 10px; border-radius: 8px; font-size: 13px; line-height: 1.4; }
+.upd-warn { background: color-mix(in srgb, var(--glow) 12%, transparent); color: var(--glow); }
+.upd-error { background: color-mix(in srgb, var(--occupied) 12%, transparent); color: var(--occupied); }
+.upd-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.upd-actions .primary { height: 36px; padding: 0 14px; }
+.upd-progress { position: relative; height: 8px; margin-top: 14px; border-radius: 4px; background: var(--raised); overflow: hidden; }
+.upd-fill { height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, var(--ember), var(--glow)); transition: width .3s; }
+.upd-progress.indeterminate .upd-fill { width: 35%; animation: upd-slide 1.2s ease-in-out infinite; }
+@keyframes upd-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(290%); } }
+.upd-status { margin-top: 6px; font-size: 13px; }

@@ -315,7 +315,7 @@ function openPopover(anchor, content, align = "above") {
 
 document.addEventListener("mousedown", (e) => {
   if (openMenus.length && !openMenus.some((m) => m.contains(e.target))) closeMenus();
-  if (popover && !popover.contains(e.target) && !e.target.closest("#gif-btn, #emoji-btn, .msg-actions, .menu, .vp-btn, .vp-status")) closePopover();
+  if (popover && !popover.contains(e.target) && !e.target.closest("#gif-btn, #emoji-btn, .msg-actions, .menu, .vp-btn, .vp-status, #update-btn")) closePopover();
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {

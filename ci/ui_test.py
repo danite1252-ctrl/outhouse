@@ -9,6 +9,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from playwright.sync_api import sync_playwright
@@ -3340,6 +3341,192 @@ with sync_playwright() as p:
         mp.close()
     dave_res = [r["item_id"] for r in api("GET", f"/api/events/{SRID}", None, TOKEN)["reserves"] if r["user_id"] == DAVE]
     assert sorted(dave_res) == [17076, 17204], dave_res
+
+    # ---- The orange update button (updates.js) ----
+    # Windows app: a mocked app bridge (http://outhouse.localhost) that finds
+    # an update, then downloads it with progress after "Update now".
+    def fake_bridge(pg, origin=BASE):
+        st = {"status": {"enabled": True, "current": "0.2.40", "available": False}, "calls": []}
+
+        def handle(route):
+            url = route.request.url
+            st["calls"].append(url)
+            headers = {"Access-Control-Allow-Origin": origin}
+            if "/update-status" in url:
+                s = st["status"]
+                if s.get("downloading"):
+                    s["progress"] = round(min(0.9, (s.get("progress") or 0) + 0.15), 2)
+                route.fulfill(status=200, headers=headers, content_type="application/json", body=json.dumps(s))
+            elif "/update-install" in url:
+                if not st["status"].get("available"):
+                    route.fulfill(status=409, headers=headers, body="there's no update to install")
+                    return
+                st["status"].update({"downloading": True, "progress": 0.1})
+                route.fulfill(status=200, headers=headers, body="ok")
+            else:
+                route.fulfill(status=200, headers=headers, body="ok")
+        pg.route("http://outhouse.localhost/**", handle)
+        return st
+
+    def app_page(label, vp, platform, token=TOKEN, mobile=False):
+        pg = browser.new_page(viewport=vp, is_mobile=mobile, has_touch=mobile, permissions=["microphone"])
+        watch(pg, label)
+        flags = "" if platform == "browser" else f"window.__OUTHOUSE_DESKTOP__ = true; window.__OUTHOUSE_PLATFORM__ = '{platform}'; window.__OUTHOUSE_APP_VERSION__ = '0.2.40';"
+        pg.add_init_script(flags + f"localStorage.removeItem('outhouse_update_later'); localStorage.setItem('outhouse_token', {json.dumps(token)}); localStorage.setItem('outhouse_guild', {json.dumps(guild['id'])}); localStorage.setItem('outhouse_channel_{guild['id']}', {json.dumps(chan['id'])});")
+        return pg
+
+    NOTES = "Voice reconnects faster after a drop.\nThe raid planner remembers your spec."
+    for label, vp, mobile, base in (("desktop", {"width": 1280, "height": 800}, False, 3401), ("phone", {"width": 390, "height": 844}, True, 3411)):
+        up = app_page(f"update-win-{label}", vp, "desktop", mobile=mobile)
+        bridge = fake_bridge(up)
+        up.goto(BASE + "/")
+        up.wait_for_selector("#messages .msg", timeout=15000)
+        up.wait_for_function("updates.state.app !== null", timeout=10000)
+        assert up.is_hidden("#update-btn"), "update button shows with no update"
+        up.screenshot(path=f"{SHOTS}/{base}-{label}-update-none.png")
+        # The app's hourly check finds 0.2.41 and nudges the page.
+        bridge["status"].update({"available": True, "version": "0.2.41", "notes": NOTES, "date": "2026-11-09 08:00:00.0 +00:00:00"})
+        up.evaluate("window.dispatchEvent(new Event('outhouse-update'))")
+        up.wait_for_selector("#update-btn:not([hidden])", timeout=5000)
+        title = up.get_attribute("#update-btn", "title")
+        assert title == "Update available — Outhouse 0.2.41. Click to restart and update", title
+        assert up.evaluate("getComputedStyle(document.getElementById('update-btn')).color") == "rgb(255, 107, 53)", "not ember orange"
+        up.wait_for_timeout(1200)  # mid-glow
+        up.screenshot(path=f"{SHOTS}/{base + 1}-{label}-update-available.png")
+        # Later hides it for six hours; a newer version brings it back.
+        up.click("#update-btn")
+        up.wait_for_selector(".upd-pop #update-later")
+        up.click(".upd-pop #update-later")
+        up.wait_for_selector("#update-btn", state="hidden", timeout=3000)
+        assert up.evaluate("JSON.parse(localStorage.getItem('outhouse_update_later')).key") == "app:0.2.41"
+        up.evaluate("updates.check()")
+        up.wait_for_timeout(300)
+        assert up.is_hidden("#update-btn"), "Later didn't stick"
+        bridge["status"]["version"] = "0.2.42"
+        up.evaluate("updates.check()")
+        up.wait_for_selector("#update-btn:not([hidden])", timeout=5000)
+        # The popover: version, notes, Later / Update now.
+        up.click("#update-btn")
+        up.wait_for_selector(".upd-pop .upd-notes:has-text('remembers your spec')")
+        assert "Outhouse 0.2.42" in up.inner_text(".upd-pop .upd-sub")
+        assert up.inner_text(".upd-pop #update-now") == "Update now"
+        assert up.query_selector(".upd-pop .upd-warn") is None
+        up.screenshot(path=f"{SHOTS}/{base + 2}-{label}-update-popover.png")
+        # Clicking the button again closes it.
+        up.click("#update-btn")
+        up.wait_for_selector(".upd-pop", state="detached", timeout=3000)
+        if label == "desktop":
+            # In voice: it warns first, and leaves voice before updating.
+            up.click("#voice-channels .channel.voice:has-text('Raid comms')")
+            up.wait_for_function("state.voice.room && state.voice.room.state === 'connected'", timeout=20000)
+            up.click("#update-btn")
+            up.wait_for_selector(".upd-pop .upd-warn:has-text('This will disconnect you from voice')")
+            assert up.inner_text(".upd-pop #update-now") == "Leave voice and update"
+            up.screenshot(path=f"{SHOTS}/{base + 3}-{label}-update-voice-warning.png")
+        else:
+            up.click("#update-btn")
+            up.wait_for_selector(".upd-pop #update-now")
+        up.click(".upd-pop #update-now")
+        up.wait_for_selector(".upd-pop .upd-progress", timeout=5000)
+        up.wait_for_function("updates.state.app?.progress >= 0.4", timeout=10000)
+        assert up.evaluate("!state.voice.room && !state.voice.channelId"), "still in voice after Update now"
+        assert any("/update-install" in c for c in bridge["calls"]), "update-install wasn't called"
+        assert "Downloading" in up.inner_text(".upd-pop .upd-status")
+        up.screenshot(path=f"{SHOTS}/{base + 4}-{label}-update-downloading.png")
+        bridge["status"].update({"downloading": False, "ready": True, "progress": 1})
+        up.wait_for_selector(".upd-pop .upd-status:has-text('Restarting…')", timeout=5000)
+        up.screenshot(path=f"{SHOTS}/{base + 5}-{label}-update-restarting.png")
+        up.close()
+
+    # An older Windows app without the update endpoints: nothing shows, and
+    # the desktop connection isn't marked broken.
+    old = app_page("update-old-app", {"width": 1280, "height": 800}, "desktop")
+    old.route("http://outhouse.localhost/**", lambda route: route.fulfill(status=404 if "update" in route.request.url else 200,
+              headers={"Access-Control-Allow-Origin": BASE}, body="unknown" if "update" in route.request.url else "ok"))
+    old.goto(BASE + "/")
+    old.wait_for_selector("#messages .msg", timeout=15000)
+    old.wait_for_function("updates.state.bridgeGone === true", timeout=10000)
+    assert old.is_hidden("#update-btn")
+    assert old.evaluate("desktopStatus.ok"), "an older app's missing update endpoint marked the bridge broken"
+    old.close()
+
+    # Android app: /updates/android.json is newer, the button offers the APK.
+    for label, vp, base in (("android", {"width": 393, "height": 852}, 3421),):
+        ad = app_page(f"update-{label}", vp, "android", mobile=True)
+        abridge = fake_bridge(ad)
+        ad.route("**/updates/android.json", lambda route: route.fulfill(json={"version": "0.2.41", "url": "/updates/Outhouse-Android.apk"}))
+        ad.goto(BASE + "/")
+        ad.wait_for_selector("#messages .msg", timeout=15000)
+        ad.wait_for_selector("#update-btn:not([hidden])", timeout=10000)
+        assert ad.query_selector(".update-bar") is None, "the old banner is still there"
+        assert ad.get_attribute("#update-btn", "title") == "Update available — Outhouse 0.2.41. Click to download it"
+        ad.wait_for_timeout(1200)
+        ad.screenshot(path=f"{SHOTS}/{base}-{label}-update-available.png")
+        ad.click("#update-btn")
+        ad.wait_for_selector(".upd-pop #update-now:has-text('Download')")
+        ad.screenshot(path=f"{SHOTS}/{base + 1}-{label}-update-popover.png")
+        ad.click(".upd-pop #update-now")
+        ad.wait_for_timeout(500)
+        opened = [c for c in abridge["calls"] if "/open?" in c]
+        assert opened and "Outhouse-Android.apk" in urllib.parse.unquote(opened[-1]), abridge["calls"]
+        ad.close()
+    # Same version as the app: no button.
+    ad = app_page("update-android-current", {"width": 393, "height": 852}, "android", mobile=True)
+    ad.route("**/updates/android.json", lambda route: route.fulfill(json={"version": "0.2.40", "url": "/updates/Outhouse-Android.apk"}))
+    ad.goto(BASE + "/")
+    ad.wait_for_selector("#messages .msg", timeout=15000)
+    ad.wait_for_function("updates.state.lastApk > 0", timeout=10000)
+    ad.wait_for_timeout(500)
+    assert ad.is_hidden("#update-btn"), "update button for the same Android version"
+    ad.close()
+
+    # Plain browser: the server got a newer web client (web_build changed).
+    for label, vp, mobile, base in (("browser", {"width": 1280, "height": 800}, False, 3431), ("browser-phone", {"width": 390, "height": 844}, True, 3434)):
+        wb = app_page(f"update-{label}", vp, "browser", mobile=mobile)
+        swap = {"on": False}
+
+        def health(route, swap=swap):
+            if not swap["on"]:
+                route.continue_()
+                return
+            res = route.fetch()
+            body = res.json()
+            body["web_build"] = "feedfacefeedface"
+            route.fulfill(response=res, json=body)
+        wb.route("**/api/health", health)
+        wb.goto(BASE + "/")
+        wb.wait_for_selector("#messages .msg", timeout=15000)
+        wb.wait_for_function("!!updates.state.webBuild", timeout=10000)
+        assert wb.is_hidden("#update-btn")
+        swap["on"] = True
+        wb.evaluate("checkForUpdates()")
+        wb.wait_for_selector("#update-btn:not([hidden])", timeout=5000)
+        assert "Click to refresh" in wb.get_attribute("#update-btn", "title")
+        wb.wait_for_timeout(1200)
+        wb.screenshot(path=f"{SHOTS}/{base}-{label}-refresh-available.png")
+        wb.click("#update-btn")
+        wb.wait_for_selector(".upd-pop #update-now:has-text('Refresh to update')")
+        wb.screenshot(path=f"{SHOTS}/{base + 1}-{label}-refresh-popover.png")
+        with wb.expect_navigation(timeout=10000):
+            wb.click(".upd-pop #update-now")
+        wb.wait_for_selector("#messages .msg", timeout=15000)
+        wb.wait_for_function("updates.state.webBuild === 'feedfacefeedface'", timeout=10000)
+        assert wb.is_hidden("#update-btn"), "still offering a refresh after refreshing"
+        wb.close()
+
+    # Home (DMs and friends): the button is there too.
+    hm = app_page("update-home", {"width": 1280, "height": 800}, "desktop")
+    hb = fake_bridge(hm)
+    hb["status"].update({"available": True, "version": "0.2.41"})
+    hm.goto(BASE + "/")
+    hm.wait_for_selector("#messages .msg", timeout=15000)
+    hm.click("#home-btn")
+    hm.wait_for_selector("#update-btn:not([hidden])", timeout=10000)
+    hm.wait_for_timeout(800)
+    box = hm.query_selector("#update-btn").bounding_box()
+    assert box and box["x"] > 1000 and box["y"] < 56, f"update button not at the top right on Home: {box}"
+    hm.screenshot(path=f"{SHOTS}/3441-home-update-available.png")
+    hm.close()
 
     browser.close()
 

@@ -10,6 +10,8 @@
 #[cfg(desktop)]
 mod ptt;
 #[cfg(desktop)]
+mod update_state;
+#[cfg(desktop)]
 mod updates;
 
 use std::collections::HashMap;
@@ -217,6 +219,26 @@ fn bridge(
             open_external(app.clone(), get("url"));
             reply(200, "ok")
         }
+        // The orange update button: what's out, and "Update now".
+        #[cfg(desktop)]
+        "/update-status" => tauri::http::Response::builder()
+            .status(200)
+            .header(
+                "Access-Control-Allow-Origin",
+                origin.clone().unwrap_or_default(),
+            )
+            .header("Content-Type", "application/json")
+            .header("Cache-Control", "no-store")
+            .body(updates::status_json(app).into_bytes())
+            .unwrap(),
+        #[cfg(desktop)]
+        "/update-install" => {
+            if updates::install_now(app.clone()) {
+                reply(200, "ok")
+            } else {
+                reply(409, "there's no update to install")
+            }
+        }
         _ => reply(404, "unknown"),
     }
 }
@@ -396,6 +418,13 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         app.autolaunch().is_enabled().unwrap_or(false),
         None::<&str>,
     )?;
+    let check_updates = MenuItem::with_id(
+        app,
+        "check_updates",
+        "Check for updates",
+        true,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Quit Outhouse", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
@@ -403,6 +432,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
             &open,
             &PredefinedMenuItem::separator(app)?,
             &autostart,
+            &check_updates,
             &PredefinedMenuItem::separator(app)?,
             &quit,
         ],
@@ -425,6 +455,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 };
                 let _ = autostart_item.set_checked(!on);
             }
+            "check_updates" => updates::check_from_tray(app.clone()),
             "quit" => app.exit(0),
             _ => {}
         })

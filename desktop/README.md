@@ -35,6 +35,7 @@ For a quick try without installing: `cargo tauri dev` in the same folder.
 - The apps always open **https://oh.hartspace.cc** (there's no server picker). If the server can't be reached you get a "Can't reach Outhouse" screen that keeps retrying.
 - Set your push-to-talk key in **User settings → Voice & audio** as usual. The app watches that one key only while you're in voice with push to talk on.
 - Windows will ask once to let Outhouse use the microphone.
+- **Updates.** When Outhouse starts it installs any new version straight away. While it's open it checks every hour (or right-click the tray icon → **Check for updates**); when there's a new version an orange download arrow lights up at the top right of the window. Click it → **Update now** to download, install and restart (it warns you first if you're in voice), or **Later** to hide it for six hours. Otherwise it installs the next time Outhouse starts. The Android app shows the same arrow, which downloads the new APK, and in a browser it appears as **Refresh to update** when the server has a newer web client.
 
 ## Notes
 - If a game runs **as administrator**, Windows won't let normal apps see keys pressed in it. Run Outhouse as administrator too in that case. WoW doesn't need this.

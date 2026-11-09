@@ -1263,21 +1263,7 @@ function touchPttButton() {
 
 if (window.__OUTHOUSE_PLATFORM__ === "android") document.documentElement.classList.add("android-app");
 
-// The Android app can't update itself, so offer the new APK when there is one.
-(async function androidUpdateCheck() {
-  const current = window.__OUTHOUSE_APP_VERSION__;
-  if (window.__OUTHOUSE_PLATFORM__ !== "android" || !current) return;
-  const latest = await fetch("/updates/android.json", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
-  if (!latest?.version || latest.version === current || prefs.get("apk_skipped", "") === latest.version) return;
-  const a = latest.version.split(".").map(Number), b = current.split(".").map(Number);
-  const i = a.findIndex((n, k) => n !== (b[k] ?? 0));
-  if (i < 0 || !(a[i] > (b[i] ?? 0))) return; // not newer
-  const bar = el("div", { class: "update-bar" },
-    el("span", {}, `Outhouse ${latest.version} is out.`),
-    el("button", { class: "primary", onclick: () => { desktopInvoke("open_external", { url: new URL(latest.url, location.href).href }); bar.remove(); } }, "Download"),
-    el("button", { class: "ghost", onclick: () => { prefs.set("apk_skipped", latest.version); bar.remove(); } }, "Later"));
-  document.body.append(bar);
-})();
+// The Android app's "new version" offer is the orange update button (updates.js).
 
 // Slide-out panels for the channel list and member list on narrow screens.
 (function mobileLayout() {

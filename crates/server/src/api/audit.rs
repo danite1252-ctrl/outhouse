@@ -162,6 +162,83 @@ pub struct ServerStatus {
 
 /// Reads the server's version: `OUTHOUSE_VERSION`, else the VERSION file
 /// deploy/push.ps1 bakes into the image, else the crate version.
+/// A short fingerprint of the web client's files (the `WEB_DIR` folder,
+/// without the mirrored app downloads in `updates/`). Open pages compare it
+/// with the one they loaded with and offer "Refresh to update" when the
+/// server has a newer client. Worked out again at most every five minutes.
+pub fn web_build() -> String {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static CACHE: Mutex<Option<(Instant, String)>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, build)) = cache.as_ref() {
+        if at.elapsed() < Duration::from_secs(300) {
+            return build.clone();
+        }
+    }
+    let dir = std::env::var("WEB_DIR").unwrap_or_else(|_| "web".into());
+    let build = fingerprint_dir(std::path::Path::new(&dir));
+    *cache = Some((Instant::now(), build.clone()));
+    build
+}
+
+/// SHA-256 over the client's file names and contents, first 16 hex digits.
+pub fn fingerprint_dir(dir: &std::path::Path) -> String {
+    use sha2::{Digest, Sha256};
+    const KINDS: [&str; 8] = [
+        "js",
+        "mjs",
+        "css",
+        "html",
+        "svg",
+        "json",
+        "webmanifest",
+        "wasm",
+    ];
+    let mut files = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                // App downloads are mirrored here; they aren't the web client.
+                if !(d == dir && entry.file_name() == "updates") {
+                    stack.push(path);
+                }
+            } else if kind.is_file()
+                && path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| KINDS.contains(&e))
+            {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    let mut hash = Sha256::new();
+    for f in files.iter().take(5000) {
+        let name = f.strip_prefix(dir).unwrap_or(f).to_string_lossy();
+        hash.update(name.as_bytes());
+        hash.update([0u8]);
+        if let Ok(bytes) = std::fs::read(f) {
+            hash.update((bytes.len() as u64).to_le_bytes());
+            hash.update(&bytes);
+        }
+    }
+    hash.finalize()
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 pub fn version() -> String {
     if let Ok(v) = std::env::var("OUTHOUSE_VERSION") {
         if !v.trim().is_empty() {
@@ -234,8 +311,9 @@ pub async fn is_site_owner(db: &sqlx::PgPool, user_id: i64) -> AppResult<bool> {
                     .bind(user_id)
                     .fetch_optional(db)
                     .await?;
-            return Ok(list.contains(&user_id.to_string())
-                || name.is_some_and(|n| list.contains(&n)));
+            return Ok(
+                list.contains(&user_id.to_string()) || name.is_some_and(|n| list.contains(&n))
+            );
         }
     }
     let first: Option<i64> =
@@ -256,7 +334,9 @@ pub async fn site_owner(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
 ) -> AppResult<Json<SiteOwner>> {
-    Ok(Json(SiteOwner { site_owner: is_site_owner(&st.db, user.id).await? }))
+    Ok(Json(SiteOwner {
+        site_owner: is_site_owner(&st.db, user.id).await?,
+    }))
 }
 
 /// `GET /api/health`: 200 with `{"status":"ok", ...}` when the database
@@ -271,10 +351,14 @@ pub async fn health(State(st): State<AppState>) -> axum::response::Response {
     .await
     .map(|r| r.is_ok())
     .unwrap_or(false);
+    let web_build = tokio::task::spawn_blocking(web_build)
+        .await
+        .unwrap_or_default();
     let body = serde_json::json!({
         "status": if db_ok { "ok" } else { "degraded" },
         "db": db_ok,
         "version": version(),
+        "web_build": web_build,
         "uptime_seconds": (Utc::now() - st.started_at).num_seconds().max(0),
     });
     let code = if db_ok {
@@ -283,4 +367,33 @@ pub async fn health(State(st): State<AppState>) -> axum::response::Response {
         StatusCode::SERVICE_UNAVAILABLE
     };
     (code, Json(body)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fingerprint_dir;
+
+    #[test]
+    fn web_build_changes_with_the_client_only() {
+        let dir = std::env::temp_dir().join(format!("outhouse-webbuild-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("updates")).unwrap();
+        std::fs::create_dir_all(dir.join("vendor")).unwrap();
+        std::fs::write(dir.join("app.js"), "console.log(1)").unwrap();
+        std::fs::write(dir.join("vendor/lib.js"), "x").unwrap();
+        let first = fingerprint_dir(&dir);
+        assert_eq!(first.len(), 16);
+        assert_eq!(first, fingerprint_dir(&dir), "same files, same build");
+        // Mirrored app downloads and other file kinds don't count.
+        std::fs::write(dir.join("updates/latest.json"), "{}").unwrap();
+        std::fs::write(dir.join("notes.txt"), "hi").unwrap();
+        assert_eq!(first, fingerprint_dir(&dir));
+        // A changed script does, even in a subfolder.
+        std::fs::write(dir.join("vendor/lib.js"), "y").unwrap();
+        let second = fingerprint_dir(&dir);
+        assert_ne!(first, second);
+        std::fs::write(dir.join("style.css"), "body{}").unwrap();
+        assert_ne!(second, fingerprint_dir(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
