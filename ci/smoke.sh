@@ -1321,13 +1321,6 @@ call DELETE "/api/loot/$FIRSTAW" >/dev/null
 call GET "/api/guilds/$GUILD/loot" | jq -e '.entries | length == 1' >/dev/null
 call GET "/api/guilds/$GUILD/audit-log?action=loot_award" | jq -e '.entries | length == 2 and (.[0].details | contains("Thunderfury") and contains("Carl"))' >/dev/null
 call GET "/api/guilds/$GUILD/audit-log?action=loot_award_remove" | jq -e '.entries | length == 1' >/dev/null
-# The log outlives the raid.
-call DELETE "/api/events/$LP" >/dev/null
-call GET "/api/guilds/$GUILD/loot" | jq -e '.entries | length == 1 and .[0].event_id == null and .[0].raid_title == "Ony tonight"' >/dev/null
-for e in "$CE" "$SRE" "$DLE"; do call DELETE "/api/events/$e" >/dev/null; done
-call DELETE "/api/events/$L1?scope=future" >/dev/null
-call DELETE "/api/events/$(pevents "$LSER" | jq -r '.[0].id')?scope=future" >/dev/null
-
 step "Wowhead loot lists: parsing, bosses, filters, caching, refresh, imports, branches, Wowhead down"
 hits() { curl -fsS "$MOCK/__hits" | jq -r --arg p "$1" '.[$p] // 0'; }
 # Molten Core's full list from its zone page (tricky JS: unquoted keys, single
@@ -1424,6 +1417,15 @@ TOKEN=$TOKEN_A
 # Item links follow the branch that has the lists; loot log entries say which.
 call GET /api/wow/info | jq -e '.wowhead_branches.tbc == "tbc" and .wowhead_branches.era == "classic" and (.wowhead_branches.forever | IN("forever", "classic")) and (.wowhead_base | length > 0)' >/dev/null
 call GET "/api/guilds/$GUILD/loot" | jq -e 'all(.entries[]; .branch != "")' >/dev/null
+for e in "$NX" "$KZ" "$SKY"; do call DELETE "/api/events/$e" >/dev/null; done
+
+step "loot log (continued)"
+# The log outlives the raid.
+call DELETE "/api/events/$LP" >/dev/null
+call GET "/api/guilds/$GUILD/loot" | jq -e '.entries | length == 1 and .[0].event_id == null and .[0].raid_title == "Ony tonight"' >/dev/null
+for e in "$CE" "$SRE" "$DLE"; do call DELETE "/api/events/$e" >/dev/null; done
+call DELETE "/api/events/$L1?scope=future" >/dev/null
+call DELETE "/api/events/$(pevents "$LSER" | jq -r '.[0].id')?scope=future" >/dev/null
 
 step "voice moderation (mock LiveKit API)"
 jwt_claims() { python3 -c 'import sys,base64;p=sys.argv[1].split(".")[1];print(base64.urlsafe_b64decode(p+"="*(-len(p)%4)).decode())' "$1"; }
