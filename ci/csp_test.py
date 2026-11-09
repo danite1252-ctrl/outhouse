@@ -51,6 +51,13 @@ csp_raid = api("POST", f"/api/channels/{chan['id']}/events", {
     "title": "CSP raid", "starts_at": time.strftime("%Y-%m-%dT20:00:00Z", time.gmtime(time.time() + 2 * 86400)),
     "soft_reserves": 1, "loot_instance": "mc"}, TOKEN)["event"]
 api("PUT", f"/api/events/{csp_raid['id']}/signup", {"status": "yes", "role": "tank", "class": "Warrior", "spec": "Protection"}, TOKEN)
+# A bot message with buttons and a select menu (components.js).
+csp_bot = api("POST", f"/api/guilds/{guild['id']}/bots", {"name": "CSP Bot"}, TOKEN)
+api("POST", f"/api/channels/{chan['id']}/messages", {"content": "Pick a die", "components": [
+    {"type": 1, "components": [{"type": 2, "style": 1, "label": "Roll", "emoji": {"name": "🎲"}, "custom_id": "roll"},
+                                {"type": 2, "style": 5, "label": "Docs", "url": "https://example.com"}]},
+    {"type": 1, "components": [{"type": 3, "custom_id": "size", "placeholder": "Dice size",
+                                "options": [{"label": "d6", "value": "6"}, {"label": "d20", "value": "20"}]}]}]}, csp_bot["token"])
 
 problems = []
 COLLECT = """
@@ -118,6 +125,13 @@ with sync_playwright() as p:
     pg.fill("#composer-input", "sent under the real CSP")
     pg.press("#composer-input", "Enter")
     pg.wait_for_selector("#messages .msg:has-text('sent under the real CSP')", timeout=10000)
+    pg.wait_for_selector("#messages .msg-components .mc-btn", timeout=10000)
+    pg.click("#messages .mc-select")
+    pg.wait_for_selector(".mc-pop .mc-option", timeout=5000)
+    pg.keyboard.press("Escape")
+    pg.evaluate(f"openEditChannel(chById({json.dumps(chan['id'])}), 'automod')")
+    pg.wait_for_selector("dialog.edit-channel .am-card", timeout=10000)
+    pg.keyboard.press("Escape")
     pg.click("#voice-channels .channel.voice:has-text('CSP Voice')")
     pg.wait_for_selector("#voice-panel .vp-status:not(.connecting)", timeout=20000)
     until(pg, "state.voice.room && state.voice.room.state === 'connected'")

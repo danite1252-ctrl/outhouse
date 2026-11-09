@@ -56,21 +56,87 @@ function threadLink(t) {
     el("span", { class: "tl-icon", "aria-hidden": "true" }, "🧵"),
     el("span", { class: "tl-name" }, t.name),
     el("span", { class: "tl-count" }, repliesLabel(t.message_count)),
+    t.archived ? el("span", { class: "tl-archived", title: "No activity for a while: hidden from the thread list" }, t.locked ? "🔒 Archived" : "Archived") : null,
     typeof threadBadge === "function" ? threadBadge(t.id) : null,
     el("span", { class: "tl-go", "aria-hidden": "true" }, "›"));
+}
+
+// ---- Auto-archive ("Hide after inactivity") ----
+
+const ARCHIVE_CHOICES = [[60, "1 hour"], [1440, "24 hours"], [4320, "3 days"], [10080, "1 week"]];
+const archiveLabel = (mins) => ARCHIVE_CHOICES.find(([m]) => m === mins)?.[1] ?? `${mins} minutes`;
+const threadDefaults = new Map(); // channel ID → minutes
+
+async function channelThreadDefault(channelId) {
+  if (threadDefaults.has(channelId)) return threadDefaults.get(channelId);
+  const d = await api("GET", `/api/channels/${channelId}/thread-defaults`).catch(() => null);
+  const mins = d?.auto_archive_duration ?? 4320;
+  threadDefaults.set(channelId, mins);
+  return mins;
+}
+
+function archiveSelect(mins) {
+  return el("select", { class: "select thread-archive-select", "aria-label": "Hide after inactivity" },
+    ARCHIVE_CHOICES.map(([m, label]) => el("option", { value: String(m), selected: m === mins }, label)));
+}
+
+// ask() with a "Hide after inactivity" picker under the name box.
+async function askThreadName(title, opts, channelId) {
+  const mins = await channelThreadDefault(channelId);
+  const select = archiveSelect(mins);
+  const promise = ask(title, opts);
+  const dialogs = document.querySelectorAll("dialog[open]");
+  const input = dialogs[dialogs.length - 1]?.querySelector("form > input");
+  input?.after(el("label", { class: "field thread-archive-field" }, "Hide after inactivity", select,
+    el("span", { class: "muted small" }, "Quiet threads tidy themselves away. A new reply brings them back.")));
+  const name = await promise;
+  return name ? { name, auto_archive_duration: Number(select.value) } : null;
+}
+
+async function patchThread(t, body) {
+  const updated = await tryApi("PATCH", `/api/threads/${t.id}`, body).catch(() => null);
+  if (updated) onThreadUpdate(updated);
+  return updated;
+}
+
+const canUnarchive = (t) => can("send_messages", t.channel_id) && (!t.locked || can("manage_messages", t.channel_id));
+
+// The archived / locked note above the thread's reply box.
+function paintThreadArchive() {
+  const t = thread.info;
+  const wrap = sidePanel.kind === "thread" ? sidePanel.node?.querySelector(".thread-composer-wrap") : null;
+  if (!t || !wrap) return;
+  sidePanel.node.querySelector(".thread-archived-bar")?.remove();
+  const mod = can("manage_messages", t.channel_id);
+  const ta = wrap.querySelector("textarea");
+  const send = wrap.querySelector("button.send");
+  const blocked = t.locked && !mod;
+  if (ta) {
+    ta.disabled = blocked || !can("send_messages", t.channel_id);
+    ta.placeholder = blocked ? "This thread is locked." : !can("send_messages", t.channel_id) ? "You can't post here." : t.archived ? "Reply to bring this thread back" : `Reply in ${t.name}`;
+  }
+  if (send) send.disabled = !!ta?.disabled;
+  if (!t.archived && !t.locked) return;
+  wrap.before(el("div", { class: `thread-archived-bar${t.locked ? " locked" : ""}`, role: "status" },
+    el("span", { class: "tab-icon", "aria-hidden": "true" }, t.locked ? "🔒" : "📦"),
+    el("span", { class: "tab-text" },
+      t.archived && t.locked ? "This thread is archived and locked. Only moderators can bring it back."
+        : t.locked ? "This thread is locked. Only moderators can post."
+          : "This thread is archived: it went quiet. Reply or unarchive it to bring it back."),
+    t.archived && canUnarchive(t) ? el("button", { type: "button", class: "ghost small tab-unarchive", onclick: () => patchThread(t, { archived: false }) }, "Unarchive") : null));
 }
 
 async function startThread(m) {
   if (m.thread) return openThread(m.thread);
   const suggested = plainMentions(m.content).replace(/https?:\/\/\S+/g, "").replace(/\s+/g, " ").trim().slice(0, 40) || (m.poll ? m.poll.question.slice(0, 40) : "");
-  const name = await ask("Start a thread", {
+  const picked = await askThreadName("Start a thread", {
     value: suggested,
     placeholder: "What's it about?",
     confirm: "Start thread",
     body: el("p", { class: "muted", style: "margin:0" }, "A side chat about this message, so the channel stays tidy."),
-  });
-  if (!name) return;
-  const t = await tryApi("POST", `/api/channels/${m.channel_id}/threads`, { name, message_id: m.id }).catch(() => null);
+  }, m.channel_id);
+  if (!picked) return;
+  const t = await tryApi("POST", `/api/channels/${m.channel_id}/threads`, { ...picked, message_id: m.id }).catch(() => null);
   if (!t) return;
   const msg = findMessage(m.id);
   if (msg) { msg.thread = t; renderMessages(); }
@@ -78,9 +144,11 @@ async function startThread(m) {
 }
 
 async function newChannelThread() {
-  const name = await ask("New thread", { placeholder: "Thread name", confirm: "Start thread" });
-  if (!name || !state.channelId) return;
-  const t = await tryApi("POST", `/api/channels/${state.channelId}/threads`, { name }).catch(() => null);
+  if (!state.channelId) return;
+  const channelId = state.channelId;
+  const picked = await askThreadName("New thread", { placeholder: "Thread name", confirm: "Start thread" }, channelId);
+  if (!picked) return;
+  const t = await tryApi("POST", `/api/channels/${channelId}/threads`, picked).catch(() => null);
   if (t) openThread(t);
 }
 
@@ -96,8 +164,16 @@ async function openThread(t) {
   }
   const more = el("button", { class: "icon-btn", title: "Thread options", "aria-label": "Thread options", onclick: (e) => {
     const r = e.currentTarget.getBoundingClientRect();
+    const ti = thread.info;
+    const mod = can("manage_messages", ti.channel_id);
     openMenu(r.left, r.bottom + 4, [
-      canManageThread(thread.info) ? { label: "Rename thread", onClick: renameThread } : null,
+      canManageThread(ti) ? { label: "Rename thread", onClick: renameThread } : null,
+      canManageThread(ti) && !ti.archived ? { label: "Archive thread", onClick: () => patchThread(ti, { archived: true }) } : null,
+      ti.archived && canUnarchive(ti) ? { label: "Unarchive thread", onClick: () => patchThread(ti, { archived: false }) } : null,
+      mod ? { label: ti.locked ? "Unlock thread" : "Lock thread", onClick: () => patchThread(ti, { locked: !ti.locked }) } : null,
+      canManageThread(ti) ? { label: `Hide after inactivity (${archiveLabel(ti.auto_archive_duration)})`, submenu: ARCHIVE_CHOICES.map(([m, label]) => ({
+        label, checked: ti.auto_archive_duration === m, onClick: () => patchThread(ti, { auto_archive_duration: m }),
+      })) } : null,
       { label: "Copy thread ID", onClick: () => copy(thread.info.id, "ID copied") },
       can("manage_messages", thread.info.channel_id) ? "sep" : null,
       can("manage_messages", thread.info.channel_id) ? { label: "Delete thread", danger: true, onClick: deleteThread } : null,
@@ -110,6 +186,7 @@ async function openThread(t) {
   body.append(el("p", { class: "sp-note" }, "Loading…"));
   body.addEventListener("scroll", () => { if (body.scrollTop < 200) loadOlderThread(); }, { passive: true });
   sidePanel.node.append(threadComposer());
+  paintThreadArchive();
   const msgs = await api("GET", `/api/channels/${t.channel_id}/messages?thread=${t.id}&limit=50`).catch((err) => { toast(err.message); return null; });
   if (!msgs || sidePanel.kind !== "thread" || thread.info?.id !== t.id) return;
   thread.messages = msgs;
@@ -141,11 +218,12 @@ async function loadOlderThread() {
 }
 
 function threadMessage(m, prev) {
-  const grouped = prev && !m.reply_to && prev.author_id === m.author_id && new Date(m.created_at) - new Date(prev.created_at) < 5 * 60 * 1000;
+  const grouped = prev && !m.reply_to && !m.ephemeral && !prev.ephemeral && prev.author_id === m.author_id && new Date(m.created_at) - new Date(prev.created_at) < 5 * 60 * 1000;
   const mine = m.author_id === state.me.id;
   const colour = memberColour(m.author_id);
   const imageOnly = m.embeds.length === 1 && m.embeds[0].kind === "image" && m.content.trim() === m.embeds[0].url;
-  return el("article", { class: `msg tmsg${grouped ? "" : " first"}`, id: `tmsg-${m.id}`, "data-id": m.id },
+  const hidden = typeof isFilteredHidden === "function" && isFilteredHidden(m);
+  return el("article", { class: `msg tmsg${grouped ? "" : " first"}${m.ephemeral ? " ephemeral" : ""}`, id: `tmsg-${m.id}`, "data-id": m.id },
     grouped ? el("div", { class: "gutter" }) : messageAvatar(m),
     el("div", { class: "msg-body" },
       grouped ? null : el("div", { class: "msg-meta" },
@@ -153,11 +231,15 @@ function threadMessage(m, prev) {
         m.author_bot ? el("span", { class: "bot-tag" }, "BOT") : null,
         el("time", { class: "msg-time", datetime: m.created_at, title: new Date(m.created_at).toLocaleString() }, timeLabel(m.created_at))),
       m.reply_to ? el("div", { class: "tmsg-reply" }, "↱ ", el("strong", {}, m.reply_to.author_display_name), " ", plainMentions(m.reply_to.content) || "(attachment)") : null,
-      m.content && !imageOnly ? el("p", { class: "msg-text" }, renderText(m.content), m.edited_at ? el("span", { class: "edited", title: new Date(m.edited_at).toLocaleString() }, "(edited)") : null) : null,
-      renderAttachments(m),
-      renderEmbeds(m),
+      hidden ? filteredCover(m) : null,
+      m.content && !imageOnly && !hidden ? el("p", { class: "msg-text" }, renderText(m.content), m.edited_at ? el("span", { class: "edited", title: new Date(m.edited_at).toLocaleString() }, "(edited)") : null) : null,
+      hidden ? null : renderAttachments(m),
+      hidden ? null : renderEmbeds(m),
+      !hidden && typeof renderComponents === "function" ? renderComponents(m) : null,
+      typeof filteredNote === "function" ? filteredNote(m) : null,
+      m.ephemeral && typeof ephemeralNote === "function" ? ephemeralNote(m) : null,
       renderReactions(m)),
-    el("div", { class: "msg-actions" },
+    m.ephemeral ? null : el("div", { class: "msg-actions" },
       can("add_reactions", m.channel_id) ? el("button", { title: "Add reaction", onclick: (e) => emojiPicker(e.currentTarget, (emoji) => toggleReaction(m, emoji)) }, "😀") : null,
       mine ? el("button", { title: "Edit", onclick: () => editThreadMessage(m) }, "✎") : null,
       mine || can("manage_messages", m.channel_id) ? el("button", { class: "danger", title: "Delete", onclick: (e) => deleteMessage(m, e.shiftKey) }, "🗑") : null));
@@ -292,19 +374,31 @@ async function drawThreadsList() {
   if (!body.childElementCount) body.append(el("p", { class: "sp-note" }, "Loading…"));
   const list = await api("GET", `/api/channels/${channelId}/threads`).catch((err) => { toast(err.message); return null; });
   if (sidePanel.kind !== "threads" || sidePanel.body !== body || state.channelId !== channelId || !list) return;
-  body.replaceChildren(...(list.length ? list.map((t) => {
+  const card = (t) => {
     const unread = typeof threadIsUnread === "function" && threadIsUnread(t.id);
-    const card = el("div", { class: `sp-card thread-card${unread ? " unread" : ""}`, role: "button", tabindex: "0", "data-thread": t.id, onclick: () => openThread(t) },
-      el("div", { class: "tc-name" }, "🧵 ", el("span", { class: "tc-title" }, t.name),
+    const node = el("div", { class: `sp-card thread-card${unread ? " unread" : ""}${t.archived ? " archived" : ""}`, role: "button", tabindex: "0", "data-thread": t.id, onclick: () => openThread(t) },
+      el("div", { class: "tc-name" }, t.locked ? "🔒 " : "🧵 ", el("span", { class: "tc-title" }, t.name),
         typeof threadBadge === "function" ? threadBadge(t.id) : null),
       el("div", { class: "tc-sub" }, repliesLabel(t.message_count), " · started ", timeLabel(t.created_at)));
-    card.addEventListener("keydown", (e) => { if (e.key === "Enter") card.click(); });
-    return card;
-  }) : [el("div", { class: "sp-empty" },
+    node.addEventListener("keydown", (e) => { if (e.key === "Enter") node.click(); });
+    return node;
+  };
+  const active = list.filter((t) => !t.archived);
+  const archived = list.filter((t) => t.archived);
+  const toggle = archived.length ? el("button", {
+    type: "button",
+    class: `archived-toggle${threadsShowArchived ? " open" : ""}`,
+    "aria-expanded": threadsShowArchived ? "true" : "false",
+    onclick: () => { threadsShowArchived = !threadsShowArchived; drawThreadsList(); },
+  }, el("span", { class: "at-caret", "aria-hidden": "true" }, "›"), `Archived threads (${archived.length})`) : null;
+  body.replaceChildren(...(active.length ? active.map(card) : [el("div", { class: "sp-empty" },
     el("div", { class: "sp-empty-icon" }, "🧵"),
-    el("p", {}, "No threads here yet."),
-    el("p", { class: "muted" }, "Start one from a message's 🧵 button to keep side chats tidy."))]));
+    el("p", {}, archived.length ? "No active threads." : "No threads here yet."),
+    el("p", { class: "muted" }, archived.length ? "Quiet threads tidy themselves away. Find them under Archived." : "Start one from a message's 🧵 button to keep side chats tidy."))]),
+  toggle,
+  ...(threadsShowArchived ? archived.map(card) : []));
 }
+let threadsShowArchived = false;
 
 let threadsRedraw = null;
 function onThreadUpdate(t) {
@@ -314,6 +408,7 @@ function onThreadUpdate(t) {
     thread.info = t;
     const title = sidePanel.node?.querySelector(".sp-title");
     if (title) title.textContent = `🧵 ${t.name}`;
+    paintThreadArchive();
   }
   if (sidePanel.kind === "threads" && t.channel_id === state.channelId) {
     clearTimeout(threadsRedraw);

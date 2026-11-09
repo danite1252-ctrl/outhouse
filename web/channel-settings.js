@@ -405,6 +405,7 @@ function openEditChannel(channel, tab = "overview") {
   const tabs = [
     can("manage_channels", ch.id) ? ["overview", "Overview"] : null,
     can("manage_roles") ? ["permissions", "Permissions"] : null,
+    can("manage_channels", ch.id) && ch.kind === TEXT && typeof drawChannelAutomod === "function" ? ["automod", "Automod"] : null,
   ].filter(Boolean);
   const draw = async (active) => {
     if (dirty && dirty() && !(await confirmBox("Unsaved changes", "You've changed this channel's settings. Throw the changes away?", "Discard"))) return;
@@ -418,6 +419,7 @@ function openEditChannel(channel, tab = "overview") {
       can("manage_channels", ch.id) ? el("button", { class: `ec-delete-tab${active === "delete" ? " active" : ""}`, "data-tab": "delete", onclick: () => draw("delete") }, "Delete", el("span", { class: "ec-wide" }, " channel")) : null);
     if (active === "overview") dirty = drawChannelOverview(main, current, dialog);
     else if (active === "permissions") drawChannelPermissions(main, current, dialog);
+    else if (active === "automod") drawChannelAutomod(main, current).then((check) => { if (check && nav.querySelector("button.active[data-tab='automod']")) dirty = check; });
     else drawChannelDelete(main, current, dialog);
   };
   dialog.addEventListener("cancel", async (e) => {
@@ -545,6 +547,8 @@ function drawChannelOverview(main, ch, dialog) {
       el("div", { class: "ec-hint" }, "Members can only send one message per this interval. People who can manage messages or channels skip it.")) : null,
     text ? el("div", { class: "ec-divider" }) : null,
     text ? el("div", { class: "field" }, el("span", {}, "Content visibility"), modeBox) : null,
+    text && typeof threadArchiveField === "function" ? el("div", { class: "ec-divider" }) : null,
+    text && typeof threadArchiveField === "function" ? threadArchiveField(ch) : null,
     !text ? el("p", { class: "muted", style: "margin:0" }, "Voice channels just have a name. Use the Permissions tab to decide who can join and speak.") : null),
     bar);
   topic.id = `topic-${ch.id}`;

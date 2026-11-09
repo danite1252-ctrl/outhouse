@@ -2372,6 +2372,198 @@ with sync_playwright() as p:
     ar.screenshot(path=f"{SHOTS}/2114-desktop-tbc-character-region.png")
     ar.close()
 
+    # ---- Bot buttons and menus, ephemeral replies, automod, archived threads ----
+    import subprocess
+    BM = guild["id"]
+    games = api("POST", f"/api/guilds/{BM}/channels", {"name": "bot-games"}, TOKEN)
+    roller = api("POST", f"/api/guilds/{BM}/bots", {"name": "Roller"}, TOKEN)
+    dice_proc = subprocess.Popen(["node", "web/bots/dice-bot.mjs"], env={**os.environ, "OUTHOUSE_URL": BASE, "OUTHOUSE_BOT_TOKEN": roller["token"]},
+                                 stdout=open("/tmp/ui-dice-bot.log", "w"), stderr=subprocess.STDOUT)
+    roll_cmd = None
+    for _ in range(40):
+        roll_cmd = next((c for c in api("GET", f"/api/guilds/{BM}/commands", None, TOKEN) if c["name"] == "roll"), None)
+        if roll_cmd:
+            break
+        time.sleep(0.5)
+    assert roll_cmd, open("/tmp/ui-dice-bot.log").read()
+    api("POST", f"/api/channels/{games['id']}/messages", {"content": "Who's rolling for the Onyxia bag?"}, dave["token"])
+    api("POST", f"/api/channels/{games['id']}/interactions", {"command_id": roll_cmd["id"], "options": {"dice": "d20"}}, TOKEN)
+    for _ in range(40):
+        msgs = api("GET", f"/api/channels/{games['id']}/messages", None, TOKEN)
+        if msgs and msgs[-1].get("components"):
+            break
+        time.sleep(0.25)
+    roll_msg = msgs[-1]
+    assert roll_msg["components"][0]["components"][0]["label"] == "Roll again", roll_msg
+    # A bot that's online but never answers (for "This interaction failed").
+    sleepy = api("POST", f"/api/guilds/{BM}/bots", {"name": "Sleepy"}, TOKEN)
+    sleepy_proc = subprocess.Popen(["node", "ci/gateway_probe.mjs", BASE, sleepy["token"], "/tmp/ui-sleepy.jsonl", "600"])
+    time.sleep(1.5)
+    api("POST", f"/api/channels/{games['id']}/messages", {"content": "I never answer, sorry.", "components": [
+        {"type": 1, "components": [{"type": 2, "style": 3, "label": "Wake up", "custom_id": "wake"},
+                                    {"type": 2, "style": 4, "label": "Poke", "emoji": {"name": "👉"}, "custom_id": "poke"},
+                                    {"type": 2, "style": 5, "label": "Bot docs", "url": "https://example.com/bots"}]}]}, sleepy["token"])
+
+    def bm_page(token, label, channel_id, **kw):
+        pg = browser.new_page(**kw)
+        watch(pg, label)
+        extra = "window.__OUTHOUSE_DESKTOP__ = true; window.__OUTHOUSE_PLATFORM__ = 'android'; window.__OUTHOUSE_APP_VERSION__ = '0.2.1';" if label.startswith("android") else ""
+        pg.add_init_script(extra + f"localStorage.setItem('outhouse_token', {json.dumps(token)}); localStorage.setItem('outhouse_guild', {json.dumps(BM)}); localStorage.setItem('outhouse_channel_{BM}', {json.dumps(channel_id)});")
+        pg.goto(BASE + "/")
+        pg.wait_for_selector("#messages .msg", timeout=15000)
+        return pg
+
+    rollsel = f"#msg-{roll_msg['id']}"
+    bm = bm_page(TOKEN, "botsmod-desktop", games["id"], viewport={"width": 1280, "height": 800})
+    bm.wait_for_selector(f"{rollsel} .msg-components .mc-btn.mc-primary", timeout=10000)
+    assert bm.evaluate(f"document.querySelector('{rollsel} .mc-select').getAttribute('aria-haspopup')") == "listbox"
+    bm.screenshot(path=f"{SHOTS}/2501-desktop-bot-buttons.png")
+    # Roll again: spinner, then the bot changes the message.
+    bm.click(f"{rollsel} .mc-btn:has-text('Roll again')")
+    bm.wait_for_selector(f"{rollsel} .mc-btn.loading", state="detached", timeout=5000)
+    assert not bm.query_selector(f"{rollsel} .mc-failed")
+    # Roll in secret: an ephemeral reply only Carol sees.
+    bm.click(f"{rollsel} .mc-btn:has-text('Roll in secret')")
+    bm.wait_for_selector("#messages .msg.ephemeral .ephemeral-note:has-text('Only you can see this')", timeout=5000)
+    bm.wait_for_timeout(300)
+    bm.screenshot(path=f"{SHOTS}/2502-desktop-ephemeral-reply.png")
+    eph_id = bm.get_attribute("#messages .msg.ephemeral", "data-id")
+    assert all(m["id"] != eph_id for m in api("GET", f"/api/channels/{games['id']}/messages", None, dave["token"])), "ephemeral message was saved"
+    # The dice-size menu, with the keyboard.
+    bm.click(f"{rollsel} .mc-select")
+    bm.wait_for_selector(".mc-pop .mc-listbox[role=listbox] .mc-option", timeout=5000)
+    assert bm.evaluate(f"document.querySelector('{rollsel} .mc-select').getAttribute('aria-expanded')") == "true"
+    bm.keyboard.press("ArrowDown")
+    bm.keyboard.press("ArrowDown")
+    bm.screenshot(path=f"{SHOTS}/2503-desktop-bot-select-open.png")
+    n_before = bm.evaluate("state.messages.length")
+    bm.keyboard.press("Enter")
+    bm.wait_for_function(f"state.messages.length > {n_before} && state.messages[state.messages.length - 1].content.includes('(1-8)')", timeout=6000)
+    bm.click("#messages .msg.ephemeral .eph-dismiss")
+    bm.wait_for_selector("#messages .msg.ephemeral", state="detached")
+    # A bot that never answers: the button spins, then "This interaction failed".
+    bm.click("#messages .mc-btn:has-text('Wake up')")
+    bm.wait_for_selector("#messages .mc-btn.loading .mc-spinner", timeout=3000)
+    bm.screenshot(path=f"{SHOTS}/2504-desktop-component-loading.png")
+    bm.wait_for_selector("#messages .mc-failed:has-text('This interaction failed')", timeout=6000)
+    bm.screenshot(path=f"{SHOTS}/2505-desktop-interaction-failed.png")
+    assert bm.get_attribute("#messages a.mc-btn.mc-link", "href") == "https://example.com/bots"
+    bm.close()
+
+    # Automod: a blocked message keeps your text; hidden ones get a "Filtered" cover.
+    am_block = api("POST", f"/api/guilds/{BM}/channels", {"name": "automod-block"}, TOKEN)
+    am_hide = api("POST", f"/api/guilds/{BM}/channels", {"name": "automod-hide"}, TOKEN)
+    api("PUT", f"/api/guilds/{BM}/automod", {"words": ["gold seller*"]}, TOKEN)
+    api("PUT", f"/api/channels/{am_block['id']}/automod", {"word_filter": True, "words": ["murloc"], "leetspeak": True,
+        "spam_filter": True, "max_mentions": 3, "max_links": 2, "timeout_minutes": 5, "timeout_after": 10, "alert_channel_id": games["id"]}, TOKEN)
+    api("PUT", f"/api/channels/{am_hide['id']}/automod", {"word_filter": True, "words": ["dang it"], "word_action": "hide"}, TOKEN)
+    api("POST", f"/api/channels/{am_block['id']}/messages", {"content": "Automod's on in here, keep it clean."}, TOKEN)
+    api("POST", f"/api/channels/{am_hide['id']}/messages", {"content": "Pulled too early, dang it"}, dave["token"])
+    api("POST", f"/api/channels/{am_hide['id']}/messages", {"content": "All good, next pull in 30"}, erin["token"])
+    for label, kw, shot in (("botsmod-dave", {"viewport": {"width": 1280, "height": 800}}, 2510),
+                            ("botsmod-dave-phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True}, 2511),
+                            ("android-botsmod-dave", {"viewport": {"width": 393, "height": 852}, "is_mobile": True, "has_touch": True}, 2512)):
+        dv = bm_page(dave["token"], label, am_block["id"], **kw)
+        dv.fill("#composer-input", "selling MURL0C pets cheap")
+        dv.keyboard.press("Enter")
+        dv.wait_for_selector(".toast:has-text('Your message was blocked by automod')", timeout=5000)
+        assert dv.evaluate("document.querySelector('#composer-input').value") == "selling MURL0C pets cheap"
+        dv.screenshot(path=f"{SHOTS}/{shot}-{label}-automod-blocked-toast.png")
+        dv.close()
+    fh = bm_page(TOKEN, "botsmod-filtered", am_hide["id"], viewport={"width": 1280, "height": 800})
+    fh.wait_for_selector("#messages .filtered-cover:has-text('Automod hid this message')", timeout=10000)
+    assert not fh.query_selector("#messages .msg-text:has-text('dang it')")
+    fh.screenshot(path=f"{SHOTS}/2513-desktop-filtered-cover.png")
+    fh.click("#messages .filtered-cover .fc-show")
+    fh.wait_for_selector("#messages .msg-text:has-text('dang it')")
+    # Edit channel → Automod, and Outhouse settings → Automod.
+    fh.evaluate(f"openEditChannel(chById({json.dumps(am_block['id'])}), 'automod')")
+    fh.wait_for_selector("dialog.edit-channel .am-page .am-card", timeout=10000)
+    fh.wait_for_timeout(300)
+    assert fh.evaluate("document.querySelector('dialog.edit-channel .am-words').value") == "murloc"
+    fh.screenshot(path=f"{SHOTS}/2514-desktop-automod-settings.png")
+    fh.evaluate("document.querySelector('dialog.edit-channel .settings-main').scrollTop = 99999")
+    fh.wait_for_timeout(200)
+    fh.screenshot(path=f"{SHOTS}/2515-desktop-automod-settings-bottom.png")
+    fh.check("dialog.edit-channel .am-role input")
+    fh.wait_for_selector(".ec-savebar.show")
+    fh.click(".ec-savebar button:has-text('Save changes')")
+    fh.wait_for_selector(".ec-savebar.show", state="hidden", timeout=5000)
+    assert len(api("GET", f"/api/channels/{am_block['id']}/automod", None, TOKEN)["exempt_roles"]) == 1
+    fh.keyboard.press("Escape")
+    fh.wait_for_selector("dialog.edit-channel", state="detached")
+    fh.evaluate(f"openEditChannel(chById({json.dumps(games['id'])}), 'overview')")
+    fh.wait_for_selector("dialog.edit-channel .am-thread-default select:not([disabled])", timeout=10000)
+    fh.select_option("dialog.edit-channel .am-thread-default select", "1440")
+    fh.wait_for_selector(".toast:has-text('New threads will use that')", timeout=5000)
+    assert api("GET", f"/api/channels/{games['id']}/thread-defaults", None, TOKEN)["auto_archive_duration"] == 1440
+    fh.keyboard.press("Escape")
+    fh.wait_for_selector("dialog.edit-channel", state="detached")
+    fh.evaluate("openSettings('automod')")
+    fh.wait_for_selector("dialog.settings .am-defaults textarea", timeout=10000)
+    assert "gold seller*" in fh.evaluate("document.querySelector('dialog.settings .am-defaults textarea').value")
+    fh.screenshot(path=f"{SHOTS}/2516-desktop-outhouse-automod.png")
+    fh.close()
+
+    # Archived threads: hidden under a toggle, read-only banner with Unarchive.
+    t_live = api("POST", f"/api/channels/{games['id']}/threads", {"name": "Bag rolls"}, dave["token"])
+    api("POST", f"/api/channels/{games['id']}/messages", {"content": "I rolled 19 for the bag", "thread_id": t_live["id"]}, dave["token"])
+    t_old = api("POST", f"/api/channels/{games['id']}/threads", {"name": "Last week's MC loot", "auto_archive_duration": 60}, dave["token"])
+    api("POST", f"/api/channels/{games['id']}/messages", {"content": "Who got the Bindings?", "thread_id": t_old["id"]}, erin["token"])
+    subprocess.run(["psql", os.environ["DATABASE_URL"], "-qc", f"UPDATE threads SET active_at = now() - interval '3 hours' WHERE id = {t_old['id']}"], check=True)
+    for _ in range(60):
+        if api("GET", f"/api/threads/{t_old['id']}", None, TOKEN)["archived"]:
+            break
+        time.sleep(0.5)
+    else:
+        raise AssertionError("the thread was never archived")
+    for label, kw, shot in (("botsmod-threads", {"viewport": {"width": 1280, "height": 800}}, 2520),
+                            ("botsmod-threads-phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True}, 2521),
+                            ("android-botsmod-threads", {"viewport": {"width": 393, "height": 852}, "is_mobile": True, "has_touch": True}, 2522)):
+        tp = bm_page(erin["token"], label, games["id"], **kw)
+        tp.click("#threads-btn")
+        tp.wait_for_selector(".threads-panel .thread-card:has-text('Bag rolls')", timeout=10000)
+        assert not tp.query_selector(".threads-panel .thread-card:has-text('MC loot')")
+        tp.click(".threads-panel .archived-toggle")
+        tp.wait_for_selector(".threads-panel .thread-card.archived:has-text('MC loot')")
+        tp.wait_for_timeout(200)
+        tp.screenshot(path=f"{SHOTS}/{shot}-{label}-archived-threads.png")
+        if label == "botsmod-threads":
+            tp.click(".threads-panel .thread-card.archived")
+            tp.wait_for_selector(".thread-archived-bar:has-text('archived')", timeout=10000)
+            tp.wait_for_selector(".thread-panel .tmsg:has-text('Bindings')")
+            tp.screenshot(path=f"{SHOTS}/2523-desktop-archived-thread-banner.png")
+            tp.click(".thread-archived-bar .tab-unarchive")
+            tp.wait_for_selector(".thread-archived-bar", state="detached", timeout=5000)
+            assert api("GET", f"/api/threads/{t_old['id']}", None, TOKEN)["archived"] is False
+        tp.close()
+
+    # Phone and Android: bot buttons and the open dice menu, ephemeral reply, automod settings.
+    for label, kw, shot in (("botsmod-phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True}, 2530),
+                            ("android-botsmod", {"viewport": {"width": 393, "height": 852}, "is_mobile": True, "has_touch": True}, 2535)):
+        mp = bm_page(TOKEN, label, games["id"], **kw)
+        mp.wait_for_selector(f"{rollsel} .msg-components", timeout=10000)
+        mp.evaluate(f"document.querySelector('{rollsel}').scrollIntoView({{block: 'center'}})")
+        mp.wait_for_timeout(200)
+        mp.screenshot(path=f"{SHOTS}/{shot}-{label}-bot-buttons.png")
+        mp.click(f"{rollsel} .mc-btn:has-text('Roll in secret')")
+        mp.wait_for_selector("#messages .msg.ephemeral", timeout=5000)
+        mp.wait_for_timeout(300)
+        mp.screenshot(path=f"{SHOTS}/{shot + 1}-{label}-ephemeral.png")
+        mp.evaluate(f"document.querySelector('{rollsel}').scrollIntoView({{block: 'center'}})")
+        mp.click(f"{rollsel} .mc-select")
+        mp.wait_for_selector(".mc-pop .mc-option", timeout=5000)
+        mp.wait_for_timeout(200)
+        mp.screenshot(path=f"{SHOTS}/{shot + 2}-{label}-bot-select-open.png")
+        mp.keyboard.press("Escape")
+        mp.evaluate(f"openEditChannel(chById({json.dumps(am_block['id'])}), 'automod')")
+        mp.wait_for_selector("dialog.edit-channel .am-page .am-card", timeout=10000)
+        mp.wait_for_timeout(300)
+        mp.screenshot(path=f"{SHOTS}/{shot + 3}-{label}-automod-settings.png")
+        mp.close()
+    dice_proc.terminate()
+    sleepy_proc.terminate()
+
 
     # ---- Raid composition, soft reserves and the loot log (loot.js) ----
     lg = api("POST", "/api/guilds", {"name": "Loot Hall"}, TOKEN)
@@ -2429,18 +2621,18 @@ with sync_playwright() as p:
     lp.screenshot(path=f"{SHOTS}/150-desktop-raid-card-loot.png")
     # Composition: Erin's tentative Mage doesn't count until you ask.
     lp.click(f"{card} .ev-comp > summary")
-    lp.wait_for_selector(f"{card} .comp-buff[data-buff='fortitude'].yes", timeout=10000)
-    lp.wait_for_selector(f"{card} .comp-buff[data-buff='arcane_intellect'].no")
-    lp.wait_for_selector(f"{card} .comp-role.short:has-text('Healers 1/2')")
-    assert "Dave" in lp.get_attribute(f"{card} .comp-buff[data-buff='fortitude']", "title")
+    lp.wait_for_selector(f"{card} .mc-buff[data-buff='fortitude'].yes", timeout=10000)
+    lp.wait_for_selector(f"{card} .mc-buff[data-buff='arcane_intellect'].no")
+    lp.wait_for_selector(f"{card} .mc-role.short:has-text('Healers 1/2')")
+    assert "Dave" in lp.get_attribute(f"{card} .mc-buff[data-buff='fortitude']", "title")
     lp.evaluate("s => document.querySelector(s)?.scrollIntoView({block: 'start'})", f"{card} .ev-comp")
     lp.wait_for_timeout(250)
     lp.screenshot(path=f"{SHOTS}/151-desktop-composition.png")
-    lp.click(f"{card} .comp-extra input")
-    lp.wait_for_selector(f"{card} .comp-buff[data-buff='arcane_intellect'].yes", timeout=10000)
-    lp.wait_for_selector(f"{card} .comp-buff[data-buff='decurse'].yes")
+    lp.click(f"{card} .mc-extra input")
+    lp.wait_for_selector(f"{card} .mc-buff[data-buff='arcane_intellect'].yes", timeout=10000)
+    lp.wait_for_selector(f"{card} .mc-buff[data-buff='decurse'].yes")
     lp.wait_for_selector(f"{card} .ev-comp-sum:has-text('incl. tentative')")
-    lp.hover(f"{card} .comp-buff[data-buff='winters_chill']")
+    lp.hover(f"{card} .mc-buff[data-buff='winters_chill']")
     lp.wait_for_timeout(200)
     lp.screenshot(path=f"{SHOTS}/152-desktop-composition-with-tentative.png")
     # The raid leader's reserves table.
@@ -2527,7 +2719,7 @@ with sync_playwright() as p:
         mp = loot_page(dave["token"] if label == "phone" else TOKEN, f"loot-{label}", **kw)
         card = sr_card(mp)
         mp.click(f"{card} .ev-comp > summary")
-        mp.wait_for_selector(f"{card} .comp-buff[data-buff='fortitude'].yes", timeout=10000)
+        mp.wait_for_selector(f"{card} .mc-buff[data-buff='fortitude'].yes", timeout=10000)
         mp.evaluate("s => document.querySelector(s)?.scrollIntoView({block: 'start'})", f"{card} .ev-comp")
         mp.wait_for_timeout(250)
         mp.screenshot(path=f"{SHOTS}/{n}-{label}-composition.png")

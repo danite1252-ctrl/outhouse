@@ -2270,4 +2270,326 @@ for mode in invite closed; do
 done
 TOKEN=$TOKEN_A
 
+# ---------------------------------------------------------------------------
+# Bot message components, automod and thread auto-archive (feat-botsmod)
+# ---------------------------------------------------------------------------
+# status METHOD PATH [JSON] -> prints just the HTTP status (body in /tmp/body)
+status() {
+  local method=$1 path=$2 body=${3:-}
+  local args=(-sS -X "$method" -o /tmp/body -w "%{http_code}" -H "Content-Type: application/json")
+  [ -n "$TOKEN" ] && args+=(-H "Authorization: Bearer $TOKEN")
+  [ -n "$body" ] && args+=(-d "$body")
+  curl "${args[@]}" "$BASE$path"
+}
+# wait_for FILE JQ_FILTER [ARGS...] -> waits up to 10 s for a gateway event matching the filter
+wait_for() {
+  local file=$1 filter=$2; shift 2
+  for _ in $(seq 1 40); do
+    jq -e -s "$@" "[.[] | select($filter)] | length > 0" "$file" >/dev/null 2>&1 && return 0
+    sleep 0.25
+  done
+  echo "never saw $filter in $file:"; tail -5 "$file"; return 1
+}
+
+step "components: bots can add buttons and select menus (Discord's shape)"
+TOKEN=$TOKEN_A
+CB=$(call POST "/api/guilds/$GUILD/bots" '{"name":"Buttons"}'); CB_TOKEN=$(jq -r .token <<<"$CB"); CB_ID=$(jq -r .bot.id <<<"$CB")
+CC=$(call POST "/api/guilds/$GUILD/channels" '{"name":"bot-buttons"}' | jq -r .id)
+ROWS='[{"type":1,"components":[{"type":2,"style":1,"label":"Again","emoji":{"name":"🎲"},"custom_id":"again"},{"type":2,"style":4,"label":"Off","custom_id":"off","disabled":true},{"type":2,"style":5,"label":"Docs","url":"https://example.com/docs"}]},{"type":1,"components":[{"type":3,"custom_id":"size","placeholder":"Pick","min_values":1,"max_values":2,"options":[{"label":"d6","value":"6"},{"label":"d20","value":"20","description":"classic"},{"label":"d100","value":"100"}]}]}]'
+TOKEN=$CB_TOKEN
+CM=$(call POST "/api/channels/$CC/messages" "$(jq -nc --argjson c "$ROWS" '{content:"Pick one",components:$c}')")
+jq -e '(.components | length) == 2 and .components[0].components[2].url == "https://example.com/docs"
+       and .components[1].components[0].max_values == 2 and .components[0].components[1].disabled' <<<"$CM" >/dev/null
+CMID=$(jq -r .id <<<"$CM")
+BAD_ROWS=(
+  '[{"type":1,"components":[{"type":2,"style":5,"label":"x","url":"javascript:alert(1)"}]}]'
+  '[{"type":1,"components":[{"type":2,"style":5,"label":"x","url":" JavaScript:alert(1)"}]}]'
+  '[{"type":1,"components":[{"type":2,"style":5,"label":"x","url":"data:text/html,hi"}]}]'
+  '[{"type":1,"components":[{"type":2,"style":5,"label":"x","url":"/api/users/@me"}]}]'
+  '[{"type":1,"components":[{"type":2,"style":5,"label":"x","url":"https://ok.example","custom_id":"y"}]}]'
+  '[{"type":1,"components":[{"type":2,"style":1,"label":"x","url":"https://ok.example","custom_id":"y"}]}]'
+  '[{"type":1,"components":[{"type":2,"style":1,"label":"no id"}]}]'
+  '[{"type":1,"components":[{"type":2,"style":1,"custom_id":"no-label"}]}]'
+  '[{"type":1,"components":[{"type":2,"style":9,"label":"x","custom_id":"x"}]}]'
+  '[{"type":1,"components":[{"type":2,"style":1,"label":"a","custom_id":"x"},{"type":2,"style":1,"label":"b","custom_id":"x"}]}]'
+  '[{"type":2,"style":1,"label":"a","custom_id":"x"}]'
+  '[{"type":1,"components":[]}]'
+  '[{"type":1,"components":[{"type":3,"custom_id":"s","options":[{"label":"a","value":"a"}]},{"type":2,"style":1,"label":"b","custom_id":"b"}]}]'
+  '[{"type":1,"components":[{"type":3,"custom_id":"s","options":[]}]}]'
+  '[{"type":1,"components":[{"type":3,"custom_id":"s","max_values":2,"options":[{"label":"a","value":"a"}]}]}]'
+  '[{"type":1,"components":[{"type":3,"custom_id":"s","options":[{"label":"a","value":"a"},{"label":"b","value":"a"}]}]}]'
+)
+BAD_ROWS+=("$(jq -nc '[{type:1,components:[{type:2,style:1,label:"x",custom_id:("x" * 101)}]}]')")
+BAD_ROWS+=("$(jq -nc '[range(6) | {type:1,components:[{type:2,style:1,label:"x",custom_id:("r\(.)")}]}]')")
+BAD_ROWS+=("$(jq -nc '[{type:1,components:[range(6) | {type:2,style:1,label:"x",custom_id:("b\(.)")}]}]')")
+BAD_ROWS+=("$(jq -nc '[{type:1,components:[{type:3,custom_id:"s",options:[range(26) | {label:"o\(.)",value:"v\(.)"}]}]}]')")
+for rows in "${BAD_ROWS[@]}"; do
+  fail_call POST "/api/channels/$CC/messages" "$(jq -nc --argjson c "$rows" '{content:"x",components:$c}')"
+done
+# Nothing bad got stored, and people (not bots) can't add components at all.
+TOKEN=$TOKEN_B
+fail_call POST "/api/channels/$CC/messages" "$(jq -nc --argjson c "$ROWS" '{content:"x",components:$c}')"
+call GET "/api/channels/$CC/messages" | jq -e 'length == 1 and .[0].components[0].components[0].custom_id == "again"' >/dev/null
+# A bot can change its buttons later (PATCH), keeping the text.
+TOKEN=$CB_TOKEN
+call PATCH "/api/channels/$CC/messages/$CMID" "$(jq -nc --argjson c "$ROWS" '{components:$c}')" | jq -e '.content == "Pick one" and (.components | length) == 2 and .edited_at == null' >/dev/null
+fail_call PATCH "/api/channels/$CC/messages/$CMID" '{"components":[{"type":1,"components":[{"type":2,"style":5,"label":"x","url":"javascript:void(0)"}]}]}'
+
+step "components: clicks reach the bot over the gateway"
+node ci/gateway_probe.mjs "$BASE" "$CB_TOKEN" /tmp/gw-cb.jsonl 90 & CB_PROBE=$!
+node ci/gateway_probe.mjs "$BASE" "$TOKEN_B" /tmp/gw-cb-bob.jsonl 90 & CBB_PROBE=$!
+node ci/gateway_probe.mjs "$BASE" "$TOKEN_A" /tmp/gw-cb-alice.jsonl 90 & CBA_PROBE=$!
+for f in /tmp/gw-cb.jsonl /tmp/gw-cb-bob.jsonl /tmp/gw-cb-alice.jsonl; do wait_for "$f" '.t == "READY"'; done
+TOKEN=$TOKEN_B
+I1=$(call POST "/api/channels/$CC/messages/$CMID/interactions" '{"custom_id":"again"}' | jq -r .id)
+wait_for /tmp/gw-cb.jsonl '.t == "INTERACTION_CREATE" and .d.id == $i' --arg i "$I1"
+jq -e -s --arg i "$I1" --arg m "$CMID" --arg c "$CC" --arg g "$GUILD" --arg b "$BOB" '
+  [.[] | select(.t == "INTERACTION_CREATE" and .d.id == $i)][0].d
+  | .type == 3 and .data.custom_id == "again" and .data.component_type == 2 and .message.id == $m
+    and .channel_id == $c and .guild_id == $g and .user.id == $b' /tmp/gw-cb.jsonl >/dev/null
+# Only real components on that message, switched on, with real choices
+# (Alice tries these, so Bob stays well under the click limit).
+PM=$(call POST "/api/channels/$CC/messages" '{"content":"just me"}' | jq -r .id)
+TOKEN=$TOKEN_A
+fail_call POST "/api/channels/$CC/messages/$PM/interactions" '{"custom_id":"again"}'
+fail_call POST "/api/channels/$CC/messages/$CMID/interactions" '{"custom_id":"nope"}'
+fail_call POST "/api/channels/$CC/messages/$CMID/interactions" '{"custom_id":"off"}'
+fail_call POST "/api/channels/$CC/messages/$CMID/interactions" '{"custom_id":"size","values":["7"]}'
+fail_call POST "/api/channels/$CC/messages/$CMID/interactions" '{"custom_id":"size","values":[]}'
+fail_call POST "/api/channels/$CC/messages/$CMID/interactions" '{"custom_id":"size","values":["6","20","100"]}'
+TOKEN=$TOKEN_B
+I2=$(call POST "/api/channels/$CC/messages/$CMID/interactions" '{"custom_id":"size","values":["6","20"]}' | jq -r .id)
+wait_for /tmp/gw-cb.jsonl '.t == "INTERACTION_CREATE" and .d.id == $i and .d.data.values == ["6","20"] and .d.data.component_type == 3' --arg i "$I2"
+# Not from outside the outhouse, and not by bots.
+TOKEN=$OUT; fail_call POST "/api/channels/$CC/messages/$CMID/interactions" '{"custom_id":"again"}'
+TOKEN=$CB_TOKEN; fail_call POST "/api/channels/$CC/messages/$CMID/interactions" '{"custom_id":"again"}'
+
+step "components: the bot answers (defer, ephemeral reply, reply, update)"
+TOKEN=$TOKEN_B; fail_call POST "/api/interactions/$I1/callback" '{"type":6}'   # not Bob's to answer
+TOKEN=$CB_TOKEN
+fail_call POST "/api/interactions/$I1/callback" '{"type":9}'
+[ "$(status POST "/api/interactions/$I1/callback" '{"type":6}')" = 204 ]
+wait_for /tmp/gw-cb-bob.jsonl '.t == "INTERACTION_SUCCESS" and .d.id == $i' --arg i "$I1"
+# Ephemeral: only Bob gets it, and it's never saved.
+E=$(call POST "/api/interactions/$I2/callback" '{"type":4,"data":{"content":"Only Bob sees this","flags":64,"components":[{"type":1,"components":[{"type":2,"style":3,"label":"Yes","custom_id":"eph-yes"}]}]}}')
+jq -e '.ephemeral == true and .content == "Only Bob sees this" and .reply_to == null' <<<"$E" >/dev/null
+EID=$(jq -r .id <<<"$E")
+wait_for /tmp/gw-cb-bob.jsonl '.t == "MESSAGE_CREATE" and .d.id == $e and .d.ephemeral' --arg e "$EID"
+wait_for /tmp/gw-cb-bob.jsonl '.t == "INTERACTION_SUCCESS" and .d.id == $i' --arg i "$I2"
+TOKEN=$TOKEN_A
+call GET "/api/channels/$CC/messages" | jq -e --arg e "$EID" 'all(.[]; .id != $e)' >/dev/null
+# Its button works for Bob only, and the bot can update it.
+fail_call POST "/api/channels/$CC/messages/$EID/interactions" '{"custom_id":"eph-yes"}'
+TOKEN=$TOKEN_B
+I3=$(call POST "/api/channels/$CC/messages/$EID/interactions" '{"custom_id":"eph-yes"}' | jq -r .id)
+wait_for /tmp/gw-cb.jsonl '.t == "INTERACTION_CREATE" and .d.id == $i and .d.message.ephemeral' --arg i "$I3"
+TOKEN=$CB_TOKEN
+call POST "/api/interactions/$I3/callback" '{"type":7,"data":{"content":"Done!","components":[]}}' | jq -e '.ephemeral and .content == "Done!"' >/dev/null
+wait_for /tmp/gw-cb-bob.jsonl '.t == "MESSAGE_UPDATE" and .d.id == $e and .d.content == "Done!"' --arg e "$EID"
+# A public reply to a click replies to the message with the button.
+TOKEN=$TOKEN_B
+I4=$(call POST "/api/channels/$CC/messages/$CMID/interactions" '{"custom_id":"again"}' | jq -r .id)
+TOKEN=$CB_TOKEN
+[ "$(status POST "/api/interactions/$I4/callback" '{"type":5}')" = 204 ]
+call POST "/api/interactions/$I4/callback" '{"type":4,"data":{"content":"Bob rolled 17"}}' | jq -e --arg m "$CMID" '.reply_to.id == $m and .author_bot and (.ephemeral | not)' >/dev/null
+wait_for /tmp/gw-cb-alice.jsonl '.t == "MESSAGE_CREATE" and .d.content == "Bob rolled 17"'
+# Update the message itself (type 7): new text, buttons gone.
+TOKEN=$TOKEN_B
+I5=$(call POST "/api/channels/$CC/messages/$CMID/interactions" '{"custom_id":"again"}' | jq -r .id)
+TOKEN=$CB_TOKEN
+fail_call POST "/api/interactions/$I5/callback" '{"type":7,"data":{"components":[{"type":1,"components":[{"type":2,"style":5,"label":"x","url":"javascript:1"}]}]}}'
+call POST "/api/interactions/$I5/callback" '{"type":7,"data":{"content":"All rolled","components":[]}}' | jq -e '.content == "All rolled" and (.components // [] | length) == 0' >/dev/null
+wait_for /tmp/gw-cb-alice.jsonl '.t == "MESSAGE_UPDATE" and .d.id == $m and .d.content == "All rolled"' --arg m "$CMID"
+TOKEN=$TOKEN_B; fail_call POST "/api/channels/$CC/messages/$CMID/interactions" '{"custom_id":"again"}'
+# Alice never saw Bob's ephemeral message.
+if jq -e -s --arg e "$EID" '[.[] | select(.d.id? == $e)] | length > 0' /tmp/gw-cb-alice.jsonl >/dev/null; then echo "ephemeral message leaked to Alice"; exit 1; fi
+
+step "components: rate limit and offline bots"
+TOKEN=$TOKEN_A
+CM2=$(TOKEN=$CB_TOKEN call POST "/api/channels/$CC/messages" "$(jq -nc --argjson c "$ROWS" '{content:"Again",components:$c}')" | jq -r .id)
+TOKEN=$TOKEN_C
+for i in $(seq 1 10); do s=$(status POST "/api/channels/$CC/messages/$CM2/interactions" '{"custom_id":"nope"}'); [ "$s" = 400 ] || { echo "click $i -> $s"; cat /tmp/body; exit 1; }; done
+[ "$(status POST "/api/channels/$CC/messages/$CM2/interactions" '{"custom_id":"again"}')" = 429 ] || { echo "no rate limit on clicks"; cat /tmp/body; exit 1; }
+kill $CB_PROBE 2>/dev/null || true; wait $CB_PROBE 2>/dev/null || true
+sleep 1
+TOKEN=$TOKEN_B
+[ "$(status POST "/api/channels/$CC/messages/$CM2/interactions" '{"custom_id":"again"}')" = 400 ] && grep -q "isn't running" /tmp/body
+
+step "components: the example dice bot (Roll again, Roll in secret, dice size)"
+TOKEN=$TOKEN_A
+DB=$(call POST "/api/guilds/$GUILD/bots" '{"name":"Dicey"}'); DB_TOKEN=$(jq -r .token <<<"$DB"); DB_ID=$(jq -r .bot.id <<<"$DB")
+OUTHOUSE_URL=$BASE OUTHOUSE_BOT_TOKEN=$DB_TOKEN node web/bots/dice-bot.mjs >/tmp/bot2.log 2>&1 &
+DB_PID=$!
+for i in $(seq 1 20); do call GET "/api/guilds/$GUILD/commands" | jq -e 'any(.[]; .name == "roll")' >/dev/null 2>&1 && break; sleep 1; done
+ROLL2=$(call GET "/api/guilds/$GUILD/commands" | jq -r '.[] | select(.name == "roll") | .id')
+TOKEN=$TOKEN_B
+call POST "/api/channels/$CC/interactions" '{"command_id":"'"$ROLL2"'","options":{"dice":"d6"}}' >/dev/null
+for i in $(seq 1 20); do call GET "/api/channels/$CC/messages" | jq -e '.[-1].interaction.command == "roll"' >/dev/null 2>&1 && break; sleep 0.5; done
+DM=$(call GET "/api/channels/$CC/messages" | jq -c '.[-1]')
+jq -e '.interaction.command == "roll" and .components[0].components[0].label == "Roll again" and .components[1].components[0].custom_id == "size"' <<<"$DM" >/dev/null || { echo "dice bot reply has no buttons: $DM"; cat /tmp/bot2.log; exit 1; }
+DMID=$(jq -r .id <<<"$DM"); AGAIN=$(jq -r '.components[0].components[0].custom_id' <<<"$DM"); SECRET=$(jq -r '.components[0].components[1].custom_id' <<<"$DM")
+call POST "/api/channels/$CC/messages/$DMID/interactions" "{\"custom_id\":\"$AGAIN\"}" >/dev/null
+wait_for /tmp/gw-cb-bob.jsonl '.t == "MESSAGE_UPDATE" and .d.id == $m and (.d.content | test("1-6"))' --arg m "$DMID"
+call POST "/api/channels/$CC/messages/$DMID/interactions" "{\"custom_id\":\"$SECRET\"}" >/dev/null
+wait_for /tmp/gw-cb-bob.jsonl '.t == "MESSAGE_CREATE" and .d.ephemeral and (.d.content | test("Just between us"))'
+call POST "/api/channels/$CC/messages/$DMID/interactions" '{"custom_id":"size","values":["20"]}' >/dev/null
+wait_for /tmp/gw-cb-bob.jsonl '.t == "MESSAGE_CREATE" and (.d.ephemeral | not) and (.d.content | test("1-20")) and .d.reply_to.id == $m' --arg m "$DMID"
+kill $DB_PID $CBB_PROBE $CBA_PROBE 2>/dev/null || true
+TOKEN=$TOKEN_A
+call DELETE "/api/bots/$DB_ID" >/dev/null
+
+step "automod: settings, permissions and the outhouse-wide list"
+TOKEN=$TOKEN_A
+AM=$(call POST "/api/guilds/$GUILD/channels" '{"name":"automod-test"}' | jq -r .id)
+AML=$(call POST "/api/guilds/$GUILD/channels" '{"name":"mod-log"}' | jq -r .id)
+call GET "/api/channels/$AM/automod" | jq -e '(.word_filter | not) and (.spam_filter | not) and .exempt_moderators and .use_default_words and .whole_word' >/dev/null
+DORA=$(TOKEN="" call POST /api/auth/register '{"username":"dora","password":"password123","display_name":"Dora"}')
+TOKEN_D=$(jq -r .token <<<"$DORA"); DORA_ID=$(jq -r .user.id <<<"$DORA")
+AMINV=$(call POST "/api/guilds/$GUILD/invites" | jq -r .code)
+TOKEN=$TOKEN_D; call POST "/api/invites/$AMINV" >/dev/null
+fail_call GET "/api/channels/$AM/automod"
+fail_call PUT "/api/channels/$AM/automod" '{"word_filter":true}'
+fail_call PUT "/api/guilds/$GUILD/automod" '{"words":["x"]}'
+TOKEN=$TOKEN_A
+call PUT "/api/guilds/$GUILD/automod" '{"words":["Murloc*","  ","murloc*"]}' | jq -e '.words == ["murloc*"]' >/dev/null
+call GET "/api/guilds/$GUILD/automod" | jq -e '.words == ["murloc*"]' >/dev/null
+fail_call PUT "/api/channels/$AM/automod" '{"alert_channel_id":"123"}'
+fail_call PUT "/api/channels/$AM/automod" "$(jq -nc '{words:[("x" * 61)]}')"
+call PUT "/api/channels/$AM/automod" '{"word_filter":true,"words":["dang it","N00B"," "],"leetspeak":true,"alert_channel_id":"'"$AML"'","exempt_roles":["'"$ROLE"'","42"]}' \
+  | jq -e --arg r "$ROLE" '.words == ["dang it","n00b"] and .exempt_roles == [$r] and .word_action == "block"' >/dev/null
+
+step "automod: word filter blocks, with leetspeak, wildcards and the outhouse list"
+TOKEN=$TOKEN_D
+blocked() { # blocked JSON [path] -> the message was refused by automod
+  local s; s=$(status POST "${2:-/api/channels/$AM/messages}" "$1")
+  [ "$s" = 403 ] && grep -q "Your message was blocked by automod" /tmp/body || { echo "not blocked ($s): $1"; cat /tmp/body; exit 1; }
+}
+blocked '{"content":"well DANG   it all"}'
+blocked '{"content":"you n00b"}'
+blocked '{"content":"you noob"}'
+blocked '{"content":"a murlocs raid"}'
+blocked '{"content":"MurlocLord here"}'
+call POST "/api/channels/$AM/messages" '{"content":"a clean message"}' >/dev/null
+call POST "/api/channels/$AM/messages" '{"content":"noobish but whole words only"}' >/dev/null
+# Edits, thread replies and polls are checked too.
+OK=$(call POST "/api/channels/$AM/messages" '{"content":"fine for now"}' | jq -r .id)
+[ "$(status PATCH "/api/channels/$AM/messages/$OK" '{"content":"dang it"}')" = 403 ]
+call GET "/api/channels/$AM/messages" | jq -e --arg m "$OK" '.[] | select(.id == $m) | .content == "fine for now"' >/dev/null
+AT=$(TOKEN=$TOKEN_A call POST "/api/channels/$AM/threads" '{"name":"Side chat"}' | jq -r .id)
+blocked '{"content":"dang it","thread_id":"'"$AT"'"}'
+blocked '{"question":"dang it?","options":["yes","no"]}' "/api/channels/$AM/polls"
+# The outhouse list can be switched off per channel.
+TOKEN=$TOKEN_A
+call PUT "/api/channels/$AM/automod" '{"word_filter":true,"words":["dang it","n00b"],"leetspeak":true,"use_default_words":false,"alert_channel_id":"'"$AML"'","exempt_roles":["'"$ROLE"'"]}' >/dev/null
+TOKEN=$TOKEN_D; call POST "/api/channels/$AM/messages" '{"content":"a murlocs raid"}' >/dev/null
+# Moderators and exempt roles (Bob is a Raider) skip it.
+TOKEN=$TOKEN_A; call POST "/api/channels/$AM/messages" '{"content":"dang it, says the boss"}' >/dev/null
+TOKEN=$TOKEN_B; call POST "/api/channels/$AM/messages" '{"content":"dang it, says a raider"}' >/dev/null
+# Bots skip it unless "check bots" is on.
+TOKEN=$CB_TOKEN; call POST "/api/channels/$AM/messages" '{"content":"dang it, says a bot"}' >/dev/null
+TOKEN=$TOKEN_A
+call PUT "/api/channels/$AM/automod" '{"word_filter":true,"words":["dang it"],"check_bots":true,"exempt_moderators":false,"alert_channel_id":"'"$AML"'"}' >/dev/null
+TOKEN=$CB_TOKEN; blocked '{"content":"dang it, says a bot again"}'
+TOKEN=$TOKEN_A; blocked '{"content":"dang it, the boss again"}'
+# The audit log has the rule and a short snippet only; the mod-log channel gets an alert.
+TOKEN=$TOKEN_D; blocked "$(jq -nc '{content:("dang it " + ("blah " * 60))}')"
+TOKEN=$TOKEN_A
+call GET "/api/guilds/$GUILD/audit-log?action=automod_block" | jq -e --arg d "$DORA_ID" '
+  (.entries | length) >= 8 and (.entries[0].actor_id == $d) and .entries[0].target_name == "#automod-test"
+  and (.entries[0].details | startswith("Blocked word (d*****t)")) and (.entries[0].details | length) < 120
+  and any(.actions[]; .key == "automod_block")' >/dev/null || { call GET "/api/guilds/$GUILD/audit-log?action=automod_block" | jq '.entries[0]'; exit 1; }
+call GET "/api/guilds/$GUILD/audit-log?action=automod_update" | jq -e '.entries | length >= 3' >/dev/null
+for i in $(seq 1 20); do call GET "/api/channels/$AML/messages" | jq -e 'length > 0' >/dev/null && break; sleep 0.5; done
+call GET "/api/channels/$AML/messages" | jq -e '.[-1].author_bot and .[-1].author_display_name == "Automod"
+  and (.[-1].embeds[0].title | test("Automod blocked")) and any(.[-1].embeds[0].fields[]; .name == "Rule")' >/dev/null
+# "Hide" lets it through behind a Filtered reveal.
+call PUT "/api/channels/$AM/automod" '{"word_filter":true,"words":["dang it"],"word_action":"hide"}' >/dev/null
+TOKEN=$TOKEN_D
+call POST "/api/channels/$AM/messages" '{"content":"dang it, hidden"}' | jq -e '.filtered == true' >/dev/null
+call POST "/api/channels/$AM/messages" '{"content":"not hidden"}' | jq -e '(.filtered // false) == false' >/dev/null
+call GET "/api/channels/$AM/messages" | jq -e '[.[] | select(.filtered)] | length == 1' >/dev/null
+
+step "automod: spam limits (rate, repeats, mentions, links, attachments) and auto-timeout"
+TOKEN=$TOKEN_A
+SP=$(call POST "/api/guilds/$GUILD/channels" '{"name":"spam-test"}' | jq -r .id)
+call PUT "/api/channels/$SP/automod" '{"spam_filter":true,"max_messages":3,"per_seconds":10,"block_duplicates":false,"max_mentions":2,"max_links":1,"max_attachments":1}' >/dev/null
+TOKEN=$TOKEN_D
+blocked '{"content":"<@'"$ALICE"'> <@'"$BOB"'> @here"}' "/api/channels/$SP/messages"
+grep -q "Too many mentions" /tmp/body
+blocked '{"content":"https://a.example and https://b.example"}' "/api/channels/$SP/messages"
+code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $TOKEN_D" -F "content=two files" -F "files=@/tmp/pixel.png;type=image/png" -F "files=@/tmp/pixel.png;type=image/png" "$BASE/api/channels/$SP/messages/upload")
+[ "$code" = 403 ] && grep -q "Too many attachments" /tmp/body || { echo "attachments -> $code"; cat /tmp/body; exit 1; }
+call POST "/api/channels/$SP/messages" '{"content":"one <@'"$ALICE"'>"}' >/dev/null
+call POST "/api/channels/$SP/messages" '{"content":"two https://a.example"}' >/dev/null
+call POST "/api/channels/$SP/messages" '{"content":"three"}' >/dev/null
+blocked '{"content":"four, too fast"}' "/api/channels/$SP/messages"
+grep -q "too fast" /tmp/body
+TOKEN=$TOKEN_A
+DUP=$(call POST "/api/guilds/$GUILD/channels" '{"name":"dup-test"}' | jq -r .id)
+call PUT "/api/channels/$DUP/automod" '{"spam_filter":true,"max_messages":0,"block_duplicates":true,"max_mentions":0,"max_links":1,"timeout_minutes":5,"timeout_after":3}' >/dev/null
+TOKEN=$TOKEN_D
+call POST "/api/channels/$DUP/messages" '{"content":"buy gold"}' >/dev/null
+call POST "/api/channels/$DUP/messages" '{"content":"Buy  GOLD"}' >/dev/null
+blocked '{"content":"buy gold"}' "/api/channels/$DUP/messages"          # strike 1
+grep -q "same message" /tmp/body
+blocked '{"content":"https://x.example https://y.example"}' "/api/channels/$DUP/messages"   # strike 2
+blocked '{"content":"https://x.example https://z.example"}' "/api/channels/$DUP/messages"   # strike 3: timed out
+grep -q "timed out for 5 minutes" /tmp/body
+TOKEN=$TOKEN_A
+call GET "/api/guilds/$GUILD/members" | jq -e --arg d "$DORA_ID" '.[] | select(.id == $d) | .timeout_until != null' >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?action=automod_timeout" | jq -e --arg d "$DORA_ID" '.entries[0].target_id == $d and (.entries[0].details | test("5 minutes"))' >/dev/null
+TOKEN=$TOKEN_D; [ "$(status POST "/api/channels/$DUP/messages" '{"content":"let me talk"}')" = 403 ]
+TOKEN=$TOKEN_A; call POST "/api/guilds/$GUILD/members/$DORA_ID/timeout" '{"minutes":0}' >/dev/null
+TOKEN=$TOKEN_D; call POST "/api/channels/$DUP/messages" '{"content":"back again"}' >/dev/null
+
+step "threads: auto-archive by the job, by posting, manual archive and lock"
+TOKEN=$TOKEN_A
+TC=$(call POST "/api/guilds/$GUILD/channels" '{"name":"archive-test"}' | jq -r .id)
+call GET "/api/channels/$TC/thread-defaults" | jq -e '.auto_archive_duration == 4320' >/dev/null
+call PUT "/api/channels/$TC/thread-defaults" '{"auto_archive_duration":1440}' | jq -e '.auto_archive_duration == 1440' >/dev/null
+fail_call PUT "/api/channels/$TC/thread-defaults" '{"auto_archive_duration":5}'
+TOKEN=$TOKEN_B; fail_call PUT "/api/channels/$TC/thread-defaults" '{"auto_archive_duration":60}'; TOKEN=$TOKEN_A
+TS=$(call POST "/api/channels/$TC/messages" '{"content":"Loot rules?"}' | jq -r .id)
+T1=$(call POST "/api/channels/$TC/threads" '{"name":"Quiet one","message_id":"'"$TS"'"}')
+jq -e '.auto_archive_duration == 1440 and (.archived | not) and (.locked | not)' <<<"$T1" >/dev/null; T1=$(jq -r .id <<<"$T1")
+T2=$(call POST "/api/channels/$TC/threads" '{"name":"Hourly","auto_archive_duration":60}' | jq -r .id)
+fail_call POST "/api/channels/$TC/threads" '{"name":"Odd","auto_archive_duration":30}'
+call GET "/api/threads/$T2" | jq -e '.auto_archive_duration == 60' >/dev/null
+# Older threads (from before this feature) got the 3-day default.
+call GET "/api/channels/$CHAN/threads" | jq -e 'all(.[]; .auto_archive_duration == 4320)' >/dev/null
+node ci/gateway_probe.mjs "$BASE" "$TOKEN_B" /tmp/gw-arch.jsonl 60 & ARCH_PROBE=$!
+wait_for /tmp/gw-arch.jsonl '.t == "READY"'
+psql "$DATABASE_URL" -qc "UPDATE threads SET active_at = now() - interval '2 hours' WHERE id IN ($T1, $T2)"
+for i in $(seq 1 40); do call GET "/api/threads/$T2" | jq -e '.archived' >/dev/null && break; sleep 1; done
+call GET "/api/threads/$T2" | jq -e '.archived' >/dev/null || { echo "the archiver never archived the thread"; exit 1; }
+call GET "/api/threads/$T1" | jq -e '.archived | not' >/dev/null
+wait_for /tmp/gw-arch.jsonl '.t == "THREAD_UPDATE" and .d.id == $t and .d.archived' --arg t "$T2"
+call GET "/api/channels/$TC/threads" | jq -e --arg t "$T2" '.[-1].id == $t and .[-1].archived' >/dev/null
+# Posting in it brings it back (and resets the clock).
+TOKEN=$TOKEN_B
+call POST "/api/channels/$TC/messages" '{"content":"still here","thread_id":"'"$T2"'"}' >/dev/null
+call GET "/api/threads/$T2" | jq -e '(.archived | not) and .message_count == 1' >/dev/null
+# Archive by hand: whoever started it or moderators; unarchive: anyone who can post.
+fail_call PATCH "/api/threads/$T1" '{"archived":true}'
+TOKEN=$TOKEN_A
+call PATCH "/api/threads/$T1" '{"archived":true}' | jq -e '.archived' >/dev/null
+call GET "/api/channels/$TC/messages" | jq -e --arg m "$TS" '.[] | select(.id == $m) | .thread.archived and .thread.name == "Quiet one"' >/dev/null
+TOKEN=$TOKEN_B
+call PATCH "/api/threads/$T1" '{"archived":false}' | jq -e '.archived | not' >/dev/null
+fail_call PATCH "/api/threads/$T1" '{"locked":true}'
+fail_call PATCH "/api/threads/$T1" '{"auto_archive_duration":60}'
+# Locked threads stay archived for everyone but moderators.
+TOKEN=$TOKEN_A
+call PATCH "/api/threads/$T1" '{"archived":true,"locked":true,"auto_archive_duration":10080}' | jq -e '.archived and .locked and .auto_archive_duration == 10080' >/dev/null
+TOKEN=$TOKEN_B
+[ "$(status POST "/api/channels/$TC/messages" '{"content":"let me in","thread_id":"'"$T1"'"}')" = 400 ] && grep -q "locked" /tmp/body
+[ "$(status PATCH "/api/threads/$T1" '{"archived":false}')" = 400 ]
+call GET "/api/channels/$TC/messages?thread=$T1" >/dev/null   # still readable
+TOKEN=$TOKEN_A
+call POST "/api/channels/$TC/messages" '{"content":"mods can","thread_id":"'"$T1"'"}' >/dev/null
+call GET "/api/threads/$T1" | jq -e '(.archived | not) and .locked' >/dev/null
+call PATCH "/api/threads/$T1" '{"locked":false}' | jq -e '.locked | not' >/dev/null
+kill $ARCH_PROBE 2>/dev/null || true
+call DELETE "/api/bots/$CB_ID" >/dev/null
+
 echo "Smoke test passed."

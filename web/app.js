@@ -964,35 +964,40 @@ function renderMessages() {
   const nodes = [];
   let prev = null;
   for (const m of state.messages) {
-    const grouped = prev && !m.reply_to && !m.interaction && !m.event && !prev.event && !m.poll && !prev.poll && !m.lfg && !prev.lfg && !prev.thread && prev.author_id === m.author_id && prev.author_display_name === m.author_display_name &&
+    const grouped = prev && !m.reply_to && !m.ephemeral && !prev.ephemeral && !m.interaction && !m.event && !prev.event && !m.poll && !prev.poll && !m.lfg && !prev.lfg && !prev.thread && prev.author_id === m.author_id && prev.author_display_name === m.author_display_name &&
       new Date(m.created_at) - new Date(prev.created_at) < 5 * 60 * 1000;
     const colour = memberColour(m.author_id);
     const imageOnly = m.embeds.length === 1 && m.embeds[0].kind === "image" && m.content.trim() === m.embeds[0].url;
     const jumbo = /^(\s*<:[a-z0-9_]{2,32}:\d+>\s*){1,10}$/.test(m.content);
     const editing = state.editingId === m.id;
+    // Bot buttons and menus, ephemeral replies and automod's "Filtered" cover (components.js).
+    const hidden = typeof isFilteredHidden === "function" && isFilteredHidden(m);
 
     const body = el("div", { class: "msg-body" },
       grouped ? null : el("div", { class: "msg-meta" },
         el("span", { class: "msg-author", style: colour ? `color:${colour}` : "", onclick: (e) => openProfile(m.author_id, e.currentTarget) }, authorName(m)),
         m.author_bot ? el("span", { class: "bot-tag" }, "BOT") : null,
         el("time", { class: "msg-time", datetime: m.created_at, title: new Date(m.created_at).toLocaleString() }, timeLabel(m.created_at))),
-      editing ? editBox(m) : (m.content && !imageOnly
+      hidden ? filteredCover(m) : editing ? editBox(m) : (m.content && !imageOnly
         ? el("p", { class: `msg-text${jumbo ? " jumbo" : ""}` }, renderText(m.content), m.edited_at ? el("span", { class: "edited", title: new Date(m.edited_at).toLocaleString() }, "(edited)") : null)
         : null),
       m.event ? renderEventCard(m) : null,
-      m.poll ? renderPollCard(m) : null,
-      renderAttachments(m),
-      renderEmbeds(m),
+      m.poll && !hidden ? renderPollCard(m) : null,
+      hidden ? null : renderAttachments(m),
+      hidden ? null : renderEmbeds(m),
+      !hidden && typeof renderComponents === "function" ? renderComponents(m) : null,
+      typeof filteredNote === "function" ? filteredNote(m) : null,
+      m.ephemeral ? ephemeralNote(m) : null,
       renderReactions(m),
       m.thread ? threadLink(m.thread) : null,
     );
 
     const article = el("article", {
-      class: `msg${grouped ? "" : " first"}${state.replyTo?.id === m.id ? " highlight" : ""}${mentionsMe(m) ? " mentions-me" : ""}${state.flashId === m.id ? " flash" : ""}${m.pinned_at ? " pinned" : ""}`,
-      "data-menu": "message",
+      class: `msg${grouped ? "" : " first"}${state.replyTo?.id === m.id ? " highlight" : ""}${mentionsMe(m) ? " mentions-me" : ""}${state.flashId === m.id ? " flash" : ""}${m.pinned_at ? " pinned" : ""}${m.ephemeral ? " ephemeral" : ""}`,
+      "data-menu": m.ephemeral ? null : "message",
       "data-id": m.id,
       id: `msg-${m.id}`,
-    }, grouped ? el("div", { class: "gutter" }) : messageAvatar(m), body, editing ? null : messageActions(m));
+    }, grouped ? el("div", { class: "gutter" }) : messageAvatar(m), body, editing || m.ephemeral ? null : messageActions(m));
 
     if (m.interaction) {
       nodes.push(el("div", { class: "reply-ref interaction-ref" },
@@ -2800,7 +2805,11 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
       nav.append(el("h3", {}, "RAIDS"), el("button", { class: activeTab === "raids" ? "active" : "", onclick: () => draw("raids") }, "Raids"));
     }
     const canAudit = (can("view_audit_log") || can("manage_guild")) && typeof drawAuditLog === "function";
-    if (can("ban_members") || canAudit) nav.append(el("h3", {}, "MODERATION"));
+    const canAutomod = can("manage_guild") && typeof drawAutomodDefaults === "function";
+    if (can("ban_members") || canAudit || canAutomod) nav.append(el("h3", {}, "MODERATION"));
+    if (canAutomod) {
+      nav.append(el("button", { class: activeTab === "automod" ? "active" : "", onclick: () => draw("automod") }, "Automod"));
+    }
     if (can("ban_members")) {
       nav.append(el("button", { class: activeTab === "bans" ? "active" : "", onclick: () => draw("bans") }, "Bans"));
     }
@@ -2816,6 +2825,7 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
     const page = settingsPage(main);
     if (activeTab === "bans") return drawBans(page);
     if (activeTab === "audit") return drawAuditLog(page);
+    if (activeTab === "automod") return drawAutomodDefaults(page);
     if (activeTab === "invites") return drawInviteSettings(page);
     if (activeTab === "badges") return drawBadgeSettings(page);
     if (activeTab === "raids") return drawRaidSettings(page);
