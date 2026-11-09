@@ -25,7 +25,9 @@ struct FileRow {
 fn safe_type(content_type: &str) -> (&str, bool) {
     match content_type {
         "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "video/mp4" | "video/webm"
-        | "audio/mpeg" | "audio/ogg" | "audio/wav" => (content_type, true),
+        | "audio/mpeg" | "audio/ogg" | "audio/wav" | "audio/webm" | "audio/mp4" => {
+            (content_type, true)
+        }
         "text/plain" => ("text/plain; charset=utf-8", true),
         "application/pdf" => ("application/pdf", false),
         _ => ("application/octet-stream", false),
@@ -83,7 +85,7 @@ struct EmojiFileRow {
     content_type: String,
 }
 
-async fn send_file(
+pub(crate) async fn send_file(
     st: &AppState,
     key: &str,
     filename: &str,

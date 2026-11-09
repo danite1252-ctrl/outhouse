@@ -137,7 +137,34 @@ with sync_playwright() as p:
     until(pg, "state.voice.room && state.voice.room.state === 'connected'")
     pg.wait_for_timeout(1500)
     pg.screenshot(path=f"{SHOTS}/csp-voice.png")
+    # A voice message recorded while in a voice channel: its own mic stream,
+    # the call's mic (and noise gate) carry on as they were.
+    gate_track = pg.evaluate("micPipe.stream?.getAudioTracks()[0]?.id || null")
+    pg.click("#mic-btn")
+    pg.wait_for_selector("#composer .vm-recbar", timeout=10000)
+    pg.wait_for_timeout(1500)
+    pg.click("#composer .vm-recbar .vm-send")
+    pg.wait_for_selector("#messages .voice-msg", timeout=15000)
+    until(pg, "state.voice.room && state.voice.room.state === 'connected'")
+    assert pg.evaluate("micPipe.stream?.getAudioTracks()[0]?.id || null") == gate_track, "voice message touched the call's mic"
+    assert pg.evaluate("micPipe.stream?.getAudioTracks()[0]?.readyState") == "live", "the call's mic stopped"
+    pg.click("#messages .voice-msg .vm-play")
+    pg.wait_for_timeout(800)
     pg.evaluate("leaveVoice(true)")
+    # Stickers (built-in pictures), the forward dialog and Home → Friends.
+    pg.click("#emoji-btn")
+    pg.click("#sticker-tab")
+    pg.wait_for_selector(".sticker-pane .sticker-tile[data-sticker='builtin:gg']", timeout=10000)
+    pg.click(".sticker-pane .sticker-tile[data-sticker='builtin:gg']")
+    pg.wait_for_selector("#messages .msg-sticker", timeout=10000)
+    pg.evaluate("openForwardDialog(state.messages[0])")
+    pg.wait_for_selector(".fwd-dialog[open] .fwd-row", timeout=10000)
+    pg.keyboard.press("Escape")
+    pg.evaluate("openFriends('add')")
+    pg.wait_for_selector("#add-friend-input", timeout=10000)
+    pg.screenshot(path=f"{SHOTS}/csp-friends.png")
+    pg.click(".guild[title='CSP Check']")
+    pg.wait_for_selector("#messages .msg", timeout=10000)
     pg.click("#user-settings")
     pg.wait_for_selector("dialog.settings", timeout=10000)
     pg.wait_for_timeout(500)
@@ -160,4 +187,4 @@ if problems:
     for line in problems:
         print("  " + line)
     sys.exit(1)
-print("CSP test passed: landing, sign-in, invite page, chat, voice, settings and soft reserves work under the real policy.")
+print("CSP test passed: landing, sign-in, invite page, chat, voice, voice messages, stickers, forwarding, friends, settings and soft reserves work under the real policy.")

@@ -517,6 +517,8 @@ async fn message_push(st: &AppState, guild_id: i64, message: &Message) -> anyhow
              JOIN push_subscriptions s ON s.user_id = p.user_id
              LEFT JOIN notify_levels l ON l.user_id = p.user_id AND l.guild_id = 0
              WHERE p.channel_id = $1 AND p.user_id <> $2
+               AND NOT EXISTS (SELECT 1 FROM user_blocks b
+                               WHERE b.user_id = p.user_id AND b.blocked_id = $2)
                AND NOT EXISTS (SELECT 1 FROM channel_mutes cm
                                WHERE cm.user_id = p.user_id AND cm.channel_id = $1
                                  AND (cm.muted_until IS NULL OR cm.muted_until > now()))",
@@ -532,6 +534,8 @@ async fn message_push(st: &AppState, guild_id: i64, message: &Message) -> anyhow
              JOIN push_subscriptions s ON s.user_id = m.user_id
              LEFT JOIN notify_levels l ON l.user_id = m.user_id AND l.guild_id = $1
              WHERE m.guild_id = $1 AND m.user_id <> $3
+               AND NOT EXISTS (SELECT 1 FROM user_blocks b
+                               WHERE b.user_id = m.user_id AND b.blocked_id = $3)
                AND NOT EXISTS (SELECT 1 FROM channel_mutes cm
                                WHERE cm.user_id = m.user_id AND cm.channel_id = $2
                                  AND (cm.muted_until IS NULL OR cm.muted_until > now()))",
@@ -582,6 +586,12 @@ async fn message_push(st: &AppState, guild_id: i64, message: &Message) -> anyhow
             format!("📊 {}", poll.question)
         } else if let Some(ev) = &message.event {
             format!("📅 {}", ev.title)
+        } else if let Some(s) = &message.sticker {
+            format!("🏷 Sent a sticker: {}", s.name)
+        } else if let Some(f) = &message.forward {
+            format!("↪ Forwarded a message from {}", f.author_display_name)
+        } else if message.attachments.iter().any(|a| a.voice) {
+            "🎤 Voice message".into()
         } else if !message.attachments.is_empty() {
             "Sent an attachment".into()
         } else if let Some(e) = message.embeds.first() {

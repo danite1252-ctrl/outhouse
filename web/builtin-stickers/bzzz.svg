@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" width="320" height="320">
+  <path d="M30 230 C 70 200, 60 160, 100 150 S 130 190, 150 168" fill="none" stroke="#a1a1aa" stroke-width="5" stroke-dasharray="4 12" stroke-linecap="round"/>
+  <ellipse cx="200" cy="96" rx="44" ry="26" fill="#cfe8ff" fill-opacity=".75" stroke="#2a2a30" stroke-width="6" transform="rotate(-30 200 96)"/>
+  <ellipse cx="236" cy="112" rx="40" ry="22" fill="#cfe8ff" fill-opacity=".75" stroke="#2a2a30" stroke-width="6" transform="rotate(-8 236 112)"/>
+  <ellipse cx="206" cy="168" rx="50" ry="36" fill="#2f3a2a" stroke="#141414" stroke-width="7"/>
+  <path d="M182 140 q-6 28 2 56 M206 134 q-4 34 2 68" stroke="#4f6b3a" stroke-width="7" fill="none" stroke-linecap="round"/>
+  <circle cx="150" cy="160" r="30" fill="#2f3a2a" stroke="#141414" stroke-width="7"/>
+  <circle cx="138" cy="150" r="16" fill="#c0262d" stroke="#141414" stroke-width="5"/>
+  <circle cx="160" cy="146" r="16" fill="#c0262d" stroke="#141414" stroke-width="5"/>
+  <circle cx="134" cy="146" r="5" fill="#fff"/>
+  <circle cx="156" cy="142" r="5" fill="#fff"/>
+  <path d="M176 200 l-14 30 M200 204 l-4 34 M226 198 l10 30" stroke="#141414" stroke-width="6" stroke-linecap="round"/>
+  <text x="196" y="286" text-anchor="middle" font-family="Arial Black, Impact, Helvetica, sans-serif" font-weight="900" font-size="54" fill="#ffd166" stroke="#2a1a10" stroke-width="5" paint-order="stroke" transform="rotate(-6 196 270)">Bzzz</text>
+  <path d="M270 168 h22 M266 186 h30 M272 204 h18" stroke="#a1a1aa" stroke-width="5" stroke-linecap="round"/>
+</svg>

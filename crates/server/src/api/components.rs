@@ -343,6 +343,8 @@ pub async fn send_ephemeral(st: &AppState, post: EphemeralPost) -> AppResult<Mes
         components: post.components,
         ephemeral: true,
         filtered: false,
+        sticker: None,
+        forward: None,
     };
     {
         let mut store = ephemerals().lock().expect("ephemeral lock");

@@ -70,10 +70,11 @@ async fn load_dms(st: &AppState, user_id: i64, only: Option<i64>) -> AppResult<V
         .bind(&ids)
         .fetch_all(&st.db)
         .await?;
+    let hidden = super::friends::blocked_by(&st.db, user_id).await?;
     let mut by_channel: HashMap<i64, Vec<DmUser>> = HashMap::new();
     for r in recipients {
         by_channel.entry(r.channel_id).or_default().push(DmUser {
-            online: st.is_online(r.id),
+            online: !hidden.contains(&r.id) && st.is_online(r.id),
             id: r.id,
             username: r.username,
             display_name: r.display_name,
@@ -126,9 +127,12 @@ async fn check_reachable(db: &PgPool, me: i64, ids: &[i64]) -> AppResult<()> {
     let ok: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM users u
          WHERE u.id = ANY($1) AND NOT u.is_bot
-           AND EXISTS (SELECT 1 FROM guild_members a
-                       JOIN guild_members b ON a.guild_id = b.guild_id
-                       WHERE a.user_id = u.id AND b.user_id = $2)",
+           AND (EXISTS (SELECT 1 FROM guild_members a
+                        JOIN guild_members b ON a.guild_id = b.guild_id
+                        WHERE a.user_id = u.id AND b.user_id = $2)
+                OR EXISTS (SELECT 1 FROM friendships f
+                           WHERE (f.user_a = $2 AND f.user_b = u.id)
+                              OR (f.user_b = $2 AND f.user_a = u.id)))",
     )
     .bind(ids)
     .bind(me)
@@ -136,7 +140,7 @@ async fn check_reachable(db: &PgPool, me: i64, ids: &[i64]) -> AppResult<()> {
     .await?;
     if ok as usize != ids.len() {
         return Err(AppError::BadRequest(
-            "You can only message people you share an outhouse with.".into(),
+            "You can only message friends and people you share an outhouse with.".into(),
         ));
     }
     Ok(())
@@ -188,23 +192,35 @@ pub async fn contacts(
         avatar_url: Option<String>,
         bot: bool,
     }
+    // Friends first, then everyone else you share an outhouse with; never
+    // anyone either of you has blocked.
     let sql = format!(
         "SELECT {USER_COLUMNS} FROM users u
          WHERE u.id <> $1 AND NOT u.is_bot
-           AND EXISTS (SELECT 1 FROM guild_members a
-                       JOIN guild_members b ON a.guild_id = b.guild_id
-                       WHERE a.user_id = u.id AND b.user_id = $1)
-         ORDER BY lower(u.display_name), u.id
+           AND (EXISTS (SELECT 1 FROM guild_members a
+                        JOIN guild_members b ON a.guild_id = b.guild_id
+                        WHERE a.user_id = u.id AND b.user_id = $1)
+                OR EXISTS (SELECT 1 FROM friendships f
+                           WHERE (f.user_a = $1 AND f.user_b = u.id)
+                              OR (f.user_b = $1 AND f.user_a = u.id)))
+           AND NOT EXISTS (SELECT 1 FROM user_blocks k
+                           WHERE (k.user_id = $1 AND k.blocked_id = u.id)
+                              OR (k.user_id = u.id AND k.blocked_id = $1))
+         ORDER BY EXISTS (SELECT 1 FROM friendships f
+                          WHERE (f.user_a = $1 AND f.user_b = u.id)
+                             OR (f.user_b = $1 AND f.user_a = u.id)) DESC,
+                  lower(u.display_name), u.id
          LIMIT 500"
     );
     let rows = sqlx::query_as::<_, Row>(&sql)
         .bind(user.id)
         .fetch_all(&st.db)
         .await?;
+    let hidden = super::friends::blocked_by(&st.db, user.id).await?;
     Ok(Json(
         rows.into_iter()
             .map(|r| DmUser {
-                online: st.is_online(r.id),
+                online: !hidden.contains(&r.id) && st.is_online(r.id),
                 id: r.id,
                 username: r.username,
                 display_name: r.display_name,
@@ -246,6 +262,15 @@ pub async fn create(
     let channel_id = if ids.len() == 1 {
         let other = ids[0];
         let key = format!("{}:{}", user.id.min(other), user.id.max(other));
+        // Privacy and blocks decide who can start a conversation; an
+        // existing one can always be opened (sending is checked per message).
+        let existing: Option<i64> = sqlx::query_scalar("SELECT id FROM channels WHERE dm_key = $1")
+            .bind(&key)
+            .fetch_optional(&st.db)
+            .await?;
+        if existing.is_none() {
+            super::friends::check_can_dm(&st.db, user.id, other).await?;
+        }
         let id: Option<i64> = sqlx::query_scalar(
             "INSERT INTO channels (id, guild_id, name, kind, position, dm_key)
              VALUES ($1, NULL, '', $2, 0, $3)
@@ -279,6 +304,9 @@ pub async fn create(
             }
         }
     } else {
+        for &other in &ids {
+            super::friends::check_can_dm(&st.db, user.id, other).await?;
+        }
         let id = st.ids.next_id();
         let name = clean_name(req.name.as_deref().unwrap_or(""));
         let mut tx = st.db.begin().await?;
@@ -356,6 +384,7 @@ pub async fn add_recipient(
         )));
     }
     check_reachable(&st.db, user.id, &[req.user_id]).await?;
+    super::friends::check_can_dm(&st.db, user.id, req.user_id).await?;
     sqlx::query(
         "INSERT INTO dm_participants (channel_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
     )
@@ -407,9 +436,7 @@ pub async fn leave(
             .bind(channel_id)
             .execute(&st.db)
             .await?;
-        for key in keys {
-            let _ = tokio::fs::remove_file(st.config.upload_dir.join(key)).await;
-        }
+        crate::api::messages::remove_unused_files(&st, keys).await;
         return Ok(StatusCode::NO_CONTENT);
     }
     if dm.owner_id == Some(user.id) {

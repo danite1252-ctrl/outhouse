@@ -4,8 +4,8 @@
 @font-face { font-family: "Inter"; font-weight: 500 600; font-style: normal; font-display: swap; src: url("fonts/inter-600.woff") format("woff"); }
 @font-face { font-family: "Inter"; font-weight: 700; font-style: normal; font-display: swap; src: url("fonts/inter-700.woff") format("woff"); }
 @font-face { font-family: "Inter Display"; font-weight: 800; font-style: normal; font-display: swap; src: url("fonts/inter-display-800.woff") format("woff"); }
-/* The wordmark is Montserrat ExtraBold when it's installed, Inter Display otherwise. */
-@font-face { font-family: "Outhouse Wordmark"; font-weight: 800; font-display: swap; src: local("Montserrat ExtraBold"), local("Montserrat-ExtraBold"), url("fonts/inter-display-800.woff") format("woff"); }
+/* The wordmark is Montserrat ExtraBold (SIL OFL 1.1, see fonts/OFL-Montserrat.txt), self-hosted, Latin subset. */
+@font-face { font-family: "Outhouse Wordmark"; font-weight: 800; font-style: normal; font-display: swap; src: url("fonts/montserrat-800.woff2") format("woff2"); }
 
 :root {
   --night: #121214; --panel: #161618; --raised: #222226; --line: #2a2a2e;

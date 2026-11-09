@@ -159,6 +159,10 @@ async fn run(socket: WebSocket, st: AppState) -> anyhow::Result<()> {
                                 ServerEvent::VoiceStateUpdate { channel_id: Some(c), .. } => {
                                     perms::can_view(&st.db, id, *c, user.id).await
                                 }
+                                // People who blocked you don't show as online to you.
+                                ServerEvent::PresenceUpdate { user_id: who, online: true } => {
+                                    !crate::api::friends::has_blocked(&st.db, *who, user.id).await
+                                }
                                 _ => true,
                             },
                             Audience::User(id) => id == user.id,

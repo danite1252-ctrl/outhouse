@@ -2245,6 +2245,7 @@ async function openUserSettings(tab = "account") {
     ["profile", "Outhouse nicknames"],
     ["voice", "Voice & audio"],
     typeof drawNotificationsPage === "function" ? ["notifications", "Notifications"] : null,
+    typeof drawPrivacyPage === "function" ? ["privacy", "Privacy & friends"] : null,
   ].filter(Boolean);
   const draw = (active) => {
     stopMicTest();
@@ -2259,6 +2260,7 @@ async function openUserSettings(tab = "account") {
     if (active === "profile") return drawProfiles(page);
     if (active === "voice") return drawVoicePage(page);
     if (active === "notifications") return drawNotificationsPage(page);
+    if (active === "privacy") return drawPrivacyPage(page);
     return drawAccount(page);
   };
   draw(tab);
@@ -2799,6 +2801,7 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
     if (can("manage_guild")) {
       nav.append(el("button", { class: activeTab === "bots" ? "active" : "", onclick: () => draw("bots") }, "Bots"));
       nav.append(el("button", { class: activeTab === "emoji" ? "active" : "", onclick: () => draw("emoji") }, "Emoji"));
+      if (typeof drawStickerSettings === "function") nav.append(el("button", { class: activeTab === "stickers" ? "active" : "", onclick: () => draw("stickers") }, "Stickers"));
     }
     if (can("manage_guild") && typeof drawBadgeSettings === "function") {
       nav.append(el("button", { class: activeTab === "badges" ? "active" : "", onclick: () => draw("badges") }, "Badges"));
@@ -2835,6 +2838,7 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
     if (activeTab === "integrations") return drawIntegrations(page);
     if (activeTab === "bots") return drawBots(page);
     if (activeTab === "emoji") return drawEmojiSettings(page);
+    if (activeTab === "stickers") return drawStickerSettings(page);
     const role = roles.find((r) => r.id === roleId) || roles.find((r) => r.id !== state.guildId) || roles[0];
     if (role) drawRole(page, role, (id) => draw("roles", id));
   };

@@ -2098,6 +2098,320 @@ jq -e '.[0].relation == ["delegate_permission/common.handle_all_urls"]
   || { echo "bad assetlinks.json:"; cat /tmp/assetlinks.json; exit 1; }
 TOKEN=$TOKEN_A
 
+step "friends: requests, accept, ignore, cancel, live events"
+TOKEN=$TOKEN_A
+node ci/gateway_probe.mjs "$BASE" "$TOKEN_B" /tmp/gw-friends-bob.jsonl 25 &
+for i in $(seq 1 40); do grep -q '"READY"' /tmp/gw-friends-bob.jsonl 2>/dev/null && break; sleep 0.25; done
+call GET /api/users/@me/relationships | jq -e 'length == 0' >/dev/null
+call GET /api/users/@me/privacy | jq -e '.allow_dms == "everyone" and .allow_friend_requests == "everyone"' >/dev/null
+call POST /api/users/@me/relationships '{"username":"Bob"}' | jq -e --arg b "$BOB" '.kind == "outgoing" and .user.id == $b' >/dev/null
+call POST /api/users/@me/relationships '{"username":"@bob"}' | jq -e '.kind == "outgoing"' >/dev/null # asking twice is fine
+fail_call POST /api/users/@me/relationships '{"username":"nobody-by-that-name"}'
+fail_call POST /api/users/@me/relationships '{"username":"alice"}' # yourself
+for i in $(seq 1 20); do grep -q 'RELATIONSHIP_UPDATE' /tmp/gw-friends-bob.jsonl && break; sleep 0.25; done
+grep 'RELATIONSHIP_UPDATE' /tmp/gw-friends-bob.jsonl | jq -e --arg a "$ALICE" 'select(.d.kind == "incoming" and .d.user.id == $a)' >/dev/null
+TOKEN=$TOKEN_B
+call GET /api/users/@me/relationships | jq -e --arg a "$ALICE" '.[] | select(.user.id == $a) | .kind == "incoming"' >/dev/null
+call PUT "/api/users/@me/relationships/$ALICE" | jq -e '.kind == "friend"' >/dev/null
+TOKEN=$TOKEN_A
+call GET /api/users/@me/relationships | jq -e --arg b "$BOB" '[.[] | select(.user.id == $b and .kind == "friend")] | length == 1' >/dev/null
+fail_call POST /api/users/@me/relationships '{"username":"bob"}' # already friends
+# Cancel your own request; ignore someone else's.
+call PUT "/api/users/@me/relationships/$CARL" | jq -e '.kind == "outgoing"' >/dev/null
+call DELETE "/api/users/@me/relationships/$CARL" >/dev/null
+TOKEN=$TOKEN_C; call GET /api/users/@me/relationships | jq -e 'length == 0' >/dev/null; TOKEN=$TOKEN_A
+call PUT "/api/users/@me/relationships/$CARL" >/dev/null
+TOKEN=$TOKEN_C; call DELETE "/api/users/@me/relationships/$ALICE" >/dev/null; TOKEN=$TOKEN_A
+call GET /api/users/@me/relationships | jq -e --arg c "$CARL" 'all(.[]; .user.id != $c)' >/dev/null
+TOKEN=""; fail_call GET /api/users/@me/relationships; TOKEN=$TOKEN_A
+
+step "friends: privacy settings (friend requests, DMs)"
+TOKEN=$TOKEN_C
+call PUT /api/users/@me/privacy '{"allow_friend_requests":"nobody"}' | jq -e '.allow_friend_requests == "nobody" and .allow_dms == "everyone"' >/dev/null
+fail_call PUT /api/users/@me/privacy '{"allow_dms":"strangers"}'
+fail_call PUT /api/users/@me/privacy '{"allow_friend_requests":"maybe"}'
+TOKEN=$TOKEN_A; fail_call PUT "/api/users/@me/relationships/$CARL"; TOKEN=$TOKEN_C
+call PUT /api/users/@me/privacy '{"allow_friend_requests":"friends_of_friends"}' >/dev/null
+TOKEN=$TOKEN_A; fail_call PUT "/api/users/@me/relationships/$CARL" # no friends in common yet
+# Carl and Bob become friends (accepting a request isn't limited), so Alice
+# (Bob's friend) is now a friend of a friend.
+TOKEN=$TOKEN_C; call PUT "/api/users/@me/relationships/$BOB" | jq -e '.kind == "outgoing"' >/dev/null
+TOKEN=$TOKEN_B; call PUT "/api/users/@me/relationships/$CARL" | jq -e '.kind == "friend"' >/dev/null
+TOKEN=$TOKEN_A; call PUT "/api/users/@me/relationships/$CARL" | jq -e '.kind == "outgoing"' >/dev/null
+call DELETE "/api/users/@me/relationships/$CARL" >/dev/null
+# People in your outhouses only: the outsider can't, Alice can.
+TOKEN=$TOKEN_C; call PUT /api/users/@me/privacy '{"allow_friend_requests":"shared"}' >/dev/null
+TOKEN=$OUT; fail_call PUT "/api/users/@me/relationships/$CARL"
+TOKEN=$TOKEN_A; call PUT "/api/users/@me/relationships/$CARL" | jq -e '.kind == "outgoing"' >/dev/null
+call DELETE "/api/users/@me/relationships/$CARL" >/dev/null
+# DMs from friends only: Alice can't start one with Carl (or put him in a group), Bob (a friend) can.
+TOKEN=$TOKEN_C; call PUT /api/users/@me/privacy '{"allow_dms":"friends","allow_friend_requests":"everyone"}' | jq -e '.allow_dms == "friends"' >/dev/null
+TOKEN=$TOKEN_A
+fail_call POST /api/dms '{"user_ids":["'"$CARL"'"]}'
+grep -q "only takes DMs from friends" /tmp/body
+fail_call POST /api/dms '{"user_ids":["'"$BOB"'","'"$CARL"'"]}'
+TOKEN=$TOKEN_B; BCDM=$(call POST /api/dms '{"user_ids":["'"$CARL"'"]}' | jq -r .id)
+call POST "/api/channels/$BCDM/messages" '{"content":"friends can DM"}' >/dev/null
+TOKEN=$TOKEN_C; call PUT /api/users/@me/privacy '{"allow_dms":"everyone"}' >/dev/null
+TOKEN=$TOKEN_A; ACDM=$(call POST /api/dms '{"user_ids":["'"$CARL"'"]}' | jq -r .id)
+# Group DM picker: friends come first.
+TOKEN=$TOKEN_C; call GET /api/users/@me/contacts | jq -e --arg b "$BOB" '.[0].id == $b' >/dev/null; TOKEN=$TOKEN_A
+
+step "friends: blocking (DMs, requests, presence, pushes)"
+node ci/gateway_probe.mjs "$BASE" "$TOKEN_B" /tmp/gw-block-bob.jsonl 20 &
+for i in $(seq 1 40); do grep -q '"READY"' /tmp/gw-block-bob.jsonl 2>/dev/null && break; sleep 0.25; done
+TOKEN=$TOKEN_C; call GET "/api/guilds/$GUILD/members" | jq -e --arg b "$BOB" '.[] | select(.id == $b) | .online' >/dev/null; TOKEN=$TOKEN_A
+call GET "/api/guilds/$GUILD/members" | jq -e --arg b "$BOB" '.[] | select(.id == $b) | .online' >/dev/null
+TOKEN=$TOKEN_B
+call PUT "/api/users/@me/blocks/$ALICE" | jq -e --arg a "$ALICE" '.kind == "blocked" and .user.id == $a' >/dev/null
+call GET /api/users/@me/relationships | jq -e --arg a "$ALICE" '.[] | select(.user.id == $a) | .kind == "blocked"' >/dev/null
+fail_call POST "/api/channels/$DMID/messages" '{"content":"you are blocked"}'
+TOKEN=$TOKEN_A
+call GET /api/users/@me/relationships | jq -e --arg b "$BOB" 'all(.[]; .user.id != $b)' >/dev/null # the friendship ended
+fail_call POST "/api/channels/$DMID/messages" '{"content":"can you hear me?"}'
+grep -q "can't message this person" /tmp/body
+fail_call PUT "/api/users/@me/relationships/$BOB"
+fail_call POST /api/dms '{"user_ids":["'"$BOB"'","'"$CARL"'"]}'
+call GET /api/users/@me/contacts | jq -e --arg b "$BOB" 'all(.[]; .id != $b)' >/dev/null
+# Bob is online, but not to Alice (Carl still sees him).
+call GET "/api/guilds/$GUILD/members" | jq -e --arg b "$BOB" '.[] | select(.id == $b) | .online | not' >/dev/null
+call GET /api/dms | jq -e --arg id "$DMID" --arg b "$BOB" '.[] | select(.id == $id) | .recipients[] | select(.id == $b) | .online | not' >/dev/null
+TOKEN=$TOKEN_C; call GET "/api/guilds/$GUILD/members" | jq -e --arg b "$BOB" '.[] | select(.id == $b) | .online' >/dev/null; TOKEN=$TOKEN_A
+# Messages in shared channels still arrive (the app folds them away).
+call POST "/api/channels/$CHAN/messages" '{"content":"alice says hi to everyone"}' >/dev/null
+# Unblocking: DMs work again.
+TOKEN=$TOKEN_B; call DELETE "/api/users/@me/blocks/$ALICE" >/dev/null
+call GET /api/users/@me/relationships | jq -e --arg a "$ALICE" 'all(.[]; .user.id != $a)' >/dev/null; TOKEN=$TOKEN_A
+call POST "/api/channels/$DMID/messages" '{"content":"unblocked hello"}' >/dev/null
+# Carl (offline, push on) heard about Alice's friend requests.
+for i in $(seq 1 20); do
+  curl -fsS "$PUSH/received/carl" | jq -e 'any(.[]; .payload.kind == "friend")' >/dev/null 2>&1 && break
+  sleep 0.5
+done
+RC=$(curl -fsS "$PUSH/received/carl")
+check_push "$RC" 'any(.[]; .payload.kind == "friend" and .payload.title == "New friend request" and (.payload.body | contains("Alice")) and .payload.url == "/app?friends=1" and .payload.channel_id == "friends")' "carl: friend request push"
+check_push "$(curl -fsS "$PUSH/received/bob")" 'all(.[]; (.payload.body // "") | (contains("you are blocked") or contains("can you hear me")) | not)' "bob: nothing from Alice while blocked"
+
+step "voice messages: upload checks (type, size, length, waveform)"
+python3 - <<'PY'
+import struct
+def webm(blocks, duration=None):
+    v = bytes([0x1A,0x45,0xDF,0xA3,0x84,0x42,0x86,0x81,0x01])
+    v += bytes([0x18,0x53,0x80,0x67,0x01,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF])
+    info = bytes([0x2A,0xD7,0xB1,0x83,0x0F,0x42,0x40])
+    if duration is not None:
+        info += bytes([0x44,0x89,0x88]) + struct.pack(">d", duration)
+    v += bytes([0x15,0x49,0xA9,0x66,0x80 | len(info)]) + info
+    t = 0
+    for c in range(0, blocks, 1000):  # a cluster every 20 s
+        v += bytes([0x1F,0x43,0xB6,0x75,0x01,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF])
+        v += bytes([0xE7,0x84]) + struct.pack(">I", c * 20)
+        for i in range(min(1000, blocks - c)):
+            v += bytes([0xA3,0x86,0x81]) + struct.pack(">h", i * 20) + bytes([0x80,0xAA,0xBB])
+    return v
+open("/tmp/voice.webm","wb").write(webm(150))           # 3 seconds
+open("/tmp/voice-long.webm","wb").write(webm(18000))    # 6 minutes
+def ogg_page(granule, seq, packet, flags=0):
+    segs = [255] * (len(packet) // 255) + [len(packet) % 255]
+    return b"OggS" + bytes([0, flags]) + struct.pack("<qIII", granule, 7, seq, 0) + bytes([len(segs)] + segs) + packet
+head = b"OpusHead" + bytes([1, 1]) + struct.pack("<HIhB", 312, 48000, 0, 0)
+open("/tmp/voice.ogg","wb").write(ogg_page(0, 0, head, 2) + ogg_page(48000 * 4 + 312, 1, b"\x00" * 40, 4))
+open("/tmp/big.webm","wb").write(webm(150) + b"\x00" * (10 * 1024 * 1024 + 10))
+PY
+WAVE=$(printf '\x10\x40\x80\xff\x80\x40\x10\x20' | base64)
+vupload() { # vupload CHANNEL FILE META [extra -F...]
+  local ch=$1 file=$2 meta=$3; shift 3
+  code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $TOKEN" -F "content=" -F "voice=$meta" -F "files=@$file" "$@" "$BASE/api/channels/$ch/messages/upload")
+}
+TOKEN=$TOKEN_A
+vupload "$CHAN" /tmp/voice.webm '{"duration_ms":2900,"waveform":"'"$WAVE"'"}'
+[ "$code" = 200 ] || { echo "voice upload -> $code"; cat /tmp/body; exit 1; }
+jq -e --arg w "$WAVE" '.content == "" and (.attachments | length == 1) and .attachments[0].voice and .attachments[0].duration_ms == 3000 and .attachments[0].waveform == $w and .attachments[0].content_type == "audio/webm"' /tmp/body >/dev/null
+VURL=$(jq -r '.attachments[0].url' /tmp/body)
+[ "$(curl -sS -o /dev/null -w '%{content_type}' "$BASE$VURL")" = "audio/webm" ]
+vupload "$CHAN" /tmp/voice.ogg '{"duration_ms":1}'
+[ "$code" = 200 ] && jq -e '.attachments[0].voice and .attachments[0].duration_ms == 4000 and .attachments[0].content_type == "audio/ogg" and (.attachments[0] | has("waveform") | not)' /tmp/body >/dev/null
+vupload "$CHAN" /tmp/voice-long.webm '{"duration_ms":1000}'
+[ "$code" = 400 ] && grep -q "5 minutes" /tmp/body
+vupload "$CHAN" /tmp/big.webm '{"duration_ms":1000}'
+[ "$code" = 400 ] && grep -q "10 MB" /tmp/body
+vupload "$CHAN" /tmp/pixel.png '{"duration_ms":1000}'
+[ "$code" = 400 ]
+vupload "$CHAN" /tmp/voice.webm '{"duration_ms":1000}' -F "files=@/tmp/voice.ogg"
+[ "$code" = 400 ]
+vupload "$CHAN" /tmp/voice.webm 'not json'
+[ "$code" = 400 ]
+cp /tmp/voice.webm /tmp/voice.m4a
+vupload "$CHAN" /tmp/voice.m4a '{"duration_ms":999999}'
+[ "$code" = 400 ] # a length past 5 minutes, when the file can't tell us
+vupload "$CHAN" /tmp/voice.webm '{"duration_ms":2900,"waveform":"!!!"}'
+[ "$code" = 200 ] && jq -e '.attachments[0] | has("waveform") | not' /tmp/body >/dev/null # a bad waveform is just dropped
+# In a DM and in a thread too; not without Attach Files.
+vupload "$DMID" /tmp/voice.webm '{"duration_ms":3000}'
+[ "$code" = 200 ]
+VT=$(call POST "/api/channels/$CHAN/threads" '{"name":"Voice notes"}' | jq -r .id)
+vupload "$CHAN" /tmp/voice.webm '{"duration_ms":3000}' -F "thread_id=$VT"
+[ "$code" = 200 ] && jq -e --arg t "$VT" '.thread_id == $t and .attachments[0].voice' /tmp/body >/dev/null
+TOKEN=$OUT; vupload "$CHAN" /tmp/voice.webm '{"duration_ms":3000}'; [ "$code" = 404 ]; TOKEN=$TOKEN_A
+
+step "stickers: upload, limits, permissions, sending"
+supload() { # supload TOKEN FILE NAME [extra -F...]
+  local tok=$1 file=$2 name=$3; shift 3
+  code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $tok" -F "name=$name" -F "file=@$file" "$@" "$BASE/api/guilds/$GUILD/stickers")
+}
+supload "$TOKEN_A" /tmp/pixel.png "Big Pull" -F "emoji=🔥" -F "description=When the tank pulls early"
+[ "$code" = 200 ] || { echo "sticker upload -> $code"; cat /tmp/body; exit 1; }
+STK=$(jq -r .id /tmp/body)
+jq -e '.name == "Big Pull" and .emoji == "🔥" and .description == "When the tank pulls early" and .content_type == "image/png" and (.url | startswith("/stickers/"))' /tmp/body >/dev/null
+[ "$(curl -sS -o /dev/null -w '%{content_type}' "$BASE/stickers/$STK")" = "image/png" ]
+supload "$TOKEN_B" /tmp/pixel.png "Not allowed"; [ "$code" = 403 ] # needs Manage Outhouse
+supload "$TOKEN_A" /tmp/pixel.png "big pull"; [ "$code" = 409 ]   # names are unique (any case)
+printf '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>' > /tmp/evil.svg
+supload "$TOKEN_A" /tmp/evil.svg "Evil"; [ "$code" = 400 ]
+head -c 600000 /dev/urandom > /tmp/big.png; printf '\x89PNG\r\n\x1a\n' | dd of=/tmp/big.png conv=notrunc 2>/dev/null
+supload "$TOKEN_A" /tmp/big.png "Too big"; [ "$code" = 400 ]
+supload "$TOKEN_A" /tmp/pixel.png "x"; [ "$code" = 400 ]
+call GET "/api/guilds/$GUILD/stickers" | jq -e 'length == 1' >/dev/null
+TOKEN=$TOKEN_B; call GET /api/users/@me/stickers | jq -e --arg s "$STK" '(.[0].id == "builtin:occupied") and any(.[]; .id == $s) and any(.[]; .id == "builtin:gg")' >/dev/null; TOKEN=$TOKEN_A
+TOKEN=$OUT; fail_call GET "/api/guilds/$GUILD/stickers"; TOKEN=$TOKEN_A
+call PATCH "/api/stickers/$STK" '{"name":"Early Pull","emoji":"😬"}' | jq -e '.name == "Early Pull" and .emoji == "😬" and .description == "When the tank pulls early"' >/dev/null
+TOKEN=$TOKEN_B; fail_call PATCH "/api/stickers/$STK" '{"name":"Mine now"}'; fail_call DELETE "/api/stickers/$STK"; TOKEN=$TOKEN_A
+# Sending: a sticker is a message on its own.
+SM=$(call POST "/api/channels/$CHAN/stickers" '{"sticker_id":"'"$STK"'"}')
+jq -e --arg s "$STK" '.content == "" and .sticker.id == $s and .sticker.name == "Early Pull" and .sticker.url == "/stickers/\($s)"' <<<"$SM" >/dev/null
+SMID=$(jq -r .id <<<"$SM")
+TOKEN=$TOKEN_B
+call POST "/api/channels/$DMID/stickers" '{"sticker_id":"builtin:gg","reply_to_id":"'"$(call GET "/api/channels/$DMID/messages?limit=1" | jq -r '.[0].id')"'"}' | jq -e '.sticker.id == "builtin:gg" and .sticker.url == "/builtin-stickers/gg.svg" and .reply_to != null' >/dev/null
+fail_call POST "/api/channels/$CHAN/stickers" '{"sticker_id":"builtin:nope"}'
+fail_call POST "/api/channels/$CHAN/stickers" '{"sticker_id":"12345"}'
+TOKEN=$TOKEN_A
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/builtin-stickers/gg.svg")" = 200 ]
+call PATCH "/api/channels/$CHAN/messages/$SMID" '{"content":"with a caption"}' | jq -e '.sticker != null' >/dev/null
+# Up to 60 per outhouse.
+for i in $(seq 2 60); do supload "$TOKEN_A" /tmp/pixel.png "Sticker $i"; [ "$code" = 200 ] || { echo "sticker $i -> $code"; cat /tmp/body; exit 1; }; done
+supload "$TOKEN_A" /tmp/pixel.png "Sticker 61"; [ "$code" = 400 ] && grep -q "60 stickers" /tmp/body
+# Deleting: the picture goes, old messages keep the sticker's name.
+call DELETE "/api/stickers/$STK" >/dev/null
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/stickers/$STK")" = 404 ]
+call GET "/api/channels/$CHAN/messages?around=$SMID&limit=3" | jq -e --arg m "$SMID" '.[] | select(.id == $m) | .sticker.name == "Early Pull"' >/dev/null
+fail_call POST "/api/channels/$CHAN/stickers" '{"sticker_id":"'"$STK"'"}'
+call GET "/api/guilds/$GUILD/audit-log?action=sticker_create" | jq -e '.entries | length >= 50' >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?action=sticker_delete" | jq -e '.entries[0].target_name == "Early Pull"' >/dev/null
+
+step "forwarding: snapshot, shared files, 18+ rule, permissions"
+FC=$(call POST "/api/guilds/$GUILD/channels" '{"name":"loot"}' | jq -r .id)
+code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $TOKEN_A" -F "content=check this drop <:nope:1>" -F "files=@/tmp/pixel.png;type=image/png" "$BASE/api/channels/$FC/messages/upload")
+[ "$code" = 200 ]; ORIG=$(jq -r .id /tmp/body); OURL=$(jq -r '.attachments[0].url' /tmp/body)
+FW=$(call POST "/api/channels/$FC/messages/$ORIG/forward" '{"destinations":["'"$DMID"'","'"$ACDM"'"],"note":"look at this"}')
+jq -e --arg o "$ORIG" --arg u "$OURL" --arg a "$ALICE" 'length == 2 and all(.[]; .content == "look at this" and .forward.message_id == $o and .forward.channel_name == "#loot" and .forward.guild_name == "Smoke Test" and .forward.author_id == $a and (.forward.content | startswith("check this drop")) and .attachments[0].url == $u)' <<<"$FW" >/dev/null
+FW1=$(jq -r '.[0].id' <<<"$FW"); FW2=$(jq -r '.[1].id' <<<"$FW")
+FWDM=$(jq -r '.[0].channel_id' <<<"$FW")
+# Bob sees it in the DM, and can open the file.
+TOKEN=$TOKEN_B
+call GET "/api/channels/$DMID/messages?limit=5" | jq -e --arg f "$FW1" 'any(.[]; .id == $f and .forward.channel_name == "#loot")' >/dev/null
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE$OURL")" = 200 ]
+# A forward of a forward passes on the original.
+FF=$(call POST "/api/channels/$FWDM/messages/$FW1/forward" '{"destinations":["'"$CHAN"'"]}')
+jq -e --arg o "$ORIG" '.[0].forward.message_id == $o and .[0].forward.channel_name == "#loot" and .[0].content == ""' <<<"$FF" >/dev/null
+FF1=$(jq -r '.[0].id' <<<"$FF")
+TOKEN=$TOKEN_A
+# The file lives as long as any message uses it.
+call DELETE "/api/channels/$FC/messages/$ORIG" >/dev/null
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE$OURL")" = 200 ]
+call DELETE "/api/channels/$DMID/messages/$FW1" >/dev/null
+call DELETE "/api/channels/$ACDM/messages/$FW2" >/dev/null
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE$OURL")" = 200 ]
+TOKEN=$TOKEN_B; call DELETE "/api/channels/$CHAN/messages/$FF1" >/dev/null; TOKEN=$TOKEN_A
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE$OURL")" = 404 ]
+# Limits and permissions.
+FM=$(call POST "/api/channels/$FC/messages" '{"content":"forward me"}' | jq -r .id)
+fail_call POST "/api/channels/$FC/messages/$FM/forward" '{"destinations":[]}'
+fail_call POST "/api/channels/$FC/messages/$FM/forward" '{"destinations":["1","2","3","4","5","6"]}'
+fail_call POST "/api/channels/$FC/messages/$FM/forward" '{"destinations":["'"$CHAN"'","999"]}'
+call GET "/api/channels/$CHAN/messages?limit=3" | jq -e 'all(.[]; .content != "forward me" and .forward.content != "forward me")' >/dev/null # nothing half-sent
+fail_call POST "/api/channels/$FC/messages/$FM/forward" '{"destinations":["'"$CHAN"'"],"note":"'"$(head -c 2001 /dev/zero | tr '\0' a)"'"}'
+TOKEN=$OUT; fail_call POST "/api/channels/$FC/messages/$FM/forward" '{"destinations":["'"$CHAN"'"]}'; TOKEN=$TOKEN_A
+# Only into places you can post in: Bob can't post in a read-only channel.
+RO=$(call POST "/api/guilds/$GUILD/channels" '{"name":"announcements"}' | jq -r .id)
+call PUT "/api/channels/$RO/permissions/$GUILD" '{"kind":"role","allow":"0","deny":"2"}' >/dev/null
+TOKEN=$TOKEN_B; fail_call POST "/api/channels/$FC/messages/$FM/forward" '{"destinations":["'"$RO"'"]}'; TOKEN=$TOKEN_A
+# Age-restricted (18+): only to other 18+ channels; you have to have said you're 18+ to see it.
+N1=$(call POST "/api/guilds/$GUILD/channels" '{"name":"after-hours"}' | jq -r .id)
+N2=$(call POST "/api/guilds/$GUILD/channels" '{"name":"after-hours-2"}' | jq -r .id)
+call PATCH "/api/channels/$N1" '{"content_mode":"nsfw"}' >/dev/null
+call PATCH "/api/channels/$N2" '{"content_mode":"nsfw"}' >/dev/null
+call PUT "/api/channels/$N1/age-gate" >/dev/null; call PUT "/api/channels/$N2/age-gate" >/dev/null
+NM1=$(call POST "/api/channels/$N1/messages" '{"content":"grown-up joke"}' | jq -r .id)
+fail_call POST "/api/channels/$N1/messages/$NM1/forward" '{"destinations":["'"$CHAN"'"]}'
+grep -q "age-restricted" /tmp/body
+fail_call POST "/api/channels/$N1/messages/$NM1/forward" '{"destinations":["'"$DMID"'"]}'
+fail_call POST "/api/channels/$N1/messages/$NM1/forward" '{"destinations":["'"$N2"'","'"$CHAN"'"]}'
+call POST "/api/channels/$N1/messages/$NM1/forward" '{"destinations":["'"$N2"'"]}' | jq -e '.[0].forward.content == "grown-up joke"' >/dev/null
+TOKEN=$TOKEN_B; fail_call POST "/api/channels/$N1/messages/$NM1/forward" '{"destinations":["'"$N1"'"]}'; jq -e '.code == "age_restricted"' /tmp/body >/dev/null; TOKEN=$TOKEN_A
+# A raid card or poll on its own can't be forwarded.
+PM=$(call POST "/api/channels/$FC/polls" '{"question":"Ony tonight?","options":["yes","no"]}' | jq -r .id)
+fail_call POST "/api/channels/$FC/messages/$PM/forward" '{"destinations":["'"$CHAN"'"]}'
+
+step "scheduled messages: create, edit, cancel, send now, limits"
+SC=$(call POST "/api/guilds/$GUILD/channels" '{"name":"later"}' | jq -r .id)
+SOON=$(date -u -d '+25 seconds' +%Y-%m-%dT%H:%M:%SZ)
+LATER=$(date -u -d '+2 days' +%Y-%m-%dT09:00:00Z)
+S1=$(call POST "/api/channels/$SC/scheduled" '{"content":"good morning raiders","send_at":"'"$SOON"'"}')
+jq -e --arg c "$SC" --arg g "$GUILD" '.status == "pending" and .channel_id == $c and .guild_id == $g and .content == "good morning raiders"' <<<"$S1" >/dev/null
+S1ID=$(jq -r .id <<<"$S1")
+S2ID=$(call POST "/api/channels/$SC/scheduled" '{"content":"reminder: flasks","send_at":"'"$LATER"'"}' | jq -r .id)
+S3ID=$(call POST "/api/channels/$SC/scheduled" '{"content":"cancel me","send_at":"'"$LATER"'"}' | jq -r .id)
+fail_call POST "/api/channels/$SC/scheduled" '{"content":"in the past","send_at":"2020-01-01T00:00:00Z"}'
+fail_call POST "/api/channels/$SC/scheduled" '{"content":"too far","send_at":"2099-01-01T00:00:00Z"}'
+fail_call POST "/api/channels/$SC/scheduled" '{"content":"   ","send_at":"'"$LATER"'"}'
+TOKEN=$OUT; fail_call POST "/api/channels/$SC/scheduled" '{"content":"not mine","send_at":"'"$LATER"'"}'; TOKEN=$TOKEN_A
+call GET /api/users/@me/scheduled | jq -e --arg a "$S1ID" --arg b "$S2ID" 'length == 3 and .[0].id == $a and .[1].id == $b' >/dev/null
+call PATCH "/api/scheduled/$S2ID" '{"content":"reminder: flasks and food"}' | jq -e '.content == "reminder: flasks and food" and .status == "pending"' >/dev/null
+fail_call PATCH "/api/scheduled/$S2ID" '{"send_at":"2020-01-01T00:00:00Z"}'
+TOKEN=$TOKEN_B; fail_call PATCH "/api/scheduled/$S2ID" '{"content":"hijack"}'; fail_call DELETE "/api/scheduled/$S3ID"; fail_call POST "/api/scheduled/$S2ID/send"; TOKEN=$TOKEN_A
+call DELETE "/api/scheduled/$S3ID" >/dev/null
+fail_call DELETE "/api/scheduled/$S3ID"
+call POST "/api/scheduled/$S2ID/send" | jq -e --arg c "$SC" '.content == "reminder: flasks and food" and .channel_id == $c' >/dev/null
+call GET /api/users/@me/scheduled | jq -e --arg a "$S1ID" 'length == 1 and .[0].id == $a' >/dev/null
+# Up to 50 waiting per person.
+TOKEN=$TOKEN_C
+for i in $(seq 1 50); do call POST "/api/channels/$CHAN/scheduled" '{"content":"note '"$i"'","send_at":"'"$LATER"'"}' >/dev/null; done
+fail_call POST "/api/channels/$CHAN/scheduled" '{"content":"one too many","send_at":"'"$LATER"'"}'
+grep -q "50 messages" /tmp/body
+for id in $(call GET /api/users/@me/scheduled | jq -r '.[].id'); do call DELETE "/api/scheduled/$id" >/dev/null; done
+call GET /api/users/@me/scheduled | jq -e 'length == 0' >/dev/null
+# Permissions are checked again when it's due: Bob's goes nowhere once he's timed out,
+# Carl's once the channel is deleted.
+SOON2=$(date -u -d '+12 seconds' +%Y-%m-%dT%H:%M:%SZ)
+TOKEN=$TOKEN_B; SB=$(call POST "/api/channels/$SC/scheduled" '{"content":"bob was here","send_at":"'"$SOON2"'"}' | jq -r .id)
+GONE=$(TOKEN=$TOKEN_A call POST "/api/guilds/$GUILD/channels" '{"name":"doomed"}' | jq -r .id)
+TOKEN=$TOKEN_C; SCARL=$(call POST "/api/channels/$GONE/scheduled" '{"content":"into the void","send_at":"'"$SOON2"'"}' | jq -r .id)
+TOKEN=$TOKEN_A
+call POST "/api/guilds/$GUILD/members/$BOB/timeout" '{"minutes":60}' >/dev/null
+call DELETE "/api/channels/$GONE" >/dev/null
+
+step "scheduled messages: the background job sends them (or says why not)"
+for i in $(seq 1 60); do
+  call GET "/api/channels/$SC/messages?limit=10" | jq -e 'any(.[]; .content == "good morning raiders")' >/dev/null 2>&1 \
+    && TOKEN=$TOKEN_B call GET /api/users/@me/scheduled | jq -e '.[0].status == "failed"' >/dev/null 2>&1 \
+    && TOKEN=$TOKEN_C call GET /api/users/@me/scheduled | jq -e '.[0].status == "failed"' >/dev/null 2>&1 && break
+  sleep 1
+done
+call GET "/api/channels/$SC/messages?limit=10" | jq -e --arg a "$ALICE" '[.[] | select(.content == "good morning raiders" and .author_id == $a)] | length == 1' >/dev/null || { echo "scheduled message never sent"; exit 1; }
+call GET /api/users/@me/scheduled | jq -e 'length == 0' >/dev/null
+call GET "/api/channels/$SC/messages?limit=10" | jq -e 'all(.[]; .content != "bob was here")' >/dev/null
+TOKEN=$TOKEN_B
+call GET /api/users/@me/scheduled | jq -e --arg s "$SB" '.[0].id == $s and .[0].status == "failed" and (.[0].error | contains("can'"'"'t post there"))' >/dev/null || { call GET /api/users/@me/scheduled; exit 1; }
+TOKEN=$TOKEN_C
+call GET /api/users/@me/scheduled | jq -e --arg s "$SCARL" '.[0].id == $s and .[0].status == "failed" and (.[0].error | contains("gone"))' >/dev/null || { call GET /api/users/@me/scheduled; exit 1; }
+call DELETE "/api/scheduled/$SCARL" >/dev/null
+TOKEN=$TOKEN_A; call POST "/api/guilds/$GUILD/members/$BOB/timeout" '{"minutes":0}' >/dev/null
+# Once he can post again, Bob tries again with a new time, or sends it now.
+TOKEN=$TOKEN_B
+call PATCH "/api/scheduled/$SB" '{"send_at":"'"$LATER"'"}' | jq -e '.status == "pending" and .error == null' >/dev/null
+call POST "/api/scheduled/$SB/send" | jq -e '.content == "bob was here"' >/dev/null
+TOKEN=$TOKEN_A
+
 step "security: headers (CSP, HSTS, framing, sniffing) on pages, API and files"
 for path in / /app /invite/zzzzzzzz /api/health /style.css; do
   curl -sS -D /tmp/sec-h -o /tmp/sec-b "$BASE$path"

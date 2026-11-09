@@ -393,9 +393,7 @@ pub async fn delete(
         .bind(thread_id)
         .execute(&st.db)
         .await?;
-    for key in keys {
-        let _ = tokio::fs::remove_file(st.config.upload_dir.join(key)).await;
-    }
+    crate::api::messages::remove_unused_files(&st, keys).await;
     st.dispatch(
         channel_audience(&access.channel),
         ServerEvent::ThreadDelete {

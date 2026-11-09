@@ -65,7 +65,15 @@ pub async fn list(
         .bind(guild_id)
         .fetch_all(&st.db)
         .await?;
-    Ok(Json(with_presence(&st, members)))
+    // People who blocked you look offline to you.
+    let hidden = super::friends::blocked_by(&st.db, user.id).await?;
+    let mut members = with_presence(&st, members);
+    for m in &mut members {
+        if hidden.contains(&m.id) {
+            m.online = false;
+        }
+    }
+    Ok(Json(members))
 }
 
 /// Checks `actor` may act on `target` with `perm`: has the permission,

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" width="320" height="320">
+  <ellipse cx="160" cy="296" rx="112" ry="12" fill="#000" opacity=".28"/>
+  <g transform="rotate(-14 160 170)">
+    <rect x="148" y="24" width="24" height="170" rx="10" fill="#c98a4b" stroke="#2a1a10" stroke-width="7"/>
+    <path d="M160 40 v140" stroke="#e3a866" stroke-width="5" stroke-linecap="round"/>
+    <path d="M90 270 C 90 210, 120 186, 160 186 C 200 186, 230 210, 230 270 Z" fill="#e2463c" stroke="#2a1a10" stroke-width="8" stroke-linejoin="round"/>
+    <rect x="78" y="262" width="164" height="22" rx="11" fill="#b8322b" stroke="#2a1a10" stroke-width="7"/>
+    <path d="M118 222 q16 -20 34 -24" stroke="#ff8a7a" stroke-width="8" stroke-linecap="round" fill="none"/>
+  </g>
+  <g transform="rotate(8 160 150)">
+    <rect x="50" y="118" width="220" height="68" rx="14" fill="#121214" stroke="#ff6b35" stroke-width="7"/>
+    <text x="160" y="172" text-anchor="middle" font-family="Arial Black, Impact, Helvetica, sans-serif" font-weight="900" font-size="54" letter-spacing="4" fill="#ffffff">REKT</text>
+  </g>
+  <path d="M40 60 l14 10 M28 96 l18 2 M280 54 l-14 12 M292 92 l-18 4" stroke="#ffd166" stroke-width="6" stroke-linecap="round"/>
+</svg>

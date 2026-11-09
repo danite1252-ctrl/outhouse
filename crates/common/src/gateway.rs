@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::id::{as_string, option_as_string};
 use crate::models::{
-    Channel, ComponentInteractionData, DmChannel, Guild, Member, Message, RaidEvent, RaidSettings,
-    ThreadInfo, User,
+    Channel, ComponentInteractionData, DmChannel, DmUser, Guild, Member, Message, RaidEvent,
+    RaidSettings, ScheduledMessage, ThreadInfo, User,
 };
 
 fn slash_command_type() -> u8 {
@@ -303,6 +303,27 @@ pub enum ServerEvent {
         #[serde(with = "as_string")]
         guild_id: i64,
         settings: RaidSettings,
+    },
+    /// Your relationship with someone changed (sent to you only): `kind`
+    /// is "friend", "incoming", "outgoing", "blocked" or "none".
+    RelationshipUpdate {
+        kind: String,
+        user: DmUser,
+    },
+    /// Stickers in this outhouse changed: re-fetch them.
+    StickersChanged {
+        #[serde(with = "as_string")]
+        guild_id: i64,
+    },
+    /// One of your scheduled messages was made, changed or couldn't be
+    /// sent (sent to you only).
+    ScheduledUpdate(ScheduledMessage),
+    /// One of your scheduled messages was sent or cancelled (sent to you only).
+    ScheduledDelete {
+        #[serde(with = "as_string")]
+        id: i64,
+        #[serde(with = "as_string")]
+        channel_id: i64,
     },
     /// Identify failed or the session expired; sign in again.
     InvalidSession {

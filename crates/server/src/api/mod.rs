@@ -12,6 +12,8 @@ mod dms;
 pub mod emojis;
 pub mod events;
 mod feeds;
+mod forward;
+pub mod friends;
 mod gifs;
 pub mod guilds;
 pub mod invites;
@@ -24,8 +26,10 @@ pub mod polls;
 mod profiles;
 pub mod raid_settings;
 mod roles;
+pub mod scheduled;
 mod search;
 pub mod sounds;
+mod stickers;
 pub mod threads;
 pub mod voice;
 mod webhooks;
@@ -387,6 +391,51 @@ pub fn router(state: AppState) -> Router {
             post(notifications::subscribe).delete(notifications::unsubscribe),
         )
         .route("/api/push/test", post(notifications::test))
+        // Friends, blocks and privacy
+        .route(
+            "/api/users/@me/relationships",
+            get(friends::list).post(friends::add_by_username),
+        )
+        .route(
+            "/api/users/@me/relationships/{id}",
+            put(friends::add_by_id).delete(friends::remove),
+        )
+        .route(
+            "/api/users/@me/blocks/{id}",
+            put(friends::block).delete(friends::unblock),
+        )
+        .route(
+            "/api/users/@me/privacy",
+            get(friends::get_privacy).put(friends::set_privacy),
+        )
+        // Stickers
+        .route(
+            "/api/guilds/{id}/stickers",
+            get(stickers::list)
+                .post(stickers::create)
+                .layer(DefaultBodyLimit::max(
+                    stickers::MAX_STICKER_BYTES + 64 * 1024,
+                )),
+        )
+        .route(
+            "/api/stickers/{id}",
+            patch(stickers::update).delete(stickers::delete),
+        )
+        .route("/api/users/@me/stickers", get(stickers::list_mine))
+        .route("/api/channels/{id}/stickers", post(stickers::send))
+        .route("/stickers/{id}", get(stickers::serve))
+        // Forwarding and scheduled messages
+        .route(
+            "/api/channels/{id}/messages/{message}/forward",
+            post(forward::forward),
+        )
+        .route("/api/users/@me/scheduled", get(scheduled::list))
+        .route("/api/channels/{id}/scheduled", post(scheduled::create))
+        .route(
+            "/api/scheduled/{id}",
+            patch(scheduled::update).delete(scheduled::delete),
+        )
+        .route("/api/scheduled/{id}/send", post(scheduled::send_now))
         // GIFs, files, gateway
         .route("/api/gifs", get(gifs::search))
         .route("/files/{key}/{name}", get(files::serve))

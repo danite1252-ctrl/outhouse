@@ -197,6 +197,15 @@ pub struct Attachment {
     pub size: i64,
     /// Relative URL to download or display the file.
     pub url: String,
+    /// A recorded voice message (shown as a player with a waveform).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub voice: bool,
+    /// Length of a voice message, in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i32>,
+    /// A voice message's waveform: base64 of up to 64 loudness bytes (0–255).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waveform: Option<String>,
 }
 
 /// A link preview, an inline image/GIF, or a rich card from a webhook or feed.
@@ -302,6 +311,13 @@ pub struct Message {
     /// Automod let it through but hides it behind a "Filtered" reveal.
     #[serde(default, skip_serializing_if = "is_false")]
     pub filtered: bool,
+    /// A sticker sent as the message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sticker: Option<StickerRef>,
+    /// A forwarded message: a snapshot of the original (its attachments are
+    /// this message's `attachments`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward: Option<ForwardInfo>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -403,6 +419,95 @@ pub struct ComponentInteractionRequest {
     pub custom_id: String,
     #[serde(default)]
     pub values: Vec<String>,
+}
+
+/// Which sticker a message is: a custom one (`id` is its snowflake) or a
+/// built-in Outhouse one (`id` is `builtin:<key>`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StickerRef {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+}
+
+/// A sticker uploaded to an outhouse (or a built-in one, `guild_id` "0").
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Sticker {
+    pub id: String,
+    #[serde(with = "as_string")]
+    pub guild_id: i64,
+    pub name: String,
+    /// A related emoji (for search), may be empty.
+    pub emoji: String,
+    pub description: String,
+    pub url: String,
+    pub content_type: String,
+}
+
+/// What a forwarded message looked like when it was forwarded, and where
+/// it came from.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ForwardInfo {
+    #[serde(with = "as_string")]
+    pub message_id: i64,
+    #[serde(with = "as_string")]
+    pub channel_id: i64,
+    #[serde(with = "as_string")]
+    pub guild_id: i64,
+    /// "#general" for a channel, the DM's name for a DM.
+    pub channel_name: String,
+    /// The outhouse it came from (none for DMs).
+    #[serde(default)]
+    pub guild_name: Option<String>,
+    #[serde(with = "as_string")]
+    pub author_id: i64,
+    pub author_display_name: String,
+    pub created_at: DateTime<Utc>,
+    pub content: String,
+    #[serde(default)]
+    pub embeds: Vec<Embed>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sticker: Option<StickerRef>,
+}
+
+/// Where you stand with someone: "friend", "incoming" (they asked you),
+/// "outgoing" (you asked them) or "blocked" (you blocked them).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Relationship {
+    pub kind: String,
+    pub user: DmUser,
+    pub since: DateTime<Utc>,
+}
+
+/// Your privacy settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PrivacySettings {
+    /// Who may start a DM with you: "everyone" (anyone you share an
+    /// outhouse with) or "friends".
+    pub allow_dms: String,
+    /// Who may send you friend requests: "everyone", "shared" (people in
+    /// your outhouses), "friends_of_friends" or "nobody".
+    pub allow_friend_requests: String,
+}
+
+/// A message you've scheduled to send later.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScheduledMessage {
+    #[serde(with = "as_string")]
+    pub id: i64,
+    #[serde(with = "as_string")]
+    pub channel_id: i64,
+    #[serde(with = "as_string")]
+    pub guild_id: i64,
+    #[serde(with = "option_as_string", default)]
+    pub thread_id: Option<i64>,
+    pub content: String,
+    pub send_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+    /// "pending" or "failed".
+    pub status: String,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// A thread: a side conversation off a channel (often off one message).

@@ -192,9 +192,159 @@ fn mp3_secs(d: &[u8]) -> Option<f64> {
     (frames > 0).then_some(secs)
 }
 
+// ---- WebM (what Chrome, Edge/WebView2 and Android record voice messages in) ----
+
+/// An EBML element ID at `at`: (id with its marker bits, length in bytes).
+fn ebml_id(d: &[u8], at: usize) -> Option<(u32, usize)> {
+    let first = *d.get(at)?;
+    let len = first.leading_zeros() as usize + 1;
+    if len > 4 {
+        return None;
+    }
+    let mut id = 0u32;
+    for i in 0..len {
+        id = (id << 8) | *d.get(at + i)? as u32;
+    }
+    Some((id, len))
+}
+
+/// An EBML size at `at`: (size, or None for "unknown", length in bytes).
+fn ebml_size(d: &[u8], at: usize) -> Option<(Option<u64>, usize)> {
+    let first = *d.get(at)?;
+    let len = first.leading_zeros() as usize + 1;
+    if len > 8 {
+        return None;
+    }
+    let mut value = (first as u64) & (0xFF >> len);
+    let mut all_ones = value == (0xFF >> len);
+    for i in 1..len {
+        let b = *d.get(at + i)?;
+        all_ones &= b == 0xFF;
+        value = (value << 8) | b as u64;
+    }
+    Some((if all_ones { None } else { Some(value) }, len))
+}
+
+fn ebml_uint(body: &[u8]) -> u64 {
+    body.iter().take(8).fold(0, |v, b| (v << 8) | *b as u64)
+}
+
+/// Length of a WebM file in milliseconds: its Duration if it has one,
+/// otherwise the time of its last audio block (browsers' recorders leave
+/// the Duration out). Walks the elements without decoding anything.
+pub fn webm_duration_ms(d: &[u8]) -> Option<u32> {
+    const EBML: u32 = 0x1A45_DFA3;
+    const SEGMENT: u32 = 0x1853_8067;
+    const INFO: u32 = 0x1549_A966;
+    const TIMECODE_SCALE: u32 = 0x2A_D7B1;
+    const DURATION: u32 = 0x4489;
+    const CLUSTER: u32 = 0x1F43_B675;
+    const CLUSTER_TIME: u32 = 0xE7;
+    const BLOCK_GROUP: u32 = 0xA0;
+    const BLOCK: u32 = 0xA1;
+    const SIMPLE_BLOCK: u32 = 0xA3;
+
+    if ebml_id(d, 0)?.0 != EBML {
+        return None;
+    }
+    let mut scale_ns: u64 = 1_000_000;
+    let mut duration: Option<f64> = None;
+    let mut cluster_time: i64 = 0;
+    let mut last: Option<i64> = None;
+    let mut at = 0usize;
+    while at < d.len() {
+        let Some((id, id_len)) = ebml_id(d, at) else {
+            break;
+        };
+        let Some((size, size_len)) = ebml_size(d, at + id_len) else {
+            break;
+        };
+        let body = at + id_len + size_len;
+        match id {
+            // Containers: step inside (their size may be "unknown" while recording).
+            SEGMENT | INFO | CLUSTER | BLOCK_GROUP => {
+                at = body;
+                continue;
+            }
+            _ => {}
+        }
+        let Some(size) = size else { break };
+        let end = body.saturating_add(size as usize);
+        let Some(content) = d.get(body..end.min(d.len())) else {
+            break;
+        };
+        match id {
+            TIMECODE_SCALE => scale_ns = ebml_uint(content).max(1),
+            DURATION => {
+                duration = match content.len() {
+                    4 => Some(f32::from_be_bytes(content.try_into().ok()?) as f64),
+                    8 => Some(f64::from_be_bytes(content.try_into().ok()?)),
+                    _ => None,
+                }
+            }
+            CLUSTER_TIME => cluster_time = ebml_uint(content) as i64,
+            SIMPLE_BLOCK | BLOCK => {
+                if let Some((_, track_len)) = ebml_size(content, 0) {
+                    if let Some(rel) = content.get(track_len..track_len + 2) {
+                        let rel = i16::from_be_bytes([rel[0], rel[1]]) as i64;
+                        let t = cluster_time + rel;
+                        last = Some(last.map_or(t, |l| l.max(t)));
+                    }
+                }
+            }
+            _ => {}
+        }
+        if end > d.len() {
+            break;
+        }
+        at = end;
+    }
+    let ticks = match duration {
+        Some(t) if t.is_finite() && t > 0.0 => t,
+        // Count the last block too (an Opus frame is 20 ms).
+        _ => last? as f64 + 20_000_000.0 / scale_ns as f64,
+    };
+    let ms = ticks * scale_ns as f64 / 1_000_000.0;
+    (ms.is_finite() && ms >= 0.0).then(|| ms.round() as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tiny WebM like Chrome's MediaRecorder makes: unknown-size Segment
+    /// and Cluster, no Duration, blocks at 0, 20 … 2980 ms.
+    fn fake_webm(blocks: u16, with_duration: Option<f64>) -> Vec<u8> {
+        let mut v = vec![0x1A, 0x45, 0xDF, 0xA3, 0x84, 0x42, 0x86, 0x81, 0x01];
+        v.extend([
+            0x18, 0x53, 0x80, 0x67, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        ]);
+        // Info { TimecodeScale 1_000_000, Duration? }
+        let mut info = vec![0x2A, 0xD7, 0xB1, 0x83, 0x0F, 0x42, 0x40];
+        if let Some(dur) = with_duration {
+            info.extend([0x44, 0x89, 0x88]);
+            info.extend(dur.to_be_bytes());
+        }
+        v.extend([0x15, 0x49, 0xA9, 0x66, 0x80 | info.len() as u8]);
+        v.extend(info);
+        v.extend([
+            0x1F, 0x43, 0xB6, 0x75, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        ]);
+        v.extend([0xE7, 0x81, 0x00]);
+        for i in 0..blocks {
+            let t = (i * 20).to_be_bytes();
+            v.extend([0xA3, 0x86, 0x81, t[0], t[1], 0x80, 0xAA, 0xBB]);
+        }
+        v
+    }
+
+    #[test]
+    fn webm_length_from_blocks_or_duration() {
+        assert_eq!(webm_duration_ms(&fake_webm(150, None)), Some(3000));
+        assert_eq!(webm_duration_ms(&fake_webm(10, Some(4500.0))), Some(4500));
+        assert_eq!(webm_duration_ms(b"not a webm file"), None);
+        assert_eq!(webm_duration_ms(&[]), None);
+    }
 
     fn wav(seconds: f64) -> Vec<u8> {
         let rate = 8000u32;

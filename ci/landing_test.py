@@ -51,7 +51,7 @@ if not NO_API:
 for path in ("/app", "/login", "/index.html"):
     status, headers, body = get(path)
     assert status == 200 and b'id="auth"' in body and b"app.js" in body, f"{path} isn't the web client"
-for path, ctype in (("/landing.css", "text/css"), ("/landing.js", "javascript"), ("/fonts/inter-400.woff", "woff"),
+for path, ctype in (("/landing.css", "text/css"), ("/landing.js", "javascript"), ("/fonts/inter-400.woff", "woff"), ("/fonts/montserrat-800.woff2", "woff2"),
                     ("/manifest.webmanifest", "manifest"), ("/sw.js", "javascript")):
     status, headers, _ = get(path)
     assert status == 200 and ctype in headers.get("Content-Type", ""), (path, headers.get("Content-Type"))
@@ -119,7 +119,22 @@ try:
             assert pg.is_visible("h1:has-text('Chat out')")
             assert pg.is_visible("a[data-signin]"), "no Sign in button"
             pg.wait_for_timeout(3600)  # door open, first chat bubbles out
+            # The wordmark is self-hosted Montserrat ExtraBold, really loaded (not a fallback).
+            assert pg.evaluate("""async () => { await document.fonts.ready;
+                return [...document.fonts].some((f) => f.family.replace(/"/g, '') === 'Outhouse Wordmark' && f.status === 'loaded')
+                    && document.fonts.check('800 40px "Outhouse Wordmark"'); }"""), "Montserrat wordmark font didn't load"
             shot(pg, f"{n}-landing-{label}-hero")
+            if label == "desktop":
+                # A close-up of the wordmark, sharp (3× pixels).
+                zctx = browser.new_context(viewport={"width": 1440, "height": 900}, device_scale_factor=3)
+                zpg = zctx.new_page()
+                watch(zpg, "landing-wordmark")
+                zpg.goto(BASE + "/")
+                zpg.wait_for_selector("#stage.open")
+                zpg.evaluate("document.fonts.ready")
+                zpg.wait_for_timeout(500)
+                zpg.locator(".brand").first.screenshot(path=f"{SHOTS}/{n}-landing-wordmark-montserrat.png")
+                zctx.close()
             show(pg, "peek", 2200)
             shot(pg, f"{n + 1}-landing-{label}-peek")
             for i, sec in enumerate(("chat", "voice", "raids")):

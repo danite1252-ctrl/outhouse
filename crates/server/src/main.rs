@@ -75,6 +75,7 @@ async fn main() -> anyhow::Result<()> {
     api::events::spawn_reminders(state.clone());
     api::polls::spawn_closer(state.clone());
     api::lfg::spawn_expirer(state.clone());
+    api::scheduled::spawn_sender(state.clone());
     audit::spawn_pruner(state.clone());
     api::threads::spawn_archiver(state.clone());
     armory::spawn_refresher(state.clone());

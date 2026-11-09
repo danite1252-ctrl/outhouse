@@ -8,8 +8,9 @@ use axum::Json;
 use chrono::{DateTime, Utc};
 use outhouse_common::gateway::ServerEvent;
 use outhouse_common::models::{
-    Attachment, Component, CreateMessageRequest, EditMessageRequest, Embed, EmbedField, Message,
-    MessageInteraction, MessageRef, Poll, PollOption, Reaction, ThreadInfo, User,
+    channel_kind, Attachment, Component, CreateMessageRequest, EditMessageRequest, Embed,
+    EmbedField, ForwardInfo, Message, MessageInteraction, MessageRef, Poll, PollOption, Reaction,
+    StickerRef, ThreadInfo, User, DM_GUILD,
 };
 use outhouse_common::permissions as p;
 use serde::Deserialize;
@@ -47,6 +48,8 @@ pub(crate) struct MessageRow {
     thread_id: Option<i64>,
     components: Option<SqlJson<Vec<Component>>>,
     filtered: bool,
+    sticker: Option<SqlJson<StickerRef>>,
+    forward: Option<SqlJson<ForwardInfo>>,
 }
 
 pub(crate) const MESSAGE_SELECT: &str = "
@@ -58,7 +61,7 @@ pub(crate) const MESSAGE_SELECT: &str = "
                AS author_avatar_url,
            u.is_bot AS author_bot,
            m.content, m.created_at, m.edited_at, m.reply_to_id, m.interaction, m.pinned_at,
-           m.thread_id, m.components, m.filtered
+           m.thread_id, m.components, m.filtered, m.sticker, m.forward
     FROM messages m
     JOIN users u ON u.id = m.author_id
     JOIN channels ch ON ch.id = m.channel_id
@@ -72,6 +75,9 @@ struct AttachmentRow {
     filename: String,
     content_type: String,
     size: i64,
+    voice: bool,
+    duration_ms: Option<i32>,
+    waveform: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -162,7 +168,8 @@ pub(crate) async fn hydrate(db: &PgPool, rows: Vec<MessageRow>) -> AppResult<Vec
     let reply_ids: Vec<i64> = rows.iter().filter_map(|r| r.reply_to_id).collect();
 
     let attachments = sqlx::query_as::<_, AttachmentRow>(
-        "SELECT id, message_id, storage_key, filename, content_type, size
+        "SELECT id, message_id, storage_key, filename, content_type, size,
+                voice, duration_ms, waveform
          FROM attachments WHERE message_id = ANY($1) ORDER BY id",
     )
     .bind(&ids[..])
@@ -212,6 +219,9 @@ pub(crate) async fn hydrate(db: &PgPool, rows: Vec<MessageRow>) -> AppResult<Vec
             filename: a.filename,
             content_type: a.content_type,
             size: a.size,
+            voice: a.voice,
+            duration_ms: a.duration_ms,
+            waveform: a.waveform,
         });
     }
     let mut embed_map: HashMap<i64, Vec<Embed>> = HashMap::new();
@@ -339,6 +349,8 @@ pub(crate) async fn hydrate(db: &PgPool, rows: Vec<MessageRow>) -> AppResult<Vec
             components: r.components.map(|c| c.0).unwrap_or_default(),
             ephemeral: false,
             filtered: r.filtered,
+            sticker: r.sticker.map(|s| s.0),
+            forward: r.forward.map(|f| f.0),
         })
         .collect())
 }
@@ -671,11 +683,42 @@ pub async fn list(
 
 // ---- Sending -----------------------------------------------------------
 
-struct PendingFile {
-    storage_key: String,
-    filename: String,
-    content_type: String,
-    data: axum::body::Bytes,
+pub(crate) struct PendingFile {
+    pub storage_key: String,
+    pub filename: String,
+    pub content_type: String,
+    pub data: axum::body::Bytes,
+    pub voice: Option<VoiceMeta>,
+}
+
+/// A recorded voice message's length and waveform.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct VoiceMeta {
+    pub duration_ms: i32,
+    pub waveform: Option<String>,
+}
+
+/// A file already on disk that a new message points at too (forwarding).
+pub(crate) struct ReusedFile {
+    pub storage_key: String,
+    pub filename: String,
+    pub content_type: String,
+    pub size: i64,
+    pub voice: bool,
+    pub duration_ms: Option<i32>,
+    pub waveform: Option<String>,
+}
+
+/// The less common things a new message can carry.
+#[derive(Default)]
+pub(crate) struct MessageExtras {
+    /// Buttons and select menus (bots only).
+    pub components: Vec<Component>,
+    pub sticker: Option<StickerRef>,
+    pub forward: Option<ForwardInfo>,
+    pub reused_files: Vec<ReusedFile>,
+    /// Scheduled messages: slowmode doesn't hold them back.
+    pub skip_slowmode: bool,
 }
 
 fn check_content(content: &str, allow_empty: bool) -> AppResult<()> {
@@ -700,19 +743,83 @@ async fn create_message(
     files: Vec<PendingFile>,
     components: Vec<Component>,
 ) -> AppResult<Message> {
+    create_message_ex(
+        st,
+        access,
+        user,
+        content,
+        reply_to_id,
+        thread_id,
+        files,
+        MessageExtras {
+            components,
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+/// Refuses a message in a one-to-one DM when either person has blocked
+/// the other.
+pub(crate) async fn check_dm_blocks(
+    st: &AppState,
+    access: &ChannelAccess,
+    user_id: i64,
+) -> AppResult<()> {
+    if access.channel.guild_id != DM_GUILD || access.channel.kind != channel_kind::DM {
+        return Ok(());
+    }
+    let blocked: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM dm_participants p
+                       JOIN user_blocks b ON (b.user_id = p.user_id AND b.blocked_id = $2)
+                                          OR (b.user_id = $2 AND b.blocked_id = p.user_id)
+                       WHERE p.channel_id = $1 AND p.user_id <> $2)",
+    )
+    .bind(access.channel.id)
+    .bind(user_id)
+    .fetch_one(&st.db)
+    .await?;
+    if blocked {
+        return Err(AppError::Refused(
+            "You can't message this person right now.".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Posts a message with stickers, forwards or reused files too.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_message_ex(
+    st: &AppState,
+    access: &ChannelAccess,
+    user: &User,
+    content: String,
+    reply_to_id: Option<i64>,
+    thread_id: Option<i64>,
+    files: Vec<PendingFile>,
+    extras: MessageExtras,
+) -> AppResult<Message> {
     let channel_id = access.channel.id;
     let guild_id = access.channel.guild_id;
     let content = content.trim().to_string();
-    check_content(&content, !files.is_empty() || !components.is_empty())?;
-    let components = if components.is_empty() {
-        components
+    check_content(
+        &content,
+        !files.is_empty()
+            || !extras.components.is_empty()
+            || !extras.reused_files.is_empty()
+            || extras.sticker.is_some()
+            || extras.forward.is_some(),
+    )?;
+    let components = if extras.components.is_empty() {
+        Vec::new()
     } else if !user.bot {
         return Err(AppError::BadRequest(
             "Only bots can add buttons and menus to messages.".into(),
         ));
     } else {
-        crate::api::components::clean(&components)?
+        crate::api::components::clean(&extras.components)?
     };
+    check_dm_blocks(st, access, user.id).await?;
     let content = crate::api::emojis::expand(&st.db, guild_id, user.id, &content).await?;
     if let Some(thread_id) = thread_id {
         let thread = thread_in_channel(&st.db, channel_id, thread_id)
@@ -740,7 +847,9 @@ async fn create_message(
         }
     }
 
-    check_slowmode(st, access, user).await?;
+    if !extras.skip_slowmode {
+        check_slowmode(st, access, user).await?;
+    }
     let filtered = crate::automod::check(
         st,
         access,
@@ -767,8 +876,9 @@ async fn create_message(
     let mut tx = st.db.begin().await?;
     sqlx::query(
         "INSERT INTO messages
-             (id, channel_id, author_id, content, reply_to_id, thread_id, components, filtered)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+             (id, channel_id, author_id, content, reply_to_id, thread_id, components, filtered,
+              sticker, forward)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(id)
     .bind(channel_id)
@@ -782,12 +892,35 @@ async fn create_message(
         Some(SqlJson(&components))
     })
     .bind(filtered)
+    .bind(extras.sticker.clone().map(SqlJson))
+    .bind(extras.forward.clone().map(SqlJson))
     .execute(&mut *tx)
     .await?;
+    for f in &extras.reused_files {
+        sqlx::query(
+            "INSERT INTO attachments
+                 (id, message_id, storage_key, filename, content_type, size,
+                  voice, duration_ms, waveform)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(st.ids.next_id())
+        .bind(id)
+        .bind(&f.storage_key)
+        .bind(&f.filename)
+        .bind(&f.content_type)
+        .bind(f.size)
+        .bind(f.voice)
+        .bind(f.duration_ms)
+        .bind(&f.waveform)
+        .execute(&mut *tx)
+        .await?;
+    }
     for f in &files {
         sqlx::query(
-            "INSERT INTO attachments (id, message_id, storage_key, filename, content_type, size)
-             VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO attachments
+                 (id, message_id, storage_key, filename, content_type, size,
+                  voice, duration_ms, waveform)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(st.ids.next_id())
         .bind(id)
@@ -795,6 +928,9 @@ async fn create_message(
         .bind(&f.filename)
         .bind(&f.content_type)
         .bind(f.data.len() as i64)
+        .bind(f.voice.is_some())
+        .bind(f.voice.as_ref().map(|v| v.duration_ms))
+        .bind(f.voice.as_ref().and_then(|v| v.waveform.clone()))
         .execute(&mut *tx)
         .await?;
     }
@@ -952,8 +1088,10 @@ fn guess_content_type(filename: &str) -> &'static str {
         "mp4" => "video/mp4",
         "webm" => "video/webm",
         "mp3" => "audio/mpeg",
-        "ogg" => "audio/ogg",
+        "ogg" | "oga" | "opus" => "audio/ogg",
         "wav" => "audio/wav",
+        "weba" => "audio/webm",
+        "m4a" => "audio/mp4",
         "txt" | "log" => "text/plain",
         "pdf" => "application/pdf",
         _ => "application/octet-stream",
@@ -979,6 +1117,7 @@ pub async fn upload(
     let mut reply_to_id = None;
     let mut thread_id = None;
     let mut files = Vec::new();
+    let mut voice: Option<VoiceUpload> = None;
     while let Some(field) = form.next_field().await.map_err(upload_error)? {
         let name = field.name().unwrap_or_default().to_string();
         match name.as_str() {
@@ -1024,13 +1163,25 @@ pub async fn upload(
                     filename,
                     content_type,
                     data,
+                    voice: None,
                 });
+            }
+            // A recorded voice message: `{"duration_ms", "waveform"}`.
+            "voice" => {
+                let text = field.text().await.map_err(upload_error)?;
+                voice = Some(
+                    serde_json::from_str(&text)
+                        .map_err(|_| AppError::BadRequest("Bad voice message details.".into()))?,
+                );
             }
             _ => {}
         }
     }
     if files.is_empty() && content.trim().is_empty() {
         return Err(AppError::BadRequest("Nothing to send.".into()));
+    }
+    if let Some(v) = voice {
+        check_voice_message(&mut files, v)?;
     }
     let msg = create_message(
         &st,
@@ -1044,6 +1195,113 @@ pub async fn upload(
     )
     .await?;
     Ok(Json(msg))
+}
+
+// ---- Voice messages ----------------------------------------------------------
+
+/// Longest voice message.
+pub const MAX_VOICE_MS: u32 = 5 * 60 * 1000;
+/// Biggest voice message file.
+pub const MAX_VOICE_BYTES: usize = 10 * 1024 * 1024;
+/// Most waveform samples kept.
+const MAX_WAVEFORM: usize = 64;
+
+#[derive(Deserialize)]
+struct VoiceUpload {
+    #[serde(default)]
+    duration_ms: Option<f64>,
+    #[serde(default)]
+    waveform: Option<String>,
+}
+
+/// The audio type of a voice recording's file name (what browsers'
+/// MediaRecorder makes: Opus in WebM or Ogg, AAC in MP4 on Safari).
+fn voice_type(filename: &str) -> Option<&'static str> {
+    let ext = filename.rsplit('.').next()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "webm" | "weba" => Some("audio/webm"),
+        "ogg" | "oga" | "opus" => Some("audio/ogg"),
+        "m4a" | "mp4" => Some("audio/mp4"),
+        "mp3" => Some("audio/mpeg"),
+        "wav" => Some("audio/wav"),
+        _ => None,
+    }
+}
+
+/// Checks a voice message upload (one audio file, at most 10 MB and five
+/// minutes) and keeps its length and waveform. The length is read from the
+/// file where we can (Ogg, WebM, MP3, WAV); otherwise the browser's figure is used.
+fn check_voice_message(files: &mut [PendingFile], meta: VoiceUpload) -> AppResult<()> {
+    let [file] = files else {
+        return Err(AppError::BadRequest(
+            "A voice message is one recording.".into(),
+        ));
+    };
+    let content_type = voice_type(&file.filename)
+        .ok_or_else(|| AppError::BadRequest("That isn't a voice recording.".into()))?;
+    if file.data.len() > MAX_VOICE_BYTES {
+        return Err(AppError::BadRequest(
+            "Voice messages can be up to 10 MB.".into(),
+        ));
+    }
+    let measured = match content_type {
+        "audio/webm" => crate::audio::webm_duration_ms(&file.data),
+        "audio/mp4" => None,
+        other => crate::audio::duration_ms(&file.data, other),
+    };
+    if matches!(content_type, "audio/ogg" | "audio/mpeg" | "audio/wav") && measured.is_none() {
+        return Err(AppError::BadRequest(
+            "That recording couldn't be read.".into(),
+        ));
+    }
+    let claimed = meta
+        .duration_ms
+        .filter(|d| d.is_finite() && *d >= 0.0)
+        .map(|d| d.min(u32::MAX as f64) as u32);
+    let duration = measured.or(claimed).ok_or_else(|| {
+        AppError::BadRequest("How long is that recording? It couldn't be read.".into())
+    })?;
+    // A little slack: recorders stop a moment after the five-minute mark.
+    if duration > MAX_VOICE_MS + 2000 {
+        return Err(AppError::BadRequest(
+            "Voice messages can be up to 5 minutes long.".into(),
+        ));
+    }
+    let waveform = meta.waveform.and_then(|w| clean_waveform(&w));
+    file.content_type = content_type.to_string();
+    file.voice = Some(VoiceMeta {
+        duration_ms: duration as i32,
+        waveform,
+    });
+    Ok(())
+}
+
+/// Keeps a waveform only if it's base64 of 1–64 bytes.
+fn clean_waveform(raw: &str) -> Option<String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(raw.trim())
+        .ok()?;
+    if bytes.is_empty() || bytes.len() > MAX_WAVEFORM {
+        return None;
+    }
+    Some(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+/// Deletes stored files that no message, sticker or emoji uses any more
+/// (a forwarded message shares its original's files).
+pub(crate) async fn remove_unused_files(st: &AppState, keys: Vec<String>) {
+    for key in keys {
+        let used: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM attachments WHERE storage_key = $1)")
+                .bind(&key)
+                .fetch_one(&st.db)
+                .await
+                .unwrap_or(true);
+        if !used {
+            let _ = tokio::fs::remove_file(st.config.upload_dir.join(key)).await;
+        }
+    }
 }
 
 // ---- Editing and deleting ------------------------------------------------
@@ -1078,7 +1336,11 @@ pub async fn edit(
         .map_or(!original.components.is_empty(), |c| !c.is_empty());
     check_content(
         &content,
-        !original.attachments.is_empty() || has_components || !original.embeds.is_empty(),
+        !original.attachments.is_empty()
+            || has_components
+            || !original.embeds.is_empty()
+            || original.sticker.is_some()
+            || original.forward.is_some(),
     )?;
     let content =
         crate::api::emojis::expand(&st.db, access.channel.guild_id, user.id, &content).await?;
@@ -1151,9 +1413,7 @@ pub async fn delete(
         .bind(message_id)
         .execute(&st.db)
         .await?;
-    for key in keys {
-        let _ = tokio::fs::remove_file(st.config.upload_dir.join(key)).await;
-    }
+    remove_unused_files(&st, keys).await;
     if msg.author_id != user.id {
         crate::audit::Entry::new(access.channel.guild_id, user.id, "message_delete")
             .target("member", msg.author_id, msg.author_display_name.clone())
