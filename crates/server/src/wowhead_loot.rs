@@ -25,7 +25,7 @@
 //! chests) have their own pages read straight away, and the rest are read
 //! slowly in the background for their drop chances.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -227,9 +227,8 @@ struct ReadList {
     name: String,
     bosses: Vec<String>,
     drops: Vec<Drop>,
-    /// A listed raid's encounter pages not read yet (for drop chances):
-    /// (encounter, kind, ID).
-    later: Vec<(String, &'static str, i32)>,
+    /// A listed raid's encounter pages not read yet (for drop chances).
+    later: PagePlan,
 }
 
 /// Puts a boss or chest page's loot under `boss` (its items the zone page
@@ -260,6 +259,9 @@ fn merge_boss_page(drops: &mut Vec<Drop>, page: Vec<Drop>, boss: &str, boss_id: 
     }
 }
 
+/// Encounter pages to read: (encounter, kind, ID).
+type PagePlan = Vec<(String, &'static str, i32)>;
+
 /// Credits a listed raid's zone-page drops to its encounters. Returns the
 /// pages to read now (encounters the zone page says little or nothing
 /// about) and the rest's, to read later for drop chances:
@@ -267,10 +269,7 @@ fn merge_boss_page(drops: &mut Vec<Drop>, page: Vec<Drop>, boss: &str, boss_id: 
 fn plan_encounters(
     key: &str,
     drops: &mut [Drop],
-) -> (
-    Vec<(&'static str, &'static str, i32)>,
-    Vec<(String, &'static str, i32)>,
-) {
+) -> (Vec<(&'static str, &'static str, i32)>, PagePlan) {
     for d in drops.iter_mut() {
         if let Some((_, e)) = raidplan::encounter_for(key, d.source_id, &d.source) {
             d.boss = e.name.to_string();
@@ -385,25 +384,43 @@ async fn read_list(
 /// Drop chances for a listed raid's bosses whose pages weren't needed for
 /// the list itself (zone pages have no chances, boss pages do). Read
 /// slowly in the background, a page every ten gaps, and stopped at the
-/// first sign of trouble.
-async fn add_chances(
-    st: AppState,
-    branch: String,
-    zone: i32,
-    later: Vec<(String, &'static str, i32)>,
-) {
+/// first sign of trouble. Loot the zone page gave to "several bosses" that
+/// turns out to be one encounter's only (the Opera event's shared pool) is
+/// given to it, once every page has been read.
+async fn add_chances(st: AppState, branch: String, zone: i32, later: PagePlan) {
     let cfg = &st.config;
     let gap = Duration::from_millis(cfg.wowhead_min_gap_ms.saturating_mul(10));
     let version = version_for(&branch);
+    let shared: Vec<i32> = sqlx::query_scalar(
+        "SELECT item_id FROM wowhead_drops
+         WHERE branch = $1 AND kind = 'zone' AND source_id = $2 AND boss = $3",
+    )
+    .bind(&branch)
+    .bind(zone)
+    .bind(wowhead_page::SHARED)
+    .fetch_all(&st.db)
+    .await
+    .unwrap_or_default();
+    // Shared item → (the encounters whose pages have it, its chance there).
+    let mut seen: HashMap<i32, (HashSet<String>, Option<f32>)> = HashMap::new();
     let mut updated = 0u64;
+    let mut complete = true;
     for (boss, kind, id) in later.into_iter().take(MAX_BOSS_PAGES) {
         tokio::time::sleep(gap).await;
         let html = match fetch_page(cfg, &page_url(cfg, &branch, kind, id)).await {
             Ok(Fetched::Page(h)) => h,
             Ok(Fetched::Missing) => continue,
-            Ok(Fetched::Forbidden) | Err(_) => break,
+            Ok(Fetched::Forbidden) | Err(_) => {
+                complete = false;
+                break;
+            }
         };
         let page = wowhead_page::read_page_for(&html, version);
+        for d in page.drops.iter().filter(|d| shared.contains(&d.item_id)) {
+            let e = seen.entry(d.item_id).or_default();
+            e.0.insert(boss.clone());
+            e.1 = d.chance.or(e.1);
+        }
         let (ids, chances): (Vec<i32>, Vec<f32>) = page
             .drops
             .iter()
@@ -429,8 +446,33 @@ async fn add_chances(
             Ok(r) => updated += r.rows_affected(),
             Err(e) => {
                 tracing::warn!(error = %e, "saving drop chances");
+                complete = false;
                 break;
             }
+        }
+    }
+    if complete {
+        for (item_id, (bosses, chance)) in seen {
+            let Some(boss) = bosses.iter().next().filter(|_| bosses.len() == 1) else {
+                continue;
+            };
+            let done = sqlx::query(
+                "UPDATE wowhead_drops SET boss = $4, chance = $5
+                 WHERE branch = $1 AND kind = 'zone' AND source_id = $2 AND item_id = $3 AND boss = $6",
+            )
+            .bind(&branch)
+            .bind(zone)
+            .bind(item_id)
+            .bind(boss)
+            .bind(chance)
+            .bind(wowhead_page::SHARED)
+            .execute(&st.db)
+            .await;
+            if let Err(e) = done {
+                tracing::warn!(error = %e, "saving a shared item's boss");
+                break;
+            }
+            updated += 1;
         }
     }
     tracing::info!(branch = %branch, zone, updated, "read drop chances from Wowhead");
@@ -1054,17 +1096,26 @@ mod tests {
                     None => wanted.push(format!("{branch}/{kind}={id}")),
                 }
             }
+            // As add_chances does, with the pages there are.
+            let mut seen: HashMap<i32, HashSet<String>> = HashMap::new();
             for (boss, kind, id) in &later {
                 let Some(h) = read(branch, kind, *id) else {
                     continue;
                 };
                 for c in wowhead_page::read_page_for(&h, version).drops {
-                    if let Some(d) = drops
-                        .iter_mut()
-                        .find(|d| d.item_id == c.item_id && &d.boss == boss)
-                    {
-                        d.chance = c.chance.or(d.chance);
+                    if let Some(d) = drops.iter_mut().find(|d| d.item_id == c.item_id) {
+                        if &d.boss == boss {
+                            d.chance = c.chance.or(d.chance);
+                        } else if d.boss == wowhead_page::SHARED {
+                            seen.entry(d.item_id).or_default().insert(boss.clone());
+                            d.chance = c.chance.or(d.chance);
+                        }
                     }
+                }
+            }
+            for d in drops.iter_mut() {
+                if let Some(b) = seen.get(&d.item_id).filter(|b| b.len() == 1) {
+                    d.boss = b.iter().next().unwrap().clone();
                 }
             }
             println!(

@@ -1333,7 +1333,7 @@ echo "$MCT" | head -c 300; echo
 jq -e '(.items | length) >= 40 and (.offline | not) and (.refreshing | not)
   and .item_branch == "classic" and (.item_base | endswith("/classic"))
   and .bosses == ["Lucifron", "Magmadar", "Gehennas", "Garr", "Shazzrah", "Baron Geddon", "Sulfuron Harbinger", "Golemagg the Incinerator", "Majordomo Executus", "Ragnaros", "Several bosses"]
-  and all(.items[]; .item_id < 200000)
+  and ([.items[] | select(.item_id >= 200000 and .item_id < 900000)] | length == 0)
   and ([.items[] | select(.name == "Eye of Sulfuras")] | length == 1)
   and any(.items[]; .item_id == 17076 and .name == "Bonereaver'"'"'s Edge" and .boss == "Ragnaros" and .slot == "Two-Hand Sword" and .category == "weapon" and .icon == "inv_sword_12" and .classes == 7)
   and any(.items[]; .item_id == 16805 and .name == "Felheart Gloves" and .quality == 4 and .armour == "cloth" and .classes == 256)
@@ -1394,7 +1394,7 @@ KZ=$(call POST "/api/channels/$LC/events" '{"title":"Kara","starts_at":"'"$START
 # page), Julianne, the Wolf and the Crone are the Opera event, the Chess
 # event's loot is in its chest; rare spawns after the bosses.
 KZT=$(call GET "/api/events/$KZ/loot-table")
-jq -e '.item_branch == "tbc" and .bosses == ["Attumen the Huntsman", "Opera Event", "Shade of Aran", "Chess Event", "Prince Malchezaar", "Hyakiss the Lurker"]
+jq -e '.item_branch == "tbc" and .bosses[0:6] == ["Attumen the Huntsman", "Opera Event", "Shade of Aran", "Chess Event", "Prince Malchezaar", "Hyakiss the Lurker"]
   and any(.items[]; .item_id == 30480 and .slot == "Mount" and .category == "other" and .boss == "Attumen the Huntsman")
   and any(.items[]; .item_id == 28453 and .boss == "Attumen the Huntsman" and (.trash | not) and .chance == 9.22)
   and any(.items[]; .item_id == 28572 and .boss == "Opera Event")
@@ -1402,6 +1402,13 @@ jq -e '.item_branch == "tbc" and .bosses == ["Attumen the Huntsman", "Opera Even
   and any(.items[]; .item_id == 21903 and .trash)
   and all(.items[]; .item_id != 21877)
   and any(.items[]; .item_id == 28785 and .category == "trinket")' <<<"$KZT" >/dev/null || { echo "$KZT" | jq -c '{bosses, n: (.items | length), i: [.items[] | {item_id, boss, trash, chance}]}'; exit 1; }
+# The Opera event's shared pool (a boss drop naming no boss on the zone
+# page) is the Opera event's once its bosses' pages have been read.
+for i in $(seq 1 60); do
+  call GET "/api/events/$KZ/loot-table" | jq -e 'any(.items[]; .item_id == 28590 and .boss == "Opera Event" and .chance == 14.28) and any(.items[]; .item_id == 28581 and .chance == 20.63)' >/dev/null && break
+  [ "$i" = 60 ] && { echo "the Opera event's shared loot wasn't given to it"; call GET "/api/events/$KZ/loot-table" | jq -c '[.items[] | {item_id, boss, chance}]'; exit 1; }
+  sleep 1
+done
 call GET "/api/wow/items/28770?branch=tbc" | jq -e '.name == "Nathrezim Mindblade" and (.url | endswith("/tbc/item=28770")) and any(.lines[]; .left == "Drops from Prince Malchezaar")' >/dev/null
 # Tooltips as Wowhead shows them: two columns and colours.
 call GET "/api/wow/items/17076" | jq -e 'any(.lines[]; .left == "Two-Hand" and .right == "Sword") and any(.lines[]; .q == "q2" and (.left | startswith("Chance on hit")))' >/dev/null

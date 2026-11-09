@@ -7,8 +7,8 @@ Wowhead:   /tooltip/item/<id>, /classic/search/suggestions-template?q=…,
            zone/NPC/object pages with `new Listview({...})` loot tables:
            trimmed copies of real pages in ci/wowhead/ (Molten Core with its
            Season of Discovery rows, Onyxia with drops only on her NPC page,
-           Ragnaros, the Cache of the Firelord, Karazhan, Attumen, the Chess
-           event's chest), redirected to their full address like the real
+           Ragnaros, the Cache of the Firelord, Karazhan, Attumen, the Big Bad
+           Wolf, the Chess event's chest), redirected to their full address like the real
            site; made-up /classic/npc=12397, /classic/object=181366 and
            /forever/zone=99001; other /forever pages answer 403 like
            wowhead.com does (2159 redirects); /classic/zone=3456 answers 503;
@@ -184,6 +184,7 @@ FIXTURES = {
     ("classic", "object", 179703): "cache-of-the-firelord",
     ("tbc", "zone", 3457): "karazhan",
     ("tbc", "npc", 16152): "attumen-the-huntsman",
+    ("tbc", "npc", 17521): "the-big-bad-wolf",
     ("tbc", "object", 185119): "dust-covered-chest",
 }
 
