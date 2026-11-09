@@ -2347,3 +2347,9 @@ img.mc-emoji { width: 18px; height: 18px; object-fit: contain; }
 .exp-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ev-btn.primary { background: var(--ember); border-color: var(--ember); color: #1a0d05; }
 @media (max-width: 760px) { .exp-kinds .seg-btn { padding: 6px 9px; font-size: 12px; } }
+
+/* "New messages" line where you stopped reading */
+.new-divider { display: flex; align-items: center; gap: 8px; margin: 10px 16px 6px; color: var(--ember, #FF6B35); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.new-divider::before, .new-divider::after { content: ""; flex: 1; height: 1px; background: var(--ember, #FF6B35); opacity: .7; }
+.new-divider::after { flex: 0 0 0; }
+.new-divider span { padding: 1px 6px; border-radius: 4px; background: var(--ember, #FF6B35); color: #121214; }

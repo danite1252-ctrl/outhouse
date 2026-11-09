@@ -964,16 +964,25 @@ const authorName = (m) => (m.author_bot ? null : memberById(m.author_id)?.displa
 // cards and raid cards finish loading after the first draw and push the
 // bottom further down, so stay pinned to the bottom for a few seconds
 // unless the person scrolls themselves.
+// When there are unread messages it lands on the "New messages" line instead.
 let pinnedUntil = 0;
-function pinToBottom(ms = 3000) {
+let pinTarget = null; // null = the bottom, otherwise a function returning a scrollTop
+function pinScroll() {
   const box = $("messages");
+  if (performance.now() >= pinnedUntil) return;
+  const top = pinTarget ? pinTarget() : null;
+  box.scrollTop = top == null ? box.scrollHeight : top;
+}
+function pinToBottom(ms = 3000, target = null) {
   pinnedUntil = performance.now() + ms;
-  const go = () => { if (performance.now() < pinnedUntil) box.scrollTop = box.scrollHeight; };
-  go();
-  requestAnimationFrame(go);
-  for (const t of [50, 150, 400, 800, 1500, 2500]) setTimeout(go, t);
+  pinTarget = target;
+  pinScroll();
+  requestAnimationFrame(pinScroll);
+  for (const t of [50, 150, 400, 800, 1500, 2500]) setTimeout(pinScroll, t);
 }
 const isPinnedToBottom = () => performance.now() < pinnedUntil;
+// Phones and tablets: don't pop the on-screen keyboard just because a channel opened.
+const touchFirst = () => window.__OUTHOUSE_PLATFORM__ === "android" || matchMedia("(pointer: coarse)").matches;
 {
   const box = $("messages");
   const unpin = () => { pinnedUntil = 0; };
@@ -982,10 +991,8 @@ const isPinnedToBottom = () => performance.now() < pinnedUntil;
   box.addEventListener("keydown", unpin);
   box.addEventListener("mousedown", (e) => { if (e.target === box) unpin(); }); // dragging the scrollbar
   // Something inside finished loading (picture, video poster): keep the bottom in view.
-  box.addEventListener("load", () => { if (isPinnedToBottom()) box.scrollTop = box.scrollHeight; }, true);
-  if ("ResizeObserver" in window) {
-    new ResizeObserver(() => { if (isPinnedToBottom()) box.scrollTop = box.scrollHeight; }).observe(box);
-  }
+  box.addEventListener("load", pinScroll, true);
+  if ("ResizeObserver" in window) new ResizeObserver(pinScroll).observe(box);
 }
 
 function renderMessages() {
@@ -993,7 +1000,14 @@ function renderMessages() {
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 150;
   const nodes = [];
   let prev = null;
+  const marker = state.unreadMarker?.channelId === state.channelId ? state.unreadMarker.after : null;
+  let markerShown = false;
   for (const m of state.messages) {
+    if (marker && !markerShown && !m.ephemeral && idGt(m.id, marker) && m.author_id !== state.me?.id) {
+      nodes.push(el("div", { class: "new-divider", id: "new-divider", role: "separator" }, el("span", {}, "New messages")));
+      markerShown = true;
+      prev = null; // start a fresh group under the line
+    }
     const grouped = prev && !m.reply_to && !m.ephemeral && !prev.ephemeral && !m.interaction && !m.event && !prev.event && !m.poll && !prev.poll && !m.lfg && !prev.lfg && !prev.thread && prev.author_id === m.author_id && prev.author_display_name === m.author_display_name &&
       new Date(m.created_at) - new Date(prev.created_at) < 5 * 60 * 1000;
     const colour = memberColour(m.author_id);
@@ -2571,7 +2585,7 @@ function updateComposer() {
   $("attach-btn").hidden = !(ch && can("attach_files", ch.id));
 }
 
-async function selectChannel(id) {
+async function selectChannel(id, opts = {}) {
   if (state.channelId !== id) {
     state.pendingFiles = [];
     renderPendingFiles();
@@ -2586,14 +2600,34 @@ async function selectChannel(id) {
   updateComposer();
   renderChannels();
   renderTyping();
-  const messages = await api("GET", `/api/channels/${id}/messages?limit=75`).catch((err) => { toast(err.message); return []; });
+  // Where you got up to: open there (with a "New messages" line) so nothing gets missed.
+  const lastRead = ch.last_read_id;
+  const unread = !opts.toPresent && lastRead && ch.last_message_id && idGt(ch.last_message_id, lastRead);
+  state.unreadMarker = unread ? { channelId: id, after: lastRead } : null;
+  let messages = await api("GET", `/api/channels/${id}/messages?limit=75`).catch((err) => { toast(err.message); return []; });
   if (state.channelId !== id) return;
+  let detached = false;
+  if (unread && messages.length >= 75 && idGt(messages[0].id, lastRead)) {
+    // More unread than one page: load around where you stopped reading instead.
+    const around = await api("GET", `/api/channels/${id}/messages?around=${lastRead}&limit=75`).catch(() => null);
+    if (state.channelId !== id) return;
+    if (around?.length) { messages = around; detached = true; }
+  }
   state.messages = messages;
-  state.historyStart = messages.length < 75 ? id : null;
-  renderMessages.forceBottom = true;
-  renderMessages();
+  state.historyStart = !detached && messages.length < 75 ? id : null;
+  if (typeof setDetached === "function") setDetached(detached);
+  const firstNew = unread ? messages.find((m) => idGt(m.id, lastRead) && m.author_id !== state.me?.id) : null;
+  if (firstNew) {
+    renderMessages();
+    const box = $("messages");
+    // Put the line near the top, with a little of what you'd already read above it.
+    pinToBottom(3000, () => { const d = $("new-divider"); return d ? Math.max(0, d.offsetTop - box.offsetTop - 80) : null; });
+  } else {
+    renderMessages.forceBottom = true;
+    renderMessages();
+  }
   ackChannel();
-  if (!input.disabled) input.focus();
+  if (!input.disabled && !touchFirst()) input.focus();
 }
 
 // ---------- right-click menus ----------

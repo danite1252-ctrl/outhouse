@@ -449,8 +449,14 @@ with sync_playwright() as p:
     assert page.query_selector("#messages article.msg:has-text('Ancient lore')") is None
     page.wait_for_timeout(1500)
     # Opening a channel lands on the newest messages, and stays there while it settles.
-    gap = page.evaluate("(() => { const b = document.getElementById('messages'); return b.scrollHeight - b.scrollTop - b.clientHeight; })()")
-    assert gap < 5, f"channel didn't open at the newest messages (gap {gap}px)"
+    # Opening a channel lands where you stopped reading ("New messages" line near the top),
+    # or at the newest message when everything's read.
+    pos = page.evaluate("""(() => { const b = document.getElementById('messages'); const d = document.getElementById('new-divider');
+      return { gap: b.scrollHeight - b.scrollTop - b.clientHeight, divider: d ? d.getBoundingClientRect().top - b.getBoundingClientRect().top : null }; })()""")
+    if pos["divider"] is None:
+        assert pos["gap"] < 5, f"channel didn't open at the newest messages: {pos}"
+    else:
+        assert 0 <= pos["divider"] <= 200 or pos["gap"] < 5, f"channel didn't open at the New messages line: {pos}"
     # Scroll up like a person (mouse wheel), which also stops the pin-to-bottom.
     page.hover("#messages")
     for _ in range(30):

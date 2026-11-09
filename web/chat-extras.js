@@ -344,7 +344,7 @@ function setDetached(on) {
   if (!bar && on) {
     bar = el("div", { id: "detached-bar", class: "detached-bar" },
       el("span", {}, "You're looking at older messages."),
-      el("button", { class: "ghost", onclick: () => { if (state.channelId) selectChannel(state.channelId); } }, "Jump to present"));
+      el("button", { class: "ghost", onclick: () => { if (state.channelId) selectChannel(state.channelId, { toPresent: true }); } }, "Jump to present"));
     $("composer-wrap").prepend(bar);
   }
   if (bar) bar.hidden = !on;

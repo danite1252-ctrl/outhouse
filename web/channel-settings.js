@@ -115,7 +115,7 @@ async function resetAgeGate(ch) {
 // ======================================================================
 
 const csBaseSelectChannel = selectChannel;
-selectChannel = async function (id) {
+selectChannel = async function (id, ...rest) {
   const ch = chById(id);
   if (ch && isGated(ch)) {
     if (state.channelId !== id) {
@@ -137,7 +137,7 @@ selectChannel = async function (id) {
     renderChannelTopic();
     return;
   }
-  const result = await csBaseSelectChannel(id);
+  const result = await csBaseSelectChannel(id, ...rest);
   if (state.channelId === id) {
     renderChannelTopic();
     slowmodeFromHistory();

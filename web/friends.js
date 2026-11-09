@@ -232,9 +232,9 @@ selectDm = async function (id) {
 };
 
 const frBaseSelectChannel = selectChannel;
-selectChannel = async function (id) {
+selectChannel = async function (id, ...rest) {
   leaveFriendsView();
-  return frBaseSelectChannel(id);
+  return frBaseSelectChannel(id, ...rest);
 };
 
 const frBaseSelectGuild = selectGuild;
