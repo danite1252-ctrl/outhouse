@@ -182,11 +182,20 @@ systemctl enable --now outhouse-ci-cleanup.timer >/dev/null
 say "GitHub Actions runner in $HOME_DIR/actions-runner"
 RDIR="$HOME_DIR/actions-runner"
 if [ ! -x "$RDIR/config.sh" ]; then
-  VER=$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest | jq -r .tag_name | sed 's/^v//')
-  [ -n "$VER" ] && [ "$VER" != null ] || { echo "Couldn't find the latest runner version"; exit 1; }
+  # GitHub's download servers sometimes answer 504, so retry generously and
+  # say so plainly if it still fails (re-running the script is safe).
+  VER=$(curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors https://api.github.com/repos/actions/runner/releases/latest | jq -r .tag_name | sed 's/^v//')
+  [ -n "$VER" ] && [ "$VER" != null ] || { echo "Couldn't find the latest runner version (GitHub didn't answer). Re-run this script in a few minutes."; exit 1; }
   sudo -u "$RUNNER_USER" mkdir -p "$RDIR"
-  curl -fsSL "https://github.com/actions/runner/releases/download/v$VER/actions-runner-linux-x64-$VER.tar.gz" \
-    | sudo -u "$RUNNER_USER" tar xz -C "$RDIR"
+  TGZ=$(mktemp --suffix=.tar.gz)
+  if ! curl -fL --retry 6 --retry-delay 15 --retry-all-errors -o "$TGZ" \
+      "https://github.com/actions/runner/releases/download/v$VER/actions-runner-linux-x64-$VER.tar.gz"; then
+    rm -f "$TGZ"
+    echo "Couldn't download the GitHub runner (GitHub's download server didn't answer). Re-run this script in a few minutes."
+    exit 1
+  fi
+  sudo -u "$RUNNER_USER" tar xzf "$TGZ" -C "$RDIR"
+  rm -f "$TGZ"
   "$RDIR/bin/installdependencies.sh" >/dev/null
 fi
 # Settings the runner service reads at start (config.sh keeps existing lines in .env).
