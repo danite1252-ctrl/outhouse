@@ -101,7 +101,7 @@ fn rows(ev: &RaidEvent, bosses: &HashMap<i32, String>, first_only: bool) -> Vec<
         .collect()
 }
 
-/// "Danité" → "Danité"; "shaman" → "Shaman" (classes and specs as softres.it
+/// "shaman" → "Shaman", "feral druid" → "Feral Druid" (classes and specs as softres.it
 /// writes them).
 fn capitalised(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
