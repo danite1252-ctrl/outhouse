@@ -856,180 +856,6 @@ TOKEN=$TOKEN_C; fail_call GET "/api/events/$RM/export"; fail_call DELETE "/api/e
 call GET "/api/events/$RM/export" | jq -e '.entries | length == 2' >/dev/null
 call DELETE "/api/events/$RM" >/dev/null; call DELETE "/api/events/$RMP" >/dev/null
 
-step "raid composition: roles, classes, armour, buffs and dispels"
-LC=$(call POST "/api/guilds/$GUILD/channels" '{"name":"loot"}' | jq -r .id)
-CE=$(call POST "/api/channels/$LC/events" '{"title":"Comp check","starts_at":"'"$START"'","game":"forever","max_tanks":1,"max_healers":3,"max_dps":3}' | jq -r .event.id)
-call PUT "/api/events/$CE/signup" '{"status":"yes","role":"tank","class":"Warrior","spec":"Protection"}' >/dev/null
-TOKEN=$TOKEN_B; call PUT "/api/events/$CE/signup" '{"status":"yes","role":"healer","class":"Priest","spec":"Holy"}' >/dev/null
-TOKEN=$TOKEN_C; call PUT "/api/events/$CE/signup" '{"status":"tentative","role":"dps","class":"Mage","spec":"Frost"}' >/dev/null; TOKEN=$TOKEN_A
-# The roster only (Carl is tentative): a Warrior and a Priest.
-COMP=$(call GET "/api/events/$CE/composition")
-jq -e '.era == "classic" and .counted == 2 and (.include_extra | not)
-  and ([.roles[] | [.role, .count, .max, .missing]] == [["tank", 1, 1, 0], ["healer", 1, 3, 2], ["dps", 0, 3, 3]])
-  and ([.classes[].class] == ["Priest", "Warrior"]) and ([.armour[].count] == [1, 0, 0, 1])
-  and (.buffs[] | select(.key == "fortitude") | .covered and .providers == ["Bob"] and .kind == "buff")
-  and (.buffs[] | select(.key == "battle_shout") | .covered and .providers == ["Ally"])
-  and (.buffs[] | select(.key == "sunder_armor") | .covered and .kind == "debuff")
-  and (.buffs[] | select(.key == "arcane_intellect") | .covered | not)
-  and (.buffs[] | select(.key == "trueshot_aura") | (.covered | not) and .sources == ["Marksmanship Hunter"])
-  and (.buffs[] | select(.key == "decurse") | (.covered | not) and .sources == ["Mage", "Druid"] and .kind == "dispel")
-  and (.buffs[] | select(.key == "cure_disease") | .covered)
-  and all(.buffs[]; .key != "bloodlust" and .key != "misery")
-  and .missing_line == "Need: 2 healers · 3 DPS · No Druid (Mark of the Wild, battle res) · No Mage (Arcane Intellect) · No Paladin (Blessings) · No Shaman (Windfury) · No Warlock (Curses, Healthstones) · No decurse · No poison cure"' <<<"$COMP" >/dev/null \
-  || { echo "odd composition: $COMP"; exit 1; }
-# Counting tentative and bench too: Carl's Mage brings Arcane Intellect, Winter's Chill and decurse.
-call GET "/api/events/$CE/composition?extra=1" | jq -e '.counted == 3 and .include_extra
-  and (.buffs[] | select(.key == "arcane_intellect") | .providers == ["Carl"])
-  and (.buffs[] | select(.key == "winters_chill") | .covered) and (.buffs[] | select(.key == "improved_scorch") | .covered | not)
-  and (.missing | index("No decurse") | not) and (.missing | index("No Mage (Arcane Intellect)") | not) and (.missing | index("2 DPS"))' >/dev/null
-# A TBC raid checks TBC buffs (Bloodlust, Misery, Drums as a note) and not Tranquilizing Shot.
-call PATCH "/api/events/$CE" '{"game":"tbc"}' >/dev/null
-call GET "/api/events/$CE/composition" | jq -e '.era == "tbc" and any(.buffs[]; .key == "bloodlust" and (.covered | not))
-  and any(.buffs[]; .key == "drums" and .kind == "note" and (.covered | not)) and all(.buffs[]; .key != "tranq_shot")
-  and (.missing_line | contains("No Shaman (Windfury, Bloodlust)"))' >/dev/null
-# Outsiders can't look.
-TOKEN=$OUT; fail_call GET "/api/events/$CE/composition"; TOKEN=$TOKEN_A
-
-step "soft reserves: settings, limits, duplicates, permissions, lock, export"
-fail_call POST "/api/channels/$LC/events" '{"title":"Too many","starts_at":"'"$START"'","soft_reserves":3}'
-fail_call POST "/api/channels/$LC/events" '{"title":"Odd lock","starts_at":"'"$START"'","soft_reserves":1,"reserve_lock":"whenever"}'
-SRE=$(call POST "/api/channels/$LC/events" '{"title":"MC with reserves","starts_at":"'"$START"'","game":"forever","soft_reserves":1,"reserve_lock":"manual","loot_instance":"Molten Core"}' | jq -r .event.id)
-call GET "/api/events/$SRE" | jq -e '.soft_reserves == 1 and .reserve_lock == "manual" and .loot_instance == "mc" and .loot_instance_name == "Molten Core" and (.reserves_locked | not) and .reserves == [] and .reserve_lock_override == null' >/dev/null
-call GET "/api/events/$SRE/loot-table" | jq -e '.instance == "mc" and .instance_name == "Molten Core" and (.items | length >= 8)
-  and any(.items[]; .item_id == 17076 and .name == "Bonereaver'"'"'s Edge" and .boss == "Ragnaros" and .quality == 4 and (.custom | not))' >/dev/null
-call GET "/api/guilds/$GUILD/loot-instances" | jq -e 'length >= 16 and any(.[]; .key == "naxx" and .era == "classic" and .builtin) and any(.[]; .key == "kara" and .era == "tbc" and .size == 10)' >/dev/null
-TOKEN=$OUT; fail_call GET "/api/events/$SRE/loot-table"; fail_call GET "/api/guilds/$GUILD/loot-instances"; TOKEN=$TOKEN_A
-# Off for the composition raid; only people signed up can reserve.
-TOKEN=$TOKEN_B
-fail_call PUT "/api/events/$CE/reserves" '{"item_id":17076}'
-fail_call PUT "/api/events/$SRE/reserves" '{"item_id":17076}'
-call PUT "/api/events/$SRE/signup" '{"status":"yes","role":"healer","class":"Priest","spec":"Holy"}' >/dev/null
-call PUT "/api/events/$SRE/reserves" '{"item_id":17076}' | jq -e --arg b "$BOB" '.event.reserves | length == 1 and .[0].user_id == $b and .[0].item_id == 17076 and .[0].item_name == "Bonereaver'"'"'s Edge" and .[0].quality == 4' >/dev/null
-# One each: a second is refused, and the same item twice too.
-fail_call PUT "/api/events/$SRE/reserves" '{"item_id":18814}'; grep -q "used your soft reserve" /tmp/body
-fail_call PUT "/api/events/$SRE/reserves" '{"item_id":17076}'; grep -q "already reserved" /tmp/body
-# Bob doesn't run this raid.
-fail_call PUT "/api/events/$SRE/reserves/lock" '{"locked":true}'
-fail_call GET "/api/events/$SRE/reserves/export"
-fail_call POST "/api/events/$SRE/loot-items" '{"query":"19019"}'
-TOKEN=$TOKEN_A
-# Two each now: by name from the list, then a third is refused.
-call PATCH "/api/events/$SRE" '{"soft_reserves":2}' | jq -e '.event.soft_reserves == 2' >/dev/null
-TOKEN=$TOKEN_B
-call PUT "/api/events/$SRE/reserves" '{"query":"leggings of transcendence"}' | jq -e '[.event.reserves[].item_id] == [17076, 16922]' >/dev/null
-fail_call PUT "/api/events/$SRE/reserves" '{"item_id":18814}'
-TOKEN=$TOKEN_C
-call PUT "/api/events/$SRE/signup" '{"status":"bench","role":"dps","class":"Rogue","spec":"Combat"}' >/dev/null
-# Any item by Wowhead link (looked up), and a WoW: Forever item from Battle.net when Wowhead hasn't got it.
-call PUT "/api/events/$SRE/reserves" '{"query":"https://www.wowhead.com/classic/item=19019/thunderfury"}' \
-  | jq -e '.event.reserves[-1] | .item_id == 19019 and .item_name == "Thunderfury, Blessed Blade of the Windseeker" and .quality == 5' >/dev/null
-fail_call PUT "/api/events/$SRE/reserves" '{"query":"zzznotanitem"}'; grep -q "find that item" /tmp/body
-call DELETE "/api/events/$SRE/reserves/19019" >/dev/null
-call PUT "/api/events/$SRE/reserves" '{"query":"Skyborne Sash"}' | jq -e '.event.reserves[-1] | .item_id == 990001 and .item_name == "Skyborne Sash" and .quality == 4' >/dev/null
-call PUT "/api/events/$SRE/reserves" '{"item_id":17076}' >/dev/null
-# Carl can't take Bob's away.
-fail_call DELETE "/api/events/$SRE/reserves/17076?user_id=$BOB"
-TOKEN=$OUT; fail_call PUT "/api/events/$SRE/reserves" '{"item_id":17076}'; TOKEN=$TOKEN_A
-# Everyone sees who reserved what (two on Bonereaver's Edge).
-TOKEN=$TOKEN_B; call GET "/api/events/$SRE" | jq -e '[.reserves[] | select(.item_id == 17076)] | length == 2' >/dev/null
-call GET "/api/events/$SRE/loot-table" | jq -e 'any(.items[]; .item_id == 990001 and .name == "Skyborne Sash")' >/dev/null; TOKEN=$TOKEN_A
-# Locking by hand: members are stuck, the raid leader can still remove one.
-call PUT "/api/events/$SRE/reserves/lock" '{"locked":true}' | jq -e '.event.reserves_locked and .event.reserve_lock_override == true' >/dev/null
-TOKEN=$TOKEN_B
-fail_call DELETE "/api/events/$SRE/reserves/16922"; grep -q "locked" /tmp/body
-TOKEN=$TOKEN_C; fail_call PUT "/api/events/$SRE/reserves" '{"item_id":18814}'; TOKEN=$TOKEN_A
-call DELETE "/api/events/$SRE/reserves/17076?user_id=$CARL" | jq -e --arg c "$CARL" '[.event.reserves[] | select(.user_id == $c)] | map(.item_id) == [990001]' >/dev/null
-call GET "/api/guilds/$GUILD/audit-log?action=loot_reserve_remove" | jq -e '.entries[0].details | contains("Carl") and contains("Bonereaver") and contains("MC with reserves")' >/dev/null
-call GET "/api/guilds/$GUILD/audit-log?action=loot_reserves_lock" | jq -e '.entries[0].details | startswith("Locked soft reserves")' >/dev/null
-call PUT "/api/events/$SRE/reserves/lock" '{"locked":false}' | jq -e '(.event.reserves_locked | not) and .event.reserve_lock_override == false' >/dev/null
-call PUT "/api/events/$SRE/reserves/lock" '{"locked":null}' | jq -e '(.event.reserves_locked | not) and .event.reserve_lock_override == null' >/dev/null
-# Export: CSV (quoted, one row per reserve) and "Item — Player, Player".
-EXP=$(call GET "/api/events/$SRE/reserves/export")
-jq -e '(.csv | startswith("Item ID,Item,Player,Character,Class,Spec,Reserved at\n17076,Bonereaver'"'"'s Edge,Bob,,Priest,Holy,"))
-  and (.csv | split("\n") | map(select(length > 0)) | length == 4)
-  and (.text | split("\n")) == ["Bonereaver'"'"'s Edge — Bob", "Leggings of Transcendence — Bob", "Skyborne Sash — Carl"]' <<<"$EXP" >/dev/null || { echo "odd export: $EXP"; exit 1; }
-# Back to one each: people keep their first.
-call PATCH "/api/events/$SRE" '{"soft_reserves":1}' | jq -e --arg b "$BOB" '[.event.reserves[] | select(.user_id == $b) | .item_id] == [17076]' >/dev/null
-# Locked at the sign-up deadline (the default): too late for Bob, even when added by the leader.
-SOONISH=$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ)
-DLE=$(call POST "/api/channels/$LC/events" '{"title":"Deadline gone","starts_at":"'"$SOONISH"'","signup_deadline_minutes":60,"soft_reserves":1,"loot_instance":"ony"}' | jq -r .event.id)
-call GET "/api/events/$DLE" | jq -e '.reserves_locked and .reserve_lock == "deadline" and .loot_instance_name == "Onyxia'"'"'s Lair"' >/dev/null
-call PUT "/api/events/$DLE/signup" '{"status":"yes","role":"dps","class":"Rogue","spec":"Combat","user_id":"'"$BOB"'"}' >/dev/null
-TOKEN=$TOKEN_B; fail_call PUT "/api/events/$DLE/reserves" '{"item_id":17078}'; grep -q "locked" /tmp/body; TOKEN=$TOKEN_A
-# The raid's own list: leaders add items (by ID, link or name) and remove the ones they added.
-call POST "/api/events/$SRE/loot-items" '{"query":"https://www.wowhead.com/classic/item=19019"}' | jq -e 'any(.items[]; .item_id == 19019 and .custom and .quality == 5)' >/dev/null
-fail_call POST "/api/events/$SRE/loot-items" '{"query":"19019"}'
-fail_call POST "/api/events/$SRE/loot-items" '{"query":"17076"}'
-fail_call DELETE "/api/events/$SRE/loot-items/17076"
-call DELETE "/api/events/$SRE/loot-items/19019" | jq -e 'all(.items[]; .item_id != 19019)' >/dev/null
-call GET "/api/guilds/$GUILD/audit-log?action=loot_item_add" | jq -e '.entries[0].details | contains("Thunderfury") and contains("Molten Core")' >/dev/null
-# Item look-ups for the pickers.
-call GET "/api/wow/items?q=thunderfury" | jq -e '.item_id == 19019 and .quality == 5 and (.icon_url | endswith("/icons/inv_sword_39.jpg")) and (.tooltip | contains("Binds when picked up")) and (.url | endswith("/item=19019"))' >/dev/null
-call GET "/api/wow/items/16922" | jq -e '.name == "Leggings of Transcendence" and .quality == 4' >/dev/null
-call GET "/api/wow/items/17204" | jq -e '.name == "Eye of Sulfuras" and .quality == 5' >/dev/null
-fail_call GET "/api/wow/items?q="
-fail_call GET "/api/wow/items/0"
-TOKEN=""; fail_call GET "/api/wow/items/16922"; TOKEN=$TOKEN_A
-# Repeating raids carry their reserve settings, also into a series split off with new days.
-LF=$(date -u -d '+1 day' +%Y-%m-%dT21:00:00Z); LD=$(( $(date -u -d '+1 day' +%u) - 1 ))
-LS=$(call POST "/api/channels/$LC/events" '{"title":"BWL reserves","starts_at":"'"$LF"'","post_rule":{"mode":"now"},"soft_reserves":2,"loot_instance":"bwl","repeat":{"weekdays":['"$LD"'],"every_weeks":1,"count":6,"time_zone":"UTC"}}')
-LSER=$(jq -r .event.series_id <<<"$LS")
-pevents "$LSER" | jq -e 'length >= 4 and all(.[]; .soft_reserves == 2 and .loot_instance == "bwl")' >/dev/null
-L1=$(pevents "$LSER" | jq -r '.[1].id'); L1START=$(pevents "$LSER" | jq -r '.[1].starts_at')
-LNEW=$(call PATCH "/api/events/$L1" '{"scope":"future","starts_at":"'"$L1START"'","repeat":{"weekdays":['"$LD"'],"every_weeks":2,"count":3,"time_zone":"UTC"}}' | jq -r .event.series_id)
-[ "$LNEW" != "$LSER" ]
-pevents "$LNEW" | jq -e 'length >= 2 and all(.[]; .soft_reserves == 2 and .loot_instance == "bwl")' >/dev/null
-[ "$(psql "$DATABASE_URL" -tAc "SELECT soft_reserves || loot_instance FROM event_series WHERE id = $LNEW")" = 2bwl ]
-# "This and future": the first raid keeps its reserves, later ones turn them off.
-call PATCH "/api/events/$L1" '{"scope":"future","soft_reserves":0,"loot_instance":"My New Raid"}' | jq -e '.event.soft_reserves == 0 and .event.loot_instance == "My New Raid" and .event.loot_instance_name == "My New Raid"' >/dev/null
-pevents "$LNEW" | jq -e 'all(.[]; .soft_reserves == 0)' >/dev/null
-pevents "$LSER" | jq -e '.[0].soft_reserves == 2' >/dev/null
-call GET "/api/guilds/$GUILD/loot-instances" | jq -e 'any(.[]; .key == "My New Raid" and (.builtin | not))' >/dev/null
-
-step "loot won and the loot log"
-TOKEN=$OUT; OUTSIDER_ID=$(call GET /api/users/@me | jq -r .id); TOKEN=$TOKEN_A
-# Not before the raid starts.
-fail_call POST "/api/events/$SRE/loot" '{"user_id":"'"$BOB"'","item_id":17076}'; grep -q "once the raid has started" /tmp/body
-LPAST=$(date -u -d '-40 minutes' +%Y-%m-%dT%H:%M:%SZ)
-LP=$(call POST "/api/channels/$LC/events" '{"title":"Ony tonight","starts_at":"'"$LPAST"'","soft_reserves":1,"reserve_lock":"manual","loot_instance":"ony"}' | jq -r .event.id)
-TOKEN=$TOKEN_B
-call PUT "/api/events/$LP/signup" '{"status":"yes","role":"healer","class":"Priest","spec":"Holy"}' >/dev/null
-call PUT "/api/events/$LP/reserves" '{"item_id":17078}' >/dev/null
-fail_call POST "/api/events/$LP/loot" '{"user_id":"'"$BOB"'","item_id":17078}'
-TOKEN=$TOKEN_A
-call POST "/api/events/$LP/loot" '{"user_id":"'"$BOB"'","item_id":17078}' | jq -e --arg b "$BOB" '.user_id == $b and .item_name == "Sapphiron Drape" and .reserved and .raid_title == "Ony tonight" and .instance_name == "Onyxia'"'"'s Lair" and .display_name == "Bob"' >/dev/null
-call POST "/api/events/$LP/loot" '{"user_id":"'"$CARL"'","query":"Thunderfury","note":"off-spec"}' | jq -e '.item_id == 19019 and (.reserved | not) and .note == "off-spec"' >/dev/null
-fail_call POST "/api/events/$LP/loot" '{"user_id":"'"$OUTSIDER_ID"'","item_id":17078}'
-fail_call POST "/api/events/$LP/loot" '{"user_id":"'"$CARL"'","query":"zzznotanitem"}'
-call GET "/api/events/$LP/loot" | jq -e 'length == 2 and .[0].item_id == 17078 and .[1].item_id == 19019' >/dev/null
-# The outhouse's log: newest first, filters, and on Bob's profile card.
-call GET "/api/guilds/$GUILD/loot" | jq -e '(.entries | length == 2) and .entries[0].item_id == 19019 and (.has_more | not)' >/dev/null
-call GET "/api/guilds/$GUILD/loot?user=$BOB&limit=5" | jq -e '.entries | length == 1 and .[0].item_name == "Sapphiron Drape"' >/dev/null
-call GET "/api/guilds/$GUILD/loot?q=thunder" | jq -e '.entries | length == 1 and .[0].display_name == "Carl"' >/dev/null
-call GET "/api/guilds/$GUILD/loot?instance=ony&limit=1" | jq -e '(.entries | length == 1) and .has_more' >/dev/null
-FIRSTAW=$(call GET "/api/guilds/$GUILD/loot?limit=1" | jq -r '.entries[0].id')
-call GET "/api/guilds/$GUILD/loot?before=$FIRSTAW" | jq -e '.entries | length == 1 and .[0].item_id == 17078' >/dev/null
-TOKEN=$TOKEN_B; call GET "/api/guilds/$GUILD/loot" | jq -e '.entries | length == 2' >/dev/null
-fail_call DELETE "/api/loot/$FIRSTAW"; TOKEN=$TOKEN_A
-TOKEN=$OUT; fail_call GET "/api/guilds/$GUILD/loot"; fail_call GET "/api/events/$LP/loot"; TOKEN=$TOKEN_A
-# An 18+ channel's loot stays out of sight until you've said you're 18+.
-call PATCH "/api/channels/$LC" '{"content_mode":"nsfw"}' >/dev/null
-TOKEN=$TOKEN_B
-call GET "/api/guilds/$GUILD/loot" | jq -e '.entries == []' >/dev/null
-fail_call GET "/api/events/$LP/loot"; fail_call GET "/api/events/$CE/composition"; fail_call PUT "/api/events/$SRE/reserves" '{"item_id":18814}'
-TOKEN=$TOKEN_A
-call PATCH "/api/channels/$LC" '{"content_mode":"default"}' >/dev/null
-call DELETE "/api/loot/$FIRSTAW" >/dev/null
-call GET "/api/guilds/$GUILD/loot" | jq -e '.entries | length == 1' >/dev/null
-call GET "/api/guilds/$GUILD/audit-log?action=loot_award" | jq -e '.entries | length == 2 and (.[0].details | contains("Thunderfury") and contains("Carl"))' >/dev/null
-call GET "/api/guilds/$GUILD/audit-log?action=loot_award_remove" | jq -e '.entries | length == 1' >/dev/null
-# The log outlives the raid.
-call DELETE "/api/events/$LP" >/dev/null
-call GET "/api/guilds/$GUILD/loot" | jq -e '.entries | length == 1 and .[0].event_id == null and .[0].raid_title == "Ony tonight"' >/dev/null
-for e in "$CE" "$SRE" "$DLE"; do call DELETE "/api/events/$e" >/dev/null; done
-call DELETE "/api/events/$L1?scope=future" >/dev/null
-call DELETE "/api/events/$(pevents "$LSER" | jq -r '.[0].id')?scope=future" >/dev/null
-
 step "raid chat cards removed after the raid"
 CC=$(call POST "/api/guilds/$GUILD/channels" '{"name":"raid-cleanup"}' | jq -r .id)
 call GET "/api/guilds/$GUILD/raid-settings" | jq -e '.card_cleanup_series == "next" and .card_cleanup_single == "off"' >/dev/null
@@ -1325,6 +1151,180 @@ call POST "/api/channels/$CHAN/lfg/$SM/close" | jq -e '.lfg.closed' >/dev/null
 TOKEN=$TOKEN_C; fail_call PUT "/api/channels/$CHAN/lfg/$SM/join" '{"role":"dps","class":"Rogue"}'; TOKEN=$TOKEN_A
 # Expires on its own (checked at the end).
 LX=$(call POST "/api/channels/$CHAN/lfg" '{"activity":"Quick Deadmines","expires_minutes":1}' | jq -r .id)
+
+step "raid composition: roles, classes, armour, buffs and dispels"
+LC=$(call POST "/api/guilds/$GUILD/channels" '{"name":"loot"}' | jq -r .id)
+CE=$(call POST "/api/channels/$LC/events" '{"title":"Comp check","starts_at":"'"$START"'","game":"forever","max_tanks":1,"max_healers":3,"max_dps":3}' | jq -r .event.id)
+call PUT "/api/events/$CE/signup" '{"status":"yes","role":"tank","class":"Warrior","spec":"Protection"}' >/dev/null
+TOKEN=$TOKEN_B; call PUT "/api/events/$CE/signup" '{"status":"yes","role":"healer","class":"Priest","spec":"Holy"}' >/dev/null
+TOKEN=$TOKEN_C; call PUT "/api/events/$CE/signup" '{"status":"tentative","role":"dps","class":"Mage","spec":"Frost"}' >/dev/null; TOKEN=$TOKEN_A
+# The roster only (Carl is tentative): a Warrior and a Priest.
+COMP=$(call GET "/api/events/$CE/composition")
+jq -e '.era == "classic" and .counted == 2 and (.include_extra | not)
+  and ([.roles[] | [.role, .count, .max, .missing]] == [["tank", 1, 1, 0], ["healer", 1, 3, 2], ["dps", 0, 3, 3]])
+  and ([.classes[].class] == ["Priest", "Warrior"]) and ([.armour[].count] == [1, 0, 0, 1])
+  and (.buffs[] | select(.key == "fortitude") | .covered and .providers == ["Bob"] and .kind == "buff")
+  and (.buffs[] | select(.key == "battle_shout") | .covered and .providers == ["Ally"])
+  and (.buffs[] | select(.key == "sunder_armor") | .covered and .kind == "debuff")
+  and (.buffs[] | select(.key == "arcane_intellect") | .covered | not)
+  and (.buffs[] | select(.key == "trueshot_aura") | (.covered | not) and .sources == ["Marksmanship Hunter"])
+  and (.buffs[] | select(.key == "decurse") | (.covered | not) and .sources == ["Mage", "Druid"] and .kind == "dispel")
+  and (.buffs[] | select(.key == "cure_disease") | .covered)
+  and all(.buffs[]; .key != "bloodlust" and .key != "misery")
+  and .missing_line == "Need: 2 healers · 3 DPS · No Druid (Mark of the Wild, battle res) · No Mage (Arcane Intellect) · No Paladin (Blessings) · No Shaman (Windfury) · No Warlock (Curses, Healthstones) · No decurse · No poison cure"' <<<"$COMP" >/dev/null \
+  || { echo "odd composition: $COMP"; exit 1; }
+# Counting tentative and bench too: Carl's Mage brings Arcane Intellect, Winter's Chill and decurse.
+call GET "/api/events/$CE/composition?extra=1" | jq -e '.counted == 3 and .include_extra
+  and (.buffs[] | select(.key == "arcane_intellect") | .providers == ["Carl"])
+  and (.buffs[] | select(.key == "winters_chill") | .covered) and (.buffs[] | select(.key == "improved_scorch") | .covered | not)
+  and (.missing | index("No decurse") | not) and (.missing | index("No Mage (Arcane Intellect)") | not) and (.missing | index("2 DPS"))' >/dev/null
+# A TBC raid checks TBC buffs (Bloodlust, Misery, Drums as a note) and not Tranquilizing Shot.
+call PATCH "/api/events/$CE" '{"game":"tbc"}' >/dev/null
+call GET "/api/events/$CE/composition" | jq -e '.era == "tbc" and any(.buffs[]; .key == "bloodlust" and (.covered | not))
+  and any(.buffs[]; .key == "drums" and .kind == "note" and (.covered | not)) and all(.buffs[]; .key != "tranq_shot")
+  and (.missing_line | contains("No Shaman (Windfury, Bloodlust)"))' >/dev/null
+# Outsiders can't look.
+TOKEN=$OUT; fail_call GET "/api/events/$CE/composition"; TOKEN=$TOKEN_A
+
+step "soft reserves: settings, limits, duplicates, permissions, lock, export"
+fail_call POST "/api/channels/$LC/events" '{"title":"Too many","starts_at":"'"$START"'","soft_reserves":3}'
+fail_call POST "/api/channels/$LC/events" '{"title":"Odd lock","starts_at":"'"$START"'","soft_reserves":1,"reserve_lock":"whenever"}'
+SRE=$(call POST "/api/channels/$LC/events" '{"title":"MC with reserves","starts_at":"'"$START"'","game":"forever","soft_reserves":1,"reserve_lock":"manual","loot_instance":"Molten Core"}' | jq -r .event.id)
+call GET "/api/events/$SRE" | jq -e '.soft_reserves == 1 and .reserve_lock == "manual" and .loot_instance == "mc" and .loot_instance_name == "Molten Core" and (.reserves_locked | not) and .reserves == [] and .reserve_lock_override == null' >/dev/null
+call GET "/api/events/$SRE/loot-table" | jq -e '.instance == "mc" and .instance_name == "Molten Core" and (.items | length >= 8)
+  and any(.items[]; .item_id == 17076 and .name == "Bonereaver'"'"'s Edge" and .boss == "Ragnaros" and .quality == 4 and (.custom | not))' >/dev/null
+call GET "/api/guilds/$GUILD/loot-instances" | jq -e 'length >= 16 and any(.[]; .key == "naxx" and .era == "classic" and .builtin) and any(.[]; .key == "kara" and .era == "tbc" and .size == 10)' >/dev/null
+TOKEN=$OUT; fail_call GET "/api/events/$SRE/loot-table"; fail_call GET "/api/guilds/$GUILD/loot-instances"; TOKEN=$TOKEN_A
+# Off for the composition raid; only people signed up can reserve.
+TOKEN=$TOKEN_B
+fail_call PUT "/api/events/$CE/reserves" '{"item_id":17076}'
+fail_call PUT "/api/events/$SRE/reserves" '{"item_id":17076}'
+call PUT "/api/events/$SRE/signup" '{"status":"yes","role":"healer","class":"Priest","spec":"Holy"}' >/dev/null
+call PUT "/api/events/$SRE/reserves" '{"item_id":17076}' | jq -e --arg b "$BOB" '.event.reserves | length == 1 and .[0].user_id == $b and .[0].item_id == 17076 and .[0].item_name == "Bonereaver'"'"'s Edge" and .[0].quality == 4' >/dev/null
+# One each: a second is refused, and the same item twice too.
+fail_call PUT "/api/events/$SRE/reserves" '{"item_id":18814}'; grep -q "used your soft reserve" /tmp/body
+fail_call PUT "/api/events/$SRE/reserves" '{"item_id":17076}'; grep -q "already reserved" /tmp/body
+# Bob doesn't run this raid.
+fail_call PUT "/api/events/$SRE/reserves/lock" '{"locked":true}'
+fail_call GET "/api/events/$SRE/reserves/export"
+fail_call POST "/api/events/$SRE/loot-items" '{"query":"19019"}'
+TOKEN=$TOKEN_A
+# Two each now: by name from the list, then a third is refused.
+call PATCH "/api/events/$SRE" '{"soft_reserves":2}' | jq -e '.event.soft_reserves == 2' >/dev/null
+TOKEN=$TOKEN_B
+call PUT "/api/events/$SRE/reserves" '{"query":"leggings of transcendence"}' | jq -e '[.event.reserves[].item_id] == [17076, 16922]' >/dev/null
+fail_call PUT "/api/events/$SRE/reserves" '{"item_id":18814}'
+TOKEN=$TOKEN_C
+call PUT "/api/events/$SRE/signup" '{"status":"bench","role":"dps","class":"Rogue","spec":"Combat"}' >/dev/null
+# Any item by Wowhead link (looked up), and a WoW: Forever item from Battle.net when Wowhead hasn't got it.
+call PUT "/api/events/$SRE/reserves" '{"query":"https://www.wowhead.com/classic/item=19019/thunderfury"}' \
+  | jq -e '.event.reserves[-1] | .item_id == 19019 and .item_name == "Thunderfury, Blessed Blade of the Windseeker" and .quality == 5' >/dev/null
+fail_call PUT "/api/events/$SRE/reserves" '{"query":"zzznotanitem"}'; grep -q "find that item" /tmp/body
+call DELETE "/api/events/$SRE/reserves/19019" >/dev/null
+call PUT "/api/events/$SRE/reserves" '{"query":"Skyborne Sash"}' | jq -e '.event.reserves[-1] | .item_id == 990001 and .item_name == "Skyborne Sash" and .quality == 4' >/dev/null
+call PUT "/api/events/$SRE/reserves" '{"item_id":17076}' >/dev/null
+# Carl can't take Bob's away.
+fail_call DELETE "/api/events/$SRE/reserves/17076?user_id=$BOB"
+TOKEN=$OUT; fail_call PUT "/api/events/$SRE/reserves" '{"item_id":17076}'; TOKEN=$TOKEN_A
+# Everyone sees who reserved what (two on Bonereaver's Edge).
+TOKEN=$TOKEN_B; call GET "/api/events/$SRE" | jq -e '[.reserves[] | select(.item_id == 17076)] | length == 2' >/dev/null
+call GET "/api/events/$SRE/loot-table" | jq -e 'any(.items[]; .item_id == 990001 and .name == "Skyborne Sash")' >/dev/null; TOKEN=$TOKEN_A
+# Locking by hand: members are stuck, the raid leader can still remove one.
+call PUT "/api/events/$SRE/reserves/lock" '{"locked":true}' | jq -e '.event.reserves_locked and .event.reserve_lock_override == true' >/dev/null
+TOKEN=$TOKEN_B
+fail_call DELETE "/api/events/$SRE/reserves/16922"; grep -q "locked" /tmp/body
+TOKEN=$TOKEN_C; fail_call PUT "/api/events/$SRE/reserves" '{"item_id":18814}'; TOKEN=$TOKEN_A
+call DELETE "/api/events/$SRE/reserves/17076?user_id=$CARL" | jq -e --arg c "$CARL" '[.event.reserves[] | select(.user_id == $c)] | map(.item_id) == [990001]' >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?action=loot_reserve_remove" | jq -e '.entries[0].details | contains("Carl") and contains("Bonereaver") and contains("MC with reserves")' >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?action=loot_reserves_lock" | jq -e '.entries[0].details | startswith("Locked soft reserves")' >/dev/null
+call PUT "/api/events/$SRE/reserves/lock" '{"locked":false}' | jq -e '(.event.reserves_locked | not) and .event.reserve_lock_override == false' >/dev/null
+call PUT "/api/events/$SRE/reserves/lock" '{"locked":null}' | jq -e '(.event.reserves_locked | not) and .event.reserve_lock_override == null' >/dev/null
+# Export: CSV (quoted, one row per reserve) and "Item — Player, Player".
+EXP=$(call GET "/api/events/$SRE/reserves/export")
+jq -e '(.csv | startswith("Item ID,Item,Player,Character,Class,Spec,Reserved at\n17076,Bonereaver'"'"'s Edge,Bob,,Priest,Holy,"))
+  and (.csv | split("\n") | map(select(length > 0)) | length == 4)
+  and (.text | split("\n")) == ["Bonereaver'"'"'s Edge — Bob", "Leggings of Transcendence — Bob", "Skyborne Sash — Carl"]' <<<"$EXP" >/dev/null || { echo "odd export: $EXP"; exit 1; }
+# Back to one each: people keep their first.
+call PATCH "/api/events/$SRE" '{"soft_reserves":1}' | jq -e --arg b "$BOB" '[.event.reserves[] | select(.user_id == $b) | .item_id] == [17076]' >/dev/null
+# Locked at the sign-up deadline (the default): too late for Bob, even when added by the leader.
+SOONISH=$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ)
+DLE=$(call POST "/api/channels/$LC/events" '{"title":"Deadline gone","starts_at":"'"$SOONISH"'","signup_deadline_minutes":60,"soft_reserves":1,"loot_instance":"ony"}' | jq -r .event.id)
+call GET "/api/events/$DLE" | jq -e '.reserves_locked and .reserve_lock == "deadline" and .loot_instance_name == "Onyxia'"'"'s Lair"' >/dev/null
+call PUT "/api/events/$DLE/signup" '{"status":"yes","role":"dps","class":"Rogue","spec":"Combat","user_id":"'"$BOB"'"}' >/dev/null
+TOKEN=$TOKEN_B; fail_call PUT "/api/events/$DLE/reserves" '{"item_id":17078}'; grep -q "locked" /tmp/body; TOKEN=$TOKEN_A
+# The raid's own list: leaders add items (by ID, link or name) and remove the ones they added.
+call POST "/api/events/$SRE/loot-items" '{"query":"https://www.wowhead.com/classic/item=19019"}' | jq -e 'any(.items[]; .item_id == 19019 and .custom and .quality == 5)' >/dev/null
+fail_call POST "/api/events/$SRE/loot-items" '{"query":"19019"}'
+fail_call POST "/api/events/$SRE/loot-items" '{"query":"17076"}'
+fail_call DELETE "/api/events/$SRE/loot-items/17076"
+call DELETE "/api/events/$SRE/loot-items/19019" | jq -e 'all(.items[]; .item_id != 19019)' >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?action=loot_item_add" | jq -e '.entries[0].details | contains("Thunderfury") and contains("Molten Core")' >/dev/null
+# Item look-ups for the pickers.
+call GET "/api/wow/items?q=thunderfury" | jq -e '.item_id == 19019 and .quality == 5 and (.icon_url | endswith("/icons/inv_sword_39.jpg")) and (.tooltip | contains("Binds when picked up")) and (.url | endswith("/item=19019"))' >/dev/null
+call GET "/api/wow/items/16922" | jq -e '.name == "Leggings of Transcendence" and .quality == 4' >/dev/null
+call GET "/api/wow/items/17204" | jq -e '.name == "Eye of Sulfuras" and .quality == 5' >/dev/null
+fail_call GET "/api/wow/items?q="
+fail_call GET "/api/wow/items/0"
+TOKEN=""; fail_call GET "/api/wow/items/16922"; TOKEN=$TOKEN_A
+# Repeating raids carry their reserve settings, also into a series split off with new days.
+LF=$(date -u -d '+1 day' +%Y-%m-%dT21:00:00Z); LD=$(( $(date -u -d '+1 day' +%u) - 1 ))
+LS=$(call POST "/api/channels/$LC/events" '{"title":"BWL reserves","starts_at":"'"$LF"'","post_rule":{"mode":"now"},"soft_reserves":2,"loot_instance":"bwl","repeat":{"weekdays":['"$LD"'],"every_weeks":1,"count":6,"time_zone":"UTC"}}')
+LSER=$(jq -r .event.series_id <<<"$LS")
+pevents "$LSER" | jq -e 'length >= 4 and all(.[]; .soft_reserves == 2 and .loot_instance == "bwl")' >/dev/null
+L1=$(pevents "$LSER" | jq -r '.[1].id'); L1START=$(pevents "$LSER" | jq -r '.[1].starts_at')
+LNEW=$(call PATCH "/api/events/$L1" '{"scope":"future","starts_at":"'"$L1START"'","repeat":{"weekdays":['"$LD"'],"every_weeks":2,"count":3,"time_zone":"UTC"}}' | jq -r .event.series_id)
+[ "$LNEW" != "$LSER" ]
+pevents "$LNEW" | jq -e 'length >= 2 and all(.[]; .soft_reserves == 2 and .loot_instance == "bwl")' >/dev/null
+[ "$(psql "$DATABASE_URL" -tAc "SELECT soft_reserves || loot_instance FROM event_series WHERE id = $LNEW")" = 2bwl ]
+# "This and future": the first raid keeps its reserves, later ones turn them off.
+call PATCH "/api/events/$L1" '{"scope":"future","soft_reserves":0,"loot_instance":"My New Raid"}' | jq -e '.event.soft_reserves == 0 and .event.loot_instance == "My New Raid" and .event.loot_instance_name == "My New Raid"' >/dev/null
+pevents "$LNEW" | jq -e 'all(.[]; .soft_reserves == 0)' >/dev/null
+pevents "$LSER" | jq -e '.[0].soft_reserves == 2' >/dev/null
+call GET "/api/guilds/$GUILD/loot-instances" | jq -e 'any(.[]; .key == "My New Raid" and (.builtin | not))' >/dev/null
+
+step "loot won and the loot log"
+TOKEN=$OUT; OUTSIDER_ID=$(call GET /api/users/@me | jq -r .id); TOKEN=$TOKEN_A
+# Not before the raid starts.
+fail_call POST "/api/events/$SRE/loot" '{"user_id":"'"$BOB"'","item_id":17076}'; grep -q "once the raid has started" /tmp/body
+LPAST=$(date -u -d '-40 minutes' +%Y-%m-%dT%H:%M:%SZ)
+LP=$(call POST "/api/channels/$LC/events" '{"title":"Ony tonight","starts_at":"'"$LPAST"'","soft_reserves":1,"reserve_lock":"manual","loot_instance":"ony"}' | jq -r .event.id)
+TOKEN=$TOKEN_B
+call PUT "/api/events/$LP/signup" '{"status":"yes","role":"healer","class":"Priest","spec":"Holy"}' >/dev/null
+call PUT "/api/events/$LP/reserves" '{"item_id":17078}' >/dev/null
+fail_call POST "/api/events/$LP/loot" '{"user_id":"'"$BOB"'","item_id":17078}'
+TOKEN=$TOKEN_A
+call POST "/api/events/$LP/loot" '{"user_id":"'"$BOB"'","item_id":17078}' | jq -e --arg b "$BOB" '.user_id == $b and .item_name == "Sapphiron Drape" and .reserved and .raid_title == "Ony tonight" and .instance_name == "Onyxia'"'"'s Lair" and .display_name == "Bob"' >/dev/null
+call POST "/api/events/$LP/loot" '{"user_id":"'"$CARL"'","query":"Thunderfury","note":"off-spec"}' | jq -e '.item_id == 19019 and (.reserved | not) and .note == "off-spec"' >/dev/null
+fail_call POST "/api/events/$LP/loot" '{"user_id":"'"$OUTSIDER_ID"'","item_id":17078}'
+fail_call POST "/api/events/$LP/loot" '{"user_id":"'"$CARL"'","query":"zzznotanitem"}'
+call GET "/api/events/$LP/loot" | jq -e 'length == 2 and .[0].item_id == 17078 and .[1].item_id == 19019' >/dev/null
+# The outhouse's log: newest first, filters, and on Bob's profile card.
+call GET "/api/guilds/$GUILD/loot" | jq -e '(.entries | length == 2) and .entries[0].item_id == 19019 and (.has_more | not)' >/dev/null
+call GET "/api/guilds/$GUILD/loot?user=$BOB&limit=5" | jq -e '.entries | length == 1 and .[0].item_name == "Sapphiron Drape"' >/dev/null
+call GET "/api/guilds/$GUILD/loot?q=thunder" | jq -e '.entries | length == 1 and .[0].display_name == "Carl"' >/dev/null
+call GET "/api/guilds/$GUILD/loot?instance=ony&limit=1" | jq -e '(.entries | length == 1) and .has_more' >/dev/null
+FIRSTAW=$(call GET "/api/guilds/$GUILD/loot?limit=1" | jq -r '.entries[0].id')
+call GET "/api/guilds/$GUILD/loot?before=$FIRSTAW" | jq -e '.entries | length == 1 and .[0].item_id == 17078' >/dev/null
+TOKEN=$TOKEN_B; call GET "/api/guilds/$GUILD/loot" | jq -e '.entries | length == 2' >/dev/null
+fail_call DELETE "/api/loot/$FIRSTAW"; TOKEN=$TOKEN_A
+TOKEN=$OUT; fail_call GET "/api/guilds/$GUILD/loot"; fail_call GET "/api/events/$LP/loot"; TOKEN=$TOKEN_A
+# An 18+ channel's loot stays out of sight until you've said you're 18+.
+call PATCH "/api/channels/$LC" '{"content_mode":"nsfw"}' >/dev/null
+TOKEN=$TOKEN_B
+call GET "/api/guilds/$GUILD/loot" | jq -e '.entries == []' >/dev/null
+fail_call GET "/api/events/$LP/loot"; fail_call GET "/api/events/$CE/composition"; fail_call PUT "/api/events/$SRE/reserves" '{"item_id":18814}'
+TOKEN=$TOKEN_A
+call PATCH "/api/channels/$LC" '{"content_mode":"default"}' >/dev/null
+call DELETE "/api/loot/$FIRSTAW" >/dev/null
+call GET "/api/guilds/$GUILD/loot" | jq -e '.entries | length == 1' >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?action=loot_award" | jq -e '.entries | length == 2 and (.[0].details | contains("Thunderfury") and contains("Carl"))' >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?action=loot_award_remove" | jq -e '.entries | length == 1' >/dev/null
+# The log outlives the raid.
+call DELETE "/api/events/$LP" >/dev/null
+call GET "/api/guilds/$GUILD/loot" | jq -e '.entries | length == 1 and .[0].event_id == null and .[0].raid_title == "Ony tonight"' >/dev/null
+for e in "$CE" "$SRE" "$DLE"; do call DELETE "/api/events/$e" >/dev/null; done
+call DELETE "/api/events/$L1?scope=future" >/dev/null
+call DELETE "/api/events/$(pevents "$LSER" | jq -r '.[0].id')?scope=future" >/dev/null
 
 step "voice moderation (mock LiveKit API)"
 jwt_claims() { python3 -c 'import sys,base64;p=sys.argv[1].split(".")[1];print(base64.urlsafe_b64decode(p+"="*(-len(p)%4)).decode())' "$1"; }
