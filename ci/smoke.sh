@@ -1333,7 +1333,9 @@ hits() { curl -fsS "$MOCK/__hits" | jq -r --arg p "$1" '.[$p] // 0'; }
 # Molten Core's full list from its zone page (tricky JS: unquoted keys, single
 # quotes, quality digits in names, functions). No "forever" branch on the mock,
 # so WoW: Forever falls back to Classic.
-call GET "/api/events/$SRE/loot-table" | jq -e '(.items | length) >= 30 and (.offline | not) and (.refreshing | not)
+MCT=$(call GET "/api/events/$SRE/loot-table")
+echo "$MCT" | head -c 300; echo
+jq -e '(.items | length) >= 30 and (.offline | not) and (.refreshing | not)
   and .item_branch == "classic" and (.item_base | endswith("/classic"))
   and .bosses[0] == "Lucifron" and .bosses[-1] == "Ragnaros" and (.bosses | index("Cache of the Firelord")) == ((.bosses | length) - 2)
   and (.bosses | index("Majordomo Executus")) == null
@@ -1344,7 +1346,8 @@ call GET "/api/events/$SRE/loot-table" | jq -e '(.items | length) >= 30 and (.of
   and any(.items[]; .item_id == 17010 and .trash and .boss == "")
   and any(.items[]; .item_id == 99901 and .quality == 0 and .trash)
   and any(.items[]; .item_id == 18646 and .boss == "Cache of the Firelord" and (.trash | not))
-  and any(.sources[]; .builtin and .kind == "zone" and .id == 2717 and .branch == "classic" and .status == "ok" and .name == "Molten Core" and .items >= 30)' >/dev/null
+  and any(.sources[]; .builtin and .kind == "zone" and .id == 2717 and .branch == "classic" and .status == "ok" and .name == "Molten Core" and .items >= 30)' <<<"$MCT" >/dev/null || { echo "$MCT" | jq -c '{bosses, sources, n: (.items | length), b: [.items[] | select(.item_id == 17076 or .item_id == 16805 or .item_id == 18646)]}'; exit 1; }
+curl -fsS "$MOCK/__hits"; echo
 # Cached: reading it again doesn't touch Wowhead; the missing branch was tried once.
 [ "$(hits /classic/zone=2717)" = 1 ] && [ "$(hits /forever/zone=2717)" = 1 ]
 call GET "/api/events/$SRE/loot-table" >/dev/null

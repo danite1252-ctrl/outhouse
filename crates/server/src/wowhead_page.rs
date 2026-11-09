@@ -469,6 +469,7 @@ pub fn parse_at(src: &str, at: usize) -> Option<(Js, usize)> {
 }
 
 /// Parses a whole JavaScript value.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn parse(src: &str) -> Option<Js> {
     parse_at(src, 0).map(|(v, _)| v)
 }
@@ -834,7 +835,7 @@ pub fn fallback_items(
         let name = window.find("\"name\":\"").and_then(|n| {
             // Read it as a JS string, from its opening quote.
             let mut p = Parser {
-                s: window[n + 7..].as_bytes(),
+                s: &window.as_bytes()[n + 7..],
                 i: 0,
                 depth: 0,
             };

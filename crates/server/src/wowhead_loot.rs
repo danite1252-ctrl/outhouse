@@ -243,6 +243,7 @@ fn title_case(s: &str) -> String {
 // ---- The cache -----------------------------------------------------------------
 
 #[derive(Debug, Clone, sqlx::FromRow)]
+#[allow(dead_code)]
 pub struct ListRow {
     pub branch: String,
     pub kind: String,
