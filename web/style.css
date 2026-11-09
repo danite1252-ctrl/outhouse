@@ -2292,3 +2292,4 @@ img.mc-emoji { width: 18px; height: 18px; object-fit: contain; }
 .rc-chips:not(:has(> :not([hidden]))) { display: none; }
 .rc-roster { container-type: inline-size; }
 @container (max-width: 420px) { .rc-roster .nm-last { display: none; } }
+.msg-body:has(> .event-card.rc) { flex: 1; }
