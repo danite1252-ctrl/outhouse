@@ -2158,3 +2158,7 @@ img.mc-emoji { width: 18px; height: 18px; object-fit: contain; }
   .loot-boss-items { padding: 0 6px 6px; }
   .item-tip { max-width: calc(100vw - 16px); }
 }
+.loot-tabs { overflow-x: auto; scrollbar-width: none; }
+.loot-tabs::-webkit-scrollbar { display: none; }
+.loot-tab { white-space: nowrap; flex: none; }
+@media (max-width: 760px) { .loot-tab { padding: 8px 10px; } }
