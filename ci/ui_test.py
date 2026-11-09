@@ -613,6 +613,16 @@ with sync_playwright() as p:
     page.screenshot(path=f"{SHOTS}/43-raid-list.png")
     page.click(".raid-list button.primary")
     page.wait_for_selector(".raid-dialog[open]")
+    # Raid sizes follow the game: TBC is 10/25, Forever 10/20/40.
+    def size_labels():
+        return page.eval_on_selector_all(".raid-dialog label.field:has-text('Size') select option", "os => os.map(o => o.textContent)")
+    page.select_option(".raid-dialog select[aria-label='Game']", "tbc")
+    assert size_labels() == ["Custom", "25-player raid", "10-player raid"], size_labels()
+    assert [page.input_value(f".raid-dialog label:has-text('{r}') input[type=number]") for r in ("Tanks", "Healers")] == ["3", "7"]
+    page.select_option(".raid-dialog select[aria-label='Game']", "forever")
+    assert size_labels() == ["Custom", "40-player raid", "20-player raid", "10-player raid"], size_labels()
+    page.select_option(".raid-dialog select[aria-label='Game']", "")
+    page.select_option(".raid-dialog label.field:has-text('Size') select", label="40-player raid")
     page.select_option(".raid-dialog select[aria-label='Repeat']", "1")
     page.wait_for_selector(".raid-dialog .repeat-box:not([hidden])")
     page.click(".raid-dialog .day-chip:not(.on) >> nth=0")

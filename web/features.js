@@ -182,11 +182,15 @@ const classColour = (name) => WOW_CLASSES.find((c) => c.name === name)?.colour ?
 const ROLE_INFO = { tank: { icon: "🛡️", label: "Tanks" }, healer: { icon: "✚", label: "Healers" }, dps: { icon: "⚔️", label: "DPS" } };
 const STATUS_LABEL = { yes: "Signed up", late: "Running late", tentative: "Tentative", bench: "Bench", no: "Can't make it" };
 
+// Raid sizes per game: WoW: Forever 10/20/40, TBC 10/25, Classic Era
+// 20/40 plus 10 (UBRS). "Any game" offers them all.
 const RAID_SIZES = [
-  { label: "40-player raid", tanks: 5, healers: 10, dps: 25 },
-  { label: "20-player raid", tanks: 3, healers: 5, dps: 12 },
-  { label: "10-player raid", tanks: 2, healers: 3, dps: 5 },
+  { label: "40-player raid", tanks: 5, healers: 10, dps: 25, games: ["forever", "era"] },
+  { label: "25-player raid", tanks: 3, healers: 7, dps: 15, games: ["tbc"] },
+  { label: "20-player raid", tanks: 3, healers: 5, dps: 12, games: ["forever", "era"] },
+  { label: "10-player raid", tanks: 2, healers: 3, dps: 5, games: ["forever", "tbc", "era"] },
 ];
+const raidSizesFor = (game) => RAID_SIZES.filter((s) => !game || s.games.includes(game));
 
 function canManageEvent(ev) {
   return ev.creator_id === state.me.id || can("manage_events", ev.channel_id);
@@ -708,13 +712,22 @@ function openRaidDialog(existing = null, { scope = "one", date = null } = {}) {
   const tanks = el("input", { type: "number", min: 0, max: 40, value: ev?.max_tanks ?? RAID_SIZES[0].tanks });
   const healers = el("input", { type: "number", min: 0, max: 40, value: ev?.max_healers ?? RAID_SIZES[0].healers });
   const dps = el("input", { type: "number", min: 0, max: 40, value: ev?.max_dps ?? RAID_SIZES[0].dps });
-  const size = el("select", { class: "select" },
-    el("option", { value: "" }, "Custom"),
-    RAID_SIZES.map((s, i) => el("option", { value: i, selected: !ev && i === 0 }, s.label)));
-  size.addEventListener("change", () => {
+  const size = el("select", { class: "select" });
+  const applySize = () => {
     const s = RAID_SIZES[size.value];
     if (s) { tanks.value = s.tanks; healers.value = s.healers; dps.value = s.dps; }
-  });
+  };
+  // The size list follows the Game picker (built further down).
+  const fillSizes = (gameId, pickFirst) => {
+    const keep = size.value;
+    const list = raidSizesFor(gameId);
+    size.replaceChildren(el("option", { value: "" }, "Custom"),
+      ...list.map((s) => el("option", { value: RAID_SIZES.indexOf(s) }, s.label)));
+    if (pickFirst) { size.value = String(RAID_SIZES.indexOf(list[0])); applySize(); }
+    else if ([...size.options].some((o) => o.value === keep)) size.value = keep;
+    else size.value = "";
+  };
+  size.addEventListener("change", applySize);
   [tanks, healers, dps].forEach((n) => n.addEventListener("input", () => (size.value = "")));
   const desc = el("textarea", { rows: 3, maxlength: 1000, placeholder: "Which raid, difficulty, flasks/food, where to meet…" }, ev?.description ?? "");
   const current = ev?.signup_deadline_minutes ?? 0;
@@ -732,6 +745,14 @@ function openRaidDialog(existing = null, { scope = "one", date = null } = {}) {
   const game = el("select", { class: "select", "aria-label": "Game" },
     el("option", { value: "" }, "Any game"),
     Object.entries(GAME_LABEL).map(([id, label]) => el("option", { value: id, selected: (ev ? ev.game : prefs.get("raid_game", "")) === id }, label)));
+  // New raids start on the biggest size for the game; editing keeps the
+  // raid's own slots (shown as Custom unless they match a size).
+  fillSizes(game.value, !ev);
+  if (ev) {
+    const match = RAID_SIZES.findIndex((s) => s.tanks === ev.max_tanks && s.healers === ev.max_healers && s.dps === ev.max_dps);
+    if (match >= 0 && [...size.options].some((o) => o.value === String(match))) size.value = String(match);
+  }
+  game.addEventListener("change", () => fillSizes(game.value, size.value === "" ? false : !raidSizesFor(game.value).includes(RAID_SIZES[size.value])));
 
   // Repeating (new raids only).
   const repeat = el("select", { class: "select", "aria-label": "Repeat" },
