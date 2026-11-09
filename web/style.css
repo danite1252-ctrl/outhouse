@@ -2290,3 +2290,5 @@ img.mc-emoji { width: 18px; height: 18px; object-fit: contain; }
 .rc .ev-comp:focus-within { outline: none; }
 .rc .rc-chip.ev-comp-ok { color: #9fdcb5; border-color: rgba(74, 222, 128, .28); }
 .rc-chips:not(:has(> :not([hidden]))) { display: none; }
+.rc-roster { container-type: inline-size; }
+@container (max-width: 420px) { .rc-roster .nm-last { display: none; } }

@@ -1848,7 +1848,7 @@ with sync_playwright() as p:
         pg.keyboard.press("Escape")
         pg.wait_for_selector("dialog.settings", state="detached")
         open_card(pg)
-        pg.wait_for_selector(f"{naxx_card} .su-name:has-text('Lightwell Dawnstar')")
+        pg.wait_for_selector(f"{naxx_card} .su-name:has-text('Lightwell')")
         pg.screenshot(path=f"{SHOTS}/{n + 1}-{label}-roster.png")
         pg.click(f"{naxx_card} .ev-link.export")
         pg.wait_for_selector(".export-dialog .exp-text")
@@ -2967,6 +2967,7 @@ with sync_playwright() as p:
     member = rc_users[3]  # Kaelith, an ordinary raider
     # Desktop, as a raider sees it.
     dp = rc_page(member["token"], "raidcard-desktop", viewport={"width": 1280, "height": 900})
+    dp.set_viewport_size({"width": 1280, "height": 1600})
     c25 = rc_card(dp, R25)
     assert dp.inner_text(f"{c25} .rc-count") == "25/25 (+2)", dp.inner_text(f"{c25} .rc-count")
     assert dp.query_selector_all(f"{c25} .rc-class").__len__() == 9
@@ -2984,7 +2985,11 @@ with sync_playwright() as p:
     assert not dp.query_selector(f"{c25} .ev-gaps"), "the gaps chip is for raid leaders"
     assert not dp.query_selector(f"{c25} button[title='Raid options']")
     dp.screenshot(path=f"{SHOTS}/3300-desktop-raidcard-25.png")
+    dp.set_viewport_size({"width": 1280, "height": 1600})
+    c25 = rc_card(dp, R25)
     dp.locator(c25).screenshot(path=f"{SHOTS}/3301-raidcard-25-card.png")
+    dp.set_viewport_size({"width": 1280, "height": 900})
+    c25 = rc_card(dp, R25)
     # The status menu (late / tentative / can't make it / withdraw).
     dp.click(f"{c25} .rc-status")
     dp.wait_for_selector(".menu button:has-text('Tentative')")
@@ -3000,6 +3005,7 @@ with sync_playwright() as p:
     dp.wait_for_selector("dialog.loot-dialog[open]", timeout=10000)
     dp.screenshot(path=f"{SHOTS}/3303-desktop-raidcard-sr-window.png")
     dp.click("dialog.loot-dialog .raid-close")
+    dp.set_viewport_size({"width": 1280, "height": 1600})
     c40 = rc_card(dp, R40)
     assert dp.inner_text(f"{c40} .rc-count") == "30/40 (+2)", dp.inner_text(f"{c40} .rc-count")
     dp.locator(c40).screenshot(path=f"{SHOTS}/3304-raidcard-40-card.png")
@@ -3007,6 +3013,7 @@ with sync_playwright() as p:
     dp.wait_for_selector(f"{c10} .rc-empty")
     dp.locator(c10).screenshot(path=f"{SHOTS}/3305-raidcard-empty-card.png")
     # The calendar's day panel reuses the card.
+    dp.set_viewport_size({"width": 1280, "height": 900})
     dp.evaluate(f"openCalendar(new Date({json.dumps(later(3))}))")
     dp.wait_for_selector(f".calendar-dialog .cal-daypanel .event-card[data-event='{R25}'] .rc-roster", timeout=10000)
     dp.wait_for_timeout(300)
@@ -3014,7 +3021,7 @@ with sync_playwright() as p:
     dp.close()
 
     # The raid leader: the gaps chip, then the composition it opens.
-    ld = rc_page(TOKEN, "raidcard-leader", viewport={"width": 1280, "height": 1000})
+    ld = rc_page(TOKEN, "raidcard-leader", viewport={"width": 1280, "height": 2000})
     c25 = rc_card(ld, R25)
     ld.wait_for_selector(f"{c25} .rc-sr.none")  # leaders see who hasn't reserved yet
     ld.wait_for_selector(f"{c25} .ev-link.export:has-text('Invite list')")
@@ -3039,10 +3046,13 @@ with sync_playwright() as p:
 
     # Phone and Android widths.
     for label, kw, shot in (("phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True, "device_scale_factor": 2}, 3310),
-                            ("android", {"viewport": {"width": 393, "height": 852}, "is_mobile": True, "has_touch": True, "device_scale_factor": 2}, 312)):
+                            ("android", {"viewport": {"width": 393, "height": 852}, "is_mobile": True, "has_touch": True, "device_scale_factor": 2}, 3312)):
         mp = rc_page(member["token"], f"raidcard-{label}", **kw)
         c25 = rc_card(mp, R25)
         mp.screenshot(path=f"{SHOTS}/{shot}-{label}-raidcard-25.png")
+        mp.wait_for_selector(f"{c25} .su-name:has-text('Golgoroth') .nm-last", state="hidden")  # narrow: first names only
+        mp.set_viewport_size({"width": kw["viewport"]["width"], "height": 2600})
+        c25 = rc_card(mp, R25)
         mp.locator(c25).screenshot(path=f"{SHOTS}/{shot + 1}-{label}-raidcard-25-card.png")
         mp.close()
 

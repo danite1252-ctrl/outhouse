@@ -231,6 +231,13 @@ const signupPerson = (s) => memberById(s.user_id)?.display_name ?? s.display_nam
 // What the roster calls them: the character they picked, else their name.
 const signupLabel = (s) => s.character?.full_name || signupPerson(s);
 
+// "First Last" characters: the last name can hide when the roster is narrow.
+function nameParts(s) {
+  const c = s.character;
+  if (c?.name && c.last_name && c.full_name === `${c.name} ${c.last_name}`) return [c.name, el("span", { class: "nm-last" }, ` ${c.last_name}`)];
+  return signupLabel(s);
+}
+
 function signupName(s, ev) {
   const colour = classColour(s.class);
   const person = signupPerson(s);
@@ -240,7 +247,7 @@ function signupName(s, ev) {
     style: colour ? `color:${colour}` : "",
     title: [s.character ? `${person} in the outhouse` : person, s.class && `${s.spec} ${s.class}`.trim(),
       s.status !== "yes" ? STATUS_LABEL[s.status] : null, s.note ? `“${s.note}”` : null].filter(Boolean).join(" · "),
-  }, signupLabel(s));
+  }, nameParts(s));
   if (manage) {
     node.classList.add("manageable");
     node.tabIndex = 0;
@@ -498,9 +505,9 @@ function renderEventCard(m) {
       const btn = e.currentTarget;
       const r = btn.getBoundingClientRect();
       openMenu(r.left, r.bottom + 4, [
-        { label: "Running late", checked: mine?.status === "late", onClick: () => openSignup(ev, btn, "late") },
-        { label: "Tentative", checked: mine?.status === "tentative", onClick: () => openSignup(ev, btn, "tentative") },
-        { label: "Can't make it", checked: mine?.status === "no", onClick: () => setSignup(ev, { status: "no" }) },
+        { label: "Running late", checked: mine?.status === "late" || null, onClick: () => openSignup(ev, btn, "late") },
+        { label: "Tentative", checked: mine?.status === "tentative" || null, onClick: () => openSignup(ev, btn, "tentative") },
+        { label: "Can't make it", checked: mine?.status === "no" || null, onClick: () => setSignup(ev, { status: "no" }) },
         mine ? "sep" : null,
         mine ? { label: "Withdraw", danger: true, onClick: () => tryApi("DELETE", `/api/events/${ev.id}/signups/${state.me.id}`).then(applyEventReply, () => {}) } : null,
       ]);
