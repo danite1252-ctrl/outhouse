@@ -1314,9 +1314,9 @@ gargul_json() { python3 -c 'import sys,json,base64,zlib; print(zlib.decompress(b
 GG=$(call GET "/api/events/$GXE/softres/gargul")
 jq -e '.raiders == 2 and .reserves == 3' <<<"$GG" >/dev/null
 GJ=$(gargul_json <<<"$GG")
-grep -qF '"name":"Danité Shambulàncè"' <<<"$GJ" || { echo "unescaped Gargul JSON: $GJ"; exit 1; }
-grep -qF ':\/\/' <<<"$GJ" || { echo "slashes not escaped: $GJ"; exit 1; }
-grep -qF '{"metadata":{"id":"' <<<"$GJ" || { echo "odd Gargul order: $GJ"; exit 1; }
+[[ "$GJ" == *'"name":"Danit\u00e9 Shambul\u00e0nc\u00e8"'* ]] || { echo "unescaped Gargul JSON: $GJ"; exit 1; }
+[[ "$GJ" == *':\/\/'* && "$GJ" != *'://'* ]] || { echo "slashes not escaped: $GJ"; exit 1; }
+[[ "$GJ" == '{"metadata":{"id":"'* ]] || { echo "odd Gargul order: $GJ"; exit 1; }
 jq -e --arg e "$GXE" '(.metadata | keys_unsorted) == ["id","url","instances","hidden","created_at","updated_at","raidStartsAt","lockedAt","discordUrl","note","bonusrolls_consumed_on_use"]
   and (.metadata.id | test("^[0-9a-zA-Z]{8}$")) and (.metadata.url | test("/app\\?guild=[0-9]+&channel=[0-9]+&event=" + $e + "$"))
   and .metadata.instances == ["moltencore"] and (.metadata.hidden | not) and .metadata.lockedAt == null and .metadata.discordUrl == ""
