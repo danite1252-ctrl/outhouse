@@ -304,7 +304,12 @@ jobs:
           if [ -n "$KEYSTORE_B64" ]; then
             # Release build signed with the Outhouse key, so new versions install over old ones.
             # 64-bit and 32-bit ARM so older/cheaper phones can install it too.
-            npm run tauri -- android build --apk --target aarch64 armv7
+            # Downloads (Gradle, Maven, GitHub releases) sometimes 504; try up to 3 times.
+            for i in 1 2 3; do
+              npm run tauri -- android build --apk --target aarch64 armv7 && break
+              [ "$i" = 3 ] && exit 1
+              echo "::warning::APK build attempt $i failed; retrying in 60s"; sleep 60
+            done
             find gen/android/app/build/outputs/apk -name '*.apk' -print
             APK=$(find gen/android/app/build/outputs/apk -name '*release*.apk' | head -1)
             echo "$KEYSTORE_B64" | base64 -d > /tmp/outhouse.jks
