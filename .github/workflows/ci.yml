@@ -197,8 +197,12 @@ jobs:
             SHELLBIN=$(ls -d ~/.cache/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell 2>/dev/null | sort -V | tail -1)
             if [ -n "$SHELLBIN" ] && ldd "$SHELLBIN" | grep -q "not found"; then
               ldd "$SHELLBIN" | grep "not found" || true
-              PKGS=$(python -m playwright install-deps --dry-run chromium 2>/dev/null | grep -oE 'apt-get install -y --no-install-recommends .*' | sed 's/.*--no-install-recommends//' | tr -d '"')
-              if [ -n "$PKGS" ]; then sudo -n apt-get update -qq && sudo -n apt-get install -y --no-install-recommends $PKGS >/dev/null; fi
+              # Chrome's usual libraries on Ubuntu 24.04 (t64 names) and 22.04.
+              PKGS="libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 libcups2t64 libasound2t64 libnss3 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libdrm2 libxshmfence1"
+              sudo -n apt-get update -qq || true
+              # shellcheck disable=SC2086
+              sudo -n apt-get install -y --no-install-recommends $PKGS >/dev/null 2>&1 \
+                || sudo -n apt-get install -y --no-install-recommends $(echo $PKGS | sed 's/t64//g') >/dev/null 2>&1 || true
               if ldd "$SHELLBIN" | grep -q "not found"; then
                 echo "::error::Chrome's libraries are missing on this runner. Re-run deploy/ci-runner/setup-linux-runner.sh on it."; exit 1
               fi
@@ -263,7 +267,7 @@ jobs:
         with:
           node-version: 22
       - name: PowerShell scripts parse (deploy/*.ps1)
-        shell: pwsh
+        shell: powershell
         run: |
           $bad = $false
           foreach ($f in @(Get-ChildItem deploy/*.ps1) + @(Get-ChildItem deploy/ci-runner/*.ps1)) {
