@@ -406,6 +406,24 @@ async fn refresh(
             }
             Ok(None) => continue,
             Err(e) => {
+                // Wowhead is down: the branches after this one weren't
+                // tried, so they're marked too (their saved lists stay).
+                let rest: Vec<String> = candidates
+                    .iter()
+                    .skip_while(|c| *c != branch)
+                    .skip(1)
+                    .cloned()
+                    .collect();
+                sqlx::query(
+                    "UPDATE wowhead_lists SET status = 'error', error = $4, fetched_at = now()
+                     WHERE kind = $1 AND source_id = $2 AND branch = ANY($3) AND status <> 'missing'",
+                )
+                .bind(kind)
+                .bind(id)
+                .bind(&rest)
+                .bind(e.to_string().chars().take(300).collect::<String>())
+                .execute(&st.db)
+                .await?;
                 tracing::warn!(branch = %branch, kind = %kind, id, error = %e, "couldn't read a loot list from Wowhead");
                 return Err(e);
             }
@@ -540,11 +558,13 @@ pub async fn list(
         && candidates
             .iter()
             .all(|b| rows.iter().any(|r| &r.branch == b && r.status == "missing"));
-    let error = candidates
-        .iter()
-        .find_map(|b| {
-            rows.iter()
-                .find(|r| &r.branch == b && r.status != "missing")
+    // Whether the list we show (else the first we tried) didn't answer last time.
+    let error = chosen
+        .or_else(|| {
+            candidates.iter().find_map(|b| {
+                rows.iter()
+                    .find(|r| &r.branch == b && r.status != "missing")
+            })
         })
         .is_some_and(|r| r.status == "error");
     let drops =

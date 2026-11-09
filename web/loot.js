@@ -321,7 +321,7 @@ async function openLoot(ev, tab = "reserve") {
   Object.assign(loot, { dialog, ev, tab, table: null, awards: [], found: null, finding: false, polls: 0 });
   if (!sameRaid) Object.assign(loot, { cat: "all", suits: false, junk: false, trash: true, open: new Map() });
   loot.root = el("div", { class: "loot-root" });
-  loot.search = el("input", { type: "search", class: "loot-search", placeholder: "Search the list, or paste a Wowhead link or item ID", maxlength: 400, "aria-label": "Find an item" });
+  loot.search = el("input", { type: "search", class: "loot-search", placeholder: "Search, or paste a Wowhead link or item ID", maxlength: 400, "aria-label": "Find an item" });
   loot.search.addEventListener("input", () => { loot.found = null; drawLootList(); });
   loot.search.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); lookUpItem(); } });
   dialog.append(loot.root);

@@ -1362,6 +1362,9 @@ psql "$DATABASE_URL" -qc "UPDATE wowhead_lists SET fetched_at = fetched_at - int
 call POST "/api/events/$SRE/loot-table/refresh" | jq -e '(.items | length) >= 30 and .sources[0].status == "error" and (.offline | not)' >/dev/null
 call GET "/api/wow/items/17110" | jq -e '.name == "Seal of the Archmagus" and .quality == 4 and (.url | endswith("/item=17110"))' >/dev/null
 curl -fsS "$MOCK/__down?on=0" >/dev/null
+# Back up: tried again 10 minutes later.
+psql "$DATABASE_URL" -qc "UPDATE wowhead_lists SET fetched_at = fetched_at - interval '11 minutes' WHERE kind = 'zone' AND source_id = 2717"
+call GET "/api/events/$SRE/loot-table" | jq -e '.sources[0].status == "ok" and .sources[0].branch == "classic"' >/dev/null
 # A raid Wowhead never answered for (the mock's Naxxramas is "down"): the built-in short list.
 NX=$(call POST "/api/channels/$LC/events" '{"title":"Naxx night","starts_at":"'"$START"'","soft_reserves":1,"loot_instance":"naxx"}' | jq -r .event.id)
 call GET "/api/events/$NX/loot-table" | jq -e '.offline and .sources[0].status == "error" and any(.items[]; .item_id == 22691 and .boss == "The Four Horsemen")' >/dev/null

@@ -172,7 +172,16 @@ with sync_playwright() as p:
     pg.click(".event-card .ev-comp > summary")
     pg.wait_for_selector(".event-card .comp-buff[data-buff='battle_shout'].yes", timeout=10000)
     pg.click(".event-card .ev-loot button:has-text('Reserve loot')")
+    # Boss sections start closed; open Ragnaros's (icons come through our own server).
+    pg.wait_for_selector("dialog.loot-dialog .loot-boss[data-boss='Ragnaros']", timeout=15000)
+    pg.click("dialog.loot-dialog .loot-boss[data-boss='Ragnaros'] > summary")
     pg.wait_for_selector("dialog.loot-dialog .loot-row[data-item='16922']", timeout=10000)
+    for _ in range(50):
+        if pg.evaluate("[...document.querySelectorAll('dialog.loot-dialog .loot-boss[open] img.item-icon')].some(i => i.complete && i.naturalWidth > 0)"):
+            break
+        pg.wait_for_timeout(200)
+    else:
+        problems.append("item icons didn't load under the real policy")
     pg.click("dialog.loot-dialog .loot-row[data-item='16922'] .sr-pick")
     pg.wait_for_selector("dialog.loot-dialog .loot-row[data-item='16922'].mine", timeout=10000)
     pg.hover("dialog.loot-dialog .loot-row[data-item='16922'] .item-name")
