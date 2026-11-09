@@ -142,6 +142,9 @@ pub const ACTIONS: &[(&str, &str)] = &[
     ("badge_award", "Gave a badge"),
     ("badge_revoke", "Took a badge away"),
     ("invite_delete", "Revoked someone's invite"),
+    ("automod_block", "Had a message blocked by automod"),
+    ("automod_timeout", "Was timed out by automod"),
+    ("automod_update", "Changed automod settings"),
 ];
 
 /// "Kick members, Ban members" for a set of permission bits.

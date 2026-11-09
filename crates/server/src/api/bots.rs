@@ -6,31 +6,38 @@
 //! 2. Someone types `/roll sides:20`; the client calls
 //!    `POST /api/channels/{id}/interactions`.
 //! 3. The bot gets an `INTERACTION_CREATE` gateway event and answers with
-//!    `POST /api/interactions/{id}/reply` (shown as "Alice used /roll").
+//!    `POST /api/interactions/{id}/reply` (shown as "Alice used /roll"), or
+//!    Discord-style with `POST /api/interactions/{id}/callback`.
+//!
+//! Buttons and select menus on a bot's messages work the same way (see
+//! `components.rs`); their answers can also update the message.
 
 use std::time::{Duration, Instant};
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
 use outhouse_common::gateway::ServerEvent;
 use outhouse_common::models::{
-    BotInfo, BotTokenResponse, CommandOption, CreateBotRequest, InteractionReply,
-    InteractionRequest, Message, MessageInteraction, SlashCommand, User,
+    interaction_response, BotInfo, BotTokenResponse, CommandOption, Component, CreateBotRequest,
+    Embed, InteractionCallback, InteractionReply, InteractionRequest, Message, MessageInteraction,
+    SlashCommand, User, FLAG_EPHEMERAL,
 };
 use outhouse_common::permissions as p;
 use sqlx::types::Json as SqlJson;
 
 use super::account::clean_name;
+use super::components::{self, EphemeralPost};
 use super::members::fetch_member;
-use super::messages::post_bot_message_full;
+use super::messages::{fetch_message, insert_embeds, post_bot_message_with, BotPost};
 use crate::auth::{self, AuthUser};
 use crate::error::{AppError, AppResult};
-use crate::perms::{channel_access, member_ctx};
+use crate::perms::{channel_access, channel_audience, member_ctx};
 use crate::state::{AppState, Audience, PendingInteraction};
 
-const INTERACTION_TTL: Duration = Duration::from_secs(15 * 60);
+pub(crate) const INTERACTION_TTL: Duration = Duration::from_secs(15 * 60);
 const MAX_COMMANDS: usize = 50;
 const MAX_OPTIONS: usize = 10;
 
@@ -401,6 +408,8 @@ pub async fn interact(
                 display_name: me.display_name.clone(),
                 command: command.name.clone(),
                 created: Instant::now(),
+                message_id: None,
+                thread_id: None,
             },
         );
     }
@@ -410,23 +419,21 @@ pub async fn interact(
         Audience::User(command.bot_id),
         ServerEvent::InteractionCreate {
             id,
+            kind: 2,
             guild_id,
             channel_id,
             user: who,
             command: command.name,
             options: req.options,
+            message: None,
+            data: None,
         },
     );
     Ok(StatusCode::ACCEPTED)
 }
 
-/// A bot answers a slash command.
-pub async fn reply(
-    State(st): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(interaction_id): Path<i64>,
-    Json(req): Json<InteractionReply>,
-) -> AppResult<Json<Message>> {
+/// The interaction a bot is answering (it must be the bot's own).
+fn pending_for(st: &AppState, interaction_id: i64, bot_id: i64) -> AppResult<PendingInteraction> {
     let pending = st
         .interactions
         .lock()
@@ -435,18 +442,25 @@ pub async fn reply(
         .cloned()
         .filter(|i| i.created.elapsed() < INTERACTION_TTL)
         .ok_or(AppError::NotFound)?;
-    if pending.bot_id != user.id {
+    if pending.bot_id != bot_id {
         return Err(AppError::Forbidden);
     }
-    let content = req.content.trim().to_string();
-    if content.is_empty() && req.embeds.is_empty() {
-        return Err(AppError::BadRequest("Replies can't be empty.".into()));
+    Ok(pending)
+}
+
+/// Tells the person who used the command or button that the bot answered.
+fn answered(st: &AppState, interaction_id: i64, pending: &PendingInteraction) {
+    st.dispatch(
+        Audience::User(pending.user_id),
+        ServerEvent::InteractionSuccess { id: interaction_id },
+    );
+}
+
+fn tidy_embeds(embeds: Vec<Embed>) -> AppResult<Vec<Embed>> {
+    if embeds.len() > 10 {
+        return Err(AppError::BadRequest("Up to 10 embeds per message.".into()));
     }
-    if content.chars().count() > 4000 || req.embeds.len() > 10 {
-        return Err(AppError::BadRequest("That reply is too big.".into()));
-    }
-    let embeds = req
-        .embeds
+    Ok(embeds
         .into_iter()
         .map(|mut e| {
             if e.kind.is_empty() {
@@ -454,22 +468,220 @@ pub async fn reply(
             }
             e
         })
-        .collect();
-    let message = post_bot_message_full(
+        .collect())
+}
+
+/// A bot's new message in answer to an interaction (CHANNEL_MESSAGE).
+async fn respond_with_message(
+    st: &AppState,
+    bot: &User,
+    pending: PendingInteraction,
+    content: String,
+    embeds: Vec<Embed>,
+    components: Vec<Component>,
+    ephemeral: bool,
+) -> AppResult<Message> {
+    let content = content.trim().to_string();
+    if content.is_empty() && embeds.is_empty() && components.is_empty() {
+        return Err(AppError::BadRequest("Replies can't be empty.".into()));
+    }
+    if content.chars().count() > 4000 {
+        return Err(AppError::BadRequest("That reply is too big.".into()));
+    }
+    let embeds = tidy_embeds(embeds)?;
+    let components = components::clean(&components)?;
+    // Slash commands show "Alice used /roll"; button answers reply to the
+    // message the button is on.
+    let interaction = pending.message_id.is_none().then(|| MessageInteraction {
+        user_id: pending.user_id,
+        display_name: pending.display_name.clone(),
+        command: pending.command.clone(),
+    });
+    if ephemeral {
+        return components::send_ephemeral(
+            st,
+            EphemeralPost {
+                guild_id: pending.guild_id,
+                channel_id: pending.channel_id,
+                thread_id: pending.thread_id,
+                bot_id: bot.id,
+                user_id: pending.user_id,
+                content,
+                embeds,
+                components,
+                interaction,
+            },
+        )
+        .await;
+    }
+    let access = channel_access(&st.db, pending.channel_id, bot.id).await?;
+    access.require(p::SEND_MESSAGES)?;
+    let filtered =
+        crate::automod::check(st, &access, bot, &content, 0, crate::automod::Check::Send).await?;
+    let reply_to_id = pending
+        .message_id
+        .filter(|id| !components::is_ephemeral(*id));
+    post_bot_message_with(
+        st,
+        BotPost {
+            guild_id: pending.guild_id,
+            channel_id: pending.channel_id,
+            author_id: bot.id,
+            content,
+            embeds,
+            interaction,
+            components,
+            thread_id: pending.thread_id,
+            reply_to_id,
+            filtered,
+            ..BotPost::default()
+        },
+    )
+    .await
+}
+
+/// A bot changes the message its button or select menu is on (UPDATE_MESSAGE).
+async fn update_component_message(
+    st: &AppState,
+    bot: &User,
+    pending: &PendingInteraction,
+    content: Option<String>,
+    embeds: Option<Vec<Embed>>,
+    components: Option<Vec<Component>>,
+) -> AppResult<Message> {
+    let message_id = pending.message_id.ok_or_else(|| {
+        AppError::BadRequest(
+            "Only button and select menu interactions can update a message.".into(),
+        )
+    })?;
+    let content = content.map(|c| c.trim().to_string());
+    if content.as_ref().is_some_and(|c| c.chars().count() > 4000) {
+        return Err(AppError::BadRequest("That message is too big.".into()));
+    }
+    let embeds = embeds.map(tidy_embeds).transpose()?;
+    let components = components.map(|c| components::clean(&c)).transpose()?;
+    if components::is_ephemeral(message_id) {
+        return components::update_ephemeral(st, message_id, content, embeds, components)
+            .ok_or(AppError::NotFound);
+    }
+    let original = fetch_message(&st.db, message_id).await?;
+    if original.author_id != bot.id {
+        return Err(AppError::Forbidden);
+    }
+    let filtered = match &content {
+        Some(text) => {
+            let access = channel_access(&st.db, original.channel_id, bot.id).await?;
+            crate::automod::check(st, &access, bot, text, 0, crate::automod::Check::Edit).await?
+        }
+        None => original.filtered,
+    };
+    sqlx::query(
+        "UPDATE messages SET content = COALESCE($2, content), filtered = $3,
+                components = CASE WHEN $4 THEN $5 ELSE components END
+         WHERE id = $1",
+    )
+    .bind(message_id)
+    .bind(&content)
+    .bind(filtered)
+    .bind(components.is_some())
+    .bind(components.filter(|c| !c.is_empty()).map(SqlJson))
+    .execute(&st.db)
+    .await?;
+    if let Some(embeds) = embeds {
+        sqlx::query("DELETE FROM message_embeds WHERE message_id = $1")
+            .bind(message_id)
+            .execute(&st.db)
+            .await?;
+        insert_embeds(&st.db, message_id, &embeds).await?;
+    }
+    let message = fetch_message(&st.db, message_id).await?;
+    let channel = crate::perms::fetch_channel(&st.db, message.channel_id).await?;
+    st.dispatch(
+        channel_audience(&channel),
+        ServerEvent::MessageUpdate(message.clone()),
+    );
+    Ok(message)
+}
+
+/// A bot answers a slash command, button or select menu with a message:
+/// `{"content", "embeds", "components", "flags": 64 | "ephemeral": true}`.
+pub async fn reply(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(interaction_id): Path<i64>,
+    Json(req): Json<InteractionReply>,
+) -> AppResult<Json<Message>> {
+    let pending = pending_for(&st, interaction_id, user.id)?;
+    let ephemeral = req.ephemeral || req.flags & FLAG_EPHEMERAL != 0;
+    let message = respond_with_message(
         &st,
-        pending.guild_id,
-        pending.channel_id,
-        user.id,
-        None,
-        None,
-        content,
-        embeds,
-        Some(MessageInteraction {
-            user_id: pending.user_id,
-            display_name: pending.display_name,
-            command: pending.command,
-        }),
+        &user,
+        pending.clone(),
+        req.content,
+        req.embeds,
+        req.components,
+        ephemeral,
     )
     .await?;
+    answered(&st, interaction_id, &pending);
     Ok(Json(message))
+}
+
+/// `POST /api/interactions/{id}/callback`, Discord's interaction response:
+/// `{"type": 4, "data": {...}}` reply (`flags: 64` = only the clicker sees
+/// it), `5` "thinking" (reply later), `6` got it (buttons; change the
+/// message later), `7` update the message the button is on. Answers with
+/// the new or changed message (204 for 5 and 6). Can be called again
+/// within 15 minutes (e.g. a reply after a 5).
+pub async fn callback(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(interaction_id): Path<i64>,
+    Json(req): Json<InteractionCallback>,
+) -> AppResult<Response> {
+    let pending = pending_for(&st, interaction_id, user.id)?;
+    let data = req.data.unwrap_or_default();
+    let out = match req.kind {
+        interaction_response::CHANNEL_MESSAGE => {
+            let message = respond_with_message(
+                &st,
+                &user,
+                pending.clone(),
+                data.content.unwrap_or_default(),
+                data.embeds.unwrap_or_default(),
+                data.components.unwrap_or_default(),
+                data.flags & FLAG_EPHEMERAL != 0,
+            )
+            .await?;
+            Json(message).into_response()
+        }
+        interaction_response::DEFERRED_CHANNEL_MESSAGE => StatusCode::NO_CONTENT.into_response(),
+        interaction_response::DEFERRED_UPDATE_MESSAGE => {
+            if pending.message_id.is_none() {
+                return Err(AppError::BadRequest(
+                    "Type 6 is for buttons and select menus; use 5 for slash commands.".into(),
+                ));
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
+        interaction_response::UPDATE_MESSAGE => {
+            let message = update_component_message(
+                &st,
+                &user,
+                &pending,
+                data.content,
+                data.embeds,
+                data.components,
+            )
+            .await?;
+            Json(message).into_response()
+        }
+        _ => {
+            return Err(AppError::BadRequest(
+                "Interaction response type must be 4, 5, 6 or 7.".into(),
+            ))
+        }
+    };
+    answered(&st, interaction_id, &pending);
+    Ok(out)
 }

@@ -291,6 +291,118 @@ pub struct Message {
     /// For a group finder post: the group and who's in it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lfg: Option<crate::wow::LfgGroup>,
+    /// Buttons and select menus on a bot's message (Discord's shape: action
+    /// rows, each with up to five buttons or one select menu).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<Component>,
+    /// Only the person it was sent to sees it (a bot's ephemeral reply; it
+    /// isn't saved and goes away when they reload).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ephemeral: bool,
+    /// Automod let it through but hides it behind a "Filtered" reveal.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub filtered: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// Component types (the `type` field).
+pub mod component_type {
+    pub const ACTION_ROW: u8 = 1;
+    pub const BUTTON: u8 = 2;
+    pub const STRING_SELECT: u8 = 3;
+}
+
+/// Button styles (the `style` field).
+pub mod button_style {
+    pub const PRIMARY: u8 = 1;
+    pub const SECONDARY: u8 = 2;
+    pub const SUCCESS: u8 = 3;
+    pub const DANGER: u8 = 4;
+    pub const LINK: u8 = 5;
+}
+
+/// An emoji on a button or select option: a Unicode emoji in `name`, or an
+/// outhouse emoji by `id` (and `name`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ComponentEmoji {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub animated: bool,
+}
+
+/// One choice in a string select menu.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct SelectOption {
+    pub label: String,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emoji: Option<ComponentEmoji>,
+    /// Picked to begin with.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub default: bool,
+}
+
+/// A message component, shaped like Discord's: an action row (`type` 1)
+/// holding buttons (`type` 2) or one string select menu (`type` 3).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Component {
+    #[serde(rename = "type")]
+    pub kind: u8,
+    /// An action row's buttons or select menu.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<Component>,
+    /// Buttons: 1 primary, 2 secondary, 3 success, 4 danger, 5 link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emoji: Option<ComponentEmoji>,
+    /// What the bot gets back when it's used (not for link buttons).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_id: Option<String>,
+    /// Link buttons: where they go (http or https).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub disabled: bool,
+    /// Select menus: text shown before anything is picked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_values: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_values: Option<u8>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<SelectOption>,
+}
+
+/// What a bot gets in `INTERACTION_CREATE` when someone clicks a button or
+/// picks from a select menu (`data`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ComponentInteractionData {
+    pub custom_id: String,
+    pub component_type: u8,
+    /// Select menus: the values picked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<String>,
+}
+
+/// `POST /api/channels/{id}/messages/{message}/interactions`: someone used a
+/// button or select menu.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComponentInteractionRequest {
+    pub custom_id: String,
+    #[serde(default)]
+    pub values: Vec<String>,
 }
 
 /// A thread: a side conversation off a channel (often off one message).
@@ -310,7 +422,26 @@ pub struct ThreadInfo {
     #[serde(with = "option_as_string", default)]
     pub last_message_id: Option<i64>,
     pub created_at: DateTime<Utc>,
+    /// Minutes without activity before it hides itself (60, 1440, 4320 or
+    /// 10080, like Discord).
+    #[serde(default = "default_auto_archive")]
+    pub auto_archive_duration: i32,
+    /// Hidden from the active thread list; posting in it brings it back.
+    #[serde(default)]
+    pub archived: bool,
+    /// Only moderators can post in it or bring it back.
+    #[serde(default)]
+    pub locked: bool,
 }
+
+fn default_auto_archive() -> i32 {
+    THREAD_ARCHIVE_DEFAULT
+}
+
+/// Auto-archive choices for threads, in minutes (1 hour to 1 week).
+pub const THREAD_ARCHIVE_CHOICES: [i32; 4] = [60, 1440, 4320, 10080];
+/// Three days, like Discord.
+pub const THREAD_ARCHIVE_DEFAULT: i32 = 4320;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PollOption {
@@ -1015,6 +1146,52 @@ pub struct InteractionReply {
     pub content: String,
     #[serde(default)]
     pub embeds: Vec<Embed>,
+    #[serde(default)]
+    pub components: Vec<Component>,
+    /// 64 = ephemeral (only the person who used it sees the reply).
+    #[serde(default)]
+    pub flags: u64,
+    /// Same as `flags: 64`.
+    #[serde(default)]
+    pub ephemeral: bool,
+}
+
+/// Message flag: only the person who used the command or button sees it.
+pub const FLAG_EPHEMERAL: u64 = 64;
+
+/// Interaction response types (`POST /api/interactions/{id}/callback`).
+pub mod interaction_response {
+    /// Reply with a new message.
+    pub const CHANNEL_MESSAGE: u8 = 4;
+    /// "Thinking…": a reply follows later.
+    pub const DEFERRED_CHANNEL_MESSAGE: u8 = 5;
+    /// Got it; the message may be changed later (buttons only).
+    pub const DEFERRED_UPDATE_MESSAGE: u8 = 6;
+    /// Change the message the button or select menu is on.
+    pub const UPDATE_MESSAGE: u8 = 7;
+}
+
+/// `POST /api/interactions/{id}/callback`, Discord's shape:
+/// `{"type": 4|5|6|7, "data": {"content", "embeds", "components", "flags"}}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InteractionCallback {
+    #[serde(rename = "type")]
+    pub kind: u8,
+    #[serde(default)]
+    pub data: Option<InteractionCallbackData>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InteractionCallbackData {
+    /// For UPDATE_MESSAGE, left out = unchanged.
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub embeds: Option<Vec<Embed>>,
+    #[serde(default)]
+    pub components: Option<Vec<Component>>,
+    #[serde(default)]
+    pub flags: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1093,7 +1270,11 @@ pub struct CreateChannelRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateMessageRequest {
+    #[serde(default)]
     pub content: String,
+    /// Buttons and select menus (bots only).
+    #[serde(default)]
+    pub components: Vec<Component>,
     #[serde(with = "option_as_string", default)]
     pub reply_to_id: Option<i64>,
     /// Post inside this thread of the channel.
@@ -1129,6 +1310,10 @@ pub struct CreateThreadRequest {
     /// Start it from this message (otherwise from the channel).
     #[serde(with = "option_as_string", default)]
     pub message_id: Option<i64>,
+    /// Hide after this many minutes without activity (default: the
+    /// channel's setting).
+    #[serde(default)]
+    pub auto_archive_duration: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1150,7 +1335,12 @@ pub struct PollVoteRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditMessageRequest {
-    pub content: String,
+    /// New text (left out: unchanged, e.g. a bot changing only its buttons).
+    #[serde(default)]
+    pub content: Option<String>,
+    /// Bots: new buttons and select menus (left out: unchanged; `[]` removes them).
+    #[serde(default)]
+    pub components: Option<Vec<Component>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

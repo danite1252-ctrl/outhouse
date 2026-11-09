@@ -7,6 +7,7 @@ mod badges;
 mod bnet;
 mod bots;
 mod channels;
+pub mod components;
 mod dms;
 pub mod emojis;
 pub mod events;
@@ -25,7 +26,7 @@ pub mod raid_settings;
 mod roles;
 mod search;
 pub mod sounds;
-mod threads;
+pub mod threads;
 pub mod voice;
 mod webhooks;
 pub mod wow;
@@ -337,6 +338,24 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/channels/{id}/interactions", post(bots::interact))
         .route("/api/interactions/{id}/reply", post(bots::reply))
+        // Bot message components (buttons, select menus), automod, thread defaults
+        .route(
+            "/api/channels/{id}/messages/{message}/interactions",
+            post(components::use_component),
+        )
+        .route("/api/interactions/{id}/callback", post(bots::callback))
+        .route(
+            "/api/channels/{id}/automod",
+            get(crate::automod::get_channel).put(crate::automod::set_channel),
+        )
+        .route(
+            "/api/guilds/{id}/automod",
+            get(crate::automod::get_guild).put(crate::automod::set_guild),
+        )
+        .route(
+            "/api/channels/{id}/thread-defaults",
+            get(threads::get_defaults).put(threads::set_defaults),
+        )
         // Audit log, server status, badges
         .route("/api/guilds/{id}/audit-log", get(audit::list))
         .route("/api/guilds/{id}/server-status", get(audit::server_status))

@@ -5,6 +5,7 @@ mod armory;
 mod audio;
 mod audit;
 mod auth;
+mod automod;
 mod embeds;
 mod error;
 mod feeds;
@@ -75,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
     api::polls::spawn_closer(state.clone());
     api::lfg::spawn_expirer(state.clone());
     audit::spawn_pruner(state.clone());
+    api::threads::spawn_archiver(state.clone());
     armory::spawn_refresher(state.clone());
     // `/` is the welcome page (it sends signed-in people and the apps on to
     // `/app`); `/app` and `/login` are the web client. Everything else is a

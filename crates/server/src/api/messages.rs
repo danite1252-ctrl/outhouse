@@ -8,7 +8,7 @@ use axum::Json;
 use chrono::{DateTime, Utc};
 use outhouse_common::gateway::ServerEvent;
 use outhouse_common::models::{
-    Attachment, CreateMessageRequest, EditMessageRequest, Embed, EmbedField, Message,
+    Attachment, Component, CreateMessageRequest, EditMessageRequest, Embed, EmbedField, Message,
     MessageInteraction, MessageRef, Poll, PollOption, Reaction, ThreadInfo, User,
 };
 use outhouse_common::permissions as p;
@@ -45,6 +45,8 @@ pub(crate) struct MessageRow {
     interaction: Option<SqlJson<MessageInteraction>>,
     pinned_at: Option<DateTime<Utc>>,
     thread_id: Option<i64>,
+    components: Option<SqlJson<Vec<Component>>>,
+    filtered: bool,
 }
 
 pub(crate) const MESSAGE_SELECT: &str = "
@@ -56,7 +58,7 @@ pub(crate) const MESSAGE_SELECT: &str = "
                AS author_avatar_url,
            u.is_bot AS author_bot,
            m.content, m.created_at, m.edited_at, m.reply_to_id, m.interaction, m.pinned_at,
-           m.thread_id
+           m.thread_id, m.components, m.filtered
     FROM messages m
     JOIN users u ON u.id = m.author_id
     JOIN channels ch ON ch.id = m.channel_id
@@ -115,9 +117,16 @@ struct VoteRow {
     user_ids: Vec<i64>,
 }
 
+/// The columns a [`ThreadInfo`] is read from (also for `RETURNING`).
+pub(crate) const THREAD_COLUMNS: &str = "id, channel_id, starter_message_id, name, creator_id,
+        message_count, last_message_id, created_at,
+        auto_archive_mins AS auto_archive_duration, (archived_at IS NOT NULL) AS archived, locked";
+
 pub(crate) const THREAD_SELECT: &str =
     "SELECT id, channel_id, starter_message_id, name, creator_id,
-        message_count, last_message_id, created_at FROM threads";
+        message_count, last_message_id, created_at,
+        auto_archive_mins AS auto_archive_duration, (archived_at IS NOT NULL) AS archived, locked
+        FROM threads";
 
 #[derive(sqlx::FromRow)]
 struct ReplyRow {
@@ -327,6 +336,9 @@ pub(crate) async fn hydrate(db: &PgPool, rows: Vec<MessageRow>) -> AppResult<Vec
             thread: thread_map.remove(&r.id),
             poll: poll_map.remove(&r.id),
             lfg: lfg_map.remove(&r.id),
+            components: r.components.map(|c| c.0).unwrap_or_default(),
+            ephemeral: false,
+            filtered: r.filtered,
         })
         .collect())
 }
@@ -456,11 +468,67 @@ pub async fn post_bot_message_full(
     embeds: Vec<Embed>,
     interaction: Option<MessageInteraction>,
 ) -> AppResult<Message> {
+    post_bot_message_with(
+        st,
+        BotPost {
+            guild_id,
+            channel_id,
+            author_id,
+            override_name,
+            override_avatar,
+            content,
+            embeds,
+            interaction,
+            ..BotPost::default()
+        },
+    )
+    .await
+}
+
+/// Everything a bot's message can have (see [`post_bot_message_with`]).
+#[derive(Default)]
+pub struct BotPost {
+    pub guild_id: i64,
+    pub channel_id: i64,
+    pub author_id: i64,
+    pub override_name: Option<String>,
+    pub override_avatar: Option<String>,
+    pub content: String,
+    pub embeds: Vec<Embed>,
+    pub interaction: Option<MessageInteraction>,
+    /// Already checked with `components::clean`.
+    pub components: Vec<Component>,
+    /// Post inside this thread of the channel.
+    pub thread_id: Option<i64>,
+    /// Shown as a reply to this message (e.g. the one with the button).
+    pub reply_to_id: Option<i64>,
+    /// Automod hides it behind a "Filtered" reveal.
+    pub filtered: bool,
+}
+
+/// Posts a message as a bot user (bots, webhooks, news feeds), with
+/// buttons, in a thread or as a reply if asked.
+pub async fn post_bot_message_with(st: &AppState, post: BotPost) -> AppResult<Message> {
+    let BotPost {
+        guild_id,
+        channel_id,
+        author_id,
+        override_name,
+        override_avatar,
+        content,
+        embeds,
+        interaction,
+        components,
+        thread_id,
+        reply_to_id,
+        filtered,
+    } = post;
     let id = st.ids.next_id();
     sqlx::query(
         "INSERT INTO messages
-             (id, channel_id, author_id, content, override_name, override_avatar, interaction)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+             (id, channel_id, author_id, content, override_name, override_avatar, interaction,
+              components, thread_id, reply_to_id, filtered)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(id)
     .bind(channel_id)
@@ -469,14 +537,34 @@ pub async fn post_bot_message_full(
     .bind(&override_name)
     .bind(&override_avatar)
     .bind(interaction.map(SqlJson))
+    .bind(if components.is_empty() {
+        None
+    } else {
+        Some(SqlJson(&components))
+    })
+    .bind(thread_id)
+    .bind(reply_to_id)
+    .bind(filtered)
     .execute(&st.db)
     .await?;
     insert_embeds(&st.db, id, &embeds).await?;
-    sqlx::query("UPDATE channels SET last_message_id = $2 WHERE id = $1")
-        .bind(channel_id)
+    if let Some(thread_id) = thread_id {
+        sqlx::query(
+            "UPDATE threads SET message_count = message_count + 1, last_message_id = $2,
+                    active_at = now(), archived_at = NULL
+             WHERE id = $1",
+        )
+        .bind(thread_id)
         .bind(id)
         .execute(&st.db)
         .await?;
+    } else {
+        sqlx::query("UPDATE channels SET last_message_id = $2 WHERE id = $1")
+            .bind(channel_id)
+            .bind(id)
+            .execute(&st.db)
+            .await?;
+    }
     let message = fetch_message(&st.db, id).await?;
     st.dispatch(
         Audience::Channel {
@@ -486,6 +574,9 @@ pub async fn post_bot_message_full(
         ServerEvent::MessageCreate(message.clone()),
     );
     crate::push::spawn_message_push(st, guild_id, &message);
+    if let Some(thread_id) = thread_id {
+        announce_thread(st, guild_id, channel_id, thread_id).await?;
+    }
     if embeds.is_empty() {
         embeds::spawn_previews(st.clone(), guild_id, channel_id, id, content);
     }
@@ -607,16 +698,33 @@ async fn create_message(
     reply_to_id: Option<i64>,
     thread_id: Option<i64>,
     files: Vec<PendingFile>,
+    components: Vec<Component>,
 ) -> AppResult<Message> {
     let channel_id = access.channel.id;
     let guild_id = access.channel.guild_id;
     let content = content.trim().to_string();
-    check_content(&content, !files.is_empty())?;
+    check_content(&content, !files.is_empty() || !components.is_empty())?;
+    let components = if components.is_empty() {
+        components
+    } else if !user.bot {
+        return Err(AppError::BadRequest(
+            "Only bots can add buttons and menus to messages.".into(),
+        ));
+    } else {
+        crate::api::components::clean(&components)?
+    };
     let content = crate::api::emojis::expand(&st.db, guild_id, user.id, &content).await?;
     if let Some(thread_id) = thread_id {
-        thread_in_channel(&st.db, channel_id, thread_id)
+        let thread = thread_in_channel(&st.db, channel_id, thread_id)
             .await
             .map_err(|_| AppError::BadRequest("That thread is gone.".into()))?;
+        // Posting in an archived thread brings it back, unless it's locked
+        // (then only moderators can).
+        if thread.locked && access.perms & p::MANAGE_MESSAGES == 0 {
+            return Err(AppError::BadRequest(
+                "This thread is locked. Only moderators can post in it.".into(),
+            ));
+        }
     }
 
     if let Some(reply_id) = reply_to_id {
@@ -633,6 +741,15 @@ async fn create_message(
     }
 
     check_slowmode(st, access, user).await?;
+    let filtered = crate::automod::check(
+        st,
+        access,
+        user,
+        &content,
+        files.len(),
+        crate::automod::Check::Send,
+    )
+    .await?;
 
     // Files go to disk first, so a failed write never leaves a broken message.
     if !files.is_empty() {
@@ -649,8 +766,9 @@ async fn create_message(
     let id = st.ids.next_id();
     let mut tx = st.db.begin().await?;
     sqlx::query(
-        "INSERT INTO messages (id, channel_id, author_id, content, reply_to_id, thread_id)
-         VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO messages
+             (id, channel_id, author_id, content, reply_to_id, thread_id, components, filtered)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(id)
     .bind(channel_id)
@@ -658,6 +776,12 @@ async fn create_message(
     .bind(&content)
     .bind(reply_to_id)
     .bind(thread_id)
+    .bind(if components.is_empty() {
+        None
+    } else {
+        Some(SqlJson(&components))
+    })
+    .bind(filtered)
     .execute(&mut *tx)
     .await?;
     for f in &files {
@@ -677,7 +801,8 @@ async fn create_message(
     if let Some(thread_id) = thread_id {
         // Thread replies don't make the channel itself unread.
         sqlx::query(
-            "UPDATE threads SET message_count = message_count + 1, last_message_id = $2
+            "UPDATE threads SET message_count = message_count + 1, last_message_id = $2,
+                    active_at = now(), archived_at = NULL
              WHERE id = $1",
         )
         .bind(thread_id)
@@ -785,6 +910,7 @@ pub async fn send(
         req.reply_to_id,
         req.thread_id,
         Vec::new(),
+        req.components,
     )
     .await?;
     Ok(Json(msg))
@@ -906,7 +1032,17 @@ pub async fn upload(
     if files.is_empty() && content.trim().is_empty() {
         return Err(AppError::BadRequest("Nothing to send.".into()));
     }
-    let msg = create_message(&st, &access, &user, content, reply_to_id, thread_id, files).await?;
+    let msg = create_message(
+        &st,
+        &access,
+        &user,
+        content,
+        reply_to_id,
+        thread_id,
+        files,
+        Vec::new(),
+    )
+    .await?;
     Ok(Json(msg))
 }
 
@@ -923,20 +1059,63 @@ pub async fn edit(
     if original.author_id != user.id {
         return Err(AppError::Forbidden);
     }
-    let content = req.content.trim().to_string();
-    check_content(&content, !original.attachments.is_empty())?;
+    let components = match req.components {
+        None => None,
+        Some(_) if !user.bot => {
+            return Err(AppError::BadRequest(
+                "Only bots can add buttons and menus to messages.".into(),
+            ))
+        }
+        Some(c) => Some(crate::api::components::clean(&c)?),
+    };
+    let text_changed = req.content.is_some();
+    let content = req
+        .content
+        .map(|c| c.trim().to_string())
+        .unwrap_or_else(|| original.content.clone());
+    let has_components = components
+        .as_ref()
+        .map_or(!original.components.is_empty(), |c| !c.is_empty());
+    check_content(
+        &content,
+        !original.attachments.is_empty() || has_components || !original.embeds.is_empty(),
+    )?;
     let content =
         crate::api::emojis::expand(&st.db, access.channel.guild_id, user.id, &content).await?;
+    let filtered = if text_changed {
+        crate::automod::check(
+            &st,
+            &access,
+            &user,
+            &content,
+            0,
+            crate::automod::Check::Edit,
+        )
+        .await?
+    } else {
+        original.filtered
+    };
 
-    sqlx::query("UPDATE messages SET content = $2, edited_at = now() WHERE id = $1")
-        .bind(message_id)
-        .bind(&content)
-        .execute(&st.db)
-        .await?;
-    sqlx::query("DELETE FROM message_embeds WHERE message_id = $1")
-        .bind(message_id)
-        .execute(&st.db)
-        .await?;
+    sqlx::query(
+        "UPDATE messages SET content = $2, filtered = $3,
+                edited_at = CASE WHEN $5 THEN now() ELSE edited_at END,
+                components = CASE WHEN $4 THEN $6 ELSE components END
+         WHERE id = $1",
+    )
+    .bind(message_id)
+    .bind(&content)
+    .bind(filtered)
+    .bind(components.is_some())
+    .bind(text_changed)
+    .bind(components.filter(|c| !c.is_empty()).map(SqlJson))
+    .execute(&st.db)
+    .await?;
+    if text_changed {
+        sqlx::query("DELETE FROM message_embeds WHERE message_id = $1")
+            .bind(message_id)
+            .execute(&st.db)
+            .await?;
+    }
 
     let message = fetch_message(&st.db, message_id).await?;
     let guild_id = access.channel.guild_id;
@@ -947,7 +1126,7 @@ pub async fn edit(
         },
         ServerEvent::MessageUpdate(message.clone()),
     );
-    if access.perms & p::EMBED_LINKS != 0 {
+    if text_changed && access.perms & p::EMBED_LINKS != 0 {
         embeds::spawn_previews(st.clone(), guild_id, channel_id, message_id, content);
     }
     Ok(Json(message))

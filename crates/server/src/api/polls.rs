@@ -77,14 +77,24 @@ pub async fn create(
         }
     };
 
+    // Automod reads the question and options like a message.
+    let text = std::iter::once(question.as_str())
+        .chain(options.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let filtered =
+        crate::automod::check(&st, &access, &user, &text, 0, crate::automod::Check::Send).await?;
+
     let id = st.ids.next_id();
     let mut tx = st.db.begin().await?;
     sqlx::query(
-        "INSERT INTO messages (id, channel_id, author_id, content) VALUES ($1, $2, $3, '')",
+        "INSERT INTO messages (id, channel_id, author_id, content, filtered)
+         VALUES ($1, $2, $3, '', $4)",
     )
     .bind(id)
     .bind(channel_id)
     .bind(user.id)
+    .bind(filtered)
     .execute(&mut *tx)
     .await?;
     sqlx::query(

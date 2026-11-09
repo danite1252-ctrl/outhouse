@@ -8,8 +8,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::id::{as_string, option_as_string};
 use crate::models::{
-    Channel, DmChannel, Guild, Member, Message, RaidEvent, RaidSettings, ThreadInfo, User,
+    Channel, ComponentInteractionData, DmChannel, Guild, Member, Message, RaidEvent, RaidSettings,
+    ThreadInfo, User,
 };
+
+fn slash_command_type() -> u8 {
+    2
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", content = "d", rename_all = "SCREAMING_SNAKE_CASE")]
@@ -192,18 +197,38 @@ pub enum ServerEvent {
         #[serde(with = "as_string")]
         guild_id: i64,
     },
-    /// Sent to a bot when someone uses one of its slash commands. Reply with
-    /// `POST /api/interactions/{id}/reply` within 15 minutes.
+    /// Sent to a bot when someone uses one of its slash commands (`type` 2)
+    /// or clicks a button / picks from a select menu on one of its messages
+    /// (`type` 3, with `message` and `data.custom_id` / `data.values`).
+    /// Answer with `POST /api/interactions/{id}/callback` (or `/reply`)
+    /// within 3 seconds to avoid "This interaction failed" (it stays
+    /// answerable for 15 minutes).
     InteractionCreate {
         #[serde(with = "as_string")]
         id: i64,
+        /// 2 = slash command, 3 = message component.
+        #[serde(rename = "type", default = "slash_command_type")]
+        kind: u8,
         #[serde(with = "as_string")]
         guild_id: i64,
         #[serde(with = "as_string")]
         channel_id: i64,
         user: User,
+        /// The slash command's name ("" for components).
         command: String,
         options: std::collections::HashMap<String, String>,
+        /// Components: the message the button or select menu is on.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<Box<Message>>,
+        /// Components: which one was used and what was picked.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<ComponentInteractionData>,
+    },
+    /// The bot answered your button click / select menu / command (sent to
+    /// you only), so the client stops showing it as loading.
+    InteractionSuccess {
+        #[serde(with = "as_string")]
+        id: i64,
     },
     /// A thread was started or changed (new reply, renamed).
     ThreadUpdate(ThreadInfo),

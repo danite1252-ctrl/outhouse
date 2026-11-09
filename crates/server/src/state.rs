@@ -412,6 +412,11 @@ pub struct PendingInteraction {
     pub display_name: String,
     pub command: String,
     pub created: Instant,
+    /// Buttons and select menus: the message they're on (an ephemeral one
+    /// lives in memory, see `api::bots`).
+    pub message_id: Option<i64>,
+    /// The thread the command was used in / the message is in.
+    pub thread_id: Option<i64>,
 }
 
 impl AppState {
