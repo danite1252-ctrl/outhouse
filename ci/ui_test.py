@@ -2834,6 +2834,218 @@ with sync_playwright() as p:
         mp.close()
 
 
+    # ---- The raid sign-up card: a full 25-man roster, a 40-man, an empty one ----
+    def api_from(ip, method, path, body=None, token=None):
+        """Like api(), as if from another address (sign-ups are limited per address)."""
+        req = urllib.request.Request(BASE + path, method=method)
+        req.add_header("Content-Type", "application/json")
+        req.add_header("X-Forwarded-For", ip)
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        data = json.dumps(body).encode() if body is not None else None
+        with urllib.request.urlopen(req, data) as res:
+            text = res.read().decode()
+            return json.loads(text) if text else None
+
+    rg = api("POST", "/api/guilds", {"name": "Raid Card Hall"}, TOKEN)
+    rchan = api("POST", f"/api/guilds/{rg['id']}/channels", {"name": "raid-signups"}, TOKEN)
+    rcode = api("POST", f"/api/guilds/{rg['id']}/invites", None, TOKEN)["code"]
+    # (name, character "First Last" or None, class, spec, role)
+    RC_PEOPLE = [
+        ("Golgoroth", "Golgoroth Ironmaw", "Warrior", "Protection", "tank"),
+        ("Brisk", None, "Warrior", "Protection", "tank"),
+        ("Mossheart", "Mossheart Thornfield", "Druid", "Feral (Bear)", "tank"),
+        ("Kaelith", None, "Priest", "Holy", "healer"),
+        ("Gorvash", "Gorvash Emberfist", "Priest", "Discipline", "healer"),
+        ("Lunessa", None, "Paladin", "Holy", "healer"),
+        ("Ironjaw", None, "Paladin", "Holy", "healer"),
+        ("Pyrella", "Pyrella Dawnbrook", "Druid", "Restoration", "healer"),
+        ("Tidecall", None, "Shaman", "Restoration", "healer"),
+        ("Shadowmend", None, "Warrior", "Fury", "dps"),
+        ("Vexx", "Vexx Nightbloom", "Warrior", "Arms", "dps"),
+        ("Hollowpine", None, "Rogue", "Combat", "dps"),
+        ("Brakka", None, "Rogue", "Combat", "dps"),
+        ("Seraphine", "Seraphine Vale", "Rogue", "Assassination", "dps"),
+        ("Duskwhisper", None, "Mage", "Frost", "dps"),
+        ("Grimtooth", None, "Mage", "Fire", "dps"),
+        ("Emberly", "Emberly Ashgrove", "Mage", "Arcane", "dps"),
+        ("Frostnova", None, "Warlock", "Destruction", "dps"),
+        ("Quillon", None, "Warlock", "Affliction", "dps"),
+        ("Ragna", "Ragna Stormhide", "Hunter", "Marksmanship", "dps"),
+        ("Stoneroot", None, "Hunter", "Survival", "dps"),
+        ("Velaria", None, "Shaman", "Enhancement", "dps"),
+        ("Zuljin", None, "Priest", "Shadow", "dps"),
+        ("Ashka", None, "Paladin", "Retribution", "dps"),
+        ("Morrow", None, "Druid", "Balance", "dps"),
+        ("Nettle", None, "Rogue", "Combat", "dps"),
+        ("Oakhide", None, "Warrior", "Fury", "dps"),
+        ("Pellwyn", None, "Mage", "Frost", "dps"),
+        ("Rook", None, "Hunter", "Beast Mastery", "dps"),
+        ("Sable", None, "Warlock", "Demonology", "dps"),
+        ("Tamsin", None, "Priest", "Holy", "healer"),
+        ("Wren", None, "Shaman", "Restoration", "healer"),
+    ]
+    rc_users = []
+    for i, (name, char, cls, spec, role) in enumerate(RC_PEOPLE):
+        ip = f"198.18.{1 + i // 12}.{10 + i}"
+        u = api_from(ip, "POST", "/api/auth/register", {"username": f"rc{i}x{suffix}", "password": "password123", "display_name": name})
+        api_from(ip, "POST", f"/api/invites/{rcode}", None, u["token"])
+        cid = None
+        if char:
+            first, last = char.split(" ", 1)
+            cid = api("POST", "/api/users/@me/characters", {"name": first, "last_name": last, "class": cls, "level": 60}, u["token"])["id"]
+        rc_users.append({"token": u["token"], "id": u["user"]["id"], "cls": cls, "spec": spec, "role": role, "char": cid})
+    for t in (dave["token"], erin["token"]):
+        api("POST", f"/api/invites/{rcode}", None, t)
+
+    def rc_sign(ev_id, u, status="yes"):
+        body = {"status": status, "role": u["role"], "class": u["cls"], "spec": u["spec"]}
+        if u["char"]:
+            body["character_id"] = u["char"]
+        api("PUT", f"/api/events/{ev_id}/signup", body, u["token"])
+
+    later = lambda days: time.strftime("%Y-%m-%dT19:30:00Z", time.gmtime(time.time() + days * 86400))
+    # 25-man with soft reserves: 25 on the roster (one late, two tentative),
+    # two benched when DPS filled up, three can't make it; about 2/3 reserved.
+    r25 = api("POST", f"/api/channels/{rchan['id']}/events", {
+        "title": "Molten Core: full clear", "description": "Fire resist for Rag, flasks and food. Meet at the Blackrock Mountain stone 15 minutes early.\nVent: Raid comms. Soft reserves 2 each, lock when sign-ups close.",
+        "starts_at": later(3), "duration_minutes": 180, "game": "forever", "max_tanks": 3, "max_healers": 6, "max_dps": 16,
+        "soft_reserves": 2, "reserve_lock": "deadline", "loot_instance": "mc", "signup_deadline_minutes": 120,
+    }, TOKEN)["event"]
+    R25 = r25["id"]
+    for i, u in enumerate(rc_users[:25]):
+        rc_sign(R25, u, "late" if i == 6 else "tentative" if i == 13 else "yes")
+    for u in rc_users[25:28]:                   # the last DPS spot, then two on the bench
+        rc_sign(R25, u)
+    rc_sign(R25, rc_users[28], "tentative")
+    for u in rc_users[29:32]:
+        rc_sign(R25, u, "no")
+    items = [17204, 18814, 17076, 17106, 16922, 17069, 17103, 18842]
+    for i, u in enumerate(rc_users[:28]):
+        if i % 3 == 2:
+            continue
+        try:
+            api("PUT", f"/api/events/{R25}/reserves", {"item_id": items[i % len(items)]}, u["token"])
+        except urllib.error.HTTPError as e:
+            print("reserve skipped:", e.code, e.read()[:200])
+    # 40-man: ~30 across all nine classes, two benched by the leader, three absences.
+    r40 = api("POST", f"/api/channels/{rchan['id']}/events", {
+        "title": "Naxxramas 40", "description": "Spider and Plague wings.", "starts_at": later(5), "duration_minutes": 240,
+        "game": "forever", "max_tanks": 5, "max_healers": 10, "max_dps": 25,
+    }, TOKEN)["event"]
+    R40 = r40["id"]
+    for u in rc_users[:29]:
+        rc_sign(R40, u)
+    api("PUT", f"/api/events/{R40}/signup", {"status": "yes", "role": "healer", "class": "Priest", "spec": "Holy"}, TOKEN)
+    for u in rc_users[29:31]:
+        api("PUT", f"/api/events/{R40}/signup", {"user_id": u["id"], "status": "bench", "role": u["role"], "class": u["cls"], "spec": u["spec"]}, TOKEN)
+    for t in (dave["token"], erin["token"]):
+        api("PUT", f"/api/events/{R40}/signup", {"status": "no"}, t)
+    rc_sign(R40, rc_users[31], "no")
+    # A brand-new 10-man nobody has signed up to yet.
+    r10 = api("POST", f"/api/channels/{rchan['id']}/events", {
+        "title": "Zul'Gurub", "description": "Quick run for the Edge of Madness.", "starts_at": later(6),
+        "game": "forever", "max_tanks": 2, "max_healers": 3, "max_dps": 5,
+    }, TOKEN)["event"]
+    R10 = r10["id"]
+
+    def rc_page(token, label, **kw):
+        pg = browser.new_page(**kw)
+        watch(pg, label)
+        extra = "window.__OUTHOUSE_DESKTOP__ = true; window.__OUTHOUSE_PLATFORM__ = 'android'; window.__OUTHOUSE_APP_VERSION__ = '0.2.1';" if label.startswith("android") else ""
+        pg.add_init_script(extra + f"localStorage.setItem('outhouse_token', {json.dumps(token)}); localStorage.setItem('outhouse_guild', {json.dumps(rg['id'])}); localStorage.setItem('outhouse_channel_{rg['id']}', {json.dumps(rchan['id'])});")
+        pg.goto(BASE + "/")
+        pg.wait_for_selector(f".event-card[data-event='{R25}'] .rc-roster", timeout=15000)
+        return pg
+
+    def rc_card(pg, ev_id):
+        sel = f"#messages .event-card[data-event='{ev_id}']"
+        pg.evaluate("s => document.querySelector(s)?.scrollIntoView({block: 'start'})", sel)
+        pg.wait_for_timeout(300)
+        return sel
+
+    member = rc_users[3]  # Kaelith, an ordinary raider
+    # Desktop, as a raider sees it.
+    dp = rc_page(member["token"], "raidcard-desktop", viewport={"width": 1280, "height": 900})
+    c25 = rc_card(dp, R25)
+    assert dp.inner_text(f"{c25} .rc-count") == "25/25 (+2)", dp.inner_text(f"{c25} .rc-count")
+    assert dp.query_selector_all(f"{c25} .rc-class").__len__() == 9
+    dp.wait_for_selector(f"{c25} .rc-entry.st-late .rc-mark.late")
+    dp.wait_for_selector(f"{c25} .rc-entry.st-tentative .rc-mark.maybe")
+    dp.wait_for_selector(f"{c25} .rc-class[data-class='Warrior'] .rc-class-head:has-text('Warrior')")
+    dp.wait_for_selector(f"{c25} .su-name:has-text('Golgoroth Ironmaw')")
+    assert "Golgoroth" in dp.get_attribute(f"{c25} .su-name:has-text('Golgoroth Ironmaw')", "title")
+    dp.wait_for_selector(f"{c25} .ev-bench:has-text('Bench (2)')")
+    dp.wait_for_selector(f"{c25} .ev-absent:has-text('Absence (3)')")
+    dp.wait_for_selector(f"{c25} .rc-roles .rc-role.ranged")
+    n_sr = len(dp.query_selector_all(f"{c25} .rc-roster .rc-sr:not(.none)"))
+    assert 12 <= n_sr <= 22, n_sr
+    assert not dp.query_selector(f"{c25} .rc-sr.none"), "only raid leaders see who hasn't reserved"
+    assert not dp.query_selector(f"{c25} .ev-gaps"), "the gaps chip is for raid leaders"
+    assert not dp.query_selector(f"{c25} button[title='Raid options']")
+    dp.screenshot(path=f"{SHOTS}/3300-desktop-raidcard-25.png")
+    dp.locator(c25).screenshot(path=f"{SHOTS}/3301-raidcard-25-card.png")
+    # The status menu (late / tentative / can't make it / withdraw).
+    dp.click(f"{c25} .rc-status")
+    dp.wait_for_selector(".menu button:has-text('Tentative')")
+    dp.wait_for_selector(".menu button:has-text('Withdraw')")
+    dp.screenshot(path=f"{SHOTS}/3302-desktop-raidcard-status-menu.png")
+    dp.click(".menu button:has-text('Running late')")
+    dp.wait_for_selector(".signup-pop")
+    dp.click(".signup-pop button.primary")
+    dp.wait_for_selector(f"{c25} .rc-entry[data-user='{member['id']}'].st-late", timeout=10000)
+    dp.wait_for_selector(f"{c25} .rc-status:has-text('Running late')")
+    # Soft reserves open in their own window.
+    dp.click(f"{c25} .ev-link.sr")
+    dp.wait_for_selector("dialog.loot-dialog[open]", timeout=10000)
+    dp.screenshot(path=f"{SHOTS}/3303-desktop-raidcard-sr-window.png")
+    dp.click("dialog.loot-dialog .raid-close")
+    c40 = rc_card(dp, R40)
+    assert dp.inner_text(f"{c40} .rc-count") == "30/40 (+2)", dp.inner_text(f"{c40} .rc-count")
+    dp.locator(c40).screenshot(path=f"{SHOTS}/3304-raidcard-40-card.png")
+    c10 = rc_card(dp, R10)
+    dp.wait_for_selector(f"{c10} .rc-empty")
+    dp.locator(c10).screenshot(path=f"{SHOTS}/3305-raidcard-empty-card.png")
+    # The calendar's day panel reuses the card.
+    dp.evaluate(f"openCalendar(new Date({json.dumps(later(3))}))")
+    dp.wait_for_selector(f".calendar-dialog .cal-daypanel .event-card[data-event='{R25}'] .rc-roster", timeout=10000)
+    dp.wait_for_timeout(300)
+    dp.screenshot(path=f"{SHOTS}/3306-desktop-calendar-raidcard.png")
+    dp.close()
+
+    # The raid leader: the gaps chip, then the composition it opens.
+    ld = rc_page(TOKEN, "raidcard-leader", viewport={"width": 1280, "height": 1000})
+    c25 = rc_card(ld, R25)
+    ld.wait_for_selector(f"{c25} .rc-sr.none")  # leaders see who hasn't reserved yet
+    ld.wait_for_selector(f"{c25} .ev-link.export:has-text('Invite list')")
+    ld.wait_for_selector(f"{c25} .ev-gaps:not([hidden]), {c25} .ev-comp-ok:not([hidden])", timeout=10000)
+    ld.locator(c25).screenshot(path=f"{SHOTS}/3307-raidcard-leader-card.png")
+    # The 40-man is short of tanks and healers: a gaps chip that opens the composition.
+    c40 = rc_card(ld, R40)
+    ld.wait_for_selector(f"{c40} .ev-gaps:not([hidden])", timeout=10000)
+    need40 = api("GET", f"/api/events/{R40}/composition", None, TOKEN)["missing_line"]
+    assert ld.get_attribute(f"{c40} .ev-gaps", "title") == need40
+    ld.locator(c40).screenshot(path=f"{SHOTS}/3308-raidcard-leader-gaps.png")
+    ld.click(f"{c40} .ev-gaps")
+    ld.wait_for_selector(f"{c40} details.ev-comp[open] .comp-missing", timeout=10000)
+    ld.wait_for_timeout(400)
+    ld.locator(c40).screenshot(path=f"{SHOTS}/3309-raidcard-leader-comp-open.png")
+    # Keyboard: a leader can open a roster name's menu with Enter.
+    ld.focus(f"{c25} .rc-entry .su-name.manageable >> nth=2")
+    ld.keyboard.press("Enter")
+    ld.wait_for_selector(".menu button:has-text('Move to bench')")
+    ld.keyboard.press("Escape")
+    ld.close()
+
+    # Phone and Android widths.
+    for label, kw, shot in (("phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True, "device_scale_factor": 2}, 3310),
+                            ("android", {"viewport": {"width": 393, "height": 852}, "is_mobile": True, "has_touch": True, "device_scale_factor": 2}, 312)):
+        mp = rc_page(member["token"], f"raidcard-{label}", **kw)
+        c25 = rc_card(mp, R25)
+        mp.screenshot(path=f"{SHOTS}/{shot}-{label}-raidcard-25.png")
+        mp.locator(c25).screenshot(path=f"{SHOTS}/{shot + 1}-{label}-raidcard-25-card.png")
+        mp.close()
+
     # ---- Raid composition, soft reserves and the loot log (loot.js) ----
     lg = api("POST", "/api/guilds", {"name": "Loot Hall"}, TOKEN)
     lchan = api("POST", f"/api/guilds/{lg['id']}/channels", {"name": "raid-loot"}, TOKEN)
@@ -3108,218 +3320,6 @@ with sync_playwright() as p:
         mp.close()
     dave_res = [r["item_id"] for r in api("GET", f"/api/events/{SRID}", None, TOKEN)["reserves"] if r["user_id"] == DAVE]
     assert sorted(dave_res) == [17076, 17204], dave_res
-
-    # ---- The raid sign-up card: a full 25-man roster, a 40-man, an empty one ----
-    def api_from(ip, method, path, body=None, token=None):
-        """Like api(), as if from another address (sign-ups are limited per address)."""
-        req = urllib.request.Request(BASE + path, method=method)
-        req.add_header("Content-Type", "application/json")
-        req.add_header("X-Forwarded-For", ip)
-        if token:
-            req.add_header("Authorization", f"Bearer {token}")
-        data = json.dumps(body).encode() if body is not None else None
-        with urllib.request.urlopen(req, data) as res:
-            text = res.read().decode()
-            return json.loads(text) if text else None
-
-    rg = api("POST", "/api/guilds", {"name": "Raid Card Hall"}, TOKEN)
-    rchan = api("POST", f"/api/guilds/{rg['id']}/channels", {"name": "raid-signups"}, TOKEN)
-    rcode = api("POST", f"/api/guilds/{rg['id']}/invites", None, TOKEN)["code"]
-    # (name, character "First Last" or None, class, spec, role)
-    RC_PEOPLE = [
-        ("Golgoroth", "Golgoroth Ironmaw", "Warrior", "Protection", "tank"),
-        ("Brisk", None, "Warrior", "Protection", "tank"),
-        ("Mossheart", "Mossheart Thornfield", "Druid", "Feral (Bear)", "tank"),
-        ("Kaelith", None, "Priest", "Holy", "healer"),
-        ("Gorvash", "Gorvash Emberfist", "Priest", "Discipline", "healer"),
-        ("Lunessa", None, "Paladin", "Holy", "healer"),
-        ("Ironjaw", None, "Paladin", "Holy", "healer"),
-        ("Pyrella", "Pyrella Dawnbrook", "Druid", "Restoration", "healer"),
-        ("Tidecall", None, "Shaman", "Restoration", "healer"),
-        ("Shadowmend", None, "Warrior", "Fury", "dps"),
-        ("Vexx", "Vexx Nightbloom", "Warrior", "Arms", "dps"),
-        ("Hollowpine", None, "Rogue", "Combat", "dps"),
-        ("Brakka", None, "Rogue", "Combat", "dps"),
-        ("Seraphine", "Seraphine Vale", "Rogue", "Assassination", "dps"),
-        ("Duskwhisper", None, "Mage", "Frost", "dps"),
-        ("Grimtooth", None, "Mage", "Fire", "dps"),
-        ("Emberly", "Emberly Ashgrove", "Mage", "Arcane", "dps"),
-        ("Frostnova", None, "Warlock", "Destruction", "dps"),
-        ("Quillon", None, "Warlock", "Affliction", "dps"),
-        ("Ragna", "Ragna Stormhide", "Hunter", "Marksmanship", "dps"),
-        ("Stoneroot", None, "Hunter", "Survival", "dps"),
-        ("Velaria", None, "Shaman", "Enhancement", "dps"),
-        ("Zuljin", None, "Priest", "Shadow", "dps"),
-        ("Ashka", None, "Paladin", "Retribution", "dps"),
-        ("Morrow", None, "Druid", "Balance", "dps"),
-        ("Nettle", None, "Rogue", "Combat", "dps"),
-        ("Oakhide", None, "Warrior", "Fury", "dps"),
-        ("Pellwyn", None, "Mage", "Frost", "dps"),
-        ("Rook", None, "Hunter", "Beast Mastery", "dps"),
-        ("Sable", None, "Warlock", "Demonology", "dps"),
-        ("Tamsin", None, "Priest", "Holy", "healer"),
-        ("Wren", None, "Shaman", "Restoration", "healer"),
-    ]
-    rc_users = []
-    for i, (name, char, cls, spec, role) in enumerate(RC_PEOPLE):
-        ip = f"198.18.{1 + i // 12}.{10 + i}"
-        u = api_from(ip, "POST", "/api/auth/register", {"username": f"rc{i}x{suffix}", "password": "password123", "display_name": name})
-        api_from(ip, "POST", f"/api/invites/{rcode}", None, u["token"])
-        cid = None
-        if char:
-            first, last = char.split(" ", 1)
-            cid = api("POST", "/api/users/@me/characters", {"name": first, "last_name": last, "class": cls, "level": 60}, u["token"])["id"]
-        rc_users.append({"token": u["token"], "id": u["user"]["id"], "cls": cls, "spec": spec, "role": role, "char": cid})
-    for t in (dave["token"], erin["token"]):
-        api("POST", f"/api/invites/{rcode}", None, t)
-
-    def rc_sign(ev_id, u, status="yes"):
-        body = {"status": status, "role": u["role"], "class": u["cls"], "spec": u["spec"]}
-        if u["char"]:
-            body["character_id"] = u["char"]
-        api("PUT", f"/api/events/{ev_id}/signup", body, u["token"])
-
-    later = lambda days: time.strftime("%Y-%m-%dT19:30:00Z", time.gmtime(time.time() + days * 86400))
-    # 25-man with soft reserves: 25 on the roster (one late, two tentative),
-    # two benched when DPS filled up, three can't make it; about 2/3 reserved.
-    r25 = api("POST", f"/api/channels/{rchan['id']}/events", {
-        "title": "Molten Core: full clear", "description": "Fire resist for Rag, flasks and food. Meet at the Blackrock Mountain stone 15 minutes early.\nVent: Raid comms. Soft reserves 2 each, lock when sign-ups close.",
-        "starts_at": later(3), "duration_minutes": 180, "game": "forever", "max_tanks": 3, "max_healers": 6, "max_dps": 16,
-        "soft_reserves": 2, "reserve_lock": "deadline", "loot_instance": "mc", "signup_deadline_minutes": 120,
-    }, TOKEN)["event"]
-    R25 = r25["id"]
-    for i, u in enumerate(rc_users[:25]):
-        rc_sign(R25, u, "late" if i == 6 else "tentative" if i == 13 else "yes")
-    for u in rc_users[25:28]:                   # the last DPS spot, then two on the bench
-        rc_sign(R25, u)
-    rc_sign(R25, rc_users[28], "tentative")
-    for u in rc_users[29:32]:
-        rc_sign(R25, u, "no")
-    items = [17204, 18814, 17076, 17106, 16922, 17069, 17103, 18842]
-    for i, u in enumerate(rc_users[:28]):
-        if i % 3 == 2:
-            continue
-        try:
-            api("PUT", f"/api/events/{R25}/reserves", {"item_id": items[i % len(items)]}, u["token"])
-        except urllib.error.HTTPError as e:
-            print("reserve skipped:", e.code, e.read()[:200])
-    # 40-man: ~30 across all nine classes, two benched by the leader, three absences.
-    r40 = api("POST", f"/api/channels/{rchan['id']}/events", {
-        "title": "Naxxramas 40", "description": "Spider and Plague wings.", "starts_at": later(5), "duration_minutes": 240,
-        "game": "forever", "max_tanks": 5, "max_healers": 10, "max_dps": 25,
-    }, TOKEN)["event"]
-    R40 = r40["id"]
-    for u in rc_users[:29]:
-        rc_sign(R40, u)
-    api("PUT", f"/api/events/{R40}/signup", {"status": "yes", "role": "healer", "class": "Priest", "spec": "Holy"}, TOKEN)
-    for u in rc_users[29:31]:
-        api("PUT", f"/api/events/{R40}/signup", {"user_id": u["id"], "status": "bench", "role": u["role"], "class": u["cls"], "spec": u["spec"]}, TOKEN)
-    for t in (dave["token"], erin["token"]):
-        api("PUT", f"/api/events/{R40}/signup", {"status": "no"}, t)
-    rc_sign(R40, rc_users[31], "no")
-    # A brand-new 10-man nobody has signed up to yet.
-    r10 = api("POST", f"/api/channels/{rchan['id']}/events", {
-        "title": "Zul'Gurub", "description": "Quick run for the Edge of Madness.", "starts_at": later(6),
-        "game": "forever", "max_tanks": 2, "max_healers": 3, "max_dps": 5,
-    }, TOKEN)["event"]
-    R10 = r10["id"]
-
-    def rc_page(token, label, **kw):
-        pg = browser.new_page(**kw)
-        watch(pg, label)
-        extra = "window.__OUTHOUSE_DESKTOP__ = true; window.__OUTHOUSE_PLATFORM__ = 'android'; window.__OUTHOUSE_APP_VERSION__ = '0.2.1';" if label.startswith("android") else ""
-        pg.add_init_script(extra + f"localStorage.setItem('outhouse_token', {json.dumps(token)}); localStorage.setItem('outhouse_guild', {json.dumps(rg['id'])}); localStorage.setItem('outhouse_channel_{rg['id']}', {json.dumps(rchan['id'])});")
-        pg.goto(BASE + "/")
-        pg.wait_for_selector(f".event-card[data-event='{R25}'] .rc-roster", timeout=15000)
-        return pg
-
-    def rc_card(pg, ev_id):
-        sel = f"#messages .event-card[data-event='{ev_id}']"
-        pg.evaluate("s => document.querySelector(s)?.scrollIntoView({block: 'start'})", sel)
-        pg.wait_for_timeout(300)
-        return sel
-
-    member = rc_users[3]  # Kaelith, an ordinary raider
-    # Desktop, as a raider sees it.
-    dp = rc_page(member["token"], "raidcard-desktop", viewport={"width": 1280, "height": 900})
-    c25 = rc_card(dp, R25)
-    assert dp.inner_text(f"{c25} .rc-count") == "25/25 (+2)", dp.inner_text(f"{c25} .rc-count")
-    assert dp.query_selector_all(f"{c25} .rc-class").__len__() == 9
-    dp.wait_for_selector(f"{c25} .rc-entry.st-late .rc-mark.late")
-    dp.wait_for_selector(f"{c25} .rc-entry.st-tentative .rc-mark.maybe")
-    dp.wait_for_selector(f"{c25} .rc-class[data-class='Warrior'] .rc-class-head:has-text('Warrior')")
-    dp.wait_for_selector(f"{c25} .su-name:has-text('Golgoroth Ironmaw')")
-    assert "Golgoroth" in dp.get_attribute(f"{c25} .su-name:has-text('Golgoroth Ironmaw')", "title")
-    dp.wait_for_selector(f"{c25} .ev-bench:has-text('Bench (2)')")
-    dp.wait_for_selector(f"{c25} .ev-absent:has-text('Absence (3)')")
-    dp.wait_for_selector(f"{c25} .rc-roles .rc-role.ranged")
-    n_sr = len(dp.query_selector_all(f"{c25} .rc-roster .rc-sr:not(.none)"))
-    assert 12 <= n_sr <= 22, n_sr
-    assert not dp.query_selector(f"{c25} .rc-sr.none"), "only raid leaders see who hasn't reserved"
-    assert not dp.query_selector(f"{c25} .ev-gaps"), "the gaps chip is for raid leaders"
-    assert not dp.query_selector(f"{c25} button[title='Raid options']")
-    dp.screenshot(path=f"{SHOTS}/3300-desktop-raidcard-25.png")
-    dp.locator(c25).screenshot(path=f"{SHOTS}/3301-raidcard-25-card.png")
-    # The status menu (late / tentative / can't make it / withdraw).
-    dp.click(f"{c25} .rc-status")
-    dp.wait_for_selector(".menu button:has-text('Tentative')")
-    dp.wait_for_selector(".menu button:has-text('Withdraw')")
-    dp.screenshot(path=f"{SHOTS}/3302-desktop-raidcard-status-menu.png")
-    dp.click(".menu button:has-text('Running late')")
-    dp.wait_for_selector(".signup-pop")
-    dp.click(".signup-pop button.primary")
-    dp.wait_for_selector(f"{c25} .rc-entry[data-user='{member['id']}'].st-late", timeout=10000)
-    dp.wait_for_selector(f"{c25} .rc-status:has-text('Running late')")
-    # Soft reserves open in their own window.
-    dp.click(f"{c25} .ev-link.sr")
-    dp.wait_for_selector("dialog.loot-dialog[open]", timeout=10000)
-    dp.screenshot(path=f"{SHOTS}/3303-desktop-raidcard-sr-window.png")
-    dp.click("dialog.loot-dialog .raid-close")
-    c40 = rc_card(dp, R40)
-    assert dp.inner_text(f"{c40} .rc-count") == "30/40 (+2)", dp.inner_text(f"{c40} .rc-count")
-    dp.locator(c40).screenshot(path=f"{SHOTS}/3304-raidcard-40-card.png")
-    c10 = rc_card(dp, R10)
-    dp.wait_for_selector(f"{c10} .rc-empty")
-    dp.locator(c10).screenshot(path=f"{SHOTS}/3305-raidcard-empty-card.png")
-    # The calendar's day panel reuses the card.
-    dp.evaluate(f"openCalendar(new Date({json.dumps(later(3))}))")
-    dp.wait_for_selector(f".calendar-dialog .cal-daypanel .event-card[data-event='{R25}'] .rc-roster", timeout=10000)
-    dp.wait_for_timeout(300)
-    dp.screenshot(path=f"{SHOTS}/3306-desktop-calendar-raidcard.png")
-    dp.close()
-
-    # The raid leader: the gaps chip, then the composition it opens.
-    ld = rc_page(TOKEN, "raidcard-leader", viewport={"width": 1280, "height": 1000})
-    c25 = rc_card(ld, R25)
-    ld.wait_for_selector(f"{c25} .rc-sr.none")  # leaders see who hasn't reserved yet
-    ld.wait_for_selector(f"{c25} .ev-link.export:has-text('Invite list')")
-    ld.wait_for_selector(f"{c25} .ev-gaps:not([hidden]), {c25} .ev-comp-ok:not([hidden])", timeout=10000)
-    ld.locator(c25).screenshot(path=f"{SHOTS}/3307-raidcard-leader-card.png")
-    # The 40-man is short of tanks and healers: a gaps chip that opens the composition.
-    c40 = rc_card(ld, R40)
-    ld.wait_for_selector(f"{c40} .ev-gaps:not([hidden])", timeout=10000)
-    need40 = api("GET", f"/api/events/{R40}/composition", None, TOKEN)["missing_line"]
-    assert ld.get_attribute(f"{c40} .ev-gaps", "title") == need40
-    ld.locator(c40).screenshot(path=f"{SHOTS}/3308-raidcard-leader-gaps.png")
-    ld.click(f"{c40} .ev-gaps")
-    ld.wait_for_selector(f"{c40} details.ev-comp[open] .comp-missing", timeout=10000)
-    ld.wait_for_timeout(400)
-    ld.locator(c40).screenshot(path=f"{SHOTS}/3309-raidcard-leader-comp-open.png")
-    # Keyboard: a leader can open a roster name's menu with Enter.
-    ld.focus(f"{c25} .rc-entry .su-name.manageable >> nth=2")
-    ld.keyboard.press("Enter")
-    ld.wait_for_selector(".menu button:has-text('Move to bench')")
-    ld.keyboard.press("Escape")
-    ld.close()
-
-    # Phone and Android widths.
-    for label, kw, shot in (("phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True, "device_scale_factor": 2}, 3310),
-                            ("android", {"viewport": {"width": 393, "height": 852}, "is_mobile": True, "has_touch": True, "device_scale_factor": 2}, 312)):
-        mp = rc_page(member["token"], f"raidcard-{label}", **kw)
-        c25 = rc_card(mp, R25)
-        mp.screenshot(path=f"{SHOTS}/{shot}-{label}-raidcard-25.png")
-        mp.locator(c25).screenshot(path=f"{SHOTS}/{shot + 1}-{label}-raidcard-25-card.png")
-        mp.close()
 
     browser.close()
 
