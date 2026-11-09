@@ -2334,3 +2334,16 @@ img.mc-emoji { width: 18px; height: 18px; object-fit: contain; }
 .upd-progress.indeterminate .upd-fill { width: 35%; animation: upd-slide 1.2s ease-in-out infinite; }
 @keyframes upd-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(290%); } }
 .upd-status { margin-top: 6px; font-size: 13px; }
+
+/* Soft-reserve exports (Everyone's tab, raid leaders): Gargul, softres.it CSV, text */
+.exp-panel { margin: 10px 0 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); display: flex; flex-direction: column; gap: 8px; }
+.exp-bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.exp-kinds .seg-btn { white-space: nowrap; }
+.exp-names { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.exp-names select { background: var(--raised); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font-size: 12px; }
+.exp-help { margin: 0; color: var(--muted); }
+.exp-help code { background: var(--raised); padding: 1px 5px; border-radius: 4px; color: var(--text); }
+.exp-out { width: 100%; box-sizing: border-box; resize: vertical; min-height: 84px; max-height: 240px; background: var(--night); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
+.exp-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ev-btn.primary { background: var(--ember); border-color: var(--ember); color: #1a0d05; }
+@media (max-width: 760px) { .exp-kinds .seg-btn { padding: 6px 9px; font-size: 12px; } }

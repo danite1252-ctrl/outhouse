@@ -301,7 +301,9 @@ function raidLootRow(ev) {
 
 const CATEGORIES = [["all", "All"], ["weapon", "Weapons"], ["armour", "Armour"], ["trinket", "Trinkets"], ["ring", "Rings"], ["neck", "Necks"], ["back", "Backs"], ["other", "Other"]];
 const loot = { dialog: null, root: null, ev: null, tab: "reserve", view: "item", table: null, awards: [], search: null, found: null, finding: false,
-  cat: "all", suits: false, junk: false, trash: true, open: new Map(), polls: 0, pollTimer: null };
+  cat: "all", suits: false, junk: false, trash: true, open: new Map(), polls: 0, pollTimer: null,
+  // Raid leaders' export panel (Everyone's tab): which format, Forever names, what the server made.
+  exp: { open: false, kind: "gargul", names: "full", out: null } };
 
 // Opens the window for a raid (by ID; the raid card's "Soft reserves" link).
 async function openSoftReserves(eventId, tab = "reserve") {
@@ -319,6 +321,7 @@ async function openLoot(ev, tab = "reserve") {
   const sameRaid = loot.ev?.id === ev.id;
   Object.assign(loot, { dialog, ev, tab, table: null, awards: [], found: null, finding: false, polls: 0 });
   if (!sameRaid) Object.assign(loot, { cat: "all", suits: false, junk: false, trash: true, open: new Map() });
+  if (!sameRaid) Object.assign(loot.exp, { open: false, out: null });
   loot.root = el("div", { class: "loot-root" });
   loot.search = el("input", { type: "search", class: "loot-search", placeholder: "Search, or paste a Wowhead link or item ID", maxlength: 400, "aria-label": "Find an item" });
   loot.search.addEventListener("input", () => { loot.found = null; drawLootList(); });
@@ -362,7 +365,7 @@ function lootEventChanged(ev) {
   loot.ev = ev;
   drawLoot();
   clearTimeout(lootEventChanged.timer);
-  lootEventChanged.timer = setTimeout(refreshLoot, 150);
+  lootEventChanged.timer = setTimeout(() => { refreshLoot(); if (loot.exp.open) loadExport(); }, 150);
 }
 
 function applyLootReply(reply) {
@@ -718,8 +721,8 @@ function drawAllTab(ev, manager) {
   const tools = manager ? el("div", { class: "loot-tools" },
     el("button", { type: "button", class: `ev-btn${ev.reserves_locked ? " on" : ""}`, onclick: () => setLock(!ev.reserves_locked) }, ev.reserves_locked ? "🔓 Unlock" : "🔒 Lock reserves"),
     ev.reserve_lock_override != null ? el("button", { type: "button", class: "ev-btn ghost", title: "Lock and unlock on the raid's own schedule again", onclick: () => setLock(null) }, "Auto lock") : null,
-    el("button", { type: "button", class: "ev-btn", onclick: () => exportReserves("csv") }, "⬇ CSV"),
-    el("button", { type: "button", class: "ev-btn", onclick: () => exportReserves("text") }, "📋 Copy list")) : null;
+    el("button", { type: "button", class: `ev-btn${loot.exp.open ? " on" : ""}`, "data-act": "export", "aria-expanded": loot.exp.open ? "true" : "false",
+      title: "Gargul, softres.it CSV or a plain list", onclick: () => toggleExport() }, "📤 Export")) : null;
   let content;
   if (!ev.reserves.length) {
     content = el("p", { class: "muted" }, "Nobody has reserved anything yet.");
@@ -749,6 +752,7 @@ function drawAllTab(ev, manager) {
   const missing = ev.signups.filter((s) => s.status !== "no" && !ev.reserves.some((r) => r.user_id === s.user_id));
   return el("div", { class: "loot-all" },
     el("div", { class: "loot-all-bar" }, views, tools),
+    manager && loot.exp.open ? drawExportPanel(ev) : null,
     content,
     missing.length ? el("p", { class: "muted small loot-noreserve" }, el("strong", {}, `No reserve yet (${missing.length}): `), missing.map(signupLabel).join(", ")) : null);
 }
@@ -765,15 +769,86 @@ async function setLock(locked) {
   toast(locked === true ? "Reserves locked." : locked === false ? "Reserves unlocked." : "Reserves lock on schedule again.");
 }
 
-async function exportReserves(kind) {
-  const ev = loot.ev;
-  const out = await tryApi("GET", `/api/events/${ev.id}/reserves/export`).catch(() => null);
-  if (!out) return;
-  if (kind === "text") return copy(out.text, "Reserves copied: Item — Player, Player");
-  const blob = new Blob([out.csv], { type: "text/csv;charset=utf-8" });
+// ---------- Exports: Gargul, softres.it CSV, plain list ----------
+
+const EXPORT_KINDS = [["gargul", "Gargul"], ["csv", "CSV (softres.it)"], ["text", "Text"]];
+
+function toggleExport() {
+  loot.exp.open = !loot.exp.open;
+  drawLoot();
+  if (loot.exp.open) loadExport();
+}
+
+// Asks the server for all three (they share the names setting).
+async function loadExport() {
+  const ev = loot.ev, x = loot.exp, names = x.names;
+  if (!ev) return;
+  const q = names === "first" ? "?names=first" : "";
+  const [g, e] = await Promise.all([
+    tryApi("GET", `/api/events/${ev.id}/softres/gargul${q}`).catch(() => null),
+    tryApi("GET", `/api/events/${ev.id}/reserves/export${q}`).catch(() => null),
+  ]);
+  if (!loot.dialog || loot.ev?.id !== ev.id || x.names !== names) return;
+  x.out = g && e ? { gargul: g.text, raiders: g.raiders, reserves: g.reserves, csv: e.csv, text: e.text } : null;
+  if (!x.out) x.open = false;
+  drawLoot();
+}
+
+// Two-part WoW: Forever names ("First Last"): we can't tell how Gargul sees them, so it's a choice.
+function hasForeverNames(ev) {
+  return ev.game === "forever" || ev.signups.some((s) => s.character?.last_name);
+}
+
+function exportBox(text, label) {
+  return el("textarea", { class: "exp-out", readonly: true, rows: 5, spellcheck: "false", "aria-label": label, onfocus: (e) => e.target.select() }, text);
+}
+
+function drawExportPanel(ev) {
+  const x = loot.exp, out = x.out;
+  const kinds = el("div", { class: "seg exp-kinds", role: "tablist", "aria-label": "Export format" }, EXPORT_KINDS.map(([k, label]) => el("button", {
+    type: "button", role: "tab", class: `seg-btn${x.kind === k ? " on" : ""}`, "aria-selected": x.kind === k ? "true" : "false", "data-kind": k,
+    onclick: () => { x.kind = k; drawLoot(); },
+  }, label)));
+  const names = hasForeverNames(ev) ? el("label", { class: "exp-names small", title: "WoW: Forever characters have two names. Pick how they appear in the export." }, "Forever names",
+    el("select", { "aria-label": "Forever names", onchange: (e) => { x.names = e.target.value; x.out = null; drawLoot(); loadExport(); } },
+      el("option", { value: "full", selected: x.names === "full" }, "First Last"),
+      el("option", { value: "first", selected: x.names === "first" }, "First only"))) : null;
+  let body;
+  if (!out) body = el("p", { class: "muted small" }, "Making the export…");
+  else if (x.kind === "gargul") {
+    body = [
+      el("p", { class: "small exp-help" }, "In game: ", el("code", {}, "/gl softreserves"), " (or Gargul → Soft-reserves → Import), paste, Import."),
+      exportBox(out.gargul, "Gargul import string"),
+      el("div", { class: "exp-actions" },
+        el("button", { type: "button", class: "ev-btn primary", "data-act": "copy-gargul", onclick: () => copy(out.gargul, "Gargul import copied") }, "📋 Copy for Gargul"),
+        el("span", { class: "muted small" }, `${out.raiders} raider${out.raiders === 1 ? "" : "s"} · ${out.reserves} reserve${out.reserves === 1 ? "" : "s"}`)),
+    ];
+  } else if (x.kind === "csv") {
+    body = [
+      el("p", { class: "small exp-help" }, "The same columns as softres.it's CSV: one row per reserve, by raider. Times are UTC."),
+      exportBox(out.csv, "CSV"),
+      el("div", { class: "exp-actions" },
+        el("button", { type: "button", class: "ev-btn", "data-act": "copy-csv", onclick: () => copy(out.csv, "CSV copied") }, "📋 Copy"),
+        el("button", { type: "button", class: "ev-btn", "data-act": "download-csv", onclick: () => downloadCsv(ev, out.csv) }, "⬇ Download .csv")),
+    ];
+  } else {
+    body = [
+      el("p", { class: "small exp-help" }, "One line per item: Item — Player, Player."),
+      exportBox(out.text || "Nobody has reserved anything yet.", "Reserves as text"),
+      el("div", { class: "exp-actions" },
+        el("button", { type: "button", class: "ev-btn", "data-act": "copy-text", onclick: () => copy(out.text, "Reserves copied") }, "📋 Copy")),
+    ];
+  }
+  return el("div", { class: "exp-panel", "data-kind": x.kind },
+    el("div", { class: "exp-bar" }, kinds, names),
+    body);
+}
+
+function downloadCsv(ev, csv) {
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const safe = ev.title.replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "-") || "raid";
-  const a = el("a", { href: url, download: `${safe}-soft-reserves.csv` });
+  const a = el("a", { href: url, download: `${safe}-softres.csv` });
   document.body.append(a);
   a.click();
   a.remove();
@@ -1016,6 +1091,15 @@ handleEvent = function (ev) {
   if (ev.t === "EVENT_UPDATE") lootEventChanged(ev.d);
   if (ev.t === "EVENT_DELETE" && loot.dialog && loot.ev?.id === ev.d.id) loot.dialog.close();
   lootBaseHandle(ev);
+  if (ev.t === "READY" && state.pendingRaid) {
+    // Opened from a raid link (/app?guild=…&channel=…&event=…, e.g. Gargul's softres link).
+    const id = state.pendingRaid;
+    state.pendingRaid = null;
+    setTimeout(async () => {
+      const raid = await api("GET", `/api/events/${id}`).catch(() => null);
+      if (raid) openRaid(raid);
+    }, 1200);
+  }
 };
 
 const lootBaseOpenProfile = openProfile;

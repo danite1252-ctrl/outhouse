@@ -28,6 +28,7 @@ pub mod raid_settings;
 mod roles;
 pub mod scheduled;
 mod search;
+mod softres;
 pub mod sounds;
 mod stickers;
 pub mod threads;
@@ -300,7 +301,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/events/{id}/reserves", put(loot::reserve))
         .route("/api/events/{id}/reserves/lock", put(loot::set_lock))
-        .route("/api/events/{id}/reserves/export", get(loot::export))
+        .route("/api/events/{id}/reserves/export", get(softres::export))
+        .route("/api/events/{id}/softres/gargul", get(softres::gargul))
         .route("/api/events/{id}/reserves/{item}", delete(loot::unreserve))
         .route(
             "/api/events/{id}/loot",

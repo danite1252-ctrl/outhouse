@@ -13,6 +13,7 @@ axum = { version = "0.8", features = ["ws", "macros", "multipart"] }
 chrono.workspace = true
 dotenvy = "0.15"
 feed-rs = "2"
+flate2 = "1"
 futures = "0.3"
 hmac = "0.12"
 ring = "0.17"

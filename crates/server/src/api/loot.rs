@@ -356,7 +356,7 @@ async fn build_table(
 
 /// The items on a raid's list (not counting reserves made by name),
 /// without waiting for Wowhead.
-async fn table_items(st: &AppState, row: &EventRow) -> AppResult<Vec<LootItem>> {
+pub(super) async fn table_items(st: &AppState, row: &EventRow) -> AppResult<Vec<LootItem>> {
     Ok(build_table(st, row, false, Duration::ZERO, false)
         .await?
         .items)
@@ -824,7 +824,7 @@ pub async fn item_icon(
 
 // ---- Reserving ---------------------------------------------------------------------
 
-async fn require_manager(
+pub(super) async fn require_manager(
     st: &AppState,
     row: &EventRow,
     access: &crate::perms::ChannelAccess,
@@ -836,11 +836,11 @@ async fn require_manager(
     }
 }
 
-fn signup_of(signups: &[EventSignup], user_id: i64) -> Option<&EventSignup> {
+pub(super) fn signup_of(signups: &[EventSignup], user_id: i64) -> Option<&EventSignup> {
     signups.iter().find(|s| s.user_id == user_id)
 }
 
-fn person(s: Option<&EventSignup>, fallback: &str) -> String {
+pub(super) fn person(s: Option<&EventSignup>, fallback: &str) -> String {
     match s {
         Some(s) => s
             .character
@@ -1034,75 +1034,18 @@ pub async fn set_lock(
     Ok(Json(broadcast(&st, event_id).await?))
 }
 
-/// Puts a CSV field in quotes when it needs them, and stops spreadsheets
-/// treating it as a formula.
-fn csv_field(raw: &str) -> String {
-    let mut v = raw.replace(['\r', '\n'], " ");
-    if v.starts_with(['=', '+', '-', '@', '\t']) {
+/// Puts a CSV field in quotes when it needs them (RFC 4180: commas, quotes
+/// and line breaks), and stops spreadsheets treating it as a formula.
+pub(super) fn csv_field(raw: &str) -> String {
+    let mut v = raw.replace("\r\n", "\n");
+    if v.starts_with(['=', '+', '-', '@', '\t', '\r']) {
         v.insert(0, '\'');
     }
-    if v.contains([',', '"']) || v.starts_with(' ') || v.ends_with(' ') {
+    if v.contains([',', '"', '\n', '\r']) || v.starts_with(' ') || v.ends_with(' ') {
         format!("\"{}\"", v.replace('"', "\"\""))
     } else {
         v
     }
-}
-
-#[derive(Serialize)]
-pub struct ReserveExport {
-    /// Item ID, Item, Player, Character, Class, Spec, Reserved at.
-    pub csv: String,
-    /// "Item — Player1, Player2", one item per line.
-    pub text: String,
-}
-
-/// `GET /api/events/{id}/reserves/export` (raid leaders).
-pub async fn export(
-    State(st): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(event_id): Path<i64>,
-) -> AppResult<Json<ReserveExport>> {
-    let (row, access) = load(&st, event_id, user.id).await?;
-    require_manager(&st, &row, &access).await?;
-    let ev = build(&st.db, vec![row])
-        .await?
-        .pop()
-        .ok_or(AppError::NotFound)?;
-    let mut csv = String::from("Item ID,Item,Player,Character,Class,Spec,Reserved at\n");
-    let mut by_item: Vec<(i32, String, Vec<String>)> = Vec::new();
-    for r in &ev.reserves {
-        let s = signup_of(&ev.signups, r.user_id);
-        let player = s.map(|s| s.display_name.clone()).unwrap_or_default();
-        let character = s
-            .and_then(|s| s.character.as_ref())
-            .map(|c| c.full_name.clone())
-            .unwrap_or_default();
-        csv.push_str(
-            &[
-                r.item_id.to_string(),
-                csv_field(&r.item_name),
-                csv_field(&player),
-                csv_field(&character),
-                csv_field(s.map(|s| s.class.as_str()).unwrap_or("")),
-                csv_field(s.map(|s| s.spec.as_str()).unwrap_or("")),
-                r.reserved_at.format("%Y-%m-%d %H:%M UTC").to_string(),
-            ]
-            .join(","),
-        );
-        csv.push('\n');
-        let name = person(s, &player);
-        match by_item.iter_mut().find(|i| i.0 == r.item_id) {
-            Some(i) => i.2.push(name),
-            None => by_item.push((r.item_id, r.item_name.clone(), vec![name])),
-        }
-    }
-    by_item.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
-    let text = by_item
-        .iter()
-        .map(|(_, item, names)| format!("{item} — {}", names.join(", ")))
-        .collect::<Vec<_>>()
-        .join("\n");
-    Ok(Json(ReserveExport { csv, text }))
 }
 
 // ---- The raid's loot list ---------------------------------------------------------------
@@ -1554,5 +1497,7 @@ mod tests {
         );
         assert_eq!(csv_field("=HYPERLINK(1)"), "'=HYPERLINK(1)");
         assert_eq!(csv_field("say \"hi\""), "\"say \"\"hi\"\"\"");
+        assert_eq!(csv_field("two\r\nlines"), "\"two\nlines\"");
+        assert_eq!(csv_field("Danité"), "Danité");
     }
 }
