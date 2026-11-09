@@ -580,6 +580,10 @@ function openRaidDialog(existing = null, { scope = "one", date = null } = {}) {
     ends.value = ev.repeat.count ? "count" : ev.repeat.until ? "until" : "never";
     if (ev.repeat.until) until.value = ev.repeat.until;
     if (ev.repeat.count) count.value = ev.repeat.count;
+    // A counted series: how many from this raid on.
+    ends.addEventListener("change", () => {
+      if (ends.value === "count" && endsValue.firstChild?.nodeType === 3) endsValue.firstChild.textContent = "How many from this raid on";
+    });
     ends.dispatchEvent(new Event("change"));
     repeatBox.hidden = false;
   }
