@@ -219,6 +219,9 @@ setInterval(() => {
   if (!guild || !/^\d+$/.test(guild) || (channel && !/^\d+$/.test(channel))) return;
   // A thread reply's notification opens the thread once the channel is up.
   if (threadId && /^\d+$/.test(threadId)) state.pendingThread = threadId;
+  // A raid's link opens the raid once the channel is up.
+  const raidId = q.get("event");
+  if (raidId && /^\d+$/.test(raidId)) state.pendingRaid = raidId;
   history.replaceState(null, "", location.pathname);
   try {
     if (guild === "0") {

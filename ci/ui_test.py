@@ -4,6 +4,7 @@ Fails on any JavaScript error and saves screenshots (uploaded by CI) so the
 new screens can be eyeballed without deploying.
 """
 
+import base64
 import json
 import os
 import sys
@@ -3163,6 +3164,42 @@ with sync_playwright() as p:
     lp.wait_for_function(f"!document.querySelector(\"dialog.loot-dialog .sr-trow[data-user='{ERIN}']\")?.textContent.includes('Choker')", timeout=10000)
     lp.click("dialog.loot-dialog .loot-tools button:has-text('Unlock')")
     lp.wait_for_selector("dialog.loot-dialog .loot-tools button:has-text('Lock reserves')", timeout=10000)
+    # Exports: Gargul (default), softres.it CSV and the plain list.
+    lp.click("dialog.loot-dialog .loot-tools button[data-act='export']")
+    lp.wait_for_selector("dialog.loot-dialog .exp-panel[data-kind='gargul'] .exp-kinds .seg-btn.on:has-text('Gargul')")
+    lp.wait_for_selector("dialog.loot-dialog .exp-panel button[data-act='copy-gargul']", timeout=10000)
+    lp.wait_for_selector("dialog.loot-dialog .exp-help:has-text('/gl softreserves')")
+    lp.wait_for_selector("dialog.loot-dialog .exp-names select")
+    gtext = lp.input_value("dialog.loot-dialog .exp-panel textarea.exp-out")
+    gdata = json.loads(zlib.decompress(base64.b64decode(gtext)).decode("ascii"))
+    assert gdata["metadata"]["instances"] == ["moltencore"], gdata["metadata"]
+    assert gdata["metadata"]["url"].endswith(f"&event={SRID}"), gdata["metadata"]["url"]
+    got = {r["name"]: [i["id"] for i in r["items"]] for r in gdata["softreserves"]}
+    assert got == {"Carol": [16922], "Dave": [17076], "Erin": [17076]}, got
+    assert [r["name"] for r in gdata["softreserves"]] == ["Carol", "Dave", "Erin"]
+    lp.context.grant_permissions(["clipboard-read", "clipboard-write"], origin=BASE)
+    lp.click("dialog.loot-dialog .exp-panel button[data-act='copy-gargul']")
+    lp.wait_for_selector(".toast:has-text('Gargul import copied')", timeout=5000)
+    assert lp.evaluate("navigator.clipboard.readText()") == gtext
+    lp.wait_for_timeout(200)
+    lp.screenshot(path=f"{SHOTS}/330-desktop-sr-export-gargul.png")
+    lp.click("dialog.loot-dialog .exp-kinds .seg-btn[data-kind='csv']")
+    lp.wait_for_selector("dialog.loot-dialog .exp-panel[data-kind='csv'] button[data-act='download-csv']")
+    csv = lp.input_value("dialog.loot-dialog .exp-panel textarea.exp-out")
+    assert csv.startswith("Item Name,Item ID,From,Raider Name,Raider Class,Raider Spec,Raider Note,Extra Reserves,Date\nLeggings of Transcendence,16922,"), csv
+    assert len(csv.strip().split("\n")) == 4, csv
+    with lp.expect_download() as dl:
+        lp.click("dialog.loot-dialog .exp-panel button[data-act='download-csv']")
+    assert dl.value.suggested_filename.endswith("-softres.csv"), dl.value.suggested_filename
+    lp.wait_for_timeout(200)
+    lp.screenshot(path=f"{SHOTS}/331-desktop-sr-export-csv.png")
+    lp.click("dialog.loot-dialog .exp-kinds .seg-btn[data-kind='text']")
+    lp.wait_for_selector("dialog.loot-dialog .exp-panel[data-kind='text'] button[data-act='copy-text']")
+    text = lp.input_value("dialog.loot-dialog .exp-panel textarea.exp-out")
+    assert "Bonereaver's Edge — Dave, Erin" in text, text
+    lp.screenshot(path=f"{SHOTS}/332-desktop-sr-export-text.png")
+    lp.click("dialog.loot-dialog .loot-tools button[data-act='export']")
+    lp.wait_for_selector("dialog.loot-dialog .exp-panel", state="detached")
     # Picking: search the list, reserve, hover for the tooltip.
     lp.click("dialog.loot-dialog .loot-tab:has-text('Reserve')")
     lp.fill("dialog.loot-dialog .loot-search", "bone")
@@ -3325,6 +3362,12 @@ with sync_playwright() as p:
             mp.wait_for_selector("dialog.loot-dialog .sr-trow[data-item='17076']", timeout=10000)
             mp.wait_for_timeout(250)
             mp.screenshot(path=f"{SHOTS}/{n + 1}-{label}-sr-table.png")
+            mp.click("dialog.loot-dialog .loot-tools button[data-act='export']")
+            mp.wait_for_selector("dialog.loot-dialog .exp-panel button[data-act='copy-gargul']", timeout=10000)
+            mp.evaluate("document.querySelector('dialog.loot-dialog .exp-panel')?.scrollIntoView({block: 'start'})")
+            mp.wait_for_timeout(250)
+            mp.screenshot(path=f"{SHOTS}/333-{label}-sr-export-gargul.png")
+            mp.click("dialog.loot-dialog .loot-tools button[data-act='export']")
             mp.click("dialog.loot-dialog .loot-tab:has-text('Reserve')")
             mp.wait_for_selector("dialog.loot-dialog .loot-row[data-item='17076']")
             mp.wait_for_timeout(300)

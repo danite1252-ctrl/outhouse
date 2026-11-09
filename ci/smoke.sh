@@ -1241,9 +1241,9 @@ call GET "/api/guilds/$GUILD/audit-log?action=loot_reserve_remove" | jq -e '.ent
 call GET "/api/guilds/$GUILD/audit-log?action=loot_reserves_lock" | jq -e '.entries[0].details | startswith("Locked soft reserves")' >/dev/null
 call PUT "/api/events/$SRE/reserves/lock" '{"locked":false}' | jq -e '(.event.reserves_locked | not) and .event.reserve_lock_override == false' >/dev/null
 call PUT "/api/events/$SRE/reserves/lock" '{"locked":null}' | jq -e '(.event.reserves_locked | not) and .event.reserve_lock_override == null' >/dev/null
-# Export: CSV (quoted, one row per reserve) and "Item — Player, Player".
+# Export: softres.it CSV (one row per reserve) and "Item — Player, Player".
 EXP=$(call GET "/api/events/$SRE/reserves/export")
-jq -e '(.csv | startswith("Item ID,Item,Player,Character,Class,Spec,Reserved at\n17076,Bonereaver'"'"'s Edge,Bob,,Priest,Holy,"))
+jq -e '(.csv | startswith("Item Name,Item ID,From,Raider Name,Raider Class,Raider Spec,Raider Note,Extra Reserves,Date\nBonereaver'"'"'s Edge,17076,Ragnaros,Bob,Priest,Holy,,0,"))
   and (.csv | split("\n") | map(select(length > 0)) | length == 4)
   and (.text | split("\n")) == ["Bonereaver'"'"'s Edge — Bob", "Leggings of Transcendence — Bob", "Skyborne Sash — Carl"]' <<<"$EXP" >/dev/null || { echo "odd export: $EXP"; exit 1; }
 # Back to one each: people keep their first.
@@ -1283,6 +1283,55 @@ call PATCH "/api/events/$L1" '{"scope":"future","soft_reserves":0,"loot_instance
 pevents "$LNEW" | jq -e 'all(.[]; .soft_reserves == 0)' >/dev/null
 pevents "$LSER" | jq -e '.[0].soft_reserves == 2' >/dev/null
 call GET "/api/guilds/$GUILD/loot-instances" | jq -e 'any(.[]; .key == "My New Raid" and (.builtin | not))' >/dev/null
+
+step "soft-reserve exports: softres.it CSV and the Gargul import string"
+GXE=$(call POST "/api/channels/$LC/events" '{"title":"Gargul night","description":"First line\nSecond line","starts_at":"'"$START"'","game":"forever","soft_reserves":2,"reserve_lock":"manual","loot_instance":"Molten Core"}' | jq -r .event.id)
+TOKEN=$TOKEN_B
+GCH=$(call POST /api/users/@me/characters '{"name":"Danité","last_name":"Shambulàncè","class":"Shaman","level":60}' | jq -r .id)
+call PUT "/api/events/$GXE/signup" '{"status":"yes","role":"dps","class":"Shaman","spec":"elemental","note":"say \"hi\", ok","character_id":"'"$GCH"'"}' \
+  | jq -e '.event.signups[0].character.full_name == "Danité Shambulàncè"' >/dev/null
+call PUT "/api/events/$GXE/reserves" '{"query":"https://www.wowhead.com/classic/item=19019/thunderfury"}' >/dev/null
+call PUT "/api/events/$GXE/reserves" '{"item_id":17076}' >/dev/null
+# Only raid leaders export.
+fail_call GET "/api/events/$GXE/softres/gargul"
+fail_call GET "/api/events/$GXE/reserves/export"
+TOKEN=$TOKEN_C
+call PUT "/api/events/$GXE/signup" '{"status":"yes","role":"dps","class":"Rogue","spec":"Combat"}' >/dev/null
+call PUT "/api/events/$GXE/reserves" '{"item_id":17076}' >/dev/null
+TOKEN=$OUT; fail_call GET "/api/events/$GXE/softres/gargul"; fail_call GET "/api/events/$GXE/reserves/export?names=first"; TOKEN=$TOKEN_A
+# softres.it's CSV: its header, RFC 4180 quoting, UTF-8 names, by raider, the boss from the loot list, UTC times.
+GEXP=$(call GET "/api/events/$GXE/reserves/export")
+jq -e '(.csv | split("\n")) as $l | ($l | length == 5) and $l[4] == ""
+  and $l[0] == "Item Name,Item ID,From,Raider Name,Raider Class,Raider Spec,Raider Note,Extra Reserves,Date"
+  and ($l[1] | test("^Bonereaver'"'"'s Edge,17076,Ragnaros,Carl,Rogue,Combat,,0,[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$"))
+  and ($l[2] | test("^\"Thunderfury, Blessed Blade of the Windseeker\",19019,[^,]*,Danité Shambulàncè,Shaman,Elemental,\"say \"\"hi\"\", ok\",0,[0-9-]{10} [0-9:]{8}$"))
+  and ($l[3] | startswith("Bonereaver'"'"'s Edge,17076,Ragnaros,Danité Shambulàncè,Shaman,Elemental,\"say \"\"hi\"\", ok\",0,"))
+  and (.text | split("\n")) == ["Bonereaver'"'"'s Edge — Danité Shambulàncè, Carl", "Thunderfury, Blessed Blade of the Windseeker — Danité Shambulàncè"]' <<<"$GEXP" >/dev/null \
+  || { echo "odd softres CSV: $GEXP"; exit 1; }
+call GET "/api/events/$GXE/reserves/export?names=first" | jq -e '.csv | contains(",Danité,Shaman,") and (contains("Shambul") | not)' >/dev/null
+# Gargul: base64(zlib(JSON)), escaped like softres.it (\/ and \uXXXX), one entry per raider.
+gargul_json() { python3 -c 'import sys,json,base64,zlib; print(zlib.decompress(base64.b64decode(json.load(sys.stdin)["text"], validate=True)).decode("ascii"))'; }
+GG=$(call GET "/api/events/$GXE/softres/gargul")
+jq -e '.raiders == 2 and .reserves == 3' <<<"$GG" >/dev/null
+GJ=$(gargul_json <<<"$GG")
+grep -qF '"name":"Danité Shambulàncè"' <<<"$GJ" || { echo "unescaped Gargul JSON: $GJ"; exit 1; }
+grep -qF ':\/\/' <<<"$GJ" || { echo "slashes not escaped: $GJ"; exit 1; }
+grep -qF '{"metadata":{"id":"' <<<"$GJ" || { echo "odd Gargul order: $GJ"; exit 1; }
+jq -e --arg e "$GXE" '(.metadata | keys_unsorted) == ["id","url","instances","hidden","created_at","updated_at","raidStartsAt","lockedAt","discordUrl","note","bonusrolls_consumed_on_use"]
+  and (.metadata.id | test("^[0-9a-zA-Z]{8}$")) and (.metadata.url | test("/app\\?guild=[0-9]+&channel=[0-9]+&event=" + $e + "$"))
+  and .metadata.instances == ["moltencore"] and (.metadata.hidden | not) and .metadata.lockedAt == null and .metadata.discordUrl == ""
+  and .metadata.note == "First line" and (.metadata.bonusrolls_consumed_on_use | not)
+  and (.metadata.created_at | type == "number") and .metadata.updated_at >= .metadata.created_at and (.metadata.raidStartsAt | type == "number")
+  and .softreserves == [
+    {"name":"Carl","class":"rogue","note":null,"items":[{"id":17076,"note":"","order":0}]},
+    {"name":"Danité Shambulàncè","class":"shaman","note":"say \"hi\", ok","items":[{"id":19019,"note":"","order":0},{"id":17076,"note":"","order":1}]}]
+  and .hardreserves == [] and .bonusrolls == []' <<<"$GJ" >/dev/null || { echo "odd Gargul export: $GJ"; exit 1; }
+# Same raid, same ID; first names only; locked reserves say when.
+call PUT "/api/events/$GXE/reserves/lock" '{"locked":true}' >/dev/null
+GJ2=$(call GET "/api/events/$GXE/softres/gargul?names=first" | gargul_json)
+jq -e --argjson a "$GJ" '.metadata.id == $a.metadata.id and (.metadata.lockedAt | type == "number")
+  and [.softreserves[].name] == ["Carl", "Danité"]' <<<"$GJ2" >/dev/null || { echo "odd Gargul export (first names): $GJ2"; exit 1; }
+call PUT "/api/events/$GXE/reserves/lock" '{"locked":null}' >/dev/null
 
 step "loot won and the loot log"
 TOKEN=$OUT; OUTSIDER_ID=$(call GET /api/users/@me | jq -r .id); TOKEN=$TOKEN_A
