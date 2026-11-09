@@ -62,7 +62,7 @@ pub(crate) struct EventRow {
     attendance_taken: bool,
     post_rule: Option<DbJson<PostRule>>,
     post_at: Option<DateTime<Utc>>,
-    game: String,
+    pub game: String,
     card_cleanup: String,
     card_removed_at: Option<DateTime<Utc>>,
     pub soft_reserves: i32,

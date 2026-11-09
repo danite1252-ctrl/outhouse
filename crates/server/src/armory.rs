@@ -996,6 +996,7 @@ pub async fn item_embed(st: &AppState, query: &str) -> Option<Embed> {
         quality: quality_of(&item["quality"]),
         icon: String::new(),
         tooltip: lines.join("\n"),
+        lines: String::new(),
     };
     let mut embed = crate::wowhead::item_embed(&st.config, &info, None);
     embed.thumbnail_url = media

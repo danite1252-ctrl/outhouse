@@ -799,6 +799,232 @@ pub const INSTANCES: &[(&str, &str, &str, i32)] = &[
     ("swp", "Sunwell Plateau", "tbc", 25),
 ];
 
+/// Each listed raid's zone on Wowhead and its bosses in the usual kill
+/// order (Wowhead lists loot in its own order; this puts the boss sections
+/// in raid order, anything else goes after). Zone IDs are the game's own
+/// area IDs, the same on every Wowhead branch (Classic, TBC, WoW: Forever).
+pub const INSTANCE_ZONES: &[(&str, i32, &[&str])] = &[
+    (
+        "mc",
+        2717,
+        &[
+            "Lucifron",
+            "Magmadar",
+            "Gehennas",
+            "Garr",
+            "Shazzrah",
+            "Baron Geddon",
+            "Sulfuron Harbinger",
+            "Golemagg the Incinerator",
+            "Majordomo Executus",
+            "Cache of the Firelord",
+            "Ragnaros",
+        ],
+    ),
+    ("ony", 2159, &["Onyxia"]),
+    (
+        "bwl",
+        2677,
+        &[
+            "Razorgore the Untamed",
+            "Vaelastrasz the Corrupt",
+            "Broodlord Lashlayer",
+            "Firemaw",
+            "Ebonroc",
+            "Flamegor",
+            "Chromaggus",
+            "Nefarian",
+        ],
+    ),
+    (
+        "zg",
+        1977,
+        &[
+            "High Priestess Jeklik",
+            "High Priest Venoxis",
+            "High Priestess Mar'li",
+            "Bloodlord Mandokir",
+            "Gri'lek",
+            "Hazza'rah",
+            "Renataki",
+            "Wushoolay",
+            "Gahz'ranka",
+            "High Priest Thekal",
+            "High Priestess Arlokk",
+            "Jin'do the Hexxer",
+            "Hakkar",
+        ],
+    ),
+    (
+        "aq20",
+        3429,
+        &[
+            "Kurinnaxx",
+            "General Rajaxx",
+            "Moam",
+            "Buru the Gorger",
+            "Ayamiss the Hunter",
+            "Ossirian the Unscarred",
+        ],
+    ),
+    (
+        "aq40",
+        3428,
+        &[
+            "The Prophet Skeram",
+            "Lord Kri",
+            "Princess Yauj",
+            "Vem",
+            "Battleguard Sartura",
+            "Fankriss the Unyielding",
+            "Viscidus",
+            "Princess Huhuran",
+            "Emperor Vek'lor",
+            "Emperor Vek'nilash",
+            "Ouro",
+            "C'Thun",
+        ],
+    ),
+    (
+        "naxx",
+        3456,
+        &[
+            "Anub'Rekhan",
+            "Grand Widow Faerlina",
+            "Maexxna",
+            "Noth the Plaguebringer",
+            "Heigan the Unclean",
+            "Loatheb",
+            "Instructor Razuvious",
+            "Gothik the Harvester",
+            "The Four Horsemen",
+            "Four Horsemen Chest",
+            "Patchwerk",
+            "Grobbulus",
+            "Gluth",
+            "Thaddius",
+            "Sapphiron",
+            "Kel'Thuzad",
+        ],
+    ),
+    (
+        "kara",
+        3457,
+        &[
+            "Attumen the Huntsman",
+            "Moroes",
+            "Maiden of Virtue",
+            "The Big Bad Wolf",
+            "Romulo",
+            "Julianne",
+            "The Crone",
+            "The Curator",
+            "Terestian Illhoof",
+            "Shade of Aran",
+            "Netherspite",
+            "Chess Event",
+            "Prince Malchezaar",
+            "Nightbane",
+        ],
+    ),
+    (
+        "gruul",
+        3923,
+        &["High King Maulgar", "Gruul the Dragonkiller"],
+    ),
+    ("mag", 3836, &["Magtheridon"]),
+    (
+        "ssc",
+        3607,
+        &[
+            "Hydross the Unstable",
+            "The Lurker Below",
+            "Leotheras the Blind",
+            "Fathom-Lord Karathress",
+            "Morogrim Tidewalker",
+            "Lady Vashj",
+        ],
+    ),
+    (
+        "tk",
+        3845,
+        &[
+            "Al'ar",
+            "Void Reaver",
+            "High Astromancer Solarian",
+            "Kael'thas Sunstrider",
+        ],
+    ),
+    (
+        "hyjal",
+        3606,
+        &[
+            "Rage Winterchill",
+            "Anetheron",
+            "Kaz'rogal",
+            "Azgalor",
+            "Archimonde",
+        ],
+    ),
+    (
+        "bt",
+        3959,
+        &[
+            "High Warlord Naj'entus",
+            "Supremus",
+            "Shade of Akama",
+            "Teron Gorefiend",
+            "Gurtogg Bloodboil",
+            "Reliquary of Souls",
+            "Essence of Anger",
+            "Mother Shahraz",
+            "The Illidari Council",
+            "Illidan Stormrage",
+        ],
+    ),
+    (
+        "za",
+        3805,
+        &[
+            "Nalorakk",
+            "Akil'zon",
+            "Jan'alai",
+            "Halazzi",
+            "Hex Lord Malacrass",
+            "Zul'jin",
+        ],
+    ),
+    (
+        "swp",
+        4075,
+        &[
+            "Kalecgos",
+            "Brutallus",
+            "Felmyst",
+            "Lady Sacrolash",
+            "Grand Warlock Alythess",
+            "M'uru",
+            "Kil'jaeden",
+        ],
+    ),
+];
+
+/// A listed raid's Wowhead zone ID.
+pub fn instance_zone(key: &str) -> Option<i32> {
+    INSTANCE_ZONES.iter().find(|z| z.0 == key).map(|z| z.1)
+}
+
+/// Where a boss comes in a listed raid (unknown bosses after, in the order
+/// Wowhead gave them).
+pub fn boss_rank(key: &str, boss: &str) -> Option<usize> {
+    INSTANCE_ZONES
+        .iter()
+        .find(|z| z.0 == key)?
+        .2
+        .iter()
+        .position(|b| b.eq_ignore_ascii_case(boss))
+}
+
 /// A few famous items per raid so the lists work out of the box:
 /// (raid, item ID, name, quality, boss). IDs are Wowhead's. Leaders add the
 /// rest themselves.
@@ -808,14 +1034,10 @@ pub const SEED_ITEMS: &[(&str, i32, &str, i32, &str)] = &[
     ("mc", 17076, "Bonereaver's Edge", 4, "Ragnaros"),
     ("mc", 17106, "Malistar's Defender", 4, "Ragnaros"),
     ("mc", 16922, "Leggings of Transcendence", 4, "Ragnaros"),
-    ("mc", 18563, "Bindings of the Windseeker (left)", 5, "Garr"),
-    (
-        "mc",
-        18564,
-        "Bindings of the Windseeker (right)",
-        5,
-        "Baron Geddon",
-    ),
+    // The left binding drops from Baron Geddon, the right one from Garr
+    // (both are called "Bindings of the Windseeker" in game).
+    ("mc", 18563, "Bindings of the Windseeker", 5, "Baron Geddon"),
+    ("mc", 18564, "Bindings of the Windseeker", 5, "Garr"),
     ("mc", 17069, "Striker's Mark", 4, "Magmadar"),
     (
         "mc",
@@ -886,7 +1108,13 @@ pub const SEED_ITEMS: &[(&str, i32, &str, i32, &str)] = &[
     ("aq40", 21134, "Dark Edge of Insanity", 4, "C'Thun"),
     ("aq40", 21126, "Death's Sting", 4, "C'Thun"),
     ("aq40", 21221, "Eye of C'Thun", 4, "C'Thun"),
-    ("aq40", 21128, "Staff of the Qiraji Prophets", 4, ""),
+    (
+        "aq40",
+        21128,
+        "Staff of the Qiraji Prophets",
+        4,
+        "The Prophet Skeram",
+    ),
     ("aq40", 21218, "Blue Qiraji Resonating Crystal", 4, ""),
     (
         "naxx",
@@ -943,13 +1171,8 @@ pub const SEED_ITEMS: &[(&str, i32, &str, i32, &str)] = &[
     ("hyjal", 30902, "Cataclysm's Edge", 4, "Archimonde"),
     ("hyjal", 30910, "Tempest of Chaos", 4, "Archimonde"),
     ("bt", 32837, "Warglaive of Azzinoth", 5, "Illidan Stormrage"),
-    (
-        "bt",
-        32838,
-        "Warglaive of Azzinoth (off hand)",
-        5,
-        "Illidan Stormrage",
-    ),
+    // Main hand and off hand share the name.
+    ("bt", 32838, "Warglaive of Azzinoth", 5, "Illidan Stormrage"),
     (
         "bt",
         32336,
@@ -1013,24 +1236,297 @@ pub fn builtin_instances() -> Vec<LootInstance> {
 }
 
 /// An item on a raid's loot list.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct LootItem {
     pub item_id: i32,
     pub name: String,
     pub quality: i32,
+    /// Who drops it ("" = trash or unknown).
     #[serde(default)]
     pub boss: String,
     /// Added by a raid leader in this outhouse (they can remove it).
     #[serde(default)]
     pub custom: bool,
+    /// Wowhead's icon name ("" if unknown); the picture is at
+    /// `/api/wow/item-icons/{item_id}`.
+    #[serde(default)]
+    pub icon: String,
+    /// "Two-Hand Sword", "Plate Chest", "Trinket", … ("" if unknown).
+    #[serde(default)]
+    pub slot: String,
+    /// "weapon", "armour", "trinket", "ring", "neck", "back" or "other".
+    #[serde(default)]
+    pub category: String,
+    /// "cloth", "leather", "mail", "plate" or "".
+    #[serde(default)]
+    pub armour: String,
+    /// Which classes it suits ([`class_bit`] bits; 0 = unknown, anyone).
+    #[serde(default)]
+    pub classes: u32,
+    /// Drop chance in percent, when Wowhead has one.
+    #[serde(default)]
+    pub chance: Option<f32>,
+    /// A trash drop (not from a boss).
+    #[serde(default)]
+    pub trash: bool,
+}
+
+/// A Wowhead page a raid's loot list is read from.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct LootSource {
+    /// "zone", "npc" or "object".
+    pub kind: String,
+    pub id: i32,
+    /// Wowhead's branch it was read from ("classic", "tbc", … "" = retail).
+    pub branch: String,
+    pub name: String,
+    /// The page on Wowhead.
+    pub url: String,
+    /// The raid's own zone (not removable); else imported by a raid leader.
+    pub builtin: bool,
+    /// "ok", "pending" (not read yet), "missing" (Wowhead doesn't have it)
+    /// or "error" (Wowhead didn't answer; the saved list is shown).
+    pub status: String,
+    pub items: usize,
+    #[serde(default)]
+    pub fetched_at: Option<DateTime<Utc>>,
 }
 
 /// `GET /api/events/{id}/loot-table`
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct LootTable {
     pub instance: String,
     pub instance_name: String,
     pub items: Vec<LootItem>,
+    /// Bosses in raid order (for the picker's sections).
+    #[serde(default)]
+    pub bosses: Vec<String>,
+    #[serde(default)]
+    pub sources: Vec<LootSource>,
+    /// Item links point here: `{item_base}/item={id}`.
+    #[serde(default)]
+    pub item_base: String,
+    /// …which is this Wowhead branch ("classic", "tbc", …).
+    #[serde(default)]
+    pub item_branch: String,
+    /// Still being read from Wowhead (ask again in a few seconds).
+    #[serde(default)]
+    pub refreshing: bool,
+    /// Wowhead couldn't be read, so this is the built-in short list.
+    #[serde(default)]
+    pub offline: bool,
+}
+
+/// `POST /api/events/{id}/loot-sources` (raid leaders): read a raid's loot
+/// from a Wowhead zone, NPC or object (chest) link.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LootSourceRequest {
+    pub url: String,
+}
+
+// ---- Item details from Wowhead's numbers ---------------------------------
+
+/// Classes as bits (Blizzard's class IDs: bit `id - 1`).
+pub const CLASS_BITS: &[(&str, u32)] = &[
+    ("Warrior", 1),
+    ("Paladin", 2),
+    ("Hunter", 4),
+    ("Rogue", 8),
+    ("Priest", 16),
+    ("Shaman", 64),
+    ("Mage", 128),
+    ("Warlock", 256),
+    ("Druid", 1024),
+];
+pub const ALL_CLASSES: u32 = 1503;
+
+pub fn class_bit(class: &str) -> u32 {
+    CLASS_BITS
+        .iter()
+        .find(|c| c.0.eq_ignore_ascii_case(class))
+        .map(|c| c.1)
+        .unwrap_or(0)
+}
+
+fn bits(classes: &[&str]) -> u32 {
+    classes.iter().map(|c| class_bit(c)).fold(0, |a, b| a | b)
+}
+
+/// Inventory slot names (Wowhead's `slot`).
+fn slot_name(slot: i32) -> &'static str {
+    match slot {
+        1 => "Head",
+        2 => "Neck",
+        3 => "Shoulder",
+        4 => "Shirt",
+        5 | 20 => "Chest",
+        6 => "Waist",
+        7 => "Legs",
+        8 => "Feet",
+        9 => "Wrist",
+        10 => "Hands",
+        11 => "Ring",
+        12 => "Trinket",
+        13 => "One-Hand",
+        14 => "Shield",
+        15 | 26 => "Ranged",
+        16 => "Back",
+        17 => "Two-Hand",
+        18 => "Bag",
+        19 => "Tabard",
+        21 => "Main Hand",
+        22 => "Off Hand",
+        23 => "Held In Off-hand",
+        25 => "Thrown",
+        28 => "Relic",
+        _ => "",
+    }
+}
+
+fn weapon_name(subclass: i32) -> &'static str {
+    match subclass {
+        0 | 1 => "Axe",
+        2 => "Bow",
+        3 => "Gun",
+        4 | 5 => "Mace",
+        6 => "Polearm",
+        7 | 8 => "Sword",
+        10 => "Staff",
+        13 => "Fist Weapon",
+        15 => "Dagger",
+        16 => "Thrown",
+        18 => "Crossbow",
+        19 => "Wand",
+        20 => "Fishing Pole",
+        _ => "",
+    }
+}
+
+/// Armour type of an armour item ("" for the rest).
+pub fn armour_type(item_class: i32, subclass: i32, slot: i32) -> &'static str {
+    // Cloaks are "cloth" to the game, but everyone wears them.
+    if item_class != 4 || matches!(slot, 2 | 11 | 12 | 16 | 23) {
+        return "";
+    }
+    match subclass {
+        1 => "cloth",
+        2 => "leather",
+        3 => "mail",
+        4 => "plate",
+        _ => "",
+    }
+}
+
+/// The picker's filter group for an item.
+pub fn item_category(item_class: i32, subclass: i32, slot: i32) -> &'static str {
+    match slot {
+        12 => return "trinket",
+        11 => return "ring",
+        2 => return "neck",
+        16 => return "back",
+        13 | 14 | 15 | 17 | 21 | 22 | 23 | 25 | 26 | 28 => return "weapon",
+        1 | 3 | 5 | 6 | 7 | 8 | 9 | 10 | 20 => {
+            if item_class == 4 || item_class < 0 {
+                return "armour";
+            }
+        }
+        _ => {}
+    }
+    match item_class {
+        2 => "weapon",
+        4 if (1..=4).contains(&subclass) && slot == 0 => "armour",
+        4 if (6..=9).contains(&subclass) => "weapon",
+        _ => "other",
+    }
+}
+
+/// "Two-Hand Sword", "Plate Chest", "Ring", "Mount", … ("" if unknown).
+pub fn slot_label(item_class: i32, subclass: i32, slot: i32) -> String {
+    let s = slot_name(slot);
+    match item_class {
+        2 => {
+            let w = weapon_name(subclass);
+            if w.is_empty() {
+                s.to_string()
+            } else if s.is_empty()
+                || matches!(slot, 15 | 25 | 26)
+                || matches!(w, "Staff" | "Polearm" | "Wand" | "Fishing Pole")
+            {
+                w.to_string()
+            } else {
+                format!("{s} {w}")
+            }
+        }
+        4 => match (subclass, slot) {
+            (6, _) => "Shield".into(),
+            (7, _) => "Libram".into(),
+            (8, _) => "Idol".into(),
+            (9, _) => "Totem".into(),
+            (_, 2 | 11 | 12 | 16 | 23) => s.into(),
+            (1..=4, _) if !s.is_empty() => {
+                let t = armour_type(item_class, subclass, slot);
+                let mut c = t.chars();
+                let t = c
+                    .next()
+                    .map(|f| f.to_ascii_uppercase().to_string() + c.as_str())
+                    .unwrap_or_default();
+                format!("{t} {s}")
+            }
+            _ => s.into(),
+        },
+        0 => "Consumable".into(),
+        7 => "Trade goods".into(),
+        9 => "Recipe".into(),
+        12 => "Quest item".into(),
+        15 if subclass == 5 => "Mount".into(),
+        15 if subclass == 2 => "Pet".into(),
+        15 => "Token".into(),
+        _ => s.into(),
+    }
+}
+
+/// Which classes an item suits: who can use the weapon, who wears the
+/// armour type (a Warrior can wear cloth, but won't reserve it), anyone for
+/// jewellery, cloaks and tokens; narrowed by the item's own class list.
+pub fn suited_classes(item_class: i32, subclass: i32, slot: i32, req_class: i32) -> u32 {
+    let base = match item_class {
+        2 => match subclass {
+            0 | 1 => bits(&["Warrior", "Paladin", "Hunter", "Shaman"]),
+            2 | 3 | 16 | 18 => bits(&["Warrior", "Hunter", "Rogue"]),
+            4 => bits(&["Warrior", "Paladin", "Rogue", "Priest", "Shaman", "Druid"]),
+            5 => bits(&["Warrior", "Paladin", "Shaman", "Druid"]),
+            6 => bits(&["Warrior", "Paladin", "Hunter"]),
+            7 => bits(&["Warrior", "Paladin", "Hunter", "Rogue", "Mage", "Warlock"]),
+            8 => bits(&["Warrior", "Paladin", "Hunter"]),
+            10 => bits(&[
+                "Warrior", "Hunter", "Priest", "Shaman", "Mage", "Warlock", "Druid",
+            ]),
+            13 => bits(&["Warrior", "Hunter", "Rogue", "Shaman", "Druid"]),
+            15 => ALL_CLASSES & !bits(&["Paladin"]),
+            19 => bits(&["Priest", "Mage", "Warlock"]),
+            _ => ALL_CLASSES,
+        },
+        4 => match (subclass, slot) {
+            (6, _) => bits(&["Warrior", "Paladin", "Shaman"]),
+            (7, _) => bits(&["Paladin"]),
+            (8, _) => bits(&["Druid"]),
+            (9, _) => bits(&["Shaman"]),
+            _ => match armour_type(item_class, subclass, slot) {
+                "cloth" => bits(&["Priest", "Mage", "Warlock"]),
+                "leather" => bits(&["Rogue", "Druid"]),
+                "mail" => bits(&["Hunter", "Shaman"]),
+                "plate" => bits(&["Warrior", "Paladin"]),
+                _ => ALL_CLASSES,
+            },
+        },
+        _ => ALL_CLASSES,
+    };
+    let req = (req_class.max(0) as u32) & ALL_CLASSES;
+    if req != 0 {
+        base & req
+    } else {
+        base
+    }
 }
 
 /// Someone's soft reserve on a raid (shown to everyone who can see it).
@@ -1110,6 +1606,9 @@ pub struct LootAward {
     #[serde(with = "option_as_string", default)]
     pub awarded_by: Option<i64>,
     pub awarded_at: DateTime<Utc>,
+    /// The Wowhead branch its item links go to ("classic", "tbc", …).
+    #[serde(default)]
+    pub branch: String,
 }
 
 /// An item from the lookup (`GET /api/wow/items?q=` / `/api/wow/items/{id}`).
@@ -1123,6 +1622,21 @@ pub struct ItemLookup {
     /// Tooltip lines.
     pub tooltip: String,
     pub url: String,
+    /// The tooltip as Wowhead shows it: rows with a right-hand part
+    /// ("Two-Hand" … "Sword") and a colour ("q2" green Equip: lines, …).
+    #[serde(default)]
+    pub lines: Vec<TipLine>,
+}
+
+/// One row of an item tooltip.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TipLine {
+    pub left: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub right: String,
+    /// Wowhead's colour class: "q0" … "q7", "q" (yellow) or "" (white).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub q: String,
 }
 
 #[cfg(test)]
@@ -1210,5 +1724,44 @@ mod tests {
         assert_eq!(instance_key(" MC "), "mc");
         assert_eq!(instance_key("Scarlet Raid"), "scarlet raid");
         assert_eq!(instance_name("bwl"), "Blackwing Lair");
+        for i in INSTANCES {
+            assert!(instance_zone(i.0).is_some(), "{} has no zone", i.0);
+        }
+        assert_eq!(instance_zone("mc"), Some(2717));
+        assert_eq!(instance_zone("swp"), Some(4075));
+        assert_eq!(boss_rank("mc", "ragnaros"), Some(10));
+        assert_eq!(boss_rank("mc", "Onyxia"), None);
+    }
+
+    #[test]
+    fn item_details() {
+        // Bonereaver's Edge: two-hand sword.
+        assert_eq!(slot_label(2, 8, 17), "Two-Hand Sword");
+        assert_eq!(item_category(2, 8, 17), "weapon");
+        let s = suited_classes(2, 8, 17, 0);
+        assert!(s & class_bit("Warrior") != 0 && s & class_bit("Mage") == 0);
+        // Leggings of Transcendence: cloth legs, priests only.
+        assert_eq!(slot_label(4, 1, 7), "Cloth Legs");
+        assert_eq!(armour_type(4, 1, 7), "cloth");
+        assert_eq!(suited_classes(4, 1, 7, 16), class_bit("Priest"));
+        assert_eq!(item_category(4, 1, 7), "armour");
+        // Cloaks, rings, trinkets: anyone.
+        assert_eq!(slot_label(4, 1, 16), "Back");
+        assert_eq!(item_category(4, 1, 16), "back");
+        assert_eq!(suited_classes(4, 1, 16, 0), ALL_CLASSES);
+        assert_eq!(item_category(4, 0, 12), "trinket");
+        assert_eq!(item_category(4, 0, 11), "ring");
+        assert_eq!(slot_label(4, 0, 2), "Neck");
+        assert_eq!(slot_label(2, 2, 15), "Bow");
+        assert_eq!(slot_label(2, 10, 17), "Staff");
+        assert_eq!(slot_label(4, 6, 14), "Shield");
+        assert_eq!(slot_label(15, 5, 0), "Mount");
+        assert_eq!(item_category(15, 5, 0), "other");
+        assert_eq!(
+            suited_classes(2, 19, 26, 0),
+            bits(&["Priest", "Mage", "Warlock"])
+        );
+        assert_eq!(class_bit("druid"), 1024);
+        assert_eq!(CLASS_BITS.iter().map(|c| c.1).sum::<u32>(), ALL_CLASSES);
     }
 }

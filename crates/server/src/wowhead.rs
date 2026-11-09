@@ -17,6 +17,7 @@ use serde_json::Value;
 
 use crate::embeds::{clip, decode_entities};
 use crate::state::{AppState, Config};
+use outhouse_common::raidplan::TipLine;
 
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(4);
 /// How long item details and name searches are kept.
@@ -33,6 +34,37 @@ pub struct ItemInfo {
     pub icon: String,
     /// Tooltip as plain text, one line per row.
     pub tooltip: String,
+    /// The tooltip's rows with colours (JSON of [`TipLine`]s; "" = not read).
+    pub lines: String,
+}
+
+impl ItemInfo {
+    pub fn tip_lines(&self) -> Vec<TipLine> {
+        serde_json::from_str(&self.lines).unwrap_or_default()
+    }
+}
+
+/// Wowhead's data set for a branch ("tbc" items differ from Classic ones).
+pub fn data_env_for(cfg: &Config, branch: &str) -> String {
+    if !branch.is_empty() && (branch == cfg.wowhead_branch_tbc || branch == "tbc") {
+        cfg.wowhead_data_env_tbc.clone()
+    } else {
+        cfg.wowhead_data_env.clone()
+    }
+}
+
+/// An item's page on a given Wowhead branch.
+pub fn item_url_on(cfg: &Config, branch: &str, id: i32) -> String {
+    format!("{}/item={id}", branch_url(cfg, branch))
+}
+
+/// `https://www.wowhead.com/{branch}` ("" = retail).
+pub fn branch_url(cfg: &Config, branch: &str) -> String {
+    if branch.is_empty() {
+        cfg.wowhead_url.clone()
+    } else {
+        format!("{}/{}", cfg.wowhead_url, branch)
+    }
 }
 
 /// Wowhead's item quality colours (poor … heirloom).
@@ -166,25 +198,64 @@ fn http_client() -> anyhow::Result<reqwest::Client> {
 
 /// Item details by ID: from the cache, or Wowhead's tooltip service.
 pub async fn item_by_id(st: &AppState, id: i32) -> anyhow::Result<Option<ItemInfo>> {
+    let env = st.config.wowhead_data_env.clone();
+    item_by_id_env(st, id, &env).await
+}
+
+/// Item details from one of Wowhead's data sets (4 Classic, 5 TBC, …).
+pub async fn item_by_id_env(st: &AppState, id: i32, env: &str) -> anyhow::Result<Option<ItemInfo>> {
     if id <= 0 {
         return Ok(None);
     }
-    let cached = sqlx::query_as::<_, ItemInfo>(
-        "SELECT item_id, name, quality, icon, tooltip FROM wow_items
-         WHERE item_id = $1 AND fetched_at > now() - make_interval(days => $2)",
+    let cfg = &st.config;
+    // The usual data set is filed under "" (older rows too).
+    let key = if env == cfg.wowhead_data_env { "" } else { env };
+    #[derive(sqlx::FromRow)]
+    struct Cached {
+        #[sqlx(flatten)]
+        info: ItemInfo,
+        fresh: bool,
+    }
+    let cached = sqlx::query_as::<_, Cached>(
+        "SELECT item_id, name, quality, icon, tooltip, lines,
+                (fetched_at > now() - make_interval(days => $3) AND lines <> '') AS fresh
+         FROM wow_items WHERE item_id = $1 AND data_env = $2",
     )
     .bind(id)
+    .bind(key)
     .bind(ITEM_CACHE_DAYS)
     .fetch_optional(&st.db)
-    .await?;
-    if cached.is_some() {
-        return Ok(cached);
+    .await?
+    .map(|c| (c.info, c.fresh));
+    let fresh = cached.as_ref().is_some_and(|c| c.1);
+    if fresh {
+        return Ok(cached.map(|c| c.0));
     }
+    match fetch_tooltip(st, id, env, key).await {
+        Ok(Some(info)) => Ok(Some(info)),
+        // Wowhead is down: what we had, however old.
+        Ok(None) => Ok(None),
+        Err(e) => match cached {
+            Some((info, _)) => {
+                tracing::debug!(error = %e, "tooltip refresh failed; using the saved one");
+                Ok(Some(info))
+            }
+            None => Err(e),
+        },
+    }
+}
+
+async fn fetch_tooltip(
+    st: &AppState,
+    id: i32,
+    env: &str,
+    key: &str,
+) -> anyhow::Result<Option<ItemInfo>> {
     let cfg = &st.config;
     let url = format!(
         "{}/tooltip/item/{id}?dataEnv={}&locale=0",
         cfg.wowhead_tooltip_url,
-        url_encode(&cfg.wowhead_data_env)
+        url_encode(env)
     );
     let resp = http_client()?.get(&url).send().await?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
@@ -198,30 +269,33 @@ pub async fn item_by_id(st: &AppState, id: i32) -> anyhow::Result<Option<ItemInf
         return Ok(None);
     };
     let name = clip(decode_entities(name), 120);
+    let html = json["tooltip"].as_str().unwrap_or("");
+    let lines: Vec<TipLine> = crate::wowhead_page::tooltip_rows(html, &name)
+        .into_iter()
+        .map(|(left, right, q)| TipLine { left, right, q })
+        .collect();
     let info = ItemInfo {
         item_id: id,
         quality: json["quality"].as_i64().unwrap_or(1).clamp(0, 7) as i32,
-        icon: json["icon"]
-            .as_str()
-            .unwrap_or("")
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
-            .take(80)
-            .collect(),
-        tooltip: tooltip_text(json["tooltip"].as_str().unwrap_or(""), &name),
+        icon: crate::wowhead_page::clean_icon(json["icon"].as_str().unwrap_or("")),
+        tooltip: tooltip_text(html, &name),
+        lines: serde_json::to_string(&lines).unwrap_or_default(),
         name,
     };
     sqlx::query(
-        "INSERT INTO wow_items (item_id, name, quality, icon, tooltip, fetched_at)
-         VALUES ($1, $2, $3, $4, $5, now())
-         ON CONFLICT (item_id) DO UPDATE SET name = EXCLUDED.name, quality = EXCLUDED.quality,
-             icon = EXCLUDED.icon, tooltip = EXCLUDED.tooltip, fetched_at = now()",
+        "INSERT INTO wow_items (item_id, data_env, name, quality, icon, tooltip, lines, fetched_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+         ON CONFLICT (item_id, data_env) DO UPDATE SET name = EXCLUDED.name,
+             quality = EXCLUDED.quality, icon = EXCLUDED.icon, tooltip = EXCLUDED.tooltip,
+             lines = EXCLUDED.lines, fetched_at = now()",
     )
     .bind(info.item_id)
+    .bind(key)
     .bind(&info.name)
     .bind(info.quality)
     .bind(&info.icon)
     .bind(&info.tooltip)
+    .bind(&info.lines)
     .execute(&st.db)
     .await?;
     Ok(Some(info))

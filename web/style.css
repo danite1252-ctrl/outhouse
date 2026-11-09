@@ -2077,3 +2077,84 @@ img.mc-emoji { width: 18px; height: 18px; object-fit: contain; }
 .vm-wave { overflow: hidden; }
 .vm-wave span { min-width: 1px; }
 @media (max-width: 760px) { .vm-wave { gap: 1px; } .voice-msg { gap: 8px; } }
+
+/* ---------- Items linked to Wowhead: icons, quality colours, tooltips, the boss-by-boss picker ---------- */
+.item-name { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; max-width: 100%; min-width: 0; color: #fff; }
+.item-name .item-label { overflow-wrap: anywhere; }
+.item-name:hover { text-decoration: none; }
+.item-name:hover .item-label { text-decoration: underline; }
+.item-name.q0, .item-tip .q0 { color: #9d9d9d; }
+.item-name.q1, .item-tip .q1 { color: #ffffff; }
+.item-name.q2, .item-tip .q2 { color: #1eff00; }
+.item-name.q3, .item-tip .q3 { color: #0070dd; }
+.item-name.q4, .item-tip .q4 { color: #a335ee; }
+.item-name.q5, .item-tip .q5 { color: #ff8000; }
+.item-name.q6, .item-tip .q6 { color: #e6cc80; }
+.item-name.q7, .item-tip .q7 { color: #00ccff; }
+.item-tip .q { color: #ffd100; }
+.item-icon { width: 20px; height: 20px; flex: none; border-radius: 4px; border: 1px solid #00000099; box-shadow: 0 0 0 1px #ffffff1f; background: #1d1d2b; object-fit: cover; }
+.item-icon.big { width: 36px; height: 36px; border-radius: 6px; }
+.item-icon.none { background: linear-gradient(135deg, #2a2a3d, #15151f); }
+.item-name.q4 .item-icon { box-shadow: 0 0 0 1px #a335ee88; }
+.item-name.q5 .item-icon { box-shadow: 0 0 0 1px #ff800099; }
+.item-name.q3 .item-icon { box-shadow: 0 0 0 1px #0070dd88; }
+.item-tip { max-width: 340px; min-width: 220px; padding: 10px 12px; }
+.item-tip.touch { pointer-events: auto; }
+.item-tip-head strong { line-height: 1.25; }
+.item-tip-head img { border-radius: 6px; border: 1px solid #555; }
+.tip-line { display: flex; justify-content: space-between; gap: 12px; }
+.tip-right { white-space: nowrap; text-align: right; }
+.item-tip-open { display: inline-block; margin-top: 8px; color: var(--glow); font-weight: 600; }
+.sr-chip .item-name { gap: 5px; }
+.sr-count.none { background: transparent; color: var(--muted); font-weight: 600; border: 1px solid var(--line); }
+.loot-banner { margin: 0; padding: 8px 10px; border-radius: 8px; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+.loot-banner.busy { background: rgba(255, 140, 60, .1); border: 1px solid rgba(255, 140, 60, .35); color: var(--glow); }
+.loot-banner.warn { background: rgba(255, 209, 0, .07); border: 1px solid rgba(255, 209, 0, .3); color: #ffe27a; }
+.loot-spin { width: 14px; height: 14px; flex: none; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: loot-spin .8s linear infinite; }
+@keyframes loot-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .loot-spin { animation: none; } }
+.loot-finder { display: grid; gap: 8px; position: sticky; top: 0; z-index: 2; background: var(--panel); padding: 2px 0 6px; }
+.loot-filters { display: grid; gap: 6px; }
+.loot-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.loot-chip { border: 1px solid var(--line); background: var(--night); color: var(--muted); border-radius: 999px; padding: 4px 11px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.loot-chip:hover { color: var(--text); border-color: #ffffff40; }
+.loot-chip.on { background: rgba(255, 107, 53, .16); border-color: var(--ember); color: var(--text); }
+.loot-chip[data-filter="suits"].on { border-color: var(--cc, var(--ember)); background: color-mix(in srgb, var(--cc, #ff6b35) 18%, transparent); }
+.loot-chip.plain { border-color: transparent; background: none; padding: 4px 6px; }
+.loot-chip.plain:hover { text-decoration: underline; }
+.loot-chip-gap { flex: 1; }
+.loot-boss { border: 1px solid var(--line); border-radius: 10px; background: var(--night); overflow: hidden; }
+.loot-boss.has-mine { border-color: #a335ee99; }
+.loot-boss > summary { list-style: none; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 9px 12px; cursor: pointer; user-select: none; }
+.loot-boss > summary::-webkit-details-marker { display: none; }
+.loot-boss > summary::before { content: "▸"; color: var(--muted); font-size: 12px; transition: transform .15s; }
+.loot-boss[open] > summary::before { transform: rotate(90deg); }
+.loot-boss > summary:hover { background: #ffffff08; }
+.loot-boss-name { font-weight: 700; font-size: 14px; flex: 1; }
+.loot-boss-meta { white-space: nowrap; }
+.loot-boss-items { display: grid; gap: 4px; padding: 0 8px 8px; }
+.loot-boss .loot-row { background: var(--panel); }
+.loot-boss .loot-row.mine { background: rgba(163, 53, 238, .1); }
+.loot-row-main .item-name { font-size: 14px; }
+.loot-row-meta { margin-left: 26px; }
+.loot-listtab { display: grid; gap: 12px; }
+.loot-list-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.loot-sources { display: grid; gap: 6px; }
+.loot-source { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; background: var(--night); border: 1px solid var(--line); }
+.loot-source.error, .loot-source.missing { border-color: rgba(255, 209, 0, .35); }
+.loot-source-main { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.loot-source-name { font-weight: 700; color: var(--text); }
+.loot-import-box { display: grid; gap: 8px; padding: 10px; border-radius: 10px; background: var(--night); border: 1px solid var(--line); }
+.loot-import { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.loot-import input { height: 36px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); min-width: 0; }
+.loot-import-btn { justify-self: start; }
+.loot-log-table .ll-item { min-width: 200px; }
+.pc-loot .pcl-row .item-name { font-size: 13px; min-width: 0; }
+@media (max-width: 760px) {
+  .loot-chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -2px; padding: 0 2px; }
+  .loot-chips::-webkit-scrollbar { display: none; }
+  .loot-chip-gap { display: none; }
+  .loot-row-meta { margin-left: 0; }
+  .loot-boss-items { padding: 0 6px 6px; }
+  .item-tip { max-width: calc(100vw - 16px); }
+}

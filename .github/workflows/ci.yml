@@ -97,6 +97,7 @@ jobs:
           WOWHEAD_URL: http://127.0.0.1:8099
           WOWHEAD_TOOLTIP_URL: http://127.0.0.1:8099
           WOWHEAD_ICON_URL: http://127.0.0.1:8099/icons
+          WOWHEAD_MIN_GAP_MS: "100"
           LINK_PREVIEWS_OFFLINE: "1"
           # Carol is the site owner here (smoke-test users came first).
           SITE_OWNER: carolui

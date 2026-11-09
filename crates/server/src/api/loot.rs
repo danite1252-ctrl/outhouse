@@ -78,9 +78,30 @@ fn table_key(row: &EventRow) -> String {
     raidplan::instance_key(&row.loot_instance)
 }
 
-/// The built-in items for a raid plus those this outhouse added.
-async fn table_items(db: &PgPool, guild_id: i64, key: &str) -> AppResult<Vec<LootItem>> {
-    let mut items: Vec<LootItem> = raidplan::SEED_ITEMS
+/// "classic" or "tbc": a listed raid's era, else the raid's game's.
+fn era_of(row: &EventRow, key: &str) -> &'static str {
+    match raidplan::instance(key) {
+        Some(i) if i.2 == "tbc" => "tbc",
+        Some(_) => "classic",
+        None => raidplan::era_of(&row.game),
+    }
+}
+
+/// How long the loot window waits for Wowhead before showing what we have.
+const TABLE_WAIT: Duration = Duration::from_secs(10);
+/// Pages a raid leader can import into one list.
+const MAX_SOURCES: i64 = 20;
+
+#[derive(sqlx::FromRow)]
+struct SourceRow {
+    branch: String,
+    kind: String,
+    source_id: i32,
+    name: String,
+}
+
+fn seed_items(key: &str) -> Vec<LootItem> {
+    raidplan::SEED_ITEMS
         .iter()
         .filter(|s| !key.is_empty() && s.0 == key)
         .map(|&(_, item_id, name, quality, boss)| LootItem {
@@ -88,62 +109,255 @@ async fn table_items(db: &PgPool, guild_id: i64, key: &str) -> AppResult<Vec<Loo
             name: name.into(),
             quality,
             boss: boss.into(),
-            custom: false,
+            trash: boss.is_empty(),
+            ..Default::default()
         })
-        .collect();
-    if key.is_empty() {
-        return Ok(items);
-    }
-    let added: Vec<(i32, String, i32, String)> = sqlx::query_as(
-        "SELECT item_id, name, quality, boss FROM loot_items
-         WHERE guild_id = $1 AND instance = $2 ORDER BY created_at, item_id",
-    )
-    .bind(guild_id)
-    .bind(key)
-    .fetch_all(db)
-    .await?;
-    for (item_id, name, quality, boss) in added {
-        if items.iter().any(|i| i.item_id == item_id) {
-            continue;
-        }
-        items.push(LootItem {
-            item_id,
-            name,
-            quality,
-            boss,
-            custom: true,
-        });
-    }
-    Ok(items)
+        .collect()
 }
 
-async fn loot_table(st: &AppState, row: &EventRow) -> AppResult<LootTable> {
+/// A raid's loot list: its zone on Wowhead, pages the outhouse imported,
+/// items its raid leaders added and anything already reserved. `wait`:
+/// how long to wait for Wowhead when a list needs reading (0 = don't).
+async fn build_table(
+    st: &AppState,
+    row: &EventRow,
+    force: bool,
+    wait: Duration,
+    with_reserved: bool,
+) -> AppResult<LootTable> {
+    let cfg = &st.config;
     let key = table_key(row);
-    let mut items = table_items(&st.db, row.guild_id, &key).await?;
+    let era = era_of(row, &key);
+    let candidates = crate::wowhead_loot::branches_for(cfg, &row.game, era);
+    let mut items: Vec<LootItem> = Vec::new();
+    let mut sources = Vec::new();
+    let mut bosses: Vec<String> = Vec::new();
+    let mut refreshing = false;
+    let mut offline = false;
+    let mut item_branch: Option<String> = None;
+    let push = |items: &mut Vec<LootItem>, it: LootItem| {
+        if !items.iter().any(|i| i.item_id == it.item_id) {
+            items.push(it);
+        }
+    };
+    let mut lists: Vec<(bool, Vec<String>, String, i32, String)> = Vec::new();
+    if let Some(zone) = raidplan::instance_zone(&key) {
+        lists.push((true, candidates.clone(), "zone".into(), zone, String::new()));
+    }
+    if !key.is_empty() {
+        let imported = sqlx::query_as::<_, SourceRow>(
+            "SELECT branch, kind, source_id, name FROM loot_sources
+             WHERE guild_id = $1 AND instance = $2 ORDER BY created_at",
+        )
+        .bind(row.guild_id)
+        .bind(&key)
+        .fetch_all(&st.db)
+        .await?;
+        for s in imported {
+            lists.push((false, vec![s.branch], s.kind, s.source_id, s.name));
+        }
+    }
+    for (builtin, branches, kind, id, saved_name) in lists {
+        let got = match crate::wowhead_loot::list(st, &branches, &kind, id, force, wait).await {
+            Ok(l) => Some(l),
+            Err(e) => {
+                tracing::warn!(error = %e, "loot list");
+                None
+            }
+        };
+        let (status, name, branch, fetched_at, count) = match &got {
+            Some(l) => {
+                refreshing |= l.refreshing;
+                if !l.drops.is_empty() && item_branch.is_none() {
+                    item_branch = Some(l.branch.clone());
+                }
+                for b in l.row.as_ref().map(|r| r.bosses.clone()).unwrap_or_default() {
+                    if !bosses.contains(&b) {
+                        bosses.push(b);
+                    }
+                }
+                for d in &l.drops {
+                    push(&mut items, d.to_item());
+                }
+                let status = if l.refreshing && l.drops.is_empty() {
+                    "pending"
+                } else if l.error {
+                    "error"
+                } else if l.missing {
+                    "missing"
+                } else if l.row.is_some() {
+                    "ok"
+                } else {
+                    "pending"
+                };
+                (
+                    status,
+                    l.row.as_ref().map(|r| r.name.clone()).unwrap_or_default(),
+                    if l.branch.is_empty() {
+                        branches[0].clone()
+                    } else {
+                        l.branch.clone()
+                    },
+                    l.row.as_ref().and_then(|r| r.ok_at),
+                    l.drops.len(),
+                )
+            }
+            None => ("error", String::new(), branches[0].clone(), None, 0),
+        };
+        if builtin && count == 0 {
+            // Nothing from Wowhead (yet): the few items we know.
+            offline = !refreshing;
+            for it in seed_items(&key) {
+                push(&mut items, it);
+            }
+        }
+        sources.push(raidplan::LootSource {
+            url: crate::wowhead_loot::page_url(cfg, &branch, &kind, id),
+            kind,
+            id,
+            branch,
+            name: if name.is_empty() {
+                if builtin {
+                    raidplan::instance_name(&key)
+                } else {
+                    saved_name
+                }
+            } else {
+                name
+            },
+            builtin,
+            status: status.into(),
+            items: count,
+            fetched_at,
+        });
+    }
+    if !key.is_empty() {
+        let added: Vec<(i32, String, i32, String)> = sqlx::query_as(
+            "SELECT item_id, name, quality, boss FROM loot_items
+             WHERE guild_id = $1 AND instance = $2 ORDER BY created_at, item_id",
+        )
+        .bind(row.guild_id)
+        .bind(&key)
+        .fetch_all(&st.db)
+        .await?;
+        for (item_id, name, quality, boss) in added {
+            push(
+                &mut items,
+                LootItem {
+                    item_id,
+                    name,
+                    quality,
+                    boss,
+                    custom: true,
+                    ..Default::default()
+                },
+            );
+        }
+    }
     // Things people reserved that aren't on the list (looked up by name).
-    let reserved: Vec<(i32, String, i32)> = sqlx::query_as(
-        "SELECT DISTINCT ON (item_id) item_id, item_name, item_quality FROM loot_reserves
-         WHERE event_id = $1 ORDER BY item_id, created_at",
-    )
-    .bind(row.id)
-    .fetch_all(&st.db)
-    .await?;
+    let reserved: Vec<(i32, String, i32)> = if with_reserved {
+        sqlx::query_as(
+            "SELECT DISTINCT ON (item_id) item_id, item_name, item_quality FROM loot_reserves
+             WHERE event_id = $1 ORDER BY item_id, created_at",
+        )
+        .bind(row.id)
+        .fetch_all(&st.db)
+        .await?
+    } else {
+        Vec::new()
+    };
     for (item_id, name, quality) in reserved {
-        if !items.iter().any(|i| i.item_id == item_id) {
-            items.push(LootItem {
+        push(
+            &mut items,
+            LootItem {
                 item_id,
                 name,
                 quality,
-                boss: String::new(),
-                custom: false,
-            });
+                ..Default::default()
+            },
+        );
+    }
+    // Icons and details we know for items that didn't come with them.
+    let bare: Vec<i32> = items
+        .iter()
+        .filter(|i| i.icon.is_empty())
+        .map(|i| i.item_id)
+        .collect();
+    if !bare.is_empty() {
+        let known: Vec<crate::wowhead_loot::DropRow> = sqlx::query_as(
+            "SELECT DISTINCT ON (item_id) item_id, name, quality, icon, item_class, subclass,
+                    slot, req_class, boss, chance, trash
+             FROM wowhead_drops WHERE item_id = ANY($1) ORDER BY item_id, icon = ''",
+        )
+        .bind(&bare)
+        .fetch_all(&st.db)
+        .await?;
+        let icons: Vec<(i32, String)> = sqlx::query_as(
+            "SELECT DISTINCT ON (item_id) item_id, icon FROM wow_items
+             WHERE item_id = ANY($1) AND icon <> '' ORDER BY item_id",
+        )
+        .bind(&bare)
+        .fetch_all(&st.db)
+        .await?;
+        for it in items.iter_mut().filter(|i| i.icon.is_empty()) {
+            if let Some(k) = known.iter().find(|k| k.item_id == it.item_id) {
+                let full = k.to_item();
+                it.icon = full.icon;
+                if it.slot.is_empty() {
+                    it.slot = full.slot;
+                    it.category = full.category;
+                    it.armour = full.armour;
+                    it.classes = full.classes;
+                }
+            }
+            if it.icon.is_empty() {
+                if let Some((_, icon)) = icons.iter().find(|i| i.0 == it.item_id) {
+                    it.icon = icon.clone();
+                }
+            }
         }
     }
+    // Boss sections in raid order, then the rest in Wowhead's order.
+    for it in &items {
+        if !it.boss.is_empty() && !it.trash && !bosses.contains(&it.boss) {
+            bosses.push(it.boss.clone());
+        }
+    }
+    bosses.retain(|b| items.iter().any(|i| &i.boss == b && !i.trash));
+    let rank = |b: &String| raidplan::boss_rank(&key, b).unwrap_or(usize::MAX);
+    let mut ranked: Vec<(usize, usize, String)> = bosses
+        .into_iter()
+        .enumerate()
+        .map(|(i, b)| (rank(&b), i, b))
+        .collect();
+    ranked.sort();
+    let branch = match item_branch {
+        Some(b) => b,
+        None => crate::wowhead_loot::link_branch(st, &row.game, era).await,
+    };
     Ok(LootTable {
         instance_name: raidplan::instance_name(&row.loot_instance),
         instance: row.loot_instance.clone(),
         items,
+        bosses: ranked.into_iter().map(|r| r.2).collect(),
+        sources,
+        item_base: crate::wowhead::branch_url(cfg, &branch),
+        item_branch: branch,
+        refreshing,
+        offline,
     })
+}
+
+/// The items on a raid's list (not counting reserves made by name),
+/// without waiting for Wowhead.
+async fn table_items(st: &AppState, row: &EventRow) -> AppResult<Vec<LootItem>> {
+    Ok(build_table(st, row, false, Duration::ZERO, false)
+        .await?
+        .items)
+}
+
+async fn loot_table(st: &AppState, row: &EventRow) -> AppResult<LootTable> {
+    build_table(st, row, false, TABLE_WAIT, true).await
 }
 
 /// `GET /api/events/{id}/loot-table`
@@ -156,7 +370,178 @@ pub async fn get_table(
     Ok(Json(loot_table(&st, &row).await?))
 }
 
+/// `POST /api/events/{id}/loot-table/refresh` (raid leaders): read the
+/// raid's lists from Wowhead again now.
+pub async fn refresh_table(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(event_id): Path<i64>,
+) -> AppResult<Json<LootTable>> {
+    let (row, access) = load(&st, event_id, user.id).await?;
+    require_manager(&st, &row, &access).await?;
+    if table_key(&row).is_empty() {
+        return Err(AppError::BadRequest(
+            "Pick which raid this is (Edit raid → Loot list) first.".into(),
+        ));
+    }
+    Ok(Json(
+        build_table(&st, &row, true, Duration::from_secs(20), true).await?,
+    ))
+}
+
+/// `POST /api/events/{id}/loot-sources` `{url}` (raid leaders): add a
+/// Wowhead zone, NPC or object (chest) page's loot to this raid's list for
+/// the whole outhouse.
+pub async fn add_source(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(event_id): Path<i64>,
+    Json(req): Json<raidplan::LootSourceRequest>,
+) -> AppResult<Json<LootTable>> {
+    let (row, access) = load(&st, event_id, user.id).await?;
+    require_manager(&st, &row, &access).await?;
+    let key = table_key(&row);
+    if key.is_empty() {
+        return Err(AppError::BadRequest(
+            "Pick which raid this is (Edit raid → Loot list) before importing loot.".into(),
+        ));
+    }
+    let raw: String = req.url.trim().chars().take(400).collect();
+    let Some((mut branch, kind, id)) = crate::wowhead_loot::parse_link(&raw) else {
+        return Err(AppError::BadRequest(
+            "That isn't a Wowhead zone, NPC or object link. Try one like wowhead.com/classic/zone=2717."
+                .into(),
+        ));
+    };
+    if branch.is_empty() && !st.config.wowhead_branch.is_empty() {
+        // A link without a branch is the retail site; WoW: Forever's
+        // lists live on its own branch, so use the raid's.
+        branch = crate::wowhead_loot::link_branch(&st, &row.game, era_of(&row, &key)).await;
+    }
+    if raidplan::instance_zone(&key) == Some(id) && kind == "zone" {
+        let mine = crate::wowhead_loot::branches_for(&st.config, &row.game, era_of(&row, &key));
+        if mine.contains(&branch) {
+            return Err(AppError::BadRequest(
+                "That's this raid's own list already.".into(),
+            ));
+        }
+    }
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM loot_sources WHERE guild_id = $1 AND instance = $2",
+    )
+    .bind(row.guild_id)
+    .bind(&key)
+    .fetch_one(&st.db)
+    .await?;
+    if count >= MAX_SOURCES {
+        return Err(AppError::BadRequest(format!(
+            "A raid's list can take up to {MAX_SOURCES} imported pages."
+        )));
+    }
+    let list = crate::wowhead_loot::list(
+        &st,
+        std::slice::from_ref(&branch),
+        &kind,
+        id,
+        true,
+        Duration::from_secs(25),
+    )
+    .await
+    .map_err(|e| AppError::Other(e))?;
+    if list.drops.is_empty() {
+        return Err(AppError::BadRequest(if list.refreshing {
+            "Wowhead is slow right now. Give it a minute and try again.".into()
+        } else if list.missing {
+            "Wowhead doesn't have that page (check the link).".into()
+        } else if list.error {
+            "Couldn't reach Wowhead just now. Try again in a few minutes.".into()
+        } else {
+            "That page has no loot listed on Wowhead.".into()
+        }));
+    }
+    let name = list
+        .row
+        .as_ref()
+        .map(|r| r.name.clone())
+        .unwrap_or_default();
+    let added = sqlx::query(
+        "INSERT INTO loot_sources (guild_id, instance, branch, kind, source_id, name, added_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING",
+    )
+    .bind(row.guild_id)
+    .bind(&key)
+    .bind(&branch)
+    .bind(&kind)
+    .bind(id)
+    .bind(&name)
+    .bind(user.id)
+    .execute(&st.db)
+    .await?
+    .rows_affected();
+    if added == 0 {
+        return Err(AppError::BadRequest(
+            "That page is on the list already.".into(),
+        ));
+    }
+    crate::audit::Entry::new(row.guild_id, user.id, "loot_source_add")
+        .details(format!(
+            "Imported {name} ({} items) into the {} loot list",
+            list.drops.len(),
+            raidplan::instance_name(&row.loot_instance)
+        ))
+        .save(&st)
+        .await;
+    Ok(Json(loot_table(&st, &row).await?))
+}
+
+#[derive(Deserialize)]
+pub struct SourceQuery {
+    #[serde(default)]
+    branch: String,
+    kind: String,
+    id: i32,
+}
+
+/// `DELETE /api/events/{id}/loot-sources?branch=&kind=&id=` (raid leaders).
+pub async fn remove_source(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(event_id): Path<i64>,
+    Query(q): Query<SourceQuery>,
+) -> AppResult<Json<LootTable>> {
+    let (row, access) = load(&st, event_id, user.id).await?;
+    require_manager(&st, &row, &access).await?;
+    let gone: Option<String> = sqlx::query_scalar(
+        "DELETE FROM loot_sources
+         WHERE guild_id = $1 AND instance = $2 AND branch = $3 AND kind = $4 AND source_id = $5
+         RETURNING name",
+    )
+    .bind(row.guild_id)
+    .bind(table_key(&row))
+    .bind(&q.branch)
+    .bind(&q.kind)
+    .bind(q.id)
+    .fetch_optional(&st.db)
+    .await?;
+    let Some(name) = gone else {
+        return Err(AppError::NotFound);
+    };
+    crate::audit::Entry::new(row.guild_id, user.id, "loot_source_remove")
+        .details(format!(
+            "Removed {name} from the {} loot list",
+            raidplan::instance_name(&row.loot_instance)
+        ))
+        .save(&st)
+        .await;
+    Ok(Json(loot_table(&st, &row).await?))
+}
+
 // ---- Finding items ---------------------------------------------------------------
+
+/// Our copy of an item's icon (`/api/wow/item-icons/{id}`).
+fn icon_path(item_id: i32) -> String {
+    format!("/api/wow/item-icons/{item_id}")
+}
 
 fn item_lookup(st: &AppState, item: &crate::wowhead::ItemInfo) -> ItemLookup {
     let cfg = &st.config;
@@ -167,10 +552,11 @@ fn item_lookup(st: &AppState, item: &crate::wowhead::ItemInfo) -> ItemLookup {
         icon_url: if item.icon.is_empty() {
             String::new()
         } else {
-            format!("{}/{}.jpg", cfg.wowhead_icon_url, item.icon)
+            icon_path(item.item_id)
         },
         tooltip: item.tooltip.clone(),
         url: crate::wowhead::item_url(cfg, item.item_id),
+        lines: item.tip_lines(),
     }
 }
 
@@ -205,6 +591,7 @@ async fn look_up(st: &AppState, query: &str) -> Option<ItemLookup> {
         icon_url: embed.thumbnail_url.clone().unwrap_or_default(),
         tooltip: embed.description.clone().unwrap_or_default(),
         url: embed.url.clone(),
+        lines: Vec::new(),
     })
 }
 
@@ -232,7 +619,7 @@ async fn resolve_item(
     item_id: Option<i32>,
     query: Option<&str>,
 ) -> AppResult<(i32, String, i32)> {
-    let items = table_items(&st.db, row.guild_id, &table_key(row)).await?;
+    let items = table_items(st, row).await?;
     let query = match query {
         Some(q) => Some(clean_query(q)?),
         None => None,
@@ -250,6 +637,8 @@ async fn resolve_item(
             "SELECT item_name, item_quality FROM loot_reserves WHERE item_id = $1
              UNION ALL
              SELECT name, quality FROM loot_items WHERE item_id = $1 AND guild_id = $2
+             UNION ALL
+             SELECT name, quality FROM wowhead_drops WHERE item_id = $1
              LIMIT 1",
         )
         .bind(id)
@@ -284,6 +673,8 @@ async fn resolve_item(
 #[derive(Deserialize)]
 pub struct ItemQuery {
     q: Option<String>,
+    /// Wowhead branch for the item's details ("tbc", …).
+    branch: Option<String>,
 }
 
 /// `GET /api/wow/items?q=` (ID, Wowhead link or name): an item's name,
@@ -300,24 +691,85 @@ pub async fn search_item(
         .ok_or(AppError::NotFound)
 }
 
-/// `GET /api/wow/items/{id}`: one item (tooltips).
+/// `GET /api/wow/items/{id}[?branch=tbc]`: one item (tooltips).
 pub async fn get_item(
     State(st): State<AppState>,
     AuthUser(_user): AuthUser,
     Path(item_id): Path<i32>,
+    Query(q): Query<ItemQuery>,
 ) -> AppResult<Json<ItemLookup>> {
     if !(1..=10_000_000).contains(&item_id) {
         return Err(AppError::NotFound);
     }
+    let branch = q
+        .branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|b| b.len() <= 30 && b.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        .unwrap_or("")
+        .to_string();
+    let env = crate::wowhead::data_env_for(&st.config, &branch);
     if let Ok(Ok(Some(item))) = tokio::time::timeout(
         Duration::from_secs(9),
-        crate::wowhead::item_by_id(&st, item_id),
+        crate::wowhead::item_by_id_env(&st, item_id, &env),
     )
     .await
     {
-        return Ok(Json(item_lookup(&st, &item)));
+        let mut out = item_lookup(&st, &item);
+        if !branch.is_empty() {
+            out.url = crate::wowhead::item_url_on(&st.config, &branch, item_id);
+        }
+        return Ok(Json(out));
     }
-    // Not on Wowhead: what we know from the lists.
+    // Not on Wowhead (or it's down): what the loot lists know.
+    let known: Option<crate::wowhead_loot::DropRow> = sqlx::query_as(
+        "SELECT item_id, name, quality, icon, item_class, subclass, slot, req_class, boss,
+                chance, trash
+         FROM wowhead_drops WHERE item_id = $1 ORDER BY (branch = $2) DESC LIMIT 1",
+    )
+    .bind(item_id)
+    .bind(&branch)
+    .fetch_optional(&st.db)
+    .await?;
+    let url = if branch.is_empty() {
+        crate::wowhead::item_url(&st.config, item_id)
+    } else {
+        crate::wowhead::item_url_on(&st.config, &branch, item_id)
+    };
+    if let Some(k) = known {
+        let it = k.to_item();
+        let mut lines = Vec::new();
+        if !it.slot.is_empty() {
+            lines.push(raidplan::TipLine {
+                left: it.slot.clone(),
+                ..Default::default()
+            });
+        }
+        if !it.boss.is_empty() {
+            lines.push(raidplan::TipLine {
+                left: format!("Drops from {}", it.boss),
+                q: "q".into(),
+                ..Default::default()
+            });
+        }
+        return Ok(Json(ItemLookup {
+            item_id,
+            tooltip: lines
+                .iter()
+                .map(|l| l.left.clone())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            name: it.name,
+            quality: it.quality,
+            icon_url: if it.icon.is_empty() {
+                String::new()
+            } else {
+                icon_path(item_id)
+            },
+            url,
+            lines,
+        }));
+    }
     if let Some(s) = raidplan::SEED_ITEMS.iter().find(|s| s.1 == item_id) {
         return Ok(Json(ItemLookup {
             item_id,
@@ -325,13 +777,43 @@ pub async fn get_item(
             quality: s.3,
             icon_url: String::new(),
             tooltip: String::new(),
-            url: crate::wowhead::item_url(&st.config, item_id),
+            url,
+            lines: Vec::new(),
         }));
     }
     look_up(&st, &item_id.to_string())
         .await
         .map(Json)
         .ok_or(AppError::NotFound)
+}
+
+/// `GET /api/wow/item-icons/{id}`: an item's icon, from our copy (no
+/// sign-in, so `<img>` can load it; only items the lists know).
+pub async fn item_icon(
+    State(st): State<AppState>,
+    Path(item_id): Path<String>,
+) -> AppResult<axum::response::Response> {
+    use axum::http::header;
+    let item_id: i32 = item_id
+        .trim_end_matches(".jpg")
+        .parse()
+        .map_err(|_| AppError::NotFound)?;
+    if !(1..=10_000_000).contains(&item_id) {
+        return Err(AppError::NotFound);
+    }
+    let Some((content_type, data)) = crate::wowhead_loot::icon(&st, item_id).await? else {
+        return Err(AppError::NotFound);
+    };
+    axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(
+            header::CONTENT_SECURITY_POLICY,
+            "default-src 'none'; sandbox",
+        )
+        .header(header::CACHE_CONTROL, "public, max-age=604800")
+        .body(axum::body::Body::from(data))
+        .map_err(|e| AppError::Other(e.into()))
 }
 
 // ---- Reserving ---------------------------------------------------------------------
@@ -647,8 +1129,10 @@ pub async fn add_item(
         )));
     }
     let query = clean_query(&req.query)?;
+    let on_list = table_items(&st, &row).await?;
+    let listed = |id: i32| on_list.iter().any(|i| i.item_id == id && !i.custom);
     let found = match crate::wowhead::item_id_in(&query) {
-        Some(id) if raidplan::SEED_ITEMS.iter().any(|s| s.0 == key && s.1 == id) => {
+        Some(id) if listed(id) => {
             return Err(AppError::BadRequest("That's already on the list.".into()))
         }
         _ => look_up(&st, &query).await,
@@ -656,10 +1140,7 @@ pub async fn add_item(
     let Some(item) = found else {
         return Err(AppError::BadRequest(NOT_FOUND_ITEM.into()));
     };
-    if raidplan::SEED_ITEMS
-        .iter()
-        .any(|s| s.0 == key && s.1 == item.item_id)
-    {
+    if listed(item.item_id) {
         return Err(AppError::BadRequest("That's already on the list.".into()));
     }
     let added = sqlx::query(
@@ -798,7 +1279,25 @@ impl From<AwardRow> for LootAward {
             note: r.note,
             awarded_by: r.awarded_by,
             awarded_at: r.awarded_at,
+            branch: String::new(),
         }
+    }
+}
+
+/// Which Wowhead branch each entry's item links go to.
+async fn fill_branches(st: &AppState, awards: &mut [LootAward]) {
+    if awards.is_empty() {
+        return;
+    }
+    let classic = crate::wowhead_loot::link_branch(st, "forever", "classic").await;
+    for a in awards {
+        let tbc = raidplan::instance(&raidplan::instance_key(&a.loot_instance))
+            .is_some_and(|i| i.2 == "tbc");
+        a.branch = if tbc {
+            st.config.wowhead_branch_tbc.clone()
+        } else {
+            classic.clone()
+        };
     }
 }
 
@@ -822,7 +1321,9 @@ pub async fn raid_awards(
         .bind(event_id)
         .fetch_all(&st.db)
         .await?;
-    Ok(Json(rows.into_iter().map(LootAward::from).collect()))
+    let mut out: Vec<LootAward> = rows.into_iter().map(LootAward::from).collect();
+    fill_branches(&st, &mut out).await;
+    Ok(Json(out))
 }
 
 /// `POST /api/events/{id}/loot` `{user_id, item_id | query, note?}` (raid
@@ -903,7 +1404,10 @@ pub async fn award(
         .bind(id)
         .fetch_one(&st.db)
         .await?;
-    Ok(Json(row.into()))
+    let mut out = [LootAward::from(row)];
+    fill_branches(&st, &mut out).await;
+    let [out] = out;
+    Ok(Json(out))
 }
 
 /// `DELETE /api/loot/{id}`: take an entry out of the loot log (the raid's
@@ -1026,10 +1530,9 @@ pub async fn guild_log(
         .await?;
     let has_more = rows.len() as i64 > limit;
     rows.truncate(limit as usize);
-    Ok(Json(LootLog {
-        entries: rows.into_iter().map(LootAward::from).collect(),
-        has_more,
-    }))
+    let mut entries: Vec<LootAward> = rows.into_iter().map(LootAward::from).collect();
+    fill_branches(&st, &mut entries).await;
+    Ok(Json(LootLog { entries, has_more }))
 }
 
 #[cfg(test)]

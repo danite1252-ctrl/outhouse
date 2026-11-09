@@ -49,6 +49,17 @@ pub struct Config {
     pub wowhead_data_env: String,
     /// Item icons: `{this}/{icon}.jpg`.
     pub wowhead_icon_url: String,
+    /// Wowhead branches to read WoW: Forever loot lists from, tried in
+    /// order (`WOWHEAD_BRANCH_FOREVER`, default "forever,classic": Forever's
+    /// own section once Wowhead has one, else Classic).
+    pub wowhead_branches_forever: Vec<String>,
+    /// Wowhead's Burning Crusade branch (`WOWHEAD_BRANCH_TBC`, default "tbc").
+    pub wowhead_branch_tbc: String,
+    /// Tooltip data set for TBC items (`WOWHEAD_DATA_ENV_TBC`, default 5).
+    pub wowhead_data_env_tbc: String,
+    /// The least time between two Wowhead page reads (`WOWHEAD_MIN_GAP_MS`,
+    /// default 1500), to be polite.
+    pub wowhead_min_gap_ms: u64,
     /// Don't fetch pages for link previews (air-gapped servers and tests).
     /// WoW links still get a card made from the link itself.
     pub previews_offline: bool,
@@ -252,6 +263,33 @@ impl Config {
                 "WOWHEAD_ICON_URL",
                 "https://wow.zamimg.com/images/wow/icons/large",
             ),
+            wowhead_branches_forever: {
+                let list: Vec<String> = env_opt("WOWHEAD_BRANCH_FOREVER")
+                    .unwrap_or_else(|| "forever,classic".into())
+                    .split(',')
+                    .map(|b| b.trim().trim_matches('/').to_ascii_lowercase())
+                    .filter(|b| {
+                        !b.is_empty()
+                            && b.chars()
+                                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                    })
+                    .take(5)
+                    .collect();
+                if list.is_empty() {
+                    vec!["classic".into()]
+                } else {
+                    list
+                }
+            },
+            wowhead_branch_tbc: env_opt("WOWHEAD_BRANCH_TBC")
+                .unwrap_or_else(|| "tbc".into())
+                .trim_matches('/')
+                .to_string(),
+            wowhead_data_env_tbc: env_opt("WOWHEAD_DATA_ENV_TBC").unwrap_or_else(|| "5".into()),
+            wowhead_min_gap_ms: env_opt("WOWHEAD_MIN_GAP_MS")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1500)
+                .min(60_000),
             previews_offline: matches!(
                 env_opt("LINK_PREVIEWS_OFFLINE").as_deref(),
                 Some("1" | "true" | "yes" | "on")

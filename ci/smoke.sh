@@ -12,6 +12,8 @@ MOCK=http://127.0.0.1:8099
 python3 ci/wow_mock.py 8099 >/tmp/wow-mock.log 2>&1 &
 MOCK_PID=$!
 export WOWHEAD_URL=$MOCK WOWHEAD_TOOLTIP_URL=$MOCK WOWHEAD_ICON_URL=$MOCK/icons LINK_PREVIEWS_OFFLINE=1
+# Loot lists: Forever tries the "forever" branch, then "classic" (the default); quick in tests.
+export WOWHEAD_MIN_GAP_MS=100
 export BNET_CLIENT_ID=mock-id BNET_CLIENT_SECRET=mock-secret BNET_REGION=us
 export BNET_OAUTH_URL=$MOCK/oauth BNET_API_URL=$MOCK/api PUBLIC_URL=$BASE
 # LiveKit RoomService stand-in (checks the JWTs Outhouse signs).
@@ -1260,7 +1262,7 @@ fail_call DELETE "/api/events/$SRE/loot-items/17076"
 call DELETE "/api/events/$SRE/loot-items/19019" | jq -e 'all(.items[]; .item_id != 19019)' >/dev/null
 call GET "/api/guilds/$GUILD/audit-log?action=loot_item_add" | jq -e '.entries[0].details | contains("Thunderfury") and contains("Molten Core")' >/dev/null
 # Item look-ups for the pickers.
-call GET "/api/wow/items?q=thunderfury" | jq -e '.item_id == 19019 and .quality == 5 and (.icon_url | endswith("/icons/inv_sword_39.jpg")) and (.tooltip | contains("Binds when picked up")) and (.url | endswith("/item=19019"))' >/dev/null
+call GET "/api/wow/items?q=thunderfury" | jq -e '.item_id == 19019 and .quality == 5 and .icon_url == "/api/wow/item-icons/19019" and (.tooltip | contains("Binds when picked up")) and (.url | endswith("/item=19019"))' >/dev/null
 call GET "/api/wow/items/16922" | jq -e '.name == "Leggings of Transcendence" and .quality == 4' >/dev/null
 call GET "/api/wow/items/17204" | jq -e '.name == "Eye of Sulfuras" and .quality == 5' >/dev/null
 fail_call GET "/api/wow/items?q="
@@ -1325,6 +1327,100 @@ call GET "/api/guilds/$GUILD/loot" | jq -e '.entries | length == 1 and .[0].even
 for e in "$CE" "$SRE" "$DLE"; do call DELETE "/api/events/$e" >/dev/null; done
 call DELETE "/api/events/$L1?scope=future" >/dev/null
 call DELETE "/api/events/$(pevents "$LSER" | jq -r '.[0].id')?scope=future" >/dev/null
+
+step "Wowhead loot lists: parsing, bosses, filters, caching, refresh, imports, branches, Wowhead down"
+hits() { curl -fsS "$MOCK/__hits" | jq -r --arg p "$1" '.[$p] // 0'; }
+# Molten Core's full list from its zone page (tricky JS: unquoted keys, single
+# quotes, quality digits in names, functions). No "forever" branch on the mock,
+# so WoW: Forever falls back to Classic.
+call GET "/api/events/$SRE/loot-table" | jq -e '(.items | length) >= 30 and (.offline | not) and (.refreshing | not)
+  and .item_branch == "classic" and (.item_base | endswith("/classic"))
+  and .bosses[0] == "Lucifron" and .bosses[-1] == "Ragnaros" and (.bosses | index("Cache of the Firelord")) == ((.bosses | length) - 2)
+  and (.bosses | index("Majordomo Executus")) == null
+  and any(.items[]; .item_id == 17076 and .name == "Bonereaver'"'"'s Edge" and .boss == "Ragnaros" and .slot == "Two-Hand Sword" and .category == "weapon" and .icon == "inv_sword_12" and .classes == 7)
+  and any(.items[]; .item_id == 16805 and .name == "Felheart Gloves" and .quality == 4 and .armour == "cloth" and .classes == 256)
+  and any(.items[]; .item_id == 16922 and .slot == "Cloth Legs" and .classes == 16)
+  and any(.items[]; .item_id == 18814 and .category == "neck" and .classes == 1503)
+  and any(.items[]; .item_id == 17010 and .trash and .boss == "")
+  and any(.items[]; .item_id == 99901 and .quality == 0 and .trash)
+  and any(.items[]; .item_id == 18646 and .boss == "Cache of the Firelord" and (.trash | not))
+  and any(.sources[]; .builtin and .kind == "zone" and .id == 2717 and .branch == "classic" and .status == "ok" and .name == "Molten Core" and .items >= 30)' >/dev/null
+# Cached: reading it again doesn't touch Wowhead; the missing branch was tried once.
+[ "$(hits /classic/zone=2717)" = 1 ] && [ "$(hits /forever/zone=2717)" = 1 ]
+call GET "/api/events/$SRE/loot-table" >/dev/null
+[ "$(hits /classic/zone=2717)" = 1 ]
+[ "$(psql "$DATABASE_URL" -tAc "SELECT status FROM wowhead_lists WHERE branch = 'forever' AND kind = 'zone' AND source_id = 2717")" = missing ]
+# Refresh from Wowhead: raid leaders only, not twice in a minute; a week-old list is read again.
+TOKEN=$TOKEN_B; fail_call POST "/api/events/$SRE/loot-table/refresh"; TOKEN=$TOKEN_A
+call POST "/api/events/$SRE/loot-table/refresh" >/dev/null
+[ "$(hits /classic/zone=2717)" = 1 ]
+psql "$DATABASE_URL" -qc "UPDATE wowhead_lists SET fetched_at = fetched_at - interval '2 minutes' WHERE kind = 'zone' AND source_id = 2717"
+call POST "/api/events/$SRE/loot-table/refresh" | jq -e '(.items | length) >= 30 and (.refreshing | not)' >/dev/null
+[ "$(hits /classic/zone=2717)" = 2 ]
+psql "$DATABASE_URL" -qc "UPDATE wowhead_lists SET ok_at = now() - interval '8 days', fetched_at = now() - interval '8 days' WHERE branch = 'classic' AND kind = 'zone' AND source_id = 2717"
+call GET "/api/events/$SRE/loot-table" >/dev/null
+[ "$(hits /classic/zone=2717)" = 3 ]
+# Wowhead down: the saved list stays (marked), refresh says so.
+curl -fsS "$MOCK/__down?on=1" >/dev/null
+psql "$DATABASE_URL" -qc "UPDATE wowhead_lists SET fetched_at = fetched_at - interval '2 minutes' WHERE kind = 'zone' AND source_id = 2717"
+call POST "/api/events/$SRE/loot-table/refresh" | jq -e '(.items | length) >= 30 and .sources[0].status == "error" and (.offline | not)' >/dev/null
+call GET "/api/wow/items/17110" | jq -e '.name == "Seal of the Archmagus" and .quality == 4 and (.url | endswith("/item=17110"))' >/dev/null
+curl -fsS "$MOCK/__down?on=0" >/dev/null
+# A raid Wowhead never answered for (the mock's Naxxramas is "down"): the built-in short list.
+NX=$(call POST "/api/channels/$LC/events" '{"title":"Naxx night","starts_at":"'"$START"'","soft_reserves":1,"loot_instance":"naxx"}' | jq -r .event.id)
+call GET "/api/events/$NX/loot-table" | jq -e '.offline and .sources[0].status == "error" and any(.items[]; .item_id == 22691 and .boss == "The Four Horsemen")' >/dev/null
+# Onyxia: the zone page has no drops, so each boss's page is read (drop chances too).
+call GET "/api/events/$LP/loot-table" | jq -e '.bosses == ["Onyxia"] and .item_branch == "classic"
+  and any(.items[]; .item_id == 17078 and .boss == "Onyxia" and .chance == 13 and .category == "back" and (.trash | not))
+  and any(.items[]; .item_id == 17067 and .slot == "Held In Off-hand")
+  and .sources[0].name == "Onyxia'"'"'s Lair"' >/dev/null
+[ "$(hits /classic/npc=10184)" = 1 ] && [ "$(hits /forever/zone=2159)" = 1 ]
+# The Burning Crusade: the tbc branch, its own data set for tooltips.
+KZ=$(call POST "/api/channels/$LC/events" '{"title":"Kara","starts_at":"'"$START"'","game":"tbc","soft_reserves":1,"loot_instance":"kara"}' | jq -r .event.id)
+call GET "/api/events/$KZ/loot-table" | jq -e '.item_branch == "tbc" and .bosses == ["Attumen the Huntsman", "Shade of Aran", "Chess Event", "Prince Malchezaar"]
+  and any(.items[]; .item_id == 30480 and .slot == "Mount" and .category == "other")
+  and any(.items[]; .item_id == 28785 and .category == "trinket")' >/dev/null
+call GET "/api/wow/items/28770?branch=tbc" | jq -e '.name == "Nathrezim Mindblade" and (.url | endswith("/tbc/item=28770")) and any(.lines[]; .left == "Drops from Prince Malchezaar")' >/dev/null
+# Tooltips as Wowhead shows them: two columns and colours.
+call GET "/api/wow/items/17076" | jq -e 'any(.lines[]; .left == "Two-Hand" and .right == "Sword") and any(.lines[]; .q == "q2" and (.left | startswith("Chance on hit")))' >/dev/null
+# Icons through our server (no sign-in for <img>), kept after the first fetch.
+[ "$(curl -s -o /tmp/icon -w '%{http_code} %{content_type}' "$BASE/api/wow/item-icons/17076")" = "200 image/png" ]
+curl -fsS -o /dev/null "$BASE/api/wow/item-icons/17076"
+[ "$(hits /icons/inv_sword_12.jpg)" = 1 ]
+curl -sI "$BASE/api/wow/item-icons/17076" | grep -qi "cache-control: public"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/wow/item-icons/99901")" = 404 ]   # Wowhead has no picture
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/wow/item-icons/4242")" = 404 ]    # not an item we know
+[ "$(hits /tooltip/item/4242)" = 0 ]
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/wow/item-icons/abc")" = 404 ]
+# Importing a list by pasting a Wowhead link: a boss (NPC), a chest (object), a new Forever raid's zone.
+TOKEN=$TOKEN_B; fail_call POST "/api/events/$SRE/loot-sources" '{"url":"https://www.wowhead.com/classic/npc=12397/lord-kazzak"}'; TOKEN=$TOKEN_A
+call POST "/api/events/$SRE/loot-sources" '{"url":"https://www.wowhead.com/classic/npc=12397/lord-kazzak"}' \
+  | jq -e 'any(.items[]; .item_id == 17111 and .boss == "Lord Kazzak") and (.bosses | index("Lord Kazzak")) > (.bosses | index("Ragnaros"))
+      and any(.sources[]; .kind == "npc" and .id == 12397 and (.builtin | not) and .name == "Lord Kazzak" and .items == 4)' >/dev/null
+call POST "/api/events/$SRE/loot-sources" '{"url":"www.wowhead.com/classic/object=181366"}' | jq -e 'any(.items[]; .item_id == 22809 and .boss == "Four Horsemen Chest")' >/dev/null
+fail_call POST "/api/events/$SRE/loot-sources" '{"url":"https://www.wowhead.com/classic/npc=12397"}'; grep -q "already" /tmp/body
+fail_call POST "/api/events/$SRE/loot-sources" '{"url":"https://evil.example/classic/zone=2717"}'
+fail_call POST "/api/events/$SRE/loot-sources" '{"url":"https://www.wowhead.com/classic/item=19019"}'
+fail_call POST "/api/events/$SRE/loot-sources" '{"url":"https://www.wowhead.com/classic/npc=4242"}'; grep -q "doesn't have" /tmp/body
+fail_call POST "/api/events/$SRE/loot-sources" '{"url":"https://www.wowhead.com/classic/zone=2717"}'; grep -q "own list" /tmp/body
+# Every MC raid in the outhouse gets the imported pages.
+call GET "/api/events/$SRE/loot-table" | jq -e '[.sources[] | select(.builtin | not)] | length == 2' >/dev/null
+call DELETE "/api/events/$SRE/loot-sources?branch=classic&kind=npc&id=12397" | jq -e 'all(.items[]; .item_id != 17111) and ([.sources[] | select(.builtin | not)] | length == 1)' >/dev/null
+fail_call DELETE "/api/events/$SRE/loot-sources?branch=classic&kind=npc&id=12397"
+call GET "/api/guilds/$GUILD/audit-log?action=loot_source_add" | jq -e '.entries | length == 2 and (.[1].details | contains("Lord Kazzak") and contains("Molten Core"))' >/dev/null
+# A WoW: Forever raid that isn't built in: its zone is on Wowhead's Forever branch.
+SKY=$(call POST "/api/channels/$LC/events" '{"title":"Spire","starts_at":"'"$START"'","game":"forever","soft_reserves":1,"reserve_lock":"manual","loot_instance":"Skyborne Spire"}' | jq -r .event.id)
+call GET "/api/events/$SKY/loot-table" | jq -e '.items == [] and .sources == []' >/dev/null
+call POST "/api/events/$SKY/loot-sources" '{"url":"https://www.wowhead.com/forever/zone=99001/skyborne-spire"}' \
+  | jq -e '.item_branch == "forever" and .bosses == ["Stormcaller Vael"] and any(.items[]; .item_id == 990003 and .quality == 5 and .slot == "Two-Hand Axe")
+      and .sources[0].branch == "forever" and .sources[0].name == "Skyborne Spire"' >/dev/null
+TOKEN=$TOKEN_B
+call PUT "/api/events/$SKY/signup" '{"status":"yes","role":"dps","class":"Warrior","spec":"Fury"}' >/dev/null
+call PUT "/api/events/$SKY/reserves" '{"item_id":990003}' | jq -e '.event.reserves[0] | .item_name == "Thunderhead Greataxe" and .quality == 5' >/dev/null
+TOKEN=$TOKEN_A
+# Item links follow the branch that has the lists; loot log entries say which.
+call GET /api/wow/info | jq -e '.wowhead_branches.tbc == "tbc" and .wowhead_branches.era == "classic" and (.wowhead_branches.forever | IN("forever", "classic")) and (.wowhead_base | length > 0)' >/dev/null
+call GET "/api/guilds/$GUILD/loot" | jq -e 'all(.entries[]; .branch != "")' >/dev/null
 
 step "voice moderation (mock LiveKit API)"
 jwt_claims() { python3 -c 'import sys,base64;p=sys.argv[1].split(".")[1];print(base64.urlsafe_b64decode(p+"="*(-len(p)%4)).decode())' "$1"; }

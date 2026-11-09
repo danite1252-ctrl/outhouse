@@ -17,6 +17,8 @@ mod push;
 mod security;
 mod state;
 mod wowhead;
+mod wowhead_loot;
+mod wowhead_page;
 
 use std::net::SocketAddr;
 

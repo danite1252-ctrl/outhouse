@@ -147,12 +147,30 @@ function raidCompSection(ev) {
   return details;
 }
 
-// ---------- Items: names, tooltips, lookups ----------
+// ---------- Items: icons, names, tooltips (linked to Wowhead) ----------
+
+// Wowhead's address for a branch ("classic", "tbc", …; "" = retail).
+function wowheadBranchUrl(branch) {
+  const base = (state.wowInfo?.wowhead_base || "https://www.wowhead.com").replace(/\/+$/, "");
+  if (branch == null) return (state.wowInfo?.wowhead_url || `${base}/classic`).replace(/\/+$/, "");
+  return branch ? `${base}/${branch}` : base;
+}
+// The branch a raid's items link to.
+const branchForGame = (game) => state.wowInfo?.wowhead_branches?.[game || "forever"] ?? null;
+const evBranch = (ev) => (loot.dialog && loot.ev?.id === ev?.id && loot.table?.item_branch != null ? loot.table.item_branch : branchForGame(ev?.game));
 
 const itemInfo = new Map();
-function itemData(id) {
-  if (!itemInfo.has(id)) itemInfo.set(id, api("GET", `/api/wow/items/${id}`).catch(() => null));
-  return itemInfo.get(id);
+function itemData(id, branch) {
+  const key = `${id}|${branch ?? ""}`;
+  if (!itemInfo.has(key)) itemInfo.set(key, api("GET", `/api/wow/items/${id}${branch ? `?branch=${encodeURIComponent(branch)}` : ""}`).catch(() => null));
+  return itemInfo.get(key);
+}
+
+// The item's icon (our copy of Wowhead's), or a plain square if there's none.
+function itemIcon(id, size = "") {
+  const img = el("img", { class: `item-icon${size ? ` ${size}` : ""}`, src: `/api/wow/item-icons/${id}`, alt: "", loading: "lazy", decoding: "async", draggable: "false" });
+  img.addEventListener("error", () => { img.removeAttribute("src"); img.classList.add("none"); }, { once: true });
+  return img;
 }
 
 let itemTip = null;
@@ -167,37 +185,54 @@ function placeTip(tip, anchor) {
   tip.style.top = `${y}px`;
 }
 
-function showItemTip(anchor, id, name, quality) {
+const TIP_Q = new Set(["q", "q0", "q1", "q2", "q3", "q4", "q5", "q6", "q7"]);
+function tipLines(info) {
+  if (info?.lines?.length) {
+    return info.lines.map((l) => el("div", { class: `tip-line${TIP_Q.has(l.q) ? ` ${l.q}` : ""}` },
+      el("span", {}, l.left), l.right ? el("span", { class: "tip-right" }, l.right) : null));
+  }
+  return (info?.tooltip || "").split("\n").filter(Boolean).map((l) => el("div", { class: "tip-line" }, el("span", {}, l)));
+}
+
+function showItemTip(anchor, id, name, quality, branch, { touch = false } = {}) {
   hideItemTip();
-  const tip = el("div", { class: "item-tip", role: "tooltip" },
-    el("div", { class: "item-tip-head" }, el("strong", { style: `color:${qualityColour(quality)}` }, name)),
+  const tip = el("div", { class: `item-tip${touch ? " touch" : ""}`, role: "tooltip" },
+    el("div", { class: "item-tip-head" }, itemIcon(id, "big"), el("strong", { class: `q${quality}` }, name)),
     el("div", { class: "item-tip-body muted small" }, "Loading…"));
+  tip.dataset.item = id;
   itemTip = tip;
   ((typeof raidHost === "function" && raidHost()) || document.body).append(tip);
   placeTip(tip, anchor);
-  itemData(id).then((info) => {
+  itemData(id, branch).then((info) => {
     if (itemTip !== tip) return;
-    const lines = (info?.tooltip || "").split("\n").filter(Boolean);
+    const lines = tipLines(info);
     tip.replaceChildren(
-      el("div", { class: "item-tip-head" },
-        info?.icon_url ? hideBroken(el("img", { src: info.icon_url, alt: "", width: 36, height: 36 })) : null,
-        el("strong", { style: `color:${qualityColour(info?.quality ?? quality)}` }, info?.name || name)),
-      lines.length ? el("div", { class: "item-tip-body" }, lines.map((l) => el("div", {}, l))) : el("div", { class: "item-tip-body muted small" }, `Item ${id}`));
+      el("div", { class: "item-tip-head" }, itemIcon(id, "big"),
+        el("strong", { class: `q${info?.quality ?? quality}` }, info?.name || name)),
+      lines.length ? el("div", { class: "item-tip-body" }, lines) : el("div", { class: "item-tip-body muted small" }, `Item ${id}`),
+      touch ? el("a", { class: "item-tip-open", href: anchor.href, target: "_blank", rel: "noopener noreferrer" }, "Open on Wowhead ↗") : null);
     placeTip(tip, anchor);
   });
 }
 
-function wowheadItemUrl(id) {
-  const base = (state.wowInfo?.wowhead_url || "https://www.wowhead.com/classic").replace(/\/+$/, "");
-  return `${base}/item=${id}`;
-}
-
-function itemName(id, name, quality) {
-  const a = el("a", { class: "item-name", href: wowheadItemUrl(id), target: "_blank", rel: "noopener noreferrer", style: `color:${qualityColour(quality)}` }, name);
-  a.addEventListener("mouseenter", () => showItemTip(a, id, name, quality));
-  a.addEventListener("focus", () => showItemTip(a, id, name, quality));
-  a.addEventListener("mouseleave", hideItemTip);
-  a.addEventListener("blur", hideItemTip);
+// An item: icon and name in its quality colour, linking to Wowhead (the
+// raid's branch) in a new tab, with a tooltip on hover (or the first tap).
+function itemName(id, name, quality, branch = null) {
+  const a = el("a", { class: `item-name q${quality}`, href: `${wowheadBranchUrl(branch)}/item=${id}`, target: "_blank", rel: "noopener noreferrer", "data-item-link": id },
+    itemIcon(id), el("span", { class: "item-label" }, name));
+  let touched = false;
+  a.addEventListener("pointerdown", (e) => { touched = e.pointerType === "touch"; });
+  a.addEventListener("mouseenter", () => { if (!touched) showItemTip(a, id, name, quality, branch); });
+  a.addEventListener("focus", () => { if (!touched) showItemTip(a, id, name, quality, branch); });
+  a.addEventListener("mouseleave", () => { if (!touched) hideItemTip(); });
+  a.addEventListener("blur", () => { if (!touched) hideItemTip(); });
+  a.addEventListener("click", (e) => {
+    // Phones: the first tap shows the tooltip (with a link to Wowhead).
+    if (!touched) return;
+    if (itemTip?.dataset.item === String(id) && itemTip.classList.contains("touch")) return;
+    e.preventDefault();
+    showItemTip(a, id, name, quality, branch, { touch: true });
+  });
   return a;
 }
 
@@ -243,7 +278,7 @@ function raidLootRow(ev) {
       el("span", { class: "muted small" }, [`${ev.soft_reserves} each`, ev.loot_instance_name, plural(ev.reserves.length, "reserve")].filter(Boolean).join(" · ")),
       el("span", { class: `ev-loot-lock${ev.reserves_locked ? " on" : ""}` }, lockText(ev))) : null,
     sr && mine.length ? el("div", { class: "ev-loot-mine" }, el("span", { class: "muted small" }, "Yours:"),
-      mine.map((r) => el("span", { class: "sr-chip" }, itemName(r.item_id, r.item_name, r.quality), srBadge(ev, r.item_id)))) : null,
+      mine.map((r) => el("span", { class: "sr-chip" }, itemName(r.item_id, r.item_name, r.quality, branchForGame(ev.game)), srBadge(ev, r.item_id)))) : null,
     el("div", { class: "ev-actions" },
       sr ? el("button", { class: `ev-btn sr${signed && !mine.length && !ev.reserves_locked ? " want" : ""}`, onclick: () => openLoot(ev, signed ? "reserve" : "all") },
         signed ? (mine.length ? (ev.reserves_locked ? "My reserves" : "Change reserves") : "🎲 Reserve loot") : "See reserves") : null,
@@ -251,16 +286,33 @@ function raidLootRow(ev) {
       manager && when.started ? el("button", { class: "ev-btn loot", onclick: () => openLoot(ev, "won") }, "💰 Loot won") : null));
 }
 
-// ---------- The loot window ----------
+// ---------- The soft reserves window ----------
+// Everything about a raid's loot in one window: picking reserves (boss by
+// boss, with filters), everyone's reserves, loot won and, for raid leaders,
+// the loot list itself (Wowhead pages, refresh, import by link).
 
-const loot = { dialog: null, root: null, ev: null, tab: "reserve", view: "item", table: null, awards: [], search: null, found: null, finding: false };
+const CATEGORIES = [["all", "All"], ["weapon", "Weapons"], ["armour", "Armour"], ["trinket", "Trinkets"], ["ring", "Rings"], ["neck", "Necks"], ["back", "Backs"], ["other", "Other"]];
+const loot = { dialog: null, root: null, ev: null, tab: "reserve", view: "item", table: null, awards: [], search: null, found: null, finding: false,
+  cat: "all", suits: false, junk: false, trash: true, open: new Map(), polls: 0, pollTimer: null };
+
+// Opens the window for a raid (by ID; the raid card's "Soft reserves" link).
+async function openSoftReserves(eventId, tab = "reserve") {
+  const id = String(eventId);
+  const known = (loot.ev?.id === id && loot.ev) || null;
+  const ev = known ?? await api("GET", `/api/events/${id}`).catch(() => null);
+  if (!ev) return toast("Couldn't open that raid.");
+  return openLoot(ev, tab);
+}
+window.openSoftReserves = openSoftReserves;
 
 async function openLoot(ev, tab = "reserve") {
   loot.dialog?.close();
-  const dialog = raidWindow("loot-dialog", () => { if (loot.dialog === dialog) { loot.dialog = null; hideItemTip(); } });
-  Object.assign(loot, { dialog, ev, tab, table: null, awards: [], found: null, finding: false });
+  const dialog = raidWindow("loot-dialog", () => { if (loot.dialog === dialog) { loot.dialog = null; hideItemTip(); clearTimeout(loot.pollTimer); } });
+  const sameRaid = loot.ev?.id === ev.id;
+  Object.assign(loot, { dialog, ev, tab, table: null, awards: [], found: null, finding: false, polls: 0 });
+  if (!sameRaid) Object.assign(loot, { cat: "all", suits: false, junk: false, trash: true, open: new Map() });
   loot.root = el("div", { class: "loot-root" });
-  loot.search = el("input", { type: "search", class: "loot-search", placeholder: "Search the list, or paste a Wowhead link or item ID", maxlength: 200, "aria-label": "Find an item" });
+  loot.search = el("input", { type: "search", class: "loot-search", placeholder: "Search the list, or paste a Wowhead link or item ID", maxlength: 400, "aria-label": "Find an item" });
   loot.search.addEventListener("input", () => { loot.found = null; drawLootList(); });
   loot.search.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); lookUpItem(); } });
   dialog.append(loot.root);
@@ -275,9 +327,25 @@ async function refreshLoot() {
     api("GET", `/api/events/${ev.id}/loot`).catch(() => []),
   ]);
   if (!loot.dialog || loot.ev.id !== ev.id) return;
-  loot.table = table ?? { instance: "", instance_name: "", items: [] };
+  setTable(table ?? { instance: "", instance_name: "", items: [], bosses: [], sources: [] });
   loot.awards = awards;
   drawLoot();
+}
+
+// A new loot list; while Wowhead is still being read, ask again shortly.
+function setTable(table) {
+  loot.table = table;
+  clearTimeout(loot.pollTimer);
+  if (table.refreshing && loot.polls < 20) {
+    loot.polls++;
+    const ev = loot.ev;
+    loot.pollTimer = setTimeout(async () => {
+      const t = await api("GET", `/api/events/${ev.id}/loot-table`).catch(() => null);
+      if (!t || !loot.dialog || loot.ev?.id !== ev.id) return;
+      setTable(t);
+      drawLoot();
+    }, 3000);
+  } else if (!table.refreshing) loot.polls = 0;
 }
 
 // A raid changed (reply to something we did, or live from the gateway).
@@ -306,9 +374,20 @@ async function unreserveItem(itemId, userId = state.me.id) {
   applyLootReply(reply);
 }
 
+// A pasted Wowhead zone, NPC or object (chest) link: its loot can be imported.
+function wowheadListLink(text) {
+  const m = /wowhead\.com\/(?:[a-z0-9_-]+\/)?(zone|npc|object)=(\d+)/i.exec(text || "");
+  return m ? { kind: m[1].toLowerCase(), id: Number(m[2]) } : null;
+}
+const KIND_LABEL = { zone: "zone", npc: "boss", object: "chest" };
+
 async function lookUpItem() {
   const q = loot.search.value.trim();
   if (!q || loot.finding) return;
+  if (wowheadListLink(q)) {
+    if (canManageEvent(loot.ev)) importSource(q);
+    return;
+  }
   loot.finding = true;
   drawLootList();
   const found = await api("GET", `/api/wow/items?q=${encodeURIComponent(q)}`).catch(() => null);
@@ -323,10 +402,13 @@ function drawLoot() {
   const ev = loot.ev;
   const sr = ev.soft_reserves > 0;
   const manager = canManageEvent(ev);
-  const tabs = [sr ? ["reserve", "Reserve"] : null, sr ? ["all", `Everyone's (${ev.reserves.length})`] : null, ["won", `Loot won (${loot.awards.length})`]].filter(Boolean);
+  const tabs = [sr ? ["reserve", "Reserve"] : null, sr ? ["all", `Everyone's (${ev.reserves.length})`] : null, ["won", `Loot won (${loot.awards.length})`],
+    manager ? ["list", "Loot list"] : null].filter(Boolean);
   if (!tabs.some(([k]) => k === loot.tab)) loot.tab = tabs[0][0];
   const focused = document.activeElement === loot.search;
   const sel = focused ? [loot.search.selectionStart, loot.search.selectionEnd] : null;
+  const scroller = loot.root.querySelector(".loot-body");
+  const scroll = scroller?.dataset.tab === loot.tab ? scroller.scrollTop : 0;
   const sub = [loot.table?.instance_name || ev.loot_instance_name || (loot.table ? "No raid picked" : ""), sr ? `${ev.soft_reserves} reserve${ev.soft_reserves === 1 ? "" : "s"} each` : "Soft reserves are off", sr ? lockText(ev) : null].filter(Boolean);
   const head = el("div", { class: "loot-head" },
     el("div", { class: "loot-title" }, el("h2", {}, sr ? "🎲 Soft reserves" : "💰 Loot"),
@@ -334,15 +416,26 @@ function drawLoot() {
       el("div", { class: "loot-sub small" }, sub.join(" · "))),
     closeX(loot.dialog));
   const tabBar = el("div", { class: "loot-tabs", role: "tablist" }, tabs.map(([k, label]) => el("button", {
-    type: "button", role: "tab", class: `loot-tab${loot.tab === k ? " on" : ""}`, "aria-selected": loot.tab === k ? "true" : "false",
+    type: "button", role: "tab", class: `loot-tab${loot.tab === k ? " on" : ""}`, "aria-selected": loot.tab === k ? "true" : "false", "data-tab": k,
     onclick: () => { loot.tab = k; drawLoot(); },
   }, label)));
   const body = !loot.table ? el("p", { class: "muted" }, "Loading…")
     : loot.tab === "reserve" ? drawReserveTab(ev, manager)
       : loot.tab === "all" ? drawAllTab(ev, manager)
-        : drawWonTab(ev, manager);
-  loot.root.replaceChildren(head, tabs.length > 1 ? tabBar : null, el("div", { class: "loot-body" }, body));
+        : loot.tab === "list" ? drawListTab(ev)
+          : drawWonTab(ev, manager);
+  const bodyBox = el("div", { class: "loot-body", "data-tab": loot.tab }, body);
+  loot.root.replaceChildren(head, tabs.length > 1 ? tabBar : null, bodyBox);
+  bodyBox.scrollTop = scroll;
   if (focused && loot.search.isConnected) { loot.search.focus(); loot.search.setSelectionRange(...sel); }
+}
+
+function lootBanner() {
+  const t = loot.table;
+  if (!t) return null;
+  if (t.refreshing) return el("p", { class: "loot-banner busy" }, el("span", { class: "loot-spin", "aria-hidden": "true" }), "Reading the full loot list from Wowhead… it'll appear here in a moment.");
+  if (t.offline) return el("p", { class: "loot-banner warn" }, "Wowhead couldn't be reached, so this is a short built-in list for now. You can still reserve anything by its Wowhead link or name.");
+  return null;
 }
 
 function drawReserveTab(ev, manager) {
@@ -357,30 +450,62 @@ function drawReserveTab(ev, manager) {
           : `Pick ${ev.soft_reserves === 1 ? "one item" : `up to ${ev.soft_reserves} items`}. Everyone can see what's reserved, so you'll know who you're up against.`;
   loot.canEdit = canEdit;
   loot.atLimit = mine.length >= ev.soft_reserves;
+  loot.myClass = me?.class || "";
   loot.listBox = el("div", { class: "loot-list" });
+  loot.filterBox = el("div", { class: "loot-filters" });
   drawLootList();
+  const branch = evBranch(ev);
   return el("div", { class: "loot-reserve" },
     el("p", { class: `loot-status${!me || (ev.reserves_locked && !manager) ? " warn" : ""}` }, status),
     el("div", { class: "loot-mine" },
       el("div", { class: "loot-mine-head" }, `Your reserves (${mine.length}/${ev.soft_reserves})`),
       mine.length ? el("div", { class: "loot-mine-list" }, mine.map((r) => el("span", { class: "sr-chip big" },
-        itemName(r.item_id, r.item_name, r.quality), srBadge(ev, r.item_id),
+        itemName(r.item_id, r.item_name, r.quality, branch), srBadge(ev, r.item_id),
         canEdit ? el("button", { type: "button", class: "sr-x", title: `Take back ${r.item_name}`, "aria-label": `Take back ${r.item_name}`, onclick: () => unreserveItem(r.item_id) }, "✕") : null)))
         : el("span", { class: "muted small" }, "Nothing yet.")),
-    loot.search, loot.listBox);
+    lootBanner(),
+    el("div", { class: "loot-finder" }, loot.search, loot.filterBox),
+    loot.listBox);
 }
 
-function lootItemRow(ev, it, manager) {
+const CLASS_BIT = { Warrior: 1, Paladin: 2, Hunter: 4, Rogue: 8, Priest: 16, Shaman: 64, Mage: 128, Warlock: 256, Druid: 1024 };
+const suitsClass = (it, cls) => !it.classes || !CLASS_BIT[cls] || (it.classes & CLASS_BIT[cls]) !== 0;
+
+function lootItemRow(ev, it, manager, branch) {
   const mine = ev.reserves.some((r) => r.user_id === state.me.id && r.item_id === it.item_id);
   const btn = mine ? el("button", { type: "button", class: "ev-btn on sr-pick", disabled: !loot.canEdit, onclick: () => unreserveItem(it.item_id), title: loot.canEdit ? "Take it back" : "" }, "Reserved ✓")
     : el("button", { type: "button", class: "ev-btn sr-pick", disabled: !loot.canEdit || loot.atLimit, title: loot.atLimit && loot.canEdit ? "Take back one of yours first" : "", onclick: () => reserveItem(it.item_id) }, "Reserve");
   const won = loot.awards.filter((a) => a.item_id === it.item_id);
-  return el("div", { class: `loot-row${mine ? " mine" : ""}`, "data-item": it.item_id },
-    el("div", { class: "loot-row-main" }, itemName(it.item_id, it.name, it.quality),
-      el("span", { class: "loot-row-meta muted small" }, [it.boss, won.length ? `won by ${won.map((a) => a.character_name || a.display_name).join(", ")}` : null].filter(Boolean).join(" · "))),
-    srBadge(ev, it.item_id),
+  const count = reserversOf(ev, it.item_id).length;
+  const meta = [it.slot, it.chance != null ? `${it.chance < 1 ? it.chance.toFixed(1) : Math.round(it.chance)}% drop` : null, it.boss && it.showBoss ? it.boss : null,
+    won.length ? `won by ${won.map((a) => a.character_name || a.display_name).join(", ")}` : null].filter(Boolean);
+  return el("div", { class: `loot-row${mine ? " mine" : ""}`, "data-item": it.item_id, "data-cat": it.category || "" },
+    el("div", { class: "loot-row-main" }, itemName(it.item_id, it.name, it.quality, branch),
+      meta.length ? el("span", { class: "loot-row-meta muted small" }, meta.join(" · ")) : null),
+    count ? srBadge(ev, it.item_id) : el("span", { class: "sr-count none", title: "Nobody has reserved it yet" }, "0 SR"),
     manager && it.custom ? el("button", { type: "button", class: "icon-btn small", title: "Remove from this raid's list", "aria-label": `Remove ${it.name} from the list`, onclick: () => removeListItem(it) }, "🗑") : null,
     loot.tab === "reserve" ? btn : null);
+}
+
+function chip(label, on, onclick, extra = {}) {
+  return el("button", { type: "button", class: `loot-chip${on ? " on" : ""}`, "aria-pressed": on ? "true" : "false", onclick, ...extra }, label);
+}
+
+function drawFilters(items) {
+  const box = loot.filterBox;
+  if (!box) return;
+  const cats = CATEGORIES.filter(([k]) => k === "all" || items.some((it) => it.category === k));
+  const cls = loot.myClass;
+  box.replaceChildren(
+    el("div", { class: "loot-chips", role: "group", "aria-label": "Item type" }, cats.map(([k, label]) =>
+      chip(label, loot.cat === k, () => { loot.cat = k; drawLootList(); }, { "data-cat": k }))),
+    el("div", { class: "loot-chips toggles" },
+      cls && CLASS_BIT[cls] ? chip(`Suits my ${cls}`, loot.suits, () => { loot.suits = !loot.suits; drawLootList(); }, { "data-filter": "suits", style: classColour(cls) ? `--cc:${classColour(cls)}` : "" }) : null,
+      items.some((it) => it.trash) ? chip("Trash drops", loot.trash, () => { loot.trash = !loot.trash; drawLootList(); }, { "data-filter": "trash" }) : null,
+      items.some((it) => it.quality < 2) ? chip("Grey & white items", loot.junk, () => { loot.junk = !loot.junk; drawLootList(); }, { "data-filter": "junk" }) : null,
+      el("span", { class: "loot-chip-gap" }),
+      chip("Expand all", false, () => { for (const k of loot.sections ?? []) loot.open.set(k, true); drawLootList(); }, { class: "loot-chip plain" }),
+      chip("Collapse all", false, () => { for (const k of loot.sections ?? []) loot.open.set(k, false); drawLootList(); }, { class: "loot-chip plain" })));
 }
 
 function drawLootList() {
@@ -388,39 +513,77 @@ function drawLootList() {
   if (!box || !loot.table) return;
   const ev = loot.ev;
   const manager = canManageEvent(ev);
-  const q = loot.search.value.trim().toLowerCase();
-  const items = loot.table.items.filter((it) => !q || it.name.toLowerCase().includes(q) || String(it.item_id) === q);
-  const groups = new Map();
+  const branch = evBranch(ev);
+  const raw = loot.search.value.trim();
+  const q = raw.toLowerCase();
+  const all = loot.table.items;
+  drawFilters(all);
+  const reservedIds = new Set(ev.reserves.map((r) => r.item_id));
+  const filtering = !!q || loot.cat !== "all" || loot.suits;
+  const items = all.filter((it) => {
+    if (q && !(it.name.toLowerCase().includes(q) || String(it.item_id) === q || (it.boss || "").toLowerCase().includes(q) || (it.slot || "").toLowerCase().includes(q))) return false;
+    if (reservedIds.has(it.item_id) && loot.cat === "all" && !loot.suits) return true;
+    if (!loot.junk && it.quality < 2 && !reservedIds.has(it.item_id)) return false;
+    if (!loot.trash && it.trash) return false;
+    if (loot.cat !== "all" && (it.category || "other") !== loot.cat) return false;
+    if (loot.suits && !suitsClass(it, loot.myClass)) return false;
+    return true;
+  });
+  // Sections: bosses in raid order, then the rest.
+  const order = [...(loot.table.bosses || [])];
+  const groups = new Map(order.map((b) => [b, []]));
+  const sectionOf = (it) => (it.trash ? "Trash & other drops" : it.boss || (it.custom ? "Added by your raid leaders" : "Other items"));
   for (const it of items) {
-    const g = it.boss || (it.custom ? "Added by your raid leaders" : "Other items");
+    const g = sectionOf(it);
     if (!groups.has(g)) groups.set(g, []);
     groups.get(g).push(it);
   }
-  const rows = [...groups].map(([boss, list]) => el("div", { class: "loot-group" },
-    el("div", { class: "loot-group-head" }, boss),
-    list.map((it) => lootItemRow(ev, { ...it, boss: "" }, manager))));
+  const sections = [...groups].filter(([, list]) => list.length);
+  loot.sections = sections.map(([k]) => k);
+  const small = items.length <= 24 || sections.length <= 1;
+  const rows = sections.map(([boss, list]) => {
+    const reserves = list.reduce((n, it) => n + reserversOf(ev, it.item_id).length, 0);
+    const mineHere = list.some((it) => ev.reserves.some((r) => r.user_id === state.me.id && r.item_id === it.item_id));
+    const auto = filtering || small || reserves > 0;
+    const open = loot.open.has(boss) && !filtering ? loot.open.get(boss) : auto;
+    const d = el("details", { class: `loot-boss${mineHere ? " has-mine" : ""}`, "data-boss": boss });
+    d.open = open;
+    d.addEventListener("toggle", () => { if (!filtering) loot.open.set(boss, d.open); });
+    d.append(el("summary", {},
+      el("span", { class: "loot-boss-name" }, boss),
+      el("span", { class: "loot-boss-meta muted small" }, `${plural(list.length, "item")}${reserves ? ` · ${reserves} SR` : ""}`)),
+    el("div", { class: "loot-boss-items" }, list.map((it) => lootItemRow(ev, it, manager, branch))));
+    return d;
+  });
   const f = loot.found;
-  const lookup = q && !loot.finding && !f ? el("button", { type: "button", class: "loot-lookup", onclick: lookUpItem },
-    `🔎 Look up “${loot.search.value.trim()}” on Wowhead`, el("span", { class: "muted small" }, " (Enter)")) : null;
+  const link = wowheadListLink(raw);
+  const importBox = link ? el("div", { class: "loot-group found" },
+    el("div", { class: "loot-group-head" }, `Wowhead ${KIND_LABEL[link.kind]} page`),
+    manager && loot.table.instance
+      ? el("button", { type: "button", class: "primary small-btn loot-import-btn", onclick: () => importSource(raw) }, `＋ Import this ${KIND_LABEL[link.kind]}'s loot into the ${loot.table.instance_name} list`)
+      : el("p", { class: "muted small", style: "margin:0" }, manager ? "Pick which raid this is (Edit raid → Loot list) first." : "That's a whole loot list. Raid leaders can import it; paste an item link to reserve one item.")) : null;
+  const lookup = q && !link && !loot.finding && !f ? el("button", { type: "button", class: "loot-lookup", onclick: lookUpItem },
+    `🔎 Look up “${raw}” on Wowhead`, el("span", { class: "muted small" }, " (Enter)")) : null;
   const finding = loot.finding ? el("p", { class: "muted small" }, "Looking it up…") : null;
   const found = f && !f.none ? el("div", { class: "loot-group found" },
     el("div", { class: "loot-group-head" }, "Found"),
-    lootItemRow(ev, { item_id: f.item_id, name: f.name, quality: f.quality, boss: "" }, manager),
+    lootItemRow(ev, { item_id: f.item_id, name: f.name, quality: f.quality, boss: "" }, manager, branch),
     manager && loot.table.instance && !loot.table.items.some((i) => i.item_id === f.item_id)
       ? el("button", { type: "button", class: "ghost small-btn", onclick: () => addListItem(String(f.item_id)) }, `＋ Add to the ${loot.table.instance_name} list for everyone`) : null)
     : f?.none ? el("p", { class: "muted small" }, `Nothing found for “${f.none}”. Try its Wowhead link or item ID.`) : null;
-  const empty = !items.length && !q
+  const empty = !all.length && !q
     ? el("p", { class: "muted small" }, loot.table.instance
       ? "This raid's list is empty. Search for an item by name, or paste a Wowhead link."
       : `No raid picked for this one${manager ? " (Edit raid → Loot list)" : ""}. Search for any item by name, or paste a Wowhead link.`) : null;
-  box.replaceChildren(found, finding, lookup, ...rows, empty,
-    q && !items.length && !f && !loot.finding ? el("p", { class: "muted small" }, "Not on this raid's list.") : null);
+  const hidden = all.length && !items.length && !q ? el("p", { class: "muted small" }, "Nothing matches those filters.") : null;
+  box.replaceChildren(importBox, found, finding, lookup, ...rows, empty, hidden,
+    q && !link && !items.length && !f && !loot.finding ? el("p", { class: "muted small" }, "Not on this raid's list.") : null);
 }
 
 async function addListItem(query) {
   const table = await tryApi("POST", `/api/events/${loot.ev.id}/loot-items`, { query }).catch(() => null);
   if (!table) return;
-  loot.table = table;
+  setTable(table);
   loot.found = null;
   toast("Added to the list.");
   drawLoot();
@@ -430,8 +593,79 @@ async function removeListItem(it) {
   if (!(await confirmBox("Remove from the list?", `${it.name} comes off the ${loot.table.instance_name} list for every raid in this outhouse. Reserves already made stay.`, "Remove"))) return;
   const table = await tryApi("DELETE", `/api/events/${loot.ev.id}/loot-items/${it.item_id}`).catch(() => null);
   if (!table) return;
-  loot.table = table;
+  setTable(table);
   drawLoot();
+}
+
+async function importSource(url) {
+  if (loot.importing) return;
+  loot.importing = true;
+  toast("Reading that page from Wowhead…");
+  const table = await tryApi("POST", `/api/events/${loot.ev.id}/loot-sources`, { url }).catch(() => null);
+  loot.importing = false;
+  if (!table || !loot.dialog) return;
+  setTable(table);
+  loot.search.value = "";
+  const src = table.sources[table.sources.length - 1];
+  toast(src ? `Imported ${src.name} (${plural(src.items, "item")}).` : "Imported.");
+  drawLoot();
+}
+
+async function removeSource(src) {
+  if (!(await confirmBox("Remove this page?", `${src.name}'s loot comes off the ${loot.table.instance_name} list for every raid in this outhouse. Reserves already made stay.`, "Remove"))) return;
+  const params = new URLSearchParams({ branch: src.branch, kind: src.kind, id: String(src.id) });
+  const table = await tryApi("DELETE", `/api/events/${loot.ev.id}/loot-sources?${params}`).catch(() => null);
+  if (!table) return;
+  setTable(table);
+  drawLoot();
+}
+
+async function refreshFromWowhead(btn) {
+  btn.disabled = true;
+  btn.textContent = "Reading Wowhead…";
+  const table = await tryApi("POST", `/api/events/${loot.ev.id}/loot-table/refresh`).catch(() => null);
+  if (!loot.dialog) return;
+  if (table) { setTable(table); toast(table.refreshing ? "Still reading Wowhead; the list fills in shortly." : "Loot list refreshed from Wowhead."); }
+  drawLoot();
+}
+
+const SOURCE_STATUS = { ok: "", pending: "Reading…", missing: "Not on Wowhead", error: "Wowhead didn't answer (showing the saved list)" };
+
+// Raid leaders: where the list comes from, refresh, import another page.
+function drawListTab(ev) {
+  const t = loot.table;
+  const url = el("input", { type: "url", placeholder: "Paste a Wowhead zone, boss or chest link", maxlength: 400, "aria-label": "Wowhead link to import" });
+  const go = el("button", { type: "submit", class: "primary" }, "Import");
+  const form = el("form", { class: "loot-import" }, url, go);
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!wowheadListLink(url.value)) return toast("Paste a Wowhead link to a zone, NPC (boss) or object (chest), e.g. wowhead.com/classic/zone=2717.");
+    go.disabled = true;
+    await importSource(url.value.trim());
+    go.disabled = false;
+  });
+  const day = (iso) => new Date(iso).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
+  const sources = t.sources?.length ? el("div", { class: "loot-sources" }, t.sources.map((s) => el("div", { class: `loot-source ${s.status}`, "data-source": `${s.kind}-${s.id}` },
+    el("div", { class: "loot-source-main" },
+      el("a", { href: s.url, target: "_blank", rel: "noopener noreferrer", class: "loot-source-name" }, s.name || `${s.kind} ${s.id}`),
+      el("span", { class: "muted small" }, [s.builtin ? "This raid's zone" : `Imported ${KIND_LABEL[s.kind] || s.kind}`, `Wowhead ${s.branch || "retail"}`, plural(s.items, "item"),
+        s.fetched_at ? `read ${day(s.fetched_at)}` : null, SOURCE_STATUS[s.status] || null].filter(Boolean).join(" · "))),
+    s.builtin ? null : el("button", { type: "button", class: "sr-x", title: "Remove this page from the list", "aria-label": `Remove ${s.name}`, onclick: () => removeSource(s) }, "✕"))))
+    : el("p", { class: "muted small" }, t.instance ? "This raid isn't one we know on Wowhead yet. Import its zone or bosses below." : "Pick which raid this is (Edit raid → Loot list) to get its loot from Wowhead.");
+  const custom = t.items.filter((i) => i.custom);
+  return el("div", { class: "loot-listtab" },
+    lootBanner(),
+    el("div", { class: "loot-list-head" },
+      el("div", {}, el("strong", {}, t.instance_name || "No raid picked"), el("div", { class: "muted small" }, `${plural(t.items.length, "item")} · ${plural((t.bosses || []).length, "boss", "bosses")} · read from Wowhead and refreshed weekly`)),
+      t.instance ? el("button", { type: "button", class: "ev-btn", onclick: (e) => refreshFromWowhead(e.currentTarget) }, "↻ Refresh from Wowhead") : null),
+    sources,
+    t.instance ? el("div", { class: "loot-import-box" },
+      el("div", { class: "loot-mine-head" }, "Import more loot"),
+      el("p", { class: "muted small", style: "margin:0" }, "New WoW: Forever raid, a world boss or a chest? Paste its Wowhead link and its drops join this list for every raid in the outhouse."),
+      form) : null,
+    custom.length ? el("div", { class: "loot-import-box" }, el("div", { class: "loot-mine-head" }, `Added by hand (${custom.length})`),
+      el("div", { class: "loot-mine-list" }, custom.map((it) => el("span", { class: "sr-chip" }, itemName(it.item_id, it.name, it.quality, evBranch(ev)),
+        el("button", { type: "button", class: "sr-x", title: "Remove from this raid's list", "aria-label": `Remove ${it.name} from the list`, onclick: () => removeListItem(it) }, "✕"))))) : null);
 }
 
 function personChip(ev, userId, { onRemove = null } = {}) {
@@ -489,7 +723,7 @@ function drawAllTab(ev, manager) {
     }
     const rows = [...byItem.values()].sort((a, b) => b.who.length - a.who.length || a.item_name.localeCompare(b.item_name));
     content = el("div", { class: "sr-table" }, rows.map((it) => el("div", { class: `sr-trow${it.who.length > 1 ? " contested" : ""}`, "data-item": it.item_id },
-      el("div", { class: "sr-tcell item" }, itemName(it.item_id, it.item_name, it.quality), srBadge(ev, it.item_id)),
+      el("div", { class: "sr-tcell item" }, itemName(it.item_id, it.item_name, it.quality, evBranch(ev)), srBadge(ev, it.item_id)),
       el("div", { class: "sr-tcell who" }, it.who.map((w) => personChip(ev, w.user_id, { onRemove: manager ? () => removeReserve(ev, w) : null })), wonBy(it.item_id)),
       manager && started ? el("button", { type: "button", class: "ev-btn small-btn", onclick: (e) => awardMenu(ev, it, e.currentTarget) }, "Won by…") : null)));
   } else {
@@ -501,7 +735,7 @@ function drawAllTab(ev, manager) {
     const rows = [...people].sort((a, b) => reserverName(ev, a[0]).localeCompare(reserverName(ev, b[0])));
     content = el("div", { class: "sr-table" }, rows.map(([userId, list]) => el("div", { class: "sr-trow", "data-user": userId },
       el("div", { class: "sr-tcell player" }, personChip(ev, userId)),
-      el("div", { class: "sr-tcell items" }, list.map((r) => el("span", { class: "sr-chip" }, itemName(r.item_id, r.item_name, r.quality), srBadge(ev, r.item_id),
+      el("div", { class: "sr-tcell items" }, list.map((r) => el("span", { class: "sr-chip" }, itemName(r.item_id, r.item_name, r.quality, evBranch(ev)), srBadge(ev, r.item_id),
         manager ? el("button", { type: "button", class: "sr-x", title: "Remove this reserve", "aria-label": `Remove ${r.item_name}`, onclick: () => removeReserve(ev, r) }, "✕") : null))))));
   }
   const missing = ev.signups.filter((s) => s.status !== "no" && !ev.reserves.some((r) => r.user_id === s.user_id));
@@ -570,7 +804,7 @@ function drawWonTab(ev, manager) {
     if (pre) setTimeout(() => who.focus(), 0);
   }
   const list = loot.awards.length ? el("div", { class: "won-list" }, [...loot.awards].reverse().map((a) => el("div", { class: "won-row", "data-award": a.id },
-    itemName(a.item_id, a.item_name, a.quality),
+    itemName(a.item_id, a.item_name, a.quality, a.branch || null),
     el("span", { class: "won-arrow muted" }, "→"),
     el("span", { class: "won-who", style: classColour(signupOf(ev, a.user_id)?.class) ? `color:${classColour(signupOf(ev, a.user_id).class)}` : "" }, a.character_name || a.display_name),
     a.reserved ? el("span", { class: "sr-count", title: "They had reserved it" }, "SR") : null,
@@ -617,7 +851,7 @@ async function openLootLog(filters = {}) {
         el("thead", {}, el("tr", {}, el("th", {}, "When"), el("th", {}, "Item"), el("th", {}, "Who"), el("th", {}, "Raid"), manageAny ? el("th", {}, "") : null)),
         el("tbody", {}, entries.map((a) => el("tr", { "data-award": a.id },
           el("td", { class: "muted small" }, day(a.awarded_at)),
-          el("td", {}, itemName(a.item_id, a.item_name, a.quality), a.reserved ? el("span", { class: "sr-count", title: "They had reserved it" }, "SR") : null),
+          el("td", { class: "ll-item" }, itemName(a.item_id, a.item_name, a.quality, a.branch || null), a.reserved ? el("span", { class: "sr-count", title: "They had reserved it" }, "SR") : null),
           el("td", {}, el("button", { type: "button", class: "att-member", onclick: (e) => openProfile(a.user_id, e.currentTarget) },
             avatarFor(a.user_id, a.display_name, 20), a.character_name || a.display_name),
           a.character_name && a.character_name !== a.display_name ? el("span", { class: "muted small" }, ` ${a.display_name}`) : null),
@@ -788,7 +1022,7 @@ openProfile = async function (userId, anchor) {
   const section = el("div", { class: "pc-section pc-loot" },
     el("h4", {}, "RECENT LOOT"),
     el("div", { class: "pcl-list" }, data.entries.map((a) => el("div", { class: "pcl-row" },
-      itemName(a.item_id, a.item_name, a.quality),
+      itemName(a.item_id, a.item_name, a.quality, a.branch || null),
       el("span", { class: "muted small" }, `${a.instance_name || a.raid_title} · ${day(a.awarded_at)}`)))),
     el("button", { type: "button", class: "link small", onclick: () => { closePopover(); openLootLog({ user: userId }); } }, "Full loot log"));
   const body = pop.querySelector(".pc-body");
@@ -799,4 +1033,4 @@ openProfile = async function (userId, anchor) {
 
 // Tooltips don't outlive what they point at (or a tap somewhere else).
 document.addEventListener("scroll", hideItemTip, true);
-document.addEventListener("pointerdown", (e) => { if (!e.target.closest?.(".item-name")) hideItemTip(); }, true);
+document.addEventListener("pointerdown", (e) => { if (!e.target.closest?.(".item-name, .item-tip")) hideItemTip(); }, true);

@@ -2942,7 +2942,71 @@ with sync_playwright() as p:
     lp.wait_for_selector("dialog.loot-dialog .loot-group.found button:has-text('Add to the Molten Core list')")
     lp.screenshot(path=f"{SHOTS}/156-desktop-sr-lookup.png")
     lp.click("dialog.loot-dialog .loot-group.found button:has-text('Add to the Molten Core list')")
-    lp.wait_for_selector("dialog.loot-dialog .loot-group-head:has-text('Added by your raid leaders')", timeout=10000)
+    lp.wait_for_selector("dialog.loot-dialog .loot-boss[data-boss='Added by your raid leaders'] .loot-row[data-item='19019']", timeout=10000)
+    # The full list from Wowhead (ci/wow_mock.py's Molten Core page), boss by boss.
+    lp.fill("dialog.loot-dialog .loot-search", "")
+    lp.wait_for_selector("dialog.loot-dialog .loot-boss[data-boss='Ragnaros'][open] .loot-row[data-item='17076']", timeout=10000)
+    assert lp.query_selector("dialog.loot-dialog .loot-boss[data-boss='Lucifron']:not([open])"), "bosses without reserves start closed"
+    bosses = lp.eval_on_selector_all("dialog.loot-dialog .loot-boss", "els => els.map(e => e.dataset.boss)")
+    assert bosses[0] == "Lucifron" and bosses.index("Ragnaros") > bosses.index("Golemagg the Incinerator"), bosses
+    assert "Smouldering Ash" not in lp.inner_text("dialog.loot-dialog .loot-list"), "grey items are hidden by default"
+    href = lp.get_attribute("dialog.loot-dialog .loot-row[data-item='17076'] a.item-name", "href")
+    assert href.endswith("/classic/item=17076"), href
+    assert lp.get_attribute("dialog.loot-dialog .loot-row[data-item='17076'] a.item-name", "target") == "_blank"
+    lp.wait_for_function("[...document.querySelectorAll(\"dialog.loot-dialog .loot-boss[open] img.item-icon\")].some(i => i.complete && i.naturalWidth > 0)", timeout=10000)
+    colour = lp.eval_on_selector("dialog.loot-dialog .loot-row[data-item='17076'] .item-label", "e => getComputedStyle(e.closest('a')).color")
+    assert colour == "rgb(163, 53, 238)", colour
+    lp.click("dialog.loot-dialog .loot-chip.plain:has-text('Expand all')")
+    lp.wait_for_selector("dialog.loot-dialog .loot-boss[data-boss='Lucifron'][open]")
+    lp.click("dialog.loot-dialog .loot-chip.plain:has-text('Collapse all')")
+    lp.wait_for_selector("dialog.loot-dialog .loot-boss[data-boss='Ragnaros']:not([open])")
+    lp.click("dialog.loot-dialog .loot-boss[data-boss='Ragnaros'] > summary")
+    lp.click("dialog.loot-dialog .loot-boss[data-boss='Golemagg the Incinerator'] > summary")
+    lp.wait_for_timeout(300)
+    lp.screenshot(path=f"{SHOTS}/170-desktop-sr-picker-bosses.png")
+    # Rich tooltip on hover: two columns and Wowhead's colours.
+    lp.hover("dialog.loot-dialog .loot-row[data-item='17076'] .item-label")
+    lp.wait_for_selector("dialog.loot-dialog .item-tip .tip-line.q2:has-text('Chance on hit')", timeout=10000)
+    lp.wait_for_selector("dialog.loot-dialog .item-tip .tip-right:has-text('Sword')")
+    lp.wait_for_timeout(200)
+    lp.screenshot(path=f"{SHOTS}/171-desktop-item-tooltip.png")
+    lp.mouse.move(5, 5)
+    # Filters: rings only; what suits Carol's Warrior; grey items on request.
+    lp.click("dialog.loot-dialog .loot-chip[data-cat='ring']")
+    lp.wait_for_selector("dialog.loot-dialog .loot-row[data-item='17110']")
+    cats = set(lp.eval_on_selector_all("dialog.loot-dialog .loot-list .loot-row", "els => els.map(e => e.dataset.cat)"))
+    assert cats == {"ring"}, cats
+    lp.screenshot(path=f"{SHOTS}/172-desktop-sr-filter-rings.png")
+    lp.click("dialog.loot-dialog .loot-chip[data-cat='all']")
+    lp.click("dialog.loot-dialog .loot-chip[data-filter='suits']")
+    lp.wait_for_selector("dialog.loot-dialog .loot-chip[data-filter='suits'].on")
+    assert lp.query_selector("dialog.loot-dialog .loot-list .loot-row[data-item='17076']"), "a two-hand sword suits a Warrior"
+    assert not lp.query_selector("dialog.loot-dialog .loot-list .loot-row[data-item='16805']"), "cloth gloves don't"
+    lp.screenshot(path=f"{SHOTS}/173-desktop-sr-suits-warrior.png")
+    lp.click("dialog.loot-dialog .loot-chip[data-filter='suits']")
+    lp.click("dialog.loot-dialog .loot-chip[data-filter='junk']")
+    lp.click("dialog.loot-dialog .loot-chip.plain:has-text('Expand all')")
+    lp.wait_for_selector("dialog.loot-dialog .loot-boss[data-boss='Trash & other drops'] .loot-row[data-item='99901']")
+    lp.click("dialog.loot-dialog .loot-chip[data-filter='junk']")
+    lp.click("dialog.loot-dialog .loot-chip.plain:has-text('Collapse all')")
+    # Raid leaders: where the list comes from, and importing more by pasting a Wowhead link.
+    lp.click("dialog.loot-dialog .loot-tab[data-tab='list']")
+    lp.wait_for_selector("dialog.loot-dialog .loot-source[data-source='zone-2717']:has-text('Molten Core')", timeout=10000)
+    lp.fill("dialog.loot-dialog .loot-import input", "https://www.wowhead.com/classic/npc=12397/lord-kazzak")
+    lp.click("dialog.loot-dialog .loot-import button")
+    lp.wait_for_selector("dialog.loot-dialog .loot-source[data-source='npc-12397']:has-text('Lord Kazzak')", timeout=20000)
+    lp.wait_for_timeout(200)
+    lp.screenshot(path=f"{SHOTS}/174-desktop-loot-list-sources.png")
+    lp.click("dialog.loot-dialog .loot-list-head button:has-text('Refresh from Wowhead')")
+    lp.wait_for_selector("dialog.loot-dialog .loot-list-head button:has-text('Refresh from Wowhead'):not([disabled])", timeout=20000)
+    # Or straight in the picker's search box: a chest's link.
+    lp.click("dialog.loot-dialog .loot-tab[data-tab='reserve']")
+    lp.fill("dialog.loot-dialog .loot-search", "https://www.wowhead.com/classic/object=181366/four-horsemen-chest")
+    lp.wait_for_selector("dialog.loot-dialog .loot-import-btn")
+    lp.screenshot(path=f"{SHOTS}/175-desktop-sr-paste-list-link.png")
+    lp.click("dialog.loot-dialog .loot-import-btn")
+    lp.wait_for_selector("dialog.loot-dialog .loot-boss[data-boss='Four Horsemen Chest']", timeout=20000)
+    lp.wait_for_selector("dialog.loot-dialog .loot-boss[data-boss='Lord Kazzak']")
     lp.click("dialog.loot-dialog .raid-close")
     # Loot won on last night's raid: log Thunderfury for Erin.
     scroll_to_card(lp, "Onyxia last night")
@@ -2994,8 +3058,17 @@ with sync_playwright() as p:
         if label == "phone":
             mp.click(f"{card} .ev-loot button:has-text('Change reserves')")
             mp.wait_for_selector("dialog.loot-dialog .loot-row[data-item='17076']", timeout=10000)
+            mp.wait_for_function("[...document.querySelectorAll(\"dialog.loot-dialog .loot-boss[open] img.item-icon\")].some(i => i.complete && i.naturalWidth > 0)", timeout=10000)
             mp.wait_for_timeout(250)
             mp.screenshot(path=f"{SHOTS}/{n + 1}-{label}-sr-picker.png")
+            # A tap shows the tooltip (with a link to Wowhead) instead of leaving the app.
+            mp.tap("dialog.loot-dialog .loot-row[data-item='17076'] .item-label")
+            mp.wait_for_selector("dialog.loot-dialog .item-tip.touch .item-tip-open", timeout=10000)
+            mp.wait_for_selector("dialog.loot-dialog .item-tip .tip-line.q2")
+            mp.wait_for_timeout(200)
+            mp.screenshot(path=f"{SHOTS}/{n}b-{label}-item-tooltip.png")
+            mp.tap("dialog.loot-dialog .loot-status")
+            mp.wait_for_selector("dialog.loot-dialog .item-tip", state="detached")
             # Bonereaver's Edge is his already; one more (two each).
             mp.click("dialog.loot-dialog .loot-row[data-item='17204'] .sr-pick")
             mp.wait_for_selector("dialog.loot-dialog .loot-row[data-item='17204'].mine", timeout=10000)
@@ -3013,7 +3086,12 @@ with sync_playwright() as p:
             mp.screenshot(path=f"{SHOTS}/{n + 1}-{label}-sr-table.png")
             mp.click("dialog.loot-dialog .loot-tab:has-text('Reserve')")
             mp.wait_for_selector("dialog.loot-dialog .loot-row[data-item='17076']")
+            mp.wait_for_timeout(300)
             mp.screenshot(path=f"{SHOTS}/{n + 2}-{label}-sr-picker.png")
+            mp.click("dialog.loot-dialog .loot-tab[data-tab='list']")
+            mp.wait_for_selector("dialog.loot-dialog .loot-source[data-source='npc-12397']", timeout=10000)
+            mp.wait_for_timeout(200)
+            mp.screenshot(path=f"{SHOTS}/{n}b-{label}-loot-list.png")
             mp.click("dialog.loot-dialog .raid-close")
             mp.evaluate("openLootLog()")
         mp.wait_for_selector("dialog.loot-log-dialog .loot-log-table tbody tr", timeout=10000)

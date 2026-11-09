@@ -81,6 +81,17 @@ pub async fn info(State(st): State<AppState>, AuthUser(_user): AuthUser) -> Json
         } else {
             format!("{}/{}", cfg.wowhead_url, cfg.wowhead_branch)
         },
+        wowhead_base: cfg.wowhead_url.clone(),
+        wowhead_branches: [
+            (
+                "forever".to_string(),
+                crate::wowhead_loot::link_branch(&st, "forever", "classic").await,
+            ),
+            ("tbc".to_string(), cfg.wowhead_branch_tbc.clone()),
+            ("era".to_string(), cfg.wowhead_branch.clone()),
+        ]
+        .into_iter()
+        .collect(),
         armory_enabled: cfg.bnet.is_some(),
         armory_region: cfg.armory_region.clone(),
         regions: REGIONS.iter().map(|r| r.to_string()).collect(),

@@ -286,6 +286,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/events/{id}/loot-table", get(loot::get_table))
         .route("/api/events/{id}/loot-items", post(loot::add_item))
         .route(
+            "/api/events/{id}/loot-table/refresh",
+            post(loot::refresh_table),
+        )
+        .route(
+            "/api/events/{id}/loot-sources",
+            post(loot::add_source).delete(loot::remove_source),
+        )
+        .route("/api/wow/item-icons/{id}", get(loot::item_icon))
+        .route(
             "/api/events/{id}/loot-items/{item}",
             delete(loot::remove_item),
         )

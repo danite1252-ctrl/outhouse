@@ -616,6 +616,13 @@ pub struct WowInfo {
     pub bnet_enabled: bool,
     /// Where item links point (e.g. https://www.wowhead.com/classic).
     pub wowhead_url: String,
+    /// Wowhead without a branch (e.g. https://www.wowhead.com).
+    #[serde(default)]
+    pub wowhead_base: String,
+    /// Which Wowhead branch each game's items link to ("forever" →
+    /// "classic" until Wowhead has a WoW: Forever section, "tbc" → "tbc").
+    #[serde(default)]
+    pub wowhead_branches: std::collections::BTreeMap<String, String>,
     /// Armory look-ups and refreshes work (the Battle.net keys are set).
     #[serde(default)]
     pub armory_enabled: bool,
