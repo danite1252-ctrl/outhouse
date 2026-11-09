@@ -14,6 +14,8 @@ async function loadOlderMessages() {
   const channelId = state.channelId;
   const first = state.messages[0];
   if (!channelId || !first || first.channel_id !== channelId || olderLoading || state.historyStart === channelId) return;
+  // Not while a freshly opened channel is still settling at the bottom.
+  if (typeof isPinnedToBottom === "function" && isPinnedToBottom()) return;
   olderLoading = true;
   const loader = el("div", { class: "history-loading" }, "Digging up older messages…");
   box.prepend(loader);

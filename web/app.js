@@ -960,6 +960,34 @@ function messageActions(m) {
 // Members' names follow nickname changes live; webhook posts keep the name they were sent with.
 const authorName = (m) => (m.author_bot ? null : memberById(m.author_id)?.display_name) ?? m.author_display_name;
 
+// Opening a channel should land on the newest messages. Pictures, link
+// cards and raid cards finish loading after the first draw and push the
+// bottom further down, so stay pinned to the bottom for a few seconds
+// unless the person scrolls themselves.
+let pinnedUntil = 0;
+function pinToBottom(ms = 3000) {
+  const box = $("messages");
+  pinnedUntil = performance.now() + ms;
+  const go = () => { if (performance.now() < pinnedUntil) box.scrollTop = box.scrollHeight; };
+  go();
+  requestAnimationFrame(go);
+  for (const t of [50, 150, 400, 800, 1500, 2500]) setTimeout(go, t);
+}
+const isPinnedToBottom = () => performance.now() < pinnedUntil;
+{
+  const box = $("messages");
+  const unpin = () => { pinnedUntil = 0; };
+  box.addEventListener("wheel", unpin, { passive: true });
+  box.addEventListener("touchstart", unpin, { passive: true });
+  box.addEventListener("keydown", unpin);
+  box.addEventListener("mousedown", (e) => { if (e.target === box) unpin(); }); // dragging the scrollbar
+  // Something inside finished loading (picture, video poster): keep the bottom in view.
+  box.addEventListener("load", () => { if (isPinnedToBottom()) box.scrollTop = box.scrollHeight; }, true);
+  if ("ResizeObserver" in window) {
+    new ResizeObserver(() => { if (isPinnedToBottom()) box.scrollTop = box.scrollHeight; }).observe(box);
+  }
+}
+
 function renderMessages() {
   const box = $("messages");
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 150;
@@ -1022,7 +1050,8 @@ function renderMessages() {
     nodes.unshift(el("div", { class: "history-start" }, "You've reached the start. Nothing older down the long drop."));
   }
   box.replaceChildren(...nodes);
-  if (nearBottom || renderMessages.forceBottom) box.scrollTop = box.scrollHeight;
+  if (renderMessages.forceBottom || (nearBottom && isPinnedToBottom())) pinToBottom();
+  else if (nearBottom) box.scrollTop = box.scrollHeight;
   renderMessages.forceBottom = false;
   const editing = box.querySelector(".edit-box textarea");
   if (editing && document.activeElement !== editing) {

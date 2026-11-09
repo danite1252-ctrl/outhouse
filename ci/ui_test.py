@@ -447,8 +447,16 @@ with sync_playwright() as p:
     page.click(".channel:has-text('general')")
     page.wait_for_selector("#messages article.msg:has-text('raid at 8')", timeout=10000)
     assert page.query_selector("#messages article.msg:has-text('Ancient lore')") is None
-    page.wait_for_timeout(500)
-    page.evaluate("document.getElementById('messages').scrollTop = 0")
+    page.wait_for_timeout(1500)
+    # Opening a channel lands on the newest messages, and stays there while it settles.
+    gap = page.evaluate("(() => { const b = document.getElementById('messages'); return b.scrollHeight - b.scrollTop - b.clientHeight; })()")
+    assert gap < 5, f"channel didn't open at the newest messages (gap {gap}px)"
+    # Scroll up like a person (mouse wheel), which also stops the pin-to-bottom.
+    page.hover("#messages")
+    for _ in range(30):
+        page.mouse.wheel(0, -2000)
+        if page.evaluate("document.getElementById('messages').scrollTop") < 300:
+            break
     page.wait_for_selector("#messages article.msg:has-text('Ancient lore')", timeout=10000)
     page.wait_for_selector("#messages .history-start")
     top = page.evaluate("document.getElementById('messages').scrollTop")
