@@ -4,4 +4,5 @@ pub mod gateway;
 pub mod id;
 pub mod models;
 pub mod permissions;
+pub mod raidplan;
 pub mod wow;

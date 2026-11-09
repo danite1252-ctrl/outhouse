@@ -15,6 +15,7 @@ mod gifs;
 pub mod guilds;
 pub mod invites;
 pub mod lfg;
+mod loot;
 pub mod members;
 pub mod messages;
 mod notifications;
@@ -275,6 +276,27 @@ pub fn router(state: AppState) -> Router {
             get(attendance::get).put(attendance::set),
         )
         .route("/api/guilds/{id}/attendance", get(attendance::guild_table))
+        // Raid composition, soft reserves and the loot log
+        .route("/api/events/{id}/composition", get(events::composition))
+        .route("/api/events/{id}/loot-table", get(loot::get_table))
+        .route("/api/events/{id}/loot-items", post(loot::add_item))
+        .route(
+            "/api/events/{id}/loot-items/{item}",
+            delete(loot::remove_item),
+        )
+        .route("/api/events/{id}/reserves", put(loot::reserve))
+        .route("/api/events/{id}/reserves/lock", put(loot::set_lock))
+        .route("/api/events/{id}/reserves/export", get(loot::export))
+        .route("/api/events/{id}/reserves/{item}", delete(loot::unreserve))
+        .route(
+            "/api/events/{id}/loot",
+            get(loot::raid_awards).post(loot::award),
+        )
+        .route("/api/loot/{id}", delete(loot::remove_award))
+        .route("/api/guilds/{id}/loot", get(loot::guild_log))
+        .route("/api/guilds/{id}/loot-instances", get(loot::instances))
+        .route("/api/wow/items", get(loot::search_item))
+        .route("/api/wow/items/{id}", get(loot::get_item))
         .route(
             "/api/guilds/{id}/attendance/{user}",
             get(attendance::member),

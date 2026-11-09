@@ -65,9 +65,35 @@ pub(crate) struct EventRow {
     game: String,
     card_cleanup: String,
     card_removed_at: Option<DateTime<Utc>>,
+    pub soft_reserves: i32,
+    pub reserve_lock: String,
+    pub reserve_lock_override: Option<bool>,
+    pub loot_instance: String,
 }
 
 impl EventRow {
+    /// Members can't add or change soft reserves (raid leaders still can):
+    /// locked by hand, or automatically at the sign-up deadline (else the
+    /// start) or at the start, and always once the raid is over.
+    pub(crate) fn reserves_locked(&self) -> bool {
+        if let Some(locked) = self.reserve_lock_override {
+            return locked;
+        }
+        if self.finished() {
+            return true;
+        }
+        let now = Utc::now();
+        match self.reserve_lock.as_str() {
+            "manual" => false,
+            "start" => now >= self.starts_at,
+            _ => now >= self.closes_at().unwrap_or(self.starts_at),
+        }
+    }
+
+    pub(crate) fn not_open_yet(&self) -> bool {
+        self.not_open()
+    }
+
     /// The card isn't up yet and it isn't time for it: sign-ups aren't open.
     fn not_open(&self) -> bool {
         self.message_id.is_none() && self.post_at.is_some_and(|t| t > Utc::now())
@@ -158,7 +184,7 @@ struct SeriesRow {
 pub(crate) const EVENT_COLUMNS: &str = "id, guild_id, channel_id, message_id, creator_id, title,
     description, starts_at, duration_minutes, max_tanks, max_healers, max_dps,
     series_id, signup_deadline_minutes, attendance_taken, post_rule, post_at, game, card_cleanup,
-    card_removed_at";
+    card_removed_at, soft_reserves, reserve_lock, reserve_lock_override, loot_instance";
 
 const SERIES_COLUMNS: &str = "id, guild_id, channel_id, creator_id, title, description,
     duration_minutes, max_tanks, max_healers, max_dps, signup_deadline_minutes, time_zone,
@@ -268,10 +294,12 @@ pub(crate) async fn build(db: &PgPool, rows: Vec<EventRow>) -> AppResult<Vec<Rai
     series_ids.sort_unstable();
     series_ids.dedup();
     let repeats = repeat_for(db, &series_ids).await?;
+    let mut reserves = super::loot::reserves_for(db, &ids).await?;
     Ok(rows
         .into_iter()
         .map(|r| {
             let closes = r.closes_at();
+            let reserves_locked = r.reserves_locked();
             let opens = if r.message_id.is_none() && r.card_removed_at.is_none() {
                 r.post_at
             } else {
@@ -301,6 +329,12 @@ pub(crate) async fn build(db: &PgPool, rows: Vec<EventRow>) -> AppResult<Vec<Rai
                 signup_deadline_minutes: r.signup_deadline_minutes,
                 signups_close_at: closes,
                 attendance_taken: r.attendance_taken,
+                soft_reserves: r.soft_reserves,
+                reserve_lock: r.reserve_lock,
+                reserve_lock_override: r.reserve_lock_override,
+                reserves_locked,
+                loot_instance: r.loot_instance,
+                reserves: reserves.remove(&r.id).unwrap_or_default(),
             }
         })
         .collect())
@@ -1002,10 +1036,169 @@ async fn run_series(st: &AppState) -> AppResult<()> {
     post_due_cards(st, None, None).await
 }
 
+// ---- Soft-reserve settings ---------------------------------------------
+
+/// Most soft reserves per person.
+const MAX_SOFT_RESERVES: i32 = 2;
+
+/// Soft-reserve settings from Plan/Edit raid (left out: unchanged).
+struct LootChange {
+    soft_reserves: Option<i32>,
+    reserve_lock: Option<String>,
+    loot_instance: Option<String>,
+}
+
+impl LootChange {
+    fn any(&self) -> bool {
+        self.soft_reserves.is_some() || self.reserve_lock.is_some() || self.loot_instance.is_some()
+    }
+}
+
+fn check_loot(
+    soft: Option<i32>,
+    lock: Option<&str>,
+    instance: Option<&str>,
+) -> AppResult<LootChange> {
+    if soft.is_some_and(|n| !(0..=MAX_SOFT_RESERVES).contains(&n)) {
+        return Err(AppError::BadRequest(
+            "Soft reserves are off, 1 or 2 per person.".into(),
+        ));
+    }
+    let reserve_lock =
+        match lock.map(str::trim) {
+            None => None,
+            Some("") => Some("deadline".to_string()),
+            Some(v @ ("deadline" | "start" | "manual")) => Some(v.to_string()),
+            Some(_) => return Err(AppError::BadRequest(
+                "Reserves lock when sign-ups close, when the raid starts, or when you lock them."
+                    .into(),
+            )),
+        };
+    let loot_instance = instance.map(|raw| {
+        let t = clean_text(raw, 60);
+        match outhouse_common::raidplan::instance(&outhouse_common::raidplan::instance_key(&t)) {
+            Some(i) => i.0.to_string(),
+            None => t,
+        }
+    });
+    Ok(LootChange {
+        soft_reserves: soft,
+        reserve_lock,
+        loot_instance,
+    })
+}
+
+fn reply_event_id(reply: &EventReply) -> Option<i64> {
+    match reply {
+        EventReply::Card(m) => m.event.as_ref().map(|e| e.id),
+        EventReply::Bare { event } => Some(event.id),
+    }
+}
+
+/// Saves soft-reserve settings on a raid (and, for "this and future
+/// raids", on the rest of its series and the raids it makes later).
+async fn apply_loot(st: &AppState, event_id: i64, future: bool, c: &LootChange) -> AppResult<()> {
+    let row = match load_row(&st.db, event_id).await {
+        Ok(r) => r,
+        Err(AppError::NotFound) => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let soft = c.soft_reserves.unwrap_or(row.soft_reserves);
+    let lock = c
+        .reserve_lock
+        .clone()
+        .unwrap_or_else(|| row.reserve_lock.clone());
+    let instance = c
+        .loot_instance
+        .clone()
+        .unwrap_or_else(|| row.loot_instance.clone());
+    let ids: Vec<i64> = match (future, row.series_id) {
+        (true, Some(series_id)) => {
+            sqlx::query(
+                "UPDATE event_series SET soft_reserves = $2, reserve_lock = $3, loot_instance = $4
+                 WHERE id = $1",
+            )
+            .bind(series_id)
+            .bind(soft)
+            .bind(&lock)
+            .bind(&instance)
+            .execute(&st.db)
+            .await?;
+            sqlx::query_scalar(
+                "UPDATE events SET soft_reserves = $3, reserve_lock = $4, loot_instance = $5
+                 WHERE series_id = $1 AND starts_at >= $2
+                 RETURNING id",
+            )
+            .bind(series_id)
+            .bind(row.starts_at)
+            .bind(soft)
+            .bind(&lock)
+            .bind(&instance)
+            .fetch_all(&st.db)
+            .await?
+        }
+        _ => {
+            sqlx::query(
+                "UPDATE events SET soft_reserves = $2, reserve_lock = $3, loot_instance = $4
+                 WHERE id = $1",
+            )
+            .bind(event_id)
+            .bind(soft)
+            .bind(&lock)
+            .bind(&instance)
+            .execute(&st.db)
+            .await?;
+            vec![event_id]
+        }
+    };
+    // Fewer reserves each: people keep their first ones.
+    if soft > 0 {
+        sqlx::query(
+            "DELETE FROM loot_reserves r
+             USING (SELECT event_id, user_id, item_id,
+                           row_number() OVER (PARTITION BY event_id, user_id
+                                              ORDER BY created_at, item_id) AS n
+                    FROM loot_reserves WHERE event_id = ANY($1)) x
+             WHERE r.event_id = x.event_id AND r.user_id = x.user_id
+               AND r.item_id = x.item_id AND x.n > $2",
+        )
+        .bind(&ids)
+        .bind(soft as i64)
+        .execute(&st.db)
+        .await?;
+    }
+    for &id in ids.iter().filter(|&&id| id != event_id) {
+        broadcast(st, id).await?;
+    }
+    Ok(())
+}
+
 // ---- Endpoints ---------------------------------------------------------
 
 /// Posts a new raid in a channel (or starts a repeating series).
 pub async fn create(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path(channel_id): Path<i64>,
+    Json(req): Json<CreateEventRequest>,
+) -> AppResult<Json<EventReply>> {
+    let loot = check_loot(
+        req.soft_reserves,
+        req.reserve_lock.as_deref(),
+        req.loot_instance.as_deref(),
+    )?;
+    let reply = create_core(State(st.clone()), user, Path(channel_id), Json(req)).await?;
+    if !loot.any() {
+        return Ok(reply);
+    }
+    let Some(event_id) = reply_event_id(&reply.0) else {
+        return Ok(reply);
+    };
+    apply_loot(&st, event_id, true, &loot).await?;
+    Ok(Json(broadcast(&st, event_id).await?))
+}
+
+async fn create_core(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
     Path(channel_id): Path<i64>,
@@ -1307,6 +1500,32 @@ pub async fn list_upcoming(
 }
 
 pub async fn update(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path(event_id): Path<i64>,
+    Json(req): Json<UpdateEventRequest>,
+) -> AppResult<Json<EventReply>> {
+    let loot = check_loot(
+        req.soft_reserves,
+        req.reserve_lock.as_deref(),
+        req.loot_instance.as_deref(),
+    )?;
+    let future = req.scope.as_deref() == Some("future");
+    let reply = update_core(State(st.clone()), user, Path(event_id), Json(req)).await?;
+    if !loot.any() {
+        return Ok(reply);
+    }
+    // "Edit this and future raids" with new days may have moved this raid
+    // into a new series (or cancelled it): follow it if it's still here.
+    apply_loot(&st, event_id, future, &loot).await?;
+    match load_row(&st.db, event_id).await {
+        Ok(_) => Ok(Json(broadcast(&st, event_id).await?)),
+        Err(AppError::NotFound) => Ok(reply),
+        Err(e) => Err(e),
+    }
+}
+
+async fn update_core(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
     Path(event_id): Path<i64>,
@@ -2489,6 +2708,78 @@ pub async fn export(
             })
             .collect(),
     }))
+}
+
+#[derive(Deserialize)]
+pub struct CompositionQuery {
+    extra: Option<String>,
+}
+
+/// `GET /api/events/{id}/composition[?extra=1]`: roles against slots,
+/// classes, armour, and which raid buffs, debuffs and dispels the roster
+/// brings (with `extra=1`, tentative and bench count too). Anyone who can
+/// see the raid can look.
+pub async fn composition(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(event_id): Path<i64>,
+    Query(q): Query<CompositionQuery>,
+) -> AppResult<Json<outhouse_common::raidplan::Composition>> {
+    use outhouse_common::raidplan::{compose, CompMember};
+    let (row, _) = load(&st, event_id, user.id).await?;
+    let extra = matches!(q.extra.as_deref(), Some("1" | "true" | "yes"));
+    let raid_game = row.game.clone();
+    let slots = [
+        ("tank", row.max_tanks),
+        ("healer", row.max_healers),
+        ("dps", row.max_dps),
+    ];
+    let ev = build(&st.db, vec![row])
+        .await?
+        .pop()
+        .ok_or(AppError::NotFound)?;
+    let counted: Vec<&EventSignup> = ev
+        .signups
+        .iter()
+        .filter(|s| match s.status.as_str() {
+            "yes" | "late" => true,
+            "tentative" | "bench" => extra,
+            _ => false,
+        })
+        .collect();
+    // Which buffs to check: the raid's game, else the game most of the
+    // characters signed up are from.
+    let game = if raid_game.is_empty() {
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for s in &counted {
+            if let Some(c) = &s.character {
+                *counts.entry(c.game.as_str()).or_default() += 1;
+            }
+        }
+        counts
+            .into_iter()
+            .max_by_key(|&(g, n)| (n, g == "tbc"))
+            .map(|(g, _)| g.to_string())
+            .unwrap_or_default()
+    } else {
+        raid_game
+    };
+    let members: Vec<CompMember> = counted
+        .iter()
+        .map(|s| CompMember {
+            user_id: s.user_id,
+            name: s
+                .character
+                .as_ref()
+                .map(|c| c.full_name.clone())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| s.display_name.clone()),
+            class: s.class.clone(),
+            spec: s.spec.clone(),
+            role: s.role.clone(),
+        })
+        .collect();
+    Ok(Json(compose(event_id, &members, &game, slots, extra)))
 }
 
 /// Removes a sign-up (yours, or anyone's if you lead the raid). The first

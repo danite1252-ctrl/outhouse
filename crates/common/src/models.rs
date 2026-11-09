@@ -508,6 +508,25 @@ pub struct RaidEvent {
     /// raid, its sign-ups and attendance are all still here).
     #[serde(default)]
     pub card_removed: bool,
+    /// Soft reserves each person gets (0 = soft reserves are off).
+    #[serde(default)]
+    pub soft_reserves: i32,
+    /// When reserves lock: "deadline" (when sign-ups close, else at the
+    /// start), "start" or "manual" (only when a raid leader locks them).
+    #[serde(default)]
+    pub reserve_lock: String,
+    /// A raid leader locked (true) or unlocked (false) reserves by hand.
+    #[serde(default)]
+    pub reserve_lock_override: Option<bool>,
+    /// Reserves can't be changed right now (raid leaders still can).
+    #[serde(default)]
+    pub reserves_locked: bool,
+    /// The raid's loot list: a listed raid ("mc", "bwl", …) or the leader's
+    /// own name for it ("" = none picked).
+    #[serde(default)]
+    pub loot_instance: String,
+    #[serde(default)]
+    pub reserves: Vec<crate::raidplan::RaidReserve>,
 }
 
 /// When a raid's sign-up card is posted in chat.
@@ -877,6 +896,15 @@ pub struct CreateEventRequest {
     /// (repeating raids only). Default: the outhouse's raid settings.
     #[serde(default)]
     pub card_cleanup: Option<String>,
+    /// Soft reserves per person: 0 (off), 1 or 2.
+    #[serde(default)]
+    pub soft_reserves: Option<i32>,
+    /// "deadline", "start" or "manual".
+    #[serde(default)]
+    pub reserve_lock: Option<String>,
+    /// A listed raid's key or name, or your own name for it ("" = none).
+    #[serde(default)]
+    pub loot_instance: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -908,6 +936,12 @@ pub struct UpdateEventRequest {
     /// matching day keep their sign-ups. The time zone stays the series' own.
     #[serde(default)]
     pub repeat: Option<RepeatInfo>,
+    #[serde(default)]
+    pub soft_reserves: Option<i32>,
+    #[serde(default)]
+    pub reserve_lock: Option<String>,
+    #[serde(default)]
+    pub loot_instance: Option<String>,
 }
 
 /// `PUT /api/events/{id}/attendance`
