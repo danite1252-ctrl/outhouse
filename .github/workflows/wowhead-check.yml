@@ -1,0 +1,47 @@
+# Run by hand (Actions → Check Wowhead → Run workflow): reads a few real
+# Wowhead pages, politely, and prints the loot lists Outhouse would make
+# from them (bosses, items per boss, Season of Discovery left out, drop
+# chances). For when Wowhead changes its pages. Never runs on a push.
+name: Check Wowhead
+on:
+  workflow_dispatch:
+    inputs:
+      pages:
+        description: "Zone pages (branch/zone=ID), plus any boss pages for drop chances"
+        default: "classic/zone=2717 classic/zone=2159 classic/zone=2677 tbc/zone=3457 classic/npc=11502"
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Read pages from Wowhead
+        env:
+          PAGES: ${{ inputs.pages }}
+        run: |
+          mkdir -p /tmp/wh
+          get() {  # branch/kind=id -> /tmp/wh/branch-kind-id.html, following the redirect to its full address
+            f=$(echo "$1" | sed -E 's#^([a-z-]+)/([a-z]+)=([0-9]+)$#\1-\2-\3#')
+            curl -sL -A "OuthouseLoot/1.0 (self-hosted guild chat app; Check Wowhead workflow)" -o "/tmp/wh/$f.html" -w "$1 %{http_code} %{size_download}\n" "https://www.wowhead.com/$1"
+            sleep 5
+          }
+          for p in $PAGES; do echo "$p" | grep -Eq '^[a-z-]+/(zone|npc|object)=[0-9]+$' && get "$p"; done
+          echo "forever/zone=2717: $(curl -s -o /dev/null -w '%{http_code}' -A 'OuthouseLoot/1.0' https://www.wowhead.com/forever/zone=2717)"
+      - name: Plan
+        env:
+          REAL_WOWHEAD_DIR: /tmp/wh
+          SQLX_OFFLINE: "true"
+        run: cargo test -q -p outhouse-server real_wowhead_pages -- --nocapture > /dev/null 2>&1 || true
+      - name: Read the boss and chest pages the zone pages need
+        run: |
+          touch /tmp/wh/wanted.txt
+          for p in $(head -n 12 /tmp/wh/wanted.txt); do
+            f=$(echo "$p" | sed -E 's#^([a-z-]+)/([a-z]+)=([0-9]+)$#\1-\2-\3#')
+            curl -sL -A "OuthouseLoot/1.0 (self-hosted guild chat app; Check Wowhead workflow)" -o "/tmp/wh/$f.html" -w "$p %{http_code} %{size_download}\n" "https://www.wowhead.com/$p"
+            sleep 5
+          done
+      - name: Loot lists
+        env:
+          REAL_WOWHEAD_DIR: /tmp/wh
+          SQLX_OFFLINE: "true"
+        run: cargo test -q -p outhouse-server real_wowhead_pages -- --nocapture 2>&1 | grep -v "^running\|^test result\|^$" | head -300

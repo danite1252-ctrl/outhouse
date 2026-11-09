@@ -324,7 +324,13 @@ async fn build_table(
         }
     }
     bosses.retain(|b| items.iter().any(|i| &i.boss == b && !i.trash));
-    let rank = |b: &String| raidplan::boss_rank(&key, b).unwrap_or(usize::MAX);
+    // Raid order, then other bosses (rare spawns, imported pages), then
+    // loot several bosses share.
+    let rank = |b: &String| match raidplan::boss_rank(&key, b) {
+        Some(r) => r,
+        None if b == crate::wowhead_page::SHARED => usize::MAX,
+        None => usize::MAX - 1,
+    };
     let mut ranked: Vec<(usize, usize, String)> = bosses
         .into_iter()
         .enumerate()

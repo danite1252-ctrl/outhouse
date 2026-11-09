@@ -1323,23 +1323,37 @@ call GET "/api/guilds/$GUILD/audit-log?action=loot_award" | jq -e '.entries | le
 call GET "/api/guilds/$GUILD/audit-log?action=loot_award_remove" | jq -e '.entries | length == 1' >/dev/null
 step "Wowhead loot lists: parsing, bosses, filters, caching, refresh, imports, branches, Wowhead down"
 hits() { curl -fsS "$MOCK/__hits" | jq -r --arg p "$1" '.[$p] // 0'; }
-# Molten Core's full list from its zone page (tricky JS: unquoted keys, single
-# quotes, quality digits in names, functions). No "forever" branch on the mock,
-# so WoW: Forever falls back to Classic.
+# Molten Core's full list from its zone page (a trimmed copy of the real one,
+# reached through Wowhead's redirect to its full address): Classic Era only
+# (no Season of Discovery copies), Majordomo's loot from his chest's page,
+# loot several bosses share in its own section. No "forever" branch (the
+# mock answers 403 like wowhead.com), so WoW: Forever falls back to Classic.
 MCT=$(call GET "/api/events/$SRE/loot-table")
 echo "$MCT" | head -c 300; echo
-jq -e '(.items | length) >= 30 and (.offline | not) and (.refreshing | not)
+jq -e '(.items | length) >= 40 and (.offline | not) and (.refreshing | not)
   and .item_branch == "classic" and (.item_base | endswith("/classic"))
-  and .bosses[0] == "Lucifron" and .bosses[-1] == "Ragnaros" and (.bosses | index("Cache of the Firelord")) == ((.bosses | length) - 2)
-  and (.bosses | index("Majordomo Executus")) == null
+  and .bosses == ["Lucifron", "Magmadar", "Gehennas", "Garr", "Shazzrah", "Baron Geddon", "Sulfuron Harbinger", "Golemagg the Incinerator", "Majordomo Executus", "Ragnaros", "Several bosses"]
+  and all(.items[]; .item_id < 200000)
+  and ([.items[] | select(.name == "Eye of Sulfuras")] | length == 1)
   and any(.items[]; .item_id == 17076 and .name == "Bonereaver'"'"'s Edge" and .boss == "Ragnaros" and .slot == "Two-Hand Sword" and .category == "weapon" and .icon == "inv_sword_12" and .classes == 7)
   and any(.items[]; .item_id == 16805 and .name == "Felheart Gloves" and .quality == 4 and .armour == "cloth" and .classes == 256)
   and any(.items[]; .item_id == 16922 and .slot == "Cloth Legs" and .classes == 16)
   and any(.items[]; .item_id == 18814 and .category == "neck" and .classes == 1503)
+  and any(.items[]; .item_id == 17072 and .slot == "Gun" and .category == "weapon")
+  and any(.items[]; .item_id == 18821 and .boss == "Several bosses" and (.trash | not))
+  and any(.items[]; .item_id == 16799 and .trash and .boss == "")
   and any(.items[]; .item_id == 17010 and .trash and .boss == "")
   and any(.items[]; .item_id == 99901 and .quality == 0 and .trash)
-  and any(.items[]; .item_id == 18646 and .boss == "Cache of the Firelord" and (.trash | not))
-  and any(.sources[]; .builtin and .kind == "zone" and .id == 2717 and .branch == "classic" and .status == "ok" and .name == "Molten Core" and .items >= 30)' <<<"$MCT" >/dev/null || { echo "$MCT" | jq -c '{bosses, sources, n: (.items | length), b: [.items[] | select(.item_id == 17076 or .item_id == 16805 or .item_id == 18646)]}'; exit 1; }
+  and any(.items[]; .item_id == 18646 and .boss == "Majordomo Executus" and (.trash | not) and .chance > 48 and .chance < 49)
+  and any(.sources[]; .builtin and .kind == "zone" and .id == 2717 and .branch == "classic" and .status == "ok" and .name == "Molten Core" and .items >= 40)' <<<"$MCT" >/dev/null || { echo "$MCT" | jq -c '{bosses, sources, n: (.items | length), b: [.items[] | select(.item_id == 17076 or .item_id == 16805 or .item_id == 18646 or .item_id == 18821)]}'; exit 1; }
+[ "$(hits /classic/object=179703)" = 1 ]
+# Zone pages have no drop chances: the bosses' own pages are read slowly in
+# the background for them (the mock only has Ragnaros's).
+for i in $(seq 1 60); do
+  call GET "/api/events/$SRE/loot-table" | jq -e 'any(.items[]; .item_id == 17076 and .chance == 12.5)' >/dev/null && break
+  [ "$i" = 60 ] && { echo "no drop chance from Ragnaros's page"; curl -sS "$MOCK/__hits"; exit 1; }
+  sleep 1
+done
 curl -fsS "$MOCK/__hits"; echo
 # Cached: reading it again doesn't touch Wowhead; the missing branch was tried once.
 [ "$(hits /classic/zone=2717)" = 1 ] && [ "$(hits /forever/zone=2717)" = 1 ]
@@ -1376,9 +1390,18 @@ call GET "/api/events/$LP/loot-table" | jq -e '.bosses == ["Onyxia"] and .item_b
 [ "$(hits /classic/npc=10184)" = 1 ] && [ "$(hits /forever/zone=2159)" = 1 ]
 # The Burning Crusade: the tbc branch, its own data set for tooltips.
 KZ=$(call POST "/api/channels/$LC/events" '{"title":"Kara","starts_at":"'"$START"'","game":"tbc","soft_reserves":1,"loot_instance":"kara"}' | jq -r .event.id)
-call GET "/api/events/$KZ/loot-table" | jq -e '.item_branch == "tbc" and .bosses == ["Attumen the Huntsman", "Shade of Aran", "Chess Event", "Prince Malchezaar"]
-  and any(.items[]; .item_id == 30480 and .slot == "Mount" and .category == "other")
-  and any(.items[]; .item_id == 28785 and .category == "trinket")' >/dev/null
+# Attumen and Midnight are one boss (most of his loot is only on his own
+# page), Julianne, the Wolf and the Crone are the Opera event, the Chess
+# event's loot is in its chest; rare spawns after the bosses.
+KZT=$(call GET "/api/events/$KZ/loot-table")
+jq -e '.item_branch == "tbc" and .bosses == ["Attumen the Huntsman", "Opera Event", "Shade of Aran", "Chess Event", "Prince Malchezaar", "Hyakiss the Lurker"]
+  and any(.items[]; .item_id == 30480 and .slot == "Mount" and .category == "other" and .boss == "Attumen the Huntsman")
+  and any(.items[]; .item_id == 28453 and .boss == "Attumen the Huntsman" and (.trash | not) and .chance == 9.22)
+  and any(.items[]; .item_id == 28572 and .boss == "Opera Event")
+  and any(.items[]; .item_id == 28749 and .boss == "Chess Event" and .chance > 16)
+  and any(.items[]; .item_id == 21903 and .trash)
+  and all(.items[]; .item_id != 21877)
+  and any(.items[]; .item_id == 28785 and .category == "trinket")' <<<"$KZT" >/dev/null || { echo "$KZT" | jq -c '{bosses, n: (.items | length), i: [.items[] | {item_id, boss, trash, chance}]}'; exit 1; }
 call GET "/api/wow/items/28770?branch=tbc" | jq -e '.name == "Nathrezim Mindblade" and (.url | endswith("/tbc/item=28770")) and any(.lines[]; .left == "Drops from Prince Malchezaar")' >/dev/null
 # Tooltips as Wowhead shows them: two columns and colours.
 call GET "/api/wow/items/17076" | jq -e 'any(.lines[]; .left == "Two-Hand" and .right == "Sword") and any(.lines[]; .q == "q2" and (.left | startswith("Chance on hit")))' >/dev/null

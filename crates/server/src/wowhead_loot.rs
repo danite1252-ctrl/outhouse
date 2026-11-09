@@ -14,8 +14,16 @@
 //! with a User-Agent that says what we are.
 //!
 //! WoW: Forever lists try each branch in `WOWHEAD_BRANCH_FOREVER` in order
-//! ("forever", then "classic"); a branch Wowhead doesn't have is remembered
-//! for a day, so as soon as Wowhead adds a Forever section it's used.
+//! ("forever", then "classic"); a branch Wowhead doesn't have (404, a
+//! redirect elsewhere, or 403: its CDN refuses every `/forever/…` page as of
+//! November 2026) is remembered for a day, so as soon as Wowhead opens a
+//! Forever section it's used. Until then Forever raids get Classic Era's
+//! lists: the Classic branch's Season of Discovery rows are left out.
+//!
+//! A listed raid's zone page says which boss drops most items but has no
+//! drop chances; bosses it says (almost) nothing about (Onyxia, Attumen,
+//! chests) have their own pages read straight away, and the rest are read
+//! slowly in the background for their drop chances.
 
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
@@ -41,7 +49,7 @@ const ERROR_RETRY_MINUTES: i64 = 10;
 const FORCE_MIN_SECONDS: i64 = 60;
 /// Boss pages read for one zone, at most.
 const MAX_BOSS_PAGES: usize = 30;
-const USER_AGENT: &str = "OuthouseLoot/1.0 (self-hosted guild chat app; reads raid loot tables for soft reserves, a few pages a week)";
+const USER_AGENT: &str = "OuthouseLoot/1.0 (self-hosted guild chat app; reads raid loot tables for soft reserves, a few dozen pages a week, slowly)";
 
 pub const KINDS: [&str; 3] = ["zone", "npc", "object"];
 
@@ -125,18 +133,53 @@ async fn polite_wait(gap: Duration) {
 
 enum Fetched {
     Page(String),
+    /// Not on this branch (404, or sent somewhere else).
     Missing,
+    /// Wowhead's CDN refused it (403 "Request blocked"): what it answers
+    /// for its WoW: Forever section (2026-11), and when it's had too many
+    /// requests from us.
+    Forbidden,
+}
+
+/// Where a redirect for `url` goes, if it's the same page: Wowhead sends
+/// `/classic/zone=2717` to `/classic/zone=2717/molten-core`. Anything else
+/// (another branch, the home page) means it hasn't got the page.
+fn same_page_redirect(url: &str, location: &str) -> Option<String> {
+    let from = reqwest::Url::parse(url).ok()?;
+    let to = from.join(location).ok()?;
+    let slug = to.path().strip_prefix(from.path())?.strip_prefix('/')?;
+    let ok = to.host_str() == from.host_str()
+        && to.scheme() == from.scheme()
+        && to.port_or_known_default() == from.port_or_known_default()
+        && !slug.is_empty()
+        && !slug.contains('/')
+        && slug.len() <= 120;
+    ok.then(|| to.to_string())
 }
 
 async fn fetch_page(cfg: &Config, url: &str) -> anyhow::Result<Fetched> {
     polite_wait(Duration::from_millis(cfg.wowhead_min_gap_ms)).await;
     let mut resp = client().get(url).send().await?;
+    if resp.status().is_redirection() {
+        let next = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|l| l.to_str().ok())
+            .and_then(|l| same_page_redirect(url, l));
+        let Some(next) = next else {
+            return Ok(Fetched::Missing);
+        };
+        resp = client().get(&next).send().await?;
+    }
     let status = resp.status();
     if status.is_redirection()
         || status == reqwest::StatusCode::NOT_FOUND
         || status == reqwest::StatusCode::GONE
     {
         return Ok(Fetched::Missing);
+    }
+    if status == reqwest::StatusCode::FORBIDDEN {
+        return Ok(Fetched::Forbidden);
     }
     if !status.is_success() {
         bail!("Wowhead answered HTTP {status}");
@@ -152,11 +195,100 @@ async fn fetch_page(cfg: &Config, url: &str) -> anyhow::Result<Fetched> {
     Ok(Fetched::Page(String::from_utf8_lossy(&body).into_owned()))
 }
 
+/// Wowhead refused a page (403).
+#[derive(Debug)]
+struct Refused;
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Wowhead refused the page (HTTP 403)")
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// Which game version's rows to keep from a branch's pages: the Classic
+/// branch also lists Season of Discovery; WoW: Forever raids are Classic
+/// Era's (until Wowhead has a Forever branch of its own).
+fn version_for(branch: &str) -> wowhead_page::Version {
+    if branch == "classic" {
+        wowhead_page::CLASSIC_ERA
+    } else {
+        wowhead_page::Version::default()
+    }
+}
+
+/// An encounter with fewer items than this on the zone page has its own
+/// page read (Attumen's loot isn't credited to him on Karazhan's).
+const FEW_ITEMS: usize = 3;
+
 /// A list as read from Wowhead.
 struct ReadList {
     name: String,
     bosses: Vec<String>,
     drops: Vec<Drop>,
+    /// A listed raid's encounter pages not read yet (for drop chances):
+    /// (encounter, kind, ID).
+    later: Vec<(String, &'static str, i32)>,
+}
+
+/// Puts a boss or chest page's loot under `boss` (its items the zone page
+/// had as trash, unknown or shared become this boss's).
+fn merge_boss_page(drops: &mut Vec<Drop>, page: Vec<Drop>, boss: &str, boss_id: i32) {
+    for mut d in page {
+        match drops.iter_mut().find(|x| x.item_id == d.item_id) {
+            Some(x) => {
+                if x.boss.is_empty() || x.trash || x.boss == wowhead_page::SHARED {
+                    x.boss = boss.to_string();
+                    x.boss_id = boss_id;
+                    x.trash = false;
+                }
+                if x.boss == boss {
+                    x.chance = d.chance.or(x.chance);
+                }
+                if x.icon.is_empty() {
+                    x.icon = d.icon;
+                }
+            }
+            None => {
+                d.boss = boss.to_string();
+                d.boss_id = boss_id;
+                d.trash = false;
+                drops.push(d);
+            }
+        }
+    }
+}
+
+/// Credits a listed raid's zone-page drops to its encounters. Returns the
+/// pages to read now (encounters the zone page says little or nothing
+/// about) and the rest's, to read later for drop chances:
+/// (encounter, kind, ID).
+fn plan_encounters(
+    key: &str,
+    drops: &mut [Drop],
+) -> (
+    Vec<(&'static str, &'static str, i32)>,
+    Vec<(String, &'static str, i32)>,
+) {
+    for d in drops.iter_mut() {
+        if let Some((_, e)) = raidplan::encounter_for(key, d.source_id, &d.source) {
+            d.boss = e.name.to_string();
+            d.trash = false;
+        }
+    }
+    let (mut now, mut later) = (Vec::new(), Vec::new());
+    for e in raidplan::encounters(key) {
+        let have = drops.iter().filter(|d| d.boss == e.name).count();
+        for (kind, id) in e.loot_pages() {
+            if have >= FEW_ITEMS {
+                later.push((e.name.to_string(), kind, id));
+            } else {
+                now.push((e.name, kind, id));
+            }
+        }
+    }
+    (now, later)
 }
 
 async fn read_list(
@@ -165,13 +297,25 @@ async fn read_list(
     kind: &str,
     id: i32,
 ) -> anyhow::Result<Option<ReadList>> {
-    let Fetched::Page(html) = fetch_page(cfg, &page_url(cfg, branch, kind, id)).await? else {
-        return Ok(None);
+    let version = version_for(branch);
+    let html = match fetch_page(cfg, &page_url(cfg, branch, kind, id)).await? {
+        Fetched::Page(h) => h,
+        Fetched::Missing => return Ok(None),
+        Fetched::Forbidden => return Err(Refused.into()),
     };
-    let page = wowhead_page::read_page(&html);
+    let page = wowhead_page::read_page_for(&html, version);
     if !page.has_listviews && page.drops.is_empty() {
         // Not a real page (an error page, or a branch that isn't there).
         return Ok(None);
+    }
+    if page.other_versions > 0 {
+        tracing::debug!(
+            branch,
+            kind,
+            id,
+            rows = page.other_versions,
+            "left out other game versions' loot"
+        );
     }
     let mut name = wowhead_page::decode_html(&page.title).trim().to_string();
     if name.is_empty() || name.eq_ignore_ascii_case("wowhead") {
@@ -180,6 +324,10 @@ async fn read_list(
     let name: String = name.chars().take(100).collect();
     let mut drops = page.drops;
     let mut bosses: Vec<String> = page.bosses.iter().map(|b| b.1.clone()).collect();
+    let mut later = Vec::new();
+    let raid = (kind == "zone")
+        .then(|| raidplan::instance_of_zone(id))
+        .flatten();
     if kind != "zone" {
         // Everything on an NPC or chest page drops from it.
         for d in &mut drops {
@@ -188,36 +336,35 @@ async fn read_list(
             d.trash = false;
         }
         bosses = vec![name.clone()];
+    } else if let Some(key) = raid {
+        // A listed raid: its encounters (Attumen and Midnight are one; the
+        // Cache of the Firelord is Majordomo's).
+        let (now, chances) = plan_encounters(key, &mut drops);
+        later = chances;
+        for (boss, pkind, pid) in now.into_iter().take(MAX_BOSS_PAGES) {
+            // The zone page doesn't say (enough of) what it drops.
+            let html = match fetch_page(cfg, &page_url(cfg, branch, pkind, pid)).await? {
+                Fetched::Page(h) => h,
+                Fetched::Missing => continue,
+                Fetched::Forbidden => break,
+            };
+            let boss_page = wowhead_page::read_page_for(&html, version);
+            merge_boss_page(&mut drops, boss_page.drops, boss, pid);
+        }
+        bosses = raidplan::encounters(key)
+            .iter()
+            .map(|e| e.name.to_string())
+            .collect();
     } else if (!page.has_sources || drops.is_empty()) && !page.bosses.is_empty() {
         // The zone page doesn't say who drops what: read each boss's page.
         for (boss_id, boss) in page.bosses.iter().take(MAX_BOSS_PAGES) {
-            let html = match fetch_page(cfg, &page_url(cfg, branch, "npc", *boss_id)).await {
-                Ok(Fetched::Page(h)) => h,
-                Ok(Fetched::Missing) => continue,
-                Err(e) => return Err(e),
+            let html = match fetch_page(cfg, &page_url(cfg, branch, "npc", *boss_id)).await? {
+                Fetched::Page(h) => h,
+                Fetched::Missing => continue,
+                Fetched::Forbidden => break,
             };
-            let boss_page = wowhead_page::read_page(&html);
-            for mut d in boss_page.drops {
-                match drops.iter_mut().find(|x| x.item_id == d.item_id) {
-                    Some(x) => {
-                        if x.boss.is_empty() || x.trash {
-                            x.boss = boss.clone();
-                            x.boss_id = *boss_id;
-                            x.trash = false;
-                            x.chance = d.chance.or(x.chance);
-                        }
-                        if x.icon.is_empty() {
-                            x.icon = d.icon;
-                        }
-                    }
-                    None => {
-                        d.boss = boss.clone();
-                        d.boss_id = *boss_id;
-                        d.trash = false;
-                        drops.push(d);
-                    }
-                }
-            }
+            let boss_page = wowhead_page::read_page_for(&html, version);
+            merge_boss_page(&mut drops, boss_page.drops, boss, *boss_id);
         }
     }
     for d in &drops {
@@ -225,12 +372,68 @@ async fn read_list(
             bosses.push(d.boss.clone());
         }
     }
+    bosses.retain(|b| drops.iter().any(|d| &d.boss == b && !d.trash));
     drops.truncate(1500);
     Ok(Some(ReadList {
         name,
         bosses,
         drops,
+        later,
     }))
+}
+
+/// Drop chances for a listed raid's bosses whose pages weren't needed for
+/// the list itself (zone pages have no chances, boss pages do). Read
+/// slowly in the background, a page every ten gaps, and stopped at the
+/// first sign of trouble.
+async fn add_chances(
+    st: AppState,
+    branch: String,
+    zone: i32,
+    later: Vec<(String, &'static str, i32)>,
+) {
+    let cfg = &st.config;
+    let gap = Duration::from_millis(cfg.wowhead_min_gap_ms.saturating_mul(10));
+    let version = version_for(&branch);
+    let mut updated = 0u64;
+    for (boss, kind, id) in later.into_iter().take(MAX_BOSS_PAGES) {
+        tokio::time::sleep(gap).await;
+        let html = match fetch_page(cfg, &page_url(cfg, &branch, kind, id)).await {
+            Ok(Fetched::Page(h)) => h,
+            Ok(Fetched::Missing) => continue,
+            Ok(Fetched::Forbidden) | Err(_) => break,
+        };
+        let page = wowhead_page::read_page_for(&html, version);
+        let (ids, chances): (Vec<i32>, Vec<f32>) = page
+            .drops
+            .iter()
+            .filter_map(|d| d.chance.map(|c| (d.item_id, c)))
+            .unzip();
+        if ids.is_empty() {
+            continue;
+        }
+        let done = sqlx::query(
+            "UPDATE wowhead_drops d SET chance = x.chance
+             FROM UNNEST($4::INT[], $5::REAL[]) AS x(item_id, chance)
+             WHERE d.branch = $1 AND d.kind = 'zone' AND d.source_id = $2 AND d.boss = $3
+               AND d.item_id = x.item_id",
+        )
+        .bind(&branch)
+        .bind(zone)
+        .bind(&boss)
+        .bind(&ids)
+        .bind(&chances)
+        .execute(&st.db)
+        .await;
+        match done {
+            Ok(r) => updated += r.rows_affected(),
+            Err(e) => {
+                tracing::warn!(error = %e, "saving drop chances");
+                break;
+            }
+        }
+    }
+    tracing::info!(branch = %branch, zone, updated, "read drop chances from Wowhead");
 }
 
 fn title_case(s: &str) -> String {
@@ -390,8 +593,13 @@ async fn refresh(
     kind: &str,
     id: i32,
 ) -> anyhow::Result<Option<String>> {
-    for branch in candidates {
-        let result = read_list(&st.config, branch, kind, id).await;
+    for (n, branch) in candidates.iter().enumerate() {
+        let mut result = read_list(&st.config, branch, kind, id).await;
+        if n + 1 < candidates.len() && result.as_ref().is_err_and(|e| e.is::<Refused>()) {
+            // A branch Wowhead won't show us (its Forever section answers
+            // 403): not there, so on to the next one.
+            result = Ok(None);
+        }
         save(st, branch, kind, id, &result).await?;
         match result {
             Ok(Some(list)) => {
@@ -402,6 +610,22 @@ async fn refresh(
                     items = list.drops.len(),
                     "read a loot list from Wowhead"
                 );
+                if !list.later.is_empty() {
+                    let key = format!("chances:{branch}:{id}");
+                    let started = inflight()
+                        .lock()
+                        .map(|mut s| s.insert(key.clone()))
+                        .unwrap_or(false);
+                    if started {
+                        let (st2, b, later) = (st.clone(), branch.clone(), list.later);
+                        tokio::spawn(async move {
+                            add_chances(st2, b, id, later).await;
+                            if let Ok(mut s) = inflight().lock() {
+                                s.remove(&key);
+                            }
+                        });
+                    }
+                }
                 return Ok(Some(branch.clone()));
             }
             Ok(None) => continue,
@@ -730,6 +954,183 @@ pub async fn icon(st: &AppState, item_id: i32) -> anyhow::Result<Option<(String,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn follows_redirects_to_the_same_page_only() {
+        let url = "https://www.wowhead.com/classic/zone=2717";
+        assert_eq!(
+            same_page_redirect(url, "/classic/zone=2717/molten-core").as_deref(),
+            Some("https://www.wowhead.com/classic/zone=2717/molten-core")
+        );
+        assert!(same_page_redirect(url, "/classic/zone=27170/x").is_none());
+        assert!(same_page_redirect(url, "/classic/zone=2159/onyxias-lair").is_none());
+        assert!(same_page_redirect(url, "/classic").is_none());
+        assert!(same_page_redirect(url, "https://evil.example/classic/zone=2717/x").is_none());
+        assert!(same_page_redirect(url, "/classic/zone=2717/a/b").is_none());
+        assert!(same_page_redirect(
+            "https://www.wowhead.com/forever/zone=2159",
+            "/classic/zone=2159"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn plans_which_encounter_pages_to_read() {
+        let v = wowhead_page::CLASSIC_ERA;
+        let mut mc = wowhead_page::read_page_for(
+            include_str!("../../../ci/wowhead/classic-zone-2717.html"),
+            v,
+        )
+        .drops;
+        let (now, later) = plan_encounters("mc", &mut mc);
+        // Majordomo's loot is in his chest, which the zone page doesn't list.
+        assert_eq!(now, vec![("Majordomo Executus", "object", 179703)]);
+        assert!(later.contains(&("Ragnaros".to_string(), "npc", 11502)));
+        assert_eq!(later.len(), 9);
+        let mut kara = wowhead_page::read_page_for(
+            include_str!("../../../ci/wowhead/tbc-zone-3457.html"),
+            wowhead_page::Version::default(),
+        )
+        .drops;
+        let (now, later) = plan_encounters("kara", &mut kara);
+        assert!(now.contains(&("Attumen the Huntsman", "npc", 16152)));
+        assert!(now.contains(&("Chess Event", "object", 185119)));
+        // Julianne, the Wolf and the Crone are the Opera event.
+        let opera: Vec<i32> = kara
+            .iter()
+            .filter(|d| d.boss == "Opera Event")
+            .map(|d| d.item_id)
+            .collect();
+        assert_eq!(opera, vec![28572, 28581, 28585]);
+        assert!(later.contains(&("Opera Event".to_string(), "npc", 18168)));
+        let reins = kara.iter().find(|d| d.item_id == 30480).unwrap();
+        assert_eq!(reins.boss, "Attumen the Huntsman");
+        // His other loot comes from his own page.
+        let mut page = wowhead_page::read_page_for(
+            include_str!("../../../ci/wowhead/tbc-npc-16152.html"),
+            wowhead_page::Version::default(),
+        )
+        .drops;
+        page.retain(|d| d.item_id != 28454);
+        merge_boss_page(&mut kara, page, "Attumen the Huntsman", 16152);
+        let bracers = kara.iter().find(|d| d.item_id == 28453).unwrap();
+        assert_eq!(bracers.boss, "Attumen the Huntsman");
+        assert!(!bracers.trash && bracers.chance == Some(9.22));
+        assert!(kara
+            .iter()
+            .any(|d| d.item_id == 23809 && d.boss == "Attumen the Huntsman"));
+    }
+
+    /// With `REAL_WOWHEAD_DIR` set (the "Check Wowhead" workflow, run by
+    /// hand): reads the real pages saved there as `{branch}-{kind}-{id}.html`
+    /// and prints what each listed raid's list would be. Pages it would
+    /// still need are written to `wanted.txt` (`branch/kind=id` lines).
+    #[test]
+    fn real_wowhead_pages() {
+        let Ok(dir) = std::env::var("REAL_WOWHEAD_DIR") else {
+            return;
+        };
+        let read = |branch: &str, kind: &str, id: i32| {
+            std::fs::read_to_string(format!("{dir}/{branch}-{kind}-{id}.html")).ok()
+        };
+        let mut wanted = Vec::new();
+        for (key, zone, _) in raidplan::INSTANCE_ZONES {
+            let tbc = raidplan::instance(key).is_some_and(|i| i.2 == "tbc");
+            let branch = if tbc { "tbc" } else { "classic" };
+            let Some(html) = read(branch, "zone", *zone) else {
+                continue;
+            };
+            let version = version_for(branch);
+            let every = wowhead_page::read_page(&html);
+            let page = wowhead_page::read_page_for(&html, version);
+            let mut drops = page.drops.clone();
+            let (now, later) = plan_encounters(key, &mut drops);
+            for (boss, kind, id) in &now {
+                match read(branch, kind, *id) {
+                    Some(h) => {
+                        let p = wowhead_page::read_page_for(&h, version);
+                        merge_boss_page(&mut drops, p.drops, boss, *id);
+                    }
+                    None => wanted.push(format!("{branch}/{kind}={id}")),
+                }
+            }
+            for (boss, kind, id) in &later {
+                let Some(h) = read(branch, kind, *id) else {
+                    continue;
+                };
+                for c in wowhead_page::read_page_for(&h, version).drops {
+                    if let Some(d) = drops
+                        .iter_mut()
+                        .find(|d| d.item_id == c.item_id && &d.boss == boss)
+                    {
+                        d.chance = c.chance.or(d.chance);
+                    }
+                }
+            }
+            println!(
+                "== {key} ({branch}/zone={zone}) \"{}\": rows {} -> {} kept, {} other versions left out; page bosses {}; has_sources {}; read now {:?}",
+                page.title,
+                every.drops.len(),
+                page.drops.len(),
+                page.other_versions,
+                page.bosses.len(),
+                page.has_sources,
+                now
+            );
+            let mut sections: Vec<String> = raidplan::encounters(key)
+                .iter()
+                .map(|e| e.name.to_string())
+                .collect();
+            for d in &drops {
+                if !d.trash && !sections.contains(&d.boss) {
+                    sections.push(d.boss.clone());
+                }
+            }
+            sections.push(String::new());
+            for b in sections {
+                let list: Vec<&Drop> = drops
+                    .iter()
+                    .filter(|d| {
+                        if b.is_empty() {
+                            d.trash
+                        } else {
+                            !d.trash && d.boss == b
+                        }
+                    })
+                    .collect();
+                if list.is_empty() {
+                    continue;
+                }
+                let with_chance = list.iter().filter(|d| d.chance.is_some()).count();
+                let sample: Vec<String> = list
+                    .iter()
+                    .filter(|d| d.quality >= 4)
+                    .take(4)
+                    .map(|d| {
+                        format!(
+                            "{} [{} q{} {} {}{}]",
+                            d.name,
+                            d.item_id,
+                            d.quality,
+                            raidplan::slot_label(d.item_class, d.subclass, d.slot),
+                            d.icon,
+                            d.chance.map(|c| format!(" {c}%")).unwrap_or_default()
+                        )
+                    })
+                    .collect();
+                println!(
+                    "  {:<28} {:>3} items, {:>3} with chances: {}",
+                    if b.is_empty() { "(trash)" } else { b.as_str() },
+                    list.len(),
+                    with_chance,
+                    sample.join(", ")
+                );
+            }
+        }
+        if !wanted.is_empty() {
+            std::fs::write(format!("{dir}/wanted.txt"), wanted.join("\n")).unwrap();
+        }
+    }
 
     #[test]
     fn reads_pasted_links() {

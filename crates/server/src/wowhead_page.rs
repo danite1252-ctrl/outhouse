@@ -591,14 +591,22 @@ pub struct Drop {
     pub subclass: i32,
     pub slot: i32,
     pub req_class: i32,
-    /// Who drops it (a boss, a chest, or "" for trash/unknown).
+    /// Who drops it (a boss, a chest, [`SHARED`], or "" for trash/unknown).
     pub boss: String,
     pub boss_id: i32,
     /// In percent.
     pub chance: Option<f32>,
     /// Not from a boss (the page told us who the bosses are).
     pub trash: bool,
+    /// Who Wowhead says drops it, as given (NPC or chest name and ID; ""
+    /// and 0 when it only names the zone).
+    pub source: String,
+    pub source_id: i32,
 }
+
+/// The "boss" of loot that several bosses share (Wowhead marks it as a
+/// boss drop without naming one, e.g. Molten Core's Quick Strike Ring).
+pub const SHARED: &str = "Several bosses";
 
 /// What a page holds.
 #[derive(Debug, Clone, Default)]
@@ -609,8 +617,12 @@ pub struct Page {
     /// Bosses listed on a zone page: (NPC ID, name).
     pub bosses: Vec<(i32, String)>,
     pub drops: Vec<Drop>,
-    /// The drops table had who-drops-it for (nearly) every item.
+    /// The drops table had who-drops-it (an NPC, a chest or just the zone)
+    /// for (nearly) every item.
     pub has_sources: bool,
+    /// Items and bosses left out because they're another game version's
+    /// (Season of Discovery on the Classic branch).
+    pub other_versions: usize,
 }
 
 fn id_of(v: &Js) -> Option<String> {
@@ -638,8 +650,82 @@ fn split_quality_prefix(name: &str, quality: Option<i64>) -> (String, Option<i64
     }
 }
 
-/// Reads a Wowhead zone, NPC or object page.
+/// Which game version to read a page for. Wowhead's Classic branch mixes
+/// Classic Era with Season of Discovery (its own boss NPCs, e.g. Ragnaros
+/// 228438, and items, e.g. Eye of Sulfuras 227728); each item row says
+/// which versions it's in: `"modes":{"mode":[9,186],"9":{"count":…}}`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Version {
+    /// Wowhead's mode for the version we want (9 = Classic Era), or None
+    /// to take every row (a branch with one version, e.g. "tbc").
+    pub mode: Option<i64>,
+}
+
+/// Classic Era (and WoW: Forever, which Wowhead's Classic pages stand in for).
+pub const CLASSIC_ERA: Version = Version { mode: Some(9) };
+
+/// NPC and item IDs from here up are new versions' (Season of Discovery);
+/// the original game's are far below.
+const NEW_VERSION_IDS: i64 = 200_000;
+
+fn ints(v: Option<&Js>) -> Vec<i64> {
+    v.map(Js::arr)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(Js::int)
+        .collect()
+}
+
+/// Whether an item row belongs to another game version than `want`.
+fn other_version(row: &Js, want: i64, id: i64) -> bool {
+    let modes = ints(row.get("modes").and_then(|m| m.get("mode")));
+    if modes.contains(&want) {
+        return false;
+    }
+    // Listed only for other versions' modes (186, 226, 30720…).
+    if !modes.is_empty() && modes.iter().any(|m| *m != 0) {
+        return true;
+    }
+    // No modes (or only "any", as on chest pages): new-version item IDs,
+    // and items only new-version bosses drop.
+    let npcs: Vec<i64> = row
+        .get("sourcemore")
+        .map(Js::arr)
+        .unwrap_or(&[])
+        .iter()
+        .filter(|s| s.get("t").and_then(Js::int) == Some(1))
+        .filter_map(|s| s.get("ti").and_then(Js::int))
+        .collect();
+    id >= NEW_VERSION_IDS || (!npcs.is_empty() && npcs.iter().all(|t| *t >= NEW_VERSION_IDS))
+}
+
+/// Drop chance in percent: the wanted version's own count (`modes["9"]`),
+/// else all versions' (`modes["0"]`, top-level `count`/`outof`), else
+/// `percent`. Zone pages have none; NPC and chest pages do.
+fn chance_of(row: &Js, version: Version) -> Option<f32> {
+    let pair = |o: &Js| -> Option<f64> {
+        let c = o.get("count").and_then(Js::int)?;
+        let n = o.get("outof").and_then(Js::int)?;
+        (c > 0 && n > 0).then(|| c as f64 * 100.0 / n as f64)
+    };
+    let modes = row.get("modes");
+    version
+        .mode
+        .and_then(|m| modes.and_then(|x| x.get(&m.to_string())).and_then(pair))
+        .or_else(|| modes.and_then(|x| x.get("0")).and_then(pair))
+        .or_else(|| pair(row))
+        .or_else(|| row.get("percent").and_then(Js::num).filter(|p| *p > 0.0))
+        .map(|p| ((p.min(100.0) * 100.0).round() / 100.0) as f32)
+}
+
+/// Reads a Wowhead zone, NPC or object page (every version's rows).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn read_page(html: &str) -> Page {
+    read_page_for(html, Version::default())
+}
+
+/// Reads a Wowhead zone, NPC or object page for one game version.
+pub fn read_page_for(html: &str, version: Version) -> Page {
     let views = listviews(html);
     let gatherer = gatherer_items(html);
     let mut page = Page {
@@ -647,9 +733,11 @@ pub fn read_page(html: &str) -> Page {
         has_listviews: !views.is_empty() || html.contains("new Listview("),
         ..Default::default()
     };
-    // Bosses (zone pages).
+    // Bosses (zone pages; NPC pages' "see also" lists aren't theirs).
     for v in &views {
-        if v.get("template").and_then(Js::str) != Some("npc") {
+        if v.get("template").and_then(Js::str) != Some("npc")
+            || id_of(v).is_some_and(|id| id != "npcs")
+        {
             continue;
         }
         for row in v.get("data").map(Js::arr).unwrap_or(&[]) {
@@ -664,7 +752,15 @@ pub fn read_page(html: &str) -> Page {
             ) else {
                 continue;
             };
-            if !page.bosses.iter().any(|b| b.0 as i64 == id) {
+            if version.mode.is_some() && id >= NEW_VERSION_IDS {
+                page.other_versions += 1;
+                continue;
+            }
+            if !page
+                .bosses
+                .iter()
+                .any(|b| b.0 as i64 == id || b.1.eq_ignore_ascii_case(name))
+            {
                 page.bosses.push((id as i32, name.to_string()));
             }
         }
@@ -683,8 +779,20 @@ pub fn read_page(html: &str) -> Page {
         return page;
     };
     let boss_names: Vec<&str> = page.bosses.iter().map(|b| b.1.as_str()).collect();
+    let is_boss = |id: i64, name: &str| {
+        page.bosses
+            .iter()
+            .any(|b| b.0 as i64 == id || b.1.eq_ignore_ascii_case(name))
+    };
+    let rows = table.get("data").map(Js::arr).unwrap_or(&[]);
+    // NPC pages list everything it was ever seen to drop (world drops,
+    // cloth); "specificDrop" marks its own loot.
+    let specific_only = rows
+        .iter()
+        .any(|r| r.get("specificDrop").is_some_and(Js::truthy));
     let mut with_source = 0;
-    for row in table.get("data").map(Js::arr).unwrap_or(&[]) {
+    let mut drops: Vec<Drop> = Vec::new();
+    for row in rows {
         let Some(id) = row
             .get("id")
             .and_then(Js::int)
@@ -692,8 +800,19 @@ pub fn read_page(html: &str) -> Page {
         else {
             continue;
         };
-        if page.drops.iter().any(|d| d.item_id as i64 == id) {
+        if drops.iter().any(|d| d.item_id as i64 == id) {
             continue;
+        }
+        if row.get("commondrop").is_some_and(Js::truthy)
+            || (specific_only && !row.get("specificDrop").is_some_and(Js::truthy))
+        {
+            continue;
+        }
+        if let Some(want) = version.mode {
+            if other_version(row, want, id) {
+                page.other_versions += 1;
+                continue;
+            }
         }
         let g = gatherer.get(&id);
         let raw_name = row
@@ -712,21 +831,17 @@ pub fn read_page(html: &str) -> Page {
             .unwrap_or(1)
             .clamp(0, 7);
         let int = |k: &str| row.get(k).and_then(Js::int);
-        let chance = match (
-            row.get("percent").and_then(Js::num),
-            int("count"),
-            int("outof"),
-        ) {
-            (Some(p), _, _) if p > 0.0 => Some(p),
-            (_, Some(c), Some(o)) if c > 0 && o > 0 => Some(c as f64 * 100.0 / o as f64),
-            _ => None,
+        let chance = chance_of(row, version);
+        // Who drops it: sourcemore [{n: "Ragnaros", t: 1, ti: 11502, bd: 1, z: 2717}]
+        // (t 1 = NPC, 2 = object; bd = a boss drop; no n = only the zone).
+        let more = row.get("sourcemore").map(Js::arr).unwrap_or(&[]);
+        if !more.is_empty() {
+            with_source += 1;
         }
-        .map(|p| ((p.min(100.0) * 100.0).round() / 100.0) as f32);
-        // Who drops it: sourcemore [{n: "Ragnaros", t: 1, ti: 11502}].
-        let sources: Vec<(String, i64, i64)> = row
-            .get("sourcemore")
-            .map(Js::arr)
-            .unwrap_or(&[])
+        let boss_drop = more
+            .iter()
+            .any(|s| s.get("bd").and_then(Js::int) == Some(1));
+        let sources: Vec<(String, i64, i64)> = more
             .iter()
             .filter_map(|s| {
                 let n = s.get("n").and_then(Js::str)?.to_string();
@@ -737,46 +852,53 @@ pub fn read_page(html: &str) -> Page {
                 ))
             })
             .filter(|s| s.1 == 1 || s.1 == 2 || s.1 == 0)
+            .filter(|s| version.mode.is_none() || s.2 < NEW_VERSION_IDS)
             .collect();
-        if !sources.is_empty() {
-            with_source += 1;
-        }
         let pick = sources
             .iter()
-            .find(|s| boss_names.iter().any(|b| b.eq_ignore_ascii_case(&s.0)))
+            .find(|s| is_boss(s.2, &s.0))
             .or_else(|| sources.iter().find(|s| s.1 == 2))
             .or(sources.first());
-        let (boss, boss_id) = pick.map(|s| (s.0.clone(), s.2 as i32)).unwrap_or_default();
-        let trash = boss.is_empty()
-            || (!boss_names.is_empty()
-                && pick.is_some_and(|s| s.1 == 1)
-                && !boss_names.iter().any(|b| b.eq_ignore_ascii_case(&boss)));
+        let (source, source_id) = pick.map(|s| (s.0.clone(), s.2 as i32)).unwrap_or_default();
+        let (boss, trash) = match pick {
+            // Named by the page's bosses, a chest, or (no boss list) anyone.
+            Some(s) if s.1 != 1 || boss_names.is_empty() || is_boss(s.2, &s.0) => {
+                (s.0.clone(), false)
+            }
+            // A trash mob.
+            Some(_) => (String::new(), true),
+            // A boss drop that doesn't say which boss: several share it.
+            None if boss_drop => (SHARED.to_string(), false),
+            None => (String::new(), true),
+        };
         let icon = g
             .map(|g| g.2.clone())
             .filter(|i| !i.is_empty())
             .or_else(|| row.get("icon").and_then(Js::str).map(str::to_string))
             .unwrap_or_default();
-        page.drops.push(Drop {
+        drops.push(Drop {
             item_id: id as i32,
             name,
             quality: quality as i32,
             icon: clean_icon(&icon),
             item_class: int("classs").or_else(|| int("class")).unwrap_or(-1) as i32,
             subclass: int("subclass").unwrap_or(-1) as i32,
-            slot: int("slot").or_else(|| int("slotbak")).unwrap_or(0) as i32,
+            slot: int("slot")
+                .filter(|s| *s > 0)
+                .or_else(|| int("slotbak"))
+                .unwrap_or(0) as i32,
             req_class: int("reqclass").unwrap_or(0) as i32,
-            boss: if trash && pick.is_some_and(|s| s.1 == 1) {
-                String::new()
-            } else {
-                boss
-            },
-            boss_id: if trash { 0 } else { boss_id },
+            boss_id: if trash { 0 } else { source_id },
+            boss,
             chance,
             trash,
+            source,
+            source_id,
         });
     }
-    page.has_sources = !page.drops.is_empty() && with_source * 10 >= page.drops.len() * 8;
-    if page.drops.is_empty() {
+    page.has_sources = !drops.is_empty() && with_source * 10 >= drops.len() * 8;
+    page.drops = drops;
+    if page.drops.is_empty() && page.other_versions == 0 {
         page.drops = fallback_items(html, &gatherer);
     }
     page
@@ -1128,6 +1250,141 @@ new Listview({template: 'item', id: 'drops', name: WH.TERMS.drops, tabs: tabsRel
         // A chest counts as who drops it.
         assert_eq!(page.drops[4].boss, "Cache of the Firelord");
         assert!(!page.drops[4].trash);
+    }
+
+    /// Trimmed copies of real Wowhead pages (ci/wowhead, also what the CI
+    /// stand-in serves).
+    fn fixture(name: &str) -> &'static str {
+        match name {
+            "mc" => include_str!("../../../ci/wowhead/classic-zone-2717.html"),
+            "ony" => include_str!("../../../ci/wowhead/classic-zone-2159.html"),
+            "onyxia" => include_str!("../../../ci/wowhead/classic-npc-10184.html"),
+            "ragnaros" => include_str!("../../../ci/wowhead/classic-npc-11502.html"),
+            "cache" => include_str!("../../../ci/wowhead/classic-object-179703.html"),
+            "kara" => include_str!("../../../ci/wowhead/tbc-zone-3457.html"),
+            "attumen" => include_str!("../../../ci/wowhead/tbc-npc-16152.html"),
+            "chess" => include_str!("../../../ci/wowhead/tbc-object-185119.html"),
+            _ => unreachable!(),
+        }
+    }
+
+    fn find(page: &Page, id: i32) -> Option<&Drop> {
+        page.drops.iter().find(|d| d.item_id == id)
+    }
+
+    #[test]
+    fn real_molten_core_leaves_out_season_of_discovery() {
+        let html = fixture("mc");
+        let page = read_page_for(html, CLASSIC_ERA);
+        assert_eq!(page.title, "Molten Core");
+        assert!(page.has_sources);
+        // Season of Discovery's items (by modes, or by ID and boss when a
+        // row has no modes) and boss NPCs are left out.
+        assert!(
+            page.drops.iter().all(|d| d.item_id < 200_000),
+            "{:?}",
+            page.drops
+        );
+        assert!(page.bosses.iter().all(|b| b.0 < 200_000));
+        assert_eq!(page.other_versions, 16);
+        let mut names: Vec<&str> = page.bosses.iter().map(|b| b.1.as_str()).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), page.bosses.len());
+        assert!(page.bosses.contains(&(11502, "Ragnaros".into())));
+        // Every version's rows when asked for all.
+        let all = read_page(html);
+        assert!(find(&all, 227728).is_some() && find(&all, 229380).is_some());
+        assert_eq!(all.drops.len(), page.drops.len() + 8);
+
+        let be = find(&page, 17076).unwrap();
+        assert_eq!(
+            (
+                be.name.as_str(),
+                be.quality,
+                be.item_class,
+                be.subclass,
+                be.slot
+            ),
+            ("Bonereaver's Edge", 4, 2, 8, 17)
+        );
+        assert_eq!(
+            (be.boss.as_str(), be.boss_id, be.trash),
+            ("Ragnaros", 11502, false)
+        );
+        assert_eq!(be.icon, "inv_sword_12");
+        // Zone pages have no drop chances.
+        assert_eq!(be.chance, None);
+        assert_eq!(find(&page, 16800).unwrap().icon, "inv_boots_07");
+        assert_eq!(find(&page, 16805).unwrap().req_class, 256);
+        assert_eq!(find(&page, 17072).unwrap().slot, 26);
+        // A row without modes, from an original boss, stays.
+        assert_eq!(find(&page, 17105).unwrap().boss, "Garr");
+        // A boss drop that names no boss is shared loot, not trash.
+        let qsr = find(&page, 18821).unwrap();
+        assert_eq!((qsr.boss.as_str(), qsr.trash), (SHARED, false));
+        // Only the zone: trash. A trash mob: trash.
+        let bracers = find(&page, 16799).unwrap();
+        assert!(bracers.trash && bracers.boss.is_empty());
+        let core = find(&page, 17010).unwrap();
+        assert!(core.trash && core.boss.is_empty());
+        assert_eq!(
+            (core.source.as_str(), core.source_id),
+            ("Molten Destroyer", 11659)
+        );
+        assert_eq!(find(&page, 99901).unwrap().quality, 0);
+        // The quest reward table isn't loot.
+        assert!(find(&page, 18253).is_none());
+    }
+
+    #[test]
+    fn real_boss_and_chest_pages_have_drop_chances() {
+        // Onyxia's zone page lists no loot at all.
+        let zone = read_page_for(fixture("ony"), CLASSIC_ERA);
+        assert!(zone.has_listviews && zone.drops.is_empty() && zone.bosses.is_empty());
+        assert_eq!(zone.title, "Onyxia's Lair");
+        // Her own page does: Classic Era's count (modes["9"]), only her own
+        // loot (not world drops or cloth), no Season of Discovery copies.
+        let ony = read_page_for(fixture("onyxia"), CLASSIC_ERA);
+        let ids: Vec<i32> = ony.drops.iter().map(|d| d.item_id).collect();
+        assert_eq!(
+            ids,
+            vec![15410, 16921, 17067, 17068, 17075, 17078, 18205, 18423, 18813]
+        );
+        assert_eq!(find(&ony, 17078).unwrap().chance, Some(13.0));
+        assert_eq!(find(&ony, 18423).unwrap().chance, Some(45.15));
+        assert_eq!(find(&ony, 17067).unwrap().slot, 23);
+        assert_eq!(find(&ony, 17078).unwrap().icon, "inv_misc_cape_16");
+        let rag = read_page_for(fixture("ragnaros"), CLASSIC_ERA);
+        assert_eq!(rag.drops.len(), 3);
+        assert_eq!(find(&rag, 17076).unwrap().chance, Some(12.5));
+        // Chests: every row is mode 0 ("any"), with the count there.
+        let cache = read_page_for(fixture("cache"), CLASSIC_ERA);
+        assert_eq!(cache.drops.len(), 6);
+        assert!(cache.bosses.is_empty(), "see-also isn't the page's bosses");
+        assert_eq!(find(&cache, 18646).unwrap().chance, Some(48.98));
+        let chess = read_page_for(fixture("chess"), Version::default());
+        assert_eq!(find(&chess, 28749).unwrap().chance, Some(16.56));
+    }
+
+    #[test]
+    fn real_karazhan() {
+        let page = read_page_for(fixture("kara"), Version::default());
+        // Attumen's mount is his; the rest of his loot only names the zone.
+        let reins = find(&page, 30480).unwrap();
+        assert_eq!(
+            (reins.boss.as_str(), reins.boss_id),
+            ("Attumen the Huntsman", 16152)
+        );
+        assert!(find(&page, 28453).unwrap().trash);
+        assert_eq!(find(&page, 28453).unwrap().source_id, 0);
+        assert_eq!(find(&page, 28572).unwrap().boss, "Julianne");
+        assert_eq!(find(&page, 30675).unwrap().boss, "Hyakiss the Lurker");
+        assert!(find(&page, 21903).unwrap().trash);
+        let att = read_page_for(fixture("attumen"), Version::default());
+        assert!(find(&att, 21877).is_none(), "cloth isn't his loot");
+        assert_eq!(find(&att, 28453).unwrap().chance, Some(9.22));
+        assert_eq!(att.drops.len(), 5);
     }
 
     #[test]

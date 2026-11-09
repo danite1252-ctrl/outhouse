@@ -799,212 +799,428 @@ pub const INSTANCES: &[(&str, &str, &str, i32)] = &[
     ("swp", "Sunwell Plateau", "tbc", 25),
 ];
 
-/// Each listed raid's zone on Wowhead and its bosses in the usual kill
+/// One boss encounter on a raid's loot list. Wowhead files loot under the
+/// NPC (or chest) that drops it, so an encounter lists every NPC, chest and
+/// name it may appear as: Attumen and Midnight, the Opera event's
+/// variants, Majordomo's Cache of the Firelord, the Four Horsemen Chest.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Encounter {
+    /// The name its section has on the list.
+    pub name: &'static str,
+    /// Its NPCs on Wowhead (Classic/TBC IDs).
+    pub npcs: &'static [i32],
+    /// The NPCs whose own pages list the loot ([] = the first NPC).
+    pub loot_from: &'static [i32],
+    /// The chest its loot is in (0 = none; the NPC drops it).
+    pub chest: i32,
+    /// Other names Wowhead shows for it (NPCs, chests).
+    pub aliases: &'static [&'static str],
+}
+
+const fn boss(name: &'static str, npc: &'static [i32]) -> Encounter {
+    Encounter {
+        name,
+        npcs: npc,
+        loot_from: &[],
+        chest: 0,
+        aliases: &[],
+    }
+}
+
+const fn group(
+    name: &'static str,
+    npcs: &'static [i32],
+    loot_from: &'static [i32],
+    chest: i32,
+    aliases: &'static [&'static str],
+) -> Encounter {
+    Encounter {
+        name,
+        npcs,
+        loot_from,
+        chest,
+        aliases,
+    }
+}
+
+impl Encounter {
+    /// The Wowhead pages its loot is listed on: ("object" | "npc", ID).
+    pub fn loot_pages(&self) -> Vec<(&'static str, i32)> {
+        if self.chest > 0 {
+            return vec![("object", self.chest)];
+        }
+        let from = if self.loot_from.is_empty() {
+            &self.npcs[..self.npcs.len().min(1)]
+        } else {
+            self.loot_from
+        };
+        from.iter().map(|&id| ("npc", id)).collect()
+    }
+
+    /// Whether Wowhead's NPC/chest ID or name is this encounter.
+    pub fn matches(&self, id: i32, name: &str) -> bool {
+        (id > 0 && (self.npcs.contains(&id) || self.chest == id))
+            || self.name.eq_ignore_ascii_case(name.trim())
+            || self
+                .aliases
+                .iter()
+                .any(|a| a.eq_ignore_ascii_case(name.trim()))
+    }
+}
+
+/// Each listed raid's zone on Wowhead and its encounters in the usual kill
 /// order (Wowhead lists loot in its own order; this puts the boss sections
 /// in raid order, anything else goes after). Zone IDs are the game's own
 /// area IDs, the same on every Wowhead branch (Classic, TBC, WoW: Forever).
-pub const INSTANCE_ZONES: &[(&str, i32, &[&str])] = &[
+pub const INSTANCE_ZONES: &[(&str, i32, &[Encounter])] = &[
     (
         "mc",
         2717,
         &[
-            "Lucifron",
-            "Magmadar",
-            "Gehennas",
-            "Garr",
-            "Shazzrah",
-            "Baron Geddon",
-            "Sulfuron Harbinger",
-            "Golemagg the Incinerator",
-            "Majordomo Executus",
-            "Cache of the Firelord",
-            "Ragnaros",
+            boss("Lucifron", &[12118]),
+            boss("Magmadar", &[11982]),
+            boss("Gehennas", &[12259]),
+            boss("Garr", &[12057]),
+            boss("Shazzrah", &[12264]),
+            boss("Baron Geddon", &[12056]),
+            boss("Sulfuron Harbinger", &[12098]),
+            boss("Golemagg the Incinerator", &[11988]),
+            group(
+                "Majordomo Executus",
+                &[12018],
+                &[],
+                179703,
+                &["Cache of the Firelord"],
+            ),
+            boss("Ragnaros", &[11502]),
         ],
     ),
-    ("ony", 2159, &["Onyxia"]),
+    ("ony", 2159, &[boss("Onyxia", &[10184])]),
     (
         "bwl",
         2677,
         &[
-            "Razorgore the Untamed",
-            "Vaelastrasz the Corrupt",
-            "Broodlord Lashlayer",
-            "Firemaw",
-            "Ebonroc",
-            "Flamegor",
-            "Chromaggus",
-            "Nefarian",
+            boss("Razorgore the Untamed", &[12435]),
+            boss("Vaelastrasz the Corrupt", &[13020]),
+            boss("Broodlord Lashlayer", &[12017]),
+            boss("Firemaw", &[11983]),
+            boss("Ebonroc", &[14601]),
+            boss("Flamegor", &[11981]),
+            boss("Chromaggus", &[14020]),
+            group(
+                "Nefarian",
+                &[11583, 10162],
+                &[11583],
+                0,
+                &["Lord Victor Nefarius"],
+            ),
         ],
     ),
     (
         "zg",
         1977,
         &[
-            "High Priestess Jeklik",
-            "High Priest Venoxis",
-            "High Priestess Mar'li",
-            "Bloodlord Mandokir",
-            "Gri'lek",
-            "Hazza'rah",
-            "Renataki",
-            "Wushoolay",
-            "Gahz'ranka",
-            "High Priest Thekal",
-            "High Priestess Arlokk",
-            "Jin'do the Hexxer",
-            "Hakkar",
+            boss("High Priestess Jeklik", &[14517]),
+            boss("High Priest Venoxis", &[14507]),
+            boss("High Priestess Mar'li", &[14510]),
+            group(
+                "Bloodlord Mandokir",
+                &[11382, 14988],
+                &[11382],
+                0,
+                &["Ohgan"],
+            ),
+            boss("Gri'lek", &[15082]),
+            boss("Hazza'rah", &[15083]),
+            boss("Renataki", &[15084]),
+            boss("Wushoolay", &[15085]),
+            boss("Gahz'ranka", &[15114]),
+            boss("High Priest Thekal", &[14509]),
+            boss("High Priestess Arlokk", &[14515]),
+            boss("Jin'do the Hexxer", &[11380]),
+            boss("Hakkar", &[14834]),
         ],
     ),
     (
         "aq20",
         3429,
         &[
-            "Kurinnaxx",
-            "General Rajaxx",
-            "Moam",
-            "Buru the Gorger",
-            "Ayamiss the Hunter",
-            "Ossirian the Unscarred",
+            boss("Kurinnaxx", &[15348]),
+            boss("General Rajaxx", &[15341]),
+            boss("Moam", &[15340]),
+            boss("Buru the Gorger", &[15370]),
+            boss("Ayamiss the Hunter", &[15369]),
+            boss("Ossirian the Unscarred", &[15339]),
         ],
     ),
     (
         "aq40",
         3428,
         &[
-            "The Prophet Skeram",
-            "Lord Kri",
-            "Princess Yauj",
-            "Vem",
-            "Battleguard Sartura",
-            "Fankriss the Unyielding",
-            "Viscidus",
-            "Princess Huhuran",
-            "Emperor Vek'lor",
-            "Emperor Vek'nilash",
-            "Ouro",
-            "C'Thun",
+            boss("The Prophet Skeram", &[15263]),
+            group(
+                "Bug Trio",
+                &[15543, 15511, 15544],
+                &[15543, 15511, 15544],
+                0,
+                &["Princess Yauj", "Lord Kri", "Vem", "Silithid Royalty"],
+            ),
+            boss("Battleguard Sartura", &[15516]),
+            boss("Fankriss the Unyielding", &[15510]),
+            boss("Viscidus", &[15299]),
+            boss("Princess Huhuran", &[15509]),
+            boss("Emperor Vek'lor", &[15276]),
+            boss("Emperor Vek'nilash", &[15275]),
+            boss("Ouro", &[15517]),
+            group("C'Thun", &[15727, 15589], &[15727], 0, &["Eye of C'Thun"]),
         ],
     ),
     (
         "naxx",
         3456,
         &[
-            "Anub'Rekhan",
-            "Grand Widow Faerlina",
-            "Maexxna",
-            "Noth the Plaguebringer",
-            "Heigan the Unclean",
-            "Loatheb",
-            "Instructor Razuvious",
-            "Gothik the Harvester",
-            "The Four Horsemen",
-            "Four Horsemen Chest",
-            "Patchwerk",
-            "Grobbulus",
-            "Gluth",
-            "Thaddius",
-            "Sapphiron",
-            "Kel'Thuzad",
+            boss("Anub'Rekhan", &[15956]),
+            boss("Grand Widow Faerlina", &[15953]),
+            boss("Maexxna", &[15952]),
+            boss("Noth the Plaguebringer", &[15954]),
+            boss("Heigan the Unclean", &[15936]),
+            boss("Loatheb", &[16011]),
+            boss("Instructor Razuvious", &[16061]),
+            boss("Gothik the Harvester", &[16060]),
+            group(
+                "The Four Horsemen",
+                &[16062, 16063, 16064, 16065],
+                &[],
+                181366,
+                &[
+                    "Four Horsemen Chest",
+                    "Highlord Mograine",
+                    "Sir Zeliek",
+                    "Thane Korth'azz",
+                    "Lady Blaumeux",
+                ],
+            ),
+            boss("Patchwerk", &[16028]),
+            boss("Grobbulus", &[15931]),
+            boss("Gluth", &[15932]),
+            group(
+                "Thaddius",
+                &[15928, 15929, 15930],
+                &[15928],
+                0,
+                &["Stalagg", "Feugen"],
+            ),
+            boss("Sapphiron", &[15989]),
+            boss("Kel'Thuzad", &[15990]),
         ],
     ),
     (
         "kara",
         3457,
         &[
-            "Attumen the Huntsman",
-            "Moroes",
-            "Maiden of Virtue",
-            "The Big Bad Wolf",
-            "Romulo",
-            "Julianne",
-            "The Crone",
-            "The Curator",
-            "Terestian Illhoof",
-            "Shade of Aran",
-            "Netherspite",
-            "Chess Event",
-            "Prince Malchezaar",
-            "Nightbane",
+            group(
+                "Attumen the Huntsman",
+                &[16152, 15550, 16151],
+                &[16152],
+                0,
+                &["Midnight"],
+            ),
+            boss("Moroes", &[15687]),
+            boss("Maiden of Virtue", &[16457]),
+            group(
+                "Opera Event",
+                &[
+                    17521, 17534, 17533, 18168, 17535, 17543, 17546, 17547, 17548,
+                ],
+                &[17521, 17534, 18168],
+                0,
+                &[
+                    "The Big Bad Wolf",
+                    "Romulo",
+                    "Julianne",
+                    "Romulo and Julianne",
+                    "The Crone",
+                    "Dorothee",
+                    "Tito",
+                    "Roar",
+                    "Strawman",
+                    "Tinhead",
+                    "Opera",
+                    "Opera House",
+                ],
+            ),
+            boss("The Curator", &[15691]),
+            boss("Terestian Illhoof", &[15688]),
+            boss("Shade of Aran", &[16524]),
+            boss("Netherspite", &[15689]),
+            group(
+                "Chess Event",
+                &[16816],
+                &[],
+                185119,
+                &["Dust Covered Chest", "Echo of Medivh"],
+            ),
+            boss("Prince Malchezaar", &[15690]),
+            boss("Nightbane", &[17225]),
         ],
     ),
     (
         "gruul",
         3923,
-        &["High King Maulgar", "Gruul the Dragonkiller"],
+        &[
+            group(
+                "High King Maulgar",
+                &[18831, 18832, 18834, 18835, 18836],
+                &[18831],
+                0,
+                &[
+                    "Krosh Firehand",
+                    "Olm the Summoner",
+                    "Kiggler the Crazed",
+                    "Blindeye the Seer",
+                ],
+            ),
+            boss("Gruul the Dragonkiller", &[19044]),
+        ],
     ),
-    ("mag", 3836, &["Magtheridon"]),
+    ("mag", 3836, &[boss("Magtheridon", &[17257])]),
     (
         "ssc",
         3607,
         &[
-            "Hydross the Unstable",
-            "The Lurker Below",
-            "Leotheras the Blind",
-            "Fathom-Lord Karathress",
-            "Morogrim Tidewalker",
-            "Lady Vashj",
+            boss("Hydross the Unstable", &[21216]),
+            boss("The Lurker Below", &[21217]),
+            group(
+                "Leotheras the Blind",
+                &[21215, 21875],
+                &[21215],
+                0,
+                &["Shadow of Leotheras"],
+            ),
+            boss("Fathom-Lord Karathress", &[21214]),
+            boss("Morogrim Tidewalker", &[21213]),
+            boss("Lady Vashj", &[21212]),
         ],
     ),
     (
         "tk",
         3845,
         &[
-            "Al'ar",
-            "Void Reaver",
-            "High Astromancer Solarian",
-            "Kael'thas Sunstrider",
+            boss("Al'ar", &[19514]),
+            boss("Void Reaver", &[19516]),
+            boss("High Astromancer Solarian", &[18805]),
+            group(
+                "Kael'thas Sunstrider",
+                &[19622],
+                &[],
+                0,
+                // His weapons are NPCs in the fight; Wowhead files them so.
+                &[
+                    "Warp Slicer",
+                    "Infinity Blades",
+                    "Staff of Disintegration",
+                    "Phaseshift Bulwark",
+                    "Devastation",
+                    "Cosmic Infuser",
+                    "Netherstrand Longbow",
+                ],
+            ),
         ],
     ),
     (
         "hyjal",
         3606,
         &[
-            "Rage Winterchill",
-            "Anetheron",
-            "Kaz'rogal",
-            "Azgalor",
-            "Archimonde",
+            boss("Rage Winterchill", &[17767]),
+            boss("Anetheron", &[17808]),
+            boss("Kaz'rogal", &[17888]),
+            boss("Azgalor", &[17842]),
+            boss("Archimonde", &[17968]),
         ],
     ),
     (
         "bt",
         3959,
         &[
-            "High Warlord Naj'entus",
-            "Supremus",
-            "Shade of Akama",
-            "Teron Gorefiend",
-            "Gurtogg Bloodboil",
-            "Reliquary of Souls",
-            "Essence of Anger",
-            "Mother Shahraz",
-            "The Illidari Council",
-            "Illidan Stormrage",
+            boss("High Warlord Naj'entus", &[22887]),
+            boss("Supremus", &[22898]),
+            boss("Shade of Akama", &[22841]),
+            boss("Teron Gorefiend", &[22871]),
+            boss("Gurtogg Bloodboil", &[22948]),
+            group(
+                "Reliquary of Souls",
+                &[23420, 23418, 23419],
+                &[23420],
+                0,
+                &[
+                    "Essence of Anger",
+                    "Essence of Suffering",
+                    "Essence of Desire",
+                ],
+            ),
+            boss("Mother Shahraz", &[22947]),
+            group(
+                "The Illidari Council",
+                &[23426, 22949, 22950, 22951, 22952],
+                &[22950],
+                0,
+                &[
+                    "Gathios the Shatterer",
+                    "High Nethermancer Zerevor",
+                    "Lady Malande",
+                    "Veras Darkshadow",
+                ],
+            ),
+            boss("Illidan Stormrage", &[22917]),
         ],
     ),
     (
         "za",
         3805,
         &[
-            "Nalorakk",
-            "Akil'zon",
-            "Jan'alai",
-            "Halazzi",
-            "Hex Lord Malacrass",
-            "Zul'jin",
+            boss("Nalorakk", &[23576]),
+            boss("Akil'zon", &[23574]),
+            boss("Jan'alai", &[23578]),
+            boss("Halazzi", &[23577]),
+            boss("Hex Lord Malacrass", &[24239]),
+            boss("Zul'jin", &[23863]),
+            group(
+                "Timed chest",
+                &[],
+                &[],
+                0,
+                &[
+                    "Tanzar's Trunk",
+                    "Kasha's Bag",
+                    "Ashli's Bag",
+                    "Harkor's Satchel",
+                    "Hazlek's Trunk",
+                ],
+            ),
         ],
     ),
     (
         "swp",
         4075,
         &[
-            "Kalecgos",
-            "Brutallus",
-            "Felmyst",
-            "Lady Sacrolash",
-            "Grand Warlock Alythess",
-            "M'uru",
-            "Kil'jaeden",
+            group(
+                "Kalecgos",
+                &[24850, 24892, 24891],
+                &[24850],
+                0,
+                &["Sathrovarr the Corruptor"],
+            ),
+            boss("Brutallus", &[24882]),
+            boss("Felmyst", &[25038]),
+            group(
+                "Eredar Twins",
+                &[25165, 25166],
+                &[25165, 25166],
+                0,
+                &["Lady Sacrolash", "Grand Warlock Alythess"],
+            ),
+            group("M'uru", &[25741, 25840], &[25840], 0, &["Entropius"]),
+            boss("Kil'jaeden", &[25315]),
         ],
     ),
 ];
@@ -1014,15 +1230,35 @@ pub fn instance_zone(key: &str) -> Option<i32> {
     INSTANCE_ZONES.iter().find(|z| z.0 == key).map(|z| z.1)
 }
 
+/// The listed raid whose Wowhead zone this is.
+pub fn instance_of_zone(zone: i32) -> Option<&'static str> {
+    INSTANCE_ZONES.iter().find(|z| z.1 == zone).map(|z| z.0)
+}
+
+/// A listed raid's encounters in kill order ([] if it isn't listed).
+pub fn encounters(key: &str) -> &'static [Encounter] {
+    INSTANCE_ZONES
+        .iter()
+        .find(|z| z.0 == key)
+        .map(|z| z.2)
+        .unwrap_or(&[])
+}
+
+/// The encounter Wowhead's NPC/chest (ID and name) belongs to in a listed
+/// raid, with its place in the kill order.
+pub fn encounter_for(key: &str, id: i32, name: &str) -> Option<(usize, &'static Encounter)> {
+    let list = encounters(key);
+    // By ID first (two NPCs can share a name across versions).
+    list.iter()
+        .position(|e| id > 0 && (e.npcs.contains(&id) || e.chest == id))
+        .or_else(|| list.iter().position(|e| e.matches(0, name)))
+        .map(|i| (i, &list[i]))
+}
+
 /// Where a boss comes in a listed raid (unknown bosses after, in the order
 /// Wowhead gave them).
 pub fn boss_rank(key: &str, boss: &str) -> Option<usize> {
-    INSTANCE_ZONES
-        .iter()
-        .find(|z| z.0 == key)?
-        .2
-        .iter()
-        .position(|b| b.eq_ignore_ascii_case(boss))
+    encounter_for(key, 0, boss).map(|e| e.0)
 }
 
 /// A few famous items per raid so the lists work out of the box:
@@ -1729,8 +1965,58 @@ mod tests {
         }
         assert_eq!(instance_zone("mc"), Some(2717));
         assert_eq!(instance_zone("swp"), Some(4075));
-        assert_eq!(boss_rank("mc", "ragnaros"), Some(10));
+        assert_eq!(boss_rank("mc", "ragnaros"), Some(9));
         assert_eq!(boss_rank("mc", "Onyxia"), None);
+        assert_eq!(boss_rank("mc", "Cache of the Firelord"), Some(8));
+        assert_eq!(instance_of_zone(3457), Some("kara"));
+        // Multi-NPC encounters, by ID or by any of their names.
+        let (i, e) = encounter_for("kara", 16151, "Midnight").unwrap();
+        assert_eq!((i, e.name), (0, "Attumen the Huntsman"));
+        assert_eq!(
+            encounter_for("kara", 0, "Julianne").unwrap().1.name,
+            "Opera Event"
+        );
+        assert_eq!(
+            encounter_for("kara", 18168, "").unwrap().1.name,
+            "Opera Event"
+        );
+        assert_eq!(
+            encounter_for("kara", 185119, "").unwrap().1.name,
+            "Chess Event"
+        );
+        assert_eq!(
+            encounter_for("naxx", 0, "Four Horsemen Chest")
+                .unwrap()
+                .1
+                .name,
+            "The Four Horsemen"
+        );
+        assert_eq!(
+            encounter_for("tk", 0, "Warp Slicer").unwrap().1.name,
+            "Kael'thas Sunstrider"
+        );
+        assert!(encounter_for("mc", 228438, "x").is_none());
+        assert_eq!(encounters("kara")[0].loot_pages(), vec![("npc", 16152)]);
+        assert_eq!(encounters("mc")[8].loot_pages(), vec![("object", 179703)]);
+        assert_eq!(encounters("ony")[0].loot_pages(), vec![("npc", 10184)]);
+        // Every built-in item's boss is one of its raid's encounters.
+        for s in SEED_ITEMS {
+            assert!(
+                s.4.is_empty() || boss_rank(s.0, s.4).is_some(),
+                "{}: {}",
+                s.0,
+                s.4
+            );
+        }
+        for z in INSTANCE_ZONES {
+            for e in z.2 {
+                assert!(
+                    e.npcs.iter().chain([&e.chest]).all(|&id| id < 200_000),
+                    "{}",
+                    e.name
+                );
+            }
+        }
     }
 
     #[test]

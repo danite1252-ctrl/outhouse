@@ -217,10 +217,10 @@ link. Optional settings, added to `~/outhouse/deploy/.env` (then
 | `WOWHEAD_BRANCH` | `classic` | Wowhead's section (if Wowhead adds a WoW: Forever section, put its name here) |
 | `WOWHEAD_TOOLTIP_URL` | `https://nether.wowhead.com` | Wowhead's item-details service |
 | `WOWHEAD_DATA_ENV` | `4` | Wowhead's data set number (4 = Classic era) |
-| `WOWHEAD_BRANCH_FOREVER` | `forever,classic` | Wowhead sections to read WoW: Forever raid loot lists from, tried in order (one Wowhead doesn't have is skipped and re-checked daily) |
+| `WOWHEAD_BRANCH_FOREVER` | `forever,classic` | Wowhead sections to read WoW: Forever raid loot lists from, tried in order (one Wowhead doesn't have, or refuses with 403 as it does `/forever` today, is skipped and re-checked daily). On `classic`, Season of Discovery items and bosses are left out |
 | `WOWHEAD_BRANCH_TBC` | `tbc` | Wowhead's Burning Crusade section (TBC raids' loot lists and item links) |
 | `WOWHEAD_DATA_ENV_TBC` | `5` | Wowhead's data set number for TBC item tooltips |
-| `WOWHEAD_MIN_GAP_MS` | `1500` | Least time between two Wowhead page reads for loot lists (be polite) |
+| `WOWHEAD_MIN_GAP_MS` | `1500` | Least time between two Wowhead page reads for loot lists (be polite; bosses' pages for drop chances are read ten times slower, in the background) |
 | `WOWHEAD_ICON_URL` | `https://wow.zamimg.com/images/wow/icons/large` | Where item icons come from (the server keeps a copy and serves them itself) |
 | `LINK_PREVIEWS_OFFLINE` | off | `1` = never fetch pages for link previews (WoW links still get a basic card) |
 
