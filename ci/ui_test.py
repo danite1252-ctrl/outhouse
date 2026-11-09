@@ -3485,15 +3485,18 @@ with sync_playwright() as p:
         wb = app_page(f"update-{label}", vp, "browser", mobile=mobile)
         swap = {"on": False}
 
-        def health(route, swap=swap):
-            if not swap["on"]:
-                route.continue_()
-                return
-            res = route.fetch()
-            body = res.json()
-            body["web_build"] = "feedfacefeedface"
-            route.fulfill(response=res, json=body)
-        wb.route("**/api/health", health)
+        def health_route(swap):
+            # (One argument: Playwright passes the request too to two-argument handlers.)
+            def handle(route):
+                if not swap["on"]:
+                    route.continue_()
+                    return
+                res = route.fetch()
+                body = res.json()
+                body["web_build"] = "feedfacefeedface"
+                route.fulfill(response=res, json=body)
+            return handle
+        wb.route("**/api/health", health_route(swap))
         wb.goto(BASE + "/")
         wb.wait_for_selector("#messages .msg", timeout=15000)
         wb.wait_for_function("!!updates.state.webBuild", timeout=10000)
