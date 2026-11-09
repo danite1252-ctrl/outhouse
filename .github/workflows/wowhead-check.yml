@@ -11,9 +11,12 @@ on:
         default: "classic/zone=2717 classic/zone=2159 classic/zone=2677 tbc/zone=3457 classic/npc=11502"
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # Same runner switch as ci.yml (see deploy/ci-runner/README.md).
+    runs-on: ${{ fromJSON(vars.RUNNER_LINUX || (vars.SELF_HOSTED_ONLY == 'true' && '["self-hosted","linux","outhouse"]') || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@v4
+      - name: Start clean (self-hosted runners keep /tmp)
+        run: rm -rf /tmp/wh
       - uses: dtolnay/rust-toolchain@stable
       - name: Read pages from Wowhead
         env:
@@ -45,3 +48,6 @@ jobs:
           REAL_WOWHEAD_DIR: /tmp/wh
           SQLX_OFFLINE: "true"
         run: cargo test -q -p outhouse-server real_wowhead_pages -- --nocapture 2>&1 | grep -v "^running\|^test result\|^$" | head -300
+      - name: Clean up
+        if: always()
+        run: rm -rf /tmp/wh

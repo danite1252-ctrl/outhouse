@@ -16,12 +16,21 @@ env:
   # The Outhouse server the Windows and Android apps open (see desktop/README.md).
   OUTHOUSE_SERVER_URL: https://oh.hartspace.cc
 
+# Where jobs run (repository variables, Settings -> Secrets and variables -> Actions -> Variables;
+# see deploy/ci-runner/README.md). Each value is JSON: a label string or a list of labels.
+#   RUNNER_LINUX        e.g. ["self-hosted","linux","outhouse"]  (unset: ubuntu-latest)
+#   RUNNER_WINDOWS      e.g. ["self-hosted","windows","outhouse"] (unset: windows-latest)
+#   RUNNER_LINUX_LIGHT  the tiny jobs (What changed, Publish); unset: same as RUNNER_LINUX
+#   SELF_HOSTED_ONLY    "true": anything unset above means the owner's runners
+#                       (self-hosted + linux/windows + outhouse), never GitHub-hosted;
+#                       jobs then wait for a runner instead of using paid minutes.
+# With nothing set, everything runs on GitHub's runners exactly as before.
 jobs:
   # Which parts changed, so the expensive jobs only run when they matter
   # (saves GitHub Actions minutes on a private repo).
   changes:
     name: What changed
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.RUNNER_LINUX_LIGHT || vars.RUNNER_LINUX || (vars.SELF_HOSTED_ONLY == 'true' && '["self-hosted","linux","outhouse"]') || '"ubuntu-latest"') }}
     outputs:
       apps: ${{ steps.f.outputs.apps }}
       server: ${{ steps.f.outputs.server }}
@@ -60,7 +69,7 @@ jobs:
     name: Server (build, tests, smoke test)
     needs: changes
     if: needs.changes.outputs.server == 'true' || github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.RUNNER_LINUX || (vars.SELF_HOSTED_ONLY == 'true' && '["self-hosted","linux","outhouse"]') || '"ubuntu-latest"') }}
     services:
       postgres:
         image: postgres:17
@@ -74,6 +83,8 @@ jobs:
           --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - name: Clear leftovers from earlier runs (self-hosted runners)
+        run: bash ci/runner-cleanup.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -120,8 +131,24 @@ jobs:
           node --check web/bots/dice-bot.mjs
       - name: Deploy scripts check (bash -n + shellcheck)
         run: |
-          for f in deploy/*.sh ci/smoke.sh; do bash -n "$f"; done
-          shellcheck -S warning deploy/backup.sh deploy/healthcheck.sh deploy/setup.sh deploy/restore.sh deploy/security-scan.sh ci/zap.sh
+          command -v shellcheck >/dev/null || sudo -n apt-get install -y -qq shellcheck >/dev/null \
+            || { echo "::error::shellcheck isn't installed (deploy/ci-runner/setup-linux-runner.sh installs it)"; exit 1; }
+          for f in deploy/*.sh deploy/ci-runner/*.sh ci/smoke.sh ci/runner-cleanup.sh; do bash -n "$f"; done
+          shellcheck -S warning deploy/backup.sh deploy/healthcheck.sh deploy/setup.sh deploy/restore.sh deploy/security-scan.sh ci/zap.sh \
+            ci/runner-cleanup.sh deploy/ci-runner/*.sh
+      - name: Workflow check (actionlint)
+        run: |
+          V=1.7.7
+          mkdir -p "$RUNNER_TEMP/actionlint"
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v$V/actionlint_${V}_linux_amd64.tar.gz" | tar xz -C "$RUNNER_TEMP/actionlint" actionlint
+          "$RUNNER_TEMP/actionlint/actionlint" -shellcheck= -pyflakes=
+      - name: Python for the tests (a venv; self-hosted Ubuntu won't pip-install into the system Python)
+        run: |
+          if python3 -m venv "$RUNNER_TEMP/venv"; then
+            echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          else
+            echo "::warning::python3 -m venv failed; using the system Python"
+          fi
       - name: Smoke test (real server + Postgres)
         env:
           DATABASE_URL: postgres://outhouse:outhouse@localhost:5432/outhouse
@@ -155,10 +182,17 @@ jobs:
           BNET_OAUTH_URL: http://127.0.0.1:8099/oauth
           BNET_API_URL: http://127.0.0.1:8099/api
         run: |
+          docker rm -f livekit >/dev/null 2>&1 || true
           docker run -d --name livekit --network host livekit/livekit-server:latest \
             --dev --bind 127.0.0.1 --node-ip 127.0.0.1 > /dev/null
           pip install --quiet playwright
-          python -m playwright install --with-deps chromium >/dev/null
+          # GitHub's runners: install Chrome's system libraries too (apt, needs sudo). Self-hosted:
+          # deploy/ci-runner/setup-linux-runner.sh installed them once (marker file), so just the browser.
+          if [ "$RUNNER_ENVIRONMENT" != self-hosted ] || { [ ! -f /etc/outhouse-ci-runner ] && sudo -n true 2>/dev/null; }; then
+            python -m playwright install --with-deps chromium >/dev/null
+          else
+            python -m playwright install chromium >/dev/null
+          fi
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:7880 >/dev/null 2>&1 && break; sleep 1; done
           curl -fsS http://127.0.0.1:7880 >/dev/null || { docker logs livekit; exit 1; }
           python3 ci/wow_mock.py 8099 > /tmp/wow-mock-ui.log 2>&1 &
@@ -187,6 +221,9 @@ jobs:
           cat /tmp/outhouse-server.log 2>/dev/null || true
           cat /tmp/ui-server.log 2>/dev/null || true
           docker logs livekit 2>&1 | tail -80 || true
+      - name: Clean up (containers, background processes, temp files)
+        if: always()
+        run: if [ -f ci/runner-cleanup.sh ]; then bash ci/runner-cleanup.sh --end; else docker rm -f livekit 2>/dev/null || true; fi
 
   desktop:
     name: Desktop app (Windows installer)
@@ -194,7 +231,7 @@ jobs:
     # Only when the app itself (desktop/) or this workflow changed; the apps
     # load the web client from the server, so web changes don't need them.
     if: needs.changes.outputs.apps == 'true'
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(vars.RUNNER_WINDOWS || (vars.SELF_HOSTED_ONLY == 'true' && '["self-hosted","windows","outhouse"]') || '"windows-latest"') }}
     env:
       VERSION: 0.2.${{ github.run_number }}
       HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' && 'yes' || 'no' }}
@@ -211,7 +248,7 @@ jobs:
         shell: pwsh
         run: |
           $bad = $false
-          foreach ($f in Get-ChildItem deploy/*.ps1) {
+          foreach ($f in @(Get-ChildItem deploy/*.ps1) + @(Get-ChildItem deploy/ci-runner/*.ps1)) {
             $errs = $null
             [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errs) | Out-Null
             if ($errs) { $bad = $true; $errs | ForEach-Object { Write-Host "::error file=$($f.Name)::$($_.Message) (line $($_.Extent.StartLineNumber))" } }
@@ -265,11 +302,17 @@ jobs:
     name: Android app (APK)
     needs: changes
     if: needs.changes.outputs.apps == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.RUNNER_LINUX || (vars.SELF_HOSTED_ONLY == 'true' && '["self-hosted","linux","outhouse"]') || '"ubuntu-latest"') }}
     env:
       VERSION: 0.2.${{ github.run_number }}
+      # Only installed when the runner has no Android SDK / NDK (self-hosted); GitHub's
+      # image already has them. Keep in step with deploy/ci-runner/setup-linux-runner.sh.
+      ANDROID_NDK_VERSION: "28.2.13676358"
+      ANDROID_BUILD_TOOLS_VERSION: "35.0.0"
     steps:
       - uses: actions/checkout@v4
+      - name: Clear leftovers from earlier runs (self-hosted runners)
+        run: bash ci/runner-cleanup.sh
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -283,6 +326,39 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Android SDK (GitHub's runners have one; a self-hosted runner gets it once and keeps it)
+        id: sdk
+        run: |
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then SDK="$HOME/android-sdk"; mkdir -p "$SDK"; fi
+          echo "Android SDK: $SDK"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          if ls "$SDK"/cmdline-tools/*/bin/sdkmanager >/dev/null 2>&1; then
+            echo "tools=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "No Android command-line tools in $SDK yet; installing them."
+            echo "tools=no" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: android-actions/setup-android@v3
+        if: steps.sdk.outputs.tools == 'no'
+        with:
+          packages: platform-tools
+      - name: Android SDK pieces (NDK, build tools, platform tools) when missing
+        run: |
+          SM=$(ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | sort -V | tail -1)
+          NEED=()
+          [ -d "$ANDROID_HOME/platform-tools" ] || NEED+=("platform-tools")
+          ls -d "$ANDROID_HOME"/build-tools/*/ >/dev/null 2>&1 || NEED+=("build-tools;$ANDROID_BUILD_TOOLS_VERSION")
+          NDK="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-}}"
+          if { [ -z "$NDK" ] || [ ! -d "$NDK" ]; } && ! ls -d "$ANDROID_HOME"/ndk/*/ >/dev/null 2>&1; then
+            NEED+=("ndk;$ANDROID_NDK_VERSION")
+          fi
+          if [ "${#NEED[@]}" = 0 ]; then echo "Android SDK has everything."; exit 0; fi
+          [ -n "$SM" ] || { echo "::error::No sdkmanager in $ANDROID_HOME"; exit 1; }
+          echo "Installing: ${NEED[*]}"
+          yes | "$SM" --licenses >/dev/null 2>&1 || true
+          "$SM" "${NEED[@]}" > /tmp/sdkmanager.log 2>&1 || { tail -40 /tmp/sdkmanager.log; exit 1; }
       - name: Find the Android NDK
         run: |
           NDK="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-}}"
@@ -313,6 +389,16 @@ jobs:
         run: |
           npm install --no-audit --no-fund
           npm run tauri -- android init --ci
+      - name: Android platform the generated project compiles against (installed when missing)
+        working-directory: desktop/src-tauri/gen/android
+        run: |
+          API=$(grep -hoE 'compileSdk *(=|Version)? *[0-9]+' app/build.gradle.kts app/build.gradle 2>/dev/null | grep -oE '[0-9]+$' | head -1)
+          echo "compileSdk: ${API:-unknown}"
+          if [ -n "$API" ] && [ ! -d "$ANDROID_HOME/platforms/android-$API" ]; then
+            SM=$(ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)
+            yes | "$SM" --licenses >/dev/null 2>&1 || true
+            "$SM" "platforms;android-$API" > /tmp/sdkmanager.log 2>&1 || { tail -40 /tmp/sdkmanager.log; exit 1; }
+          fi
       - name: App icon (Outhouse logo, incl. adaptive and round icons)
         working-directory: desktop/src-tauri
         run: |
@@ -356,6 +442,9 @@ jobs:
         run: |
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           echo "Build tools: $BT"
+          # The signing key only ever lives in the runner's per-job temp folder, and goes even if a step fails.
+          KS="$RUNNER_TEMP/outhouse.jks"
+          trap 'rm -f "$KS" "$RUNNER_TEMP/aligned.apk"' EXIT
           if [ -n "$KEYSTORE_B64" ]; then
             # Release build signed with the Outhouse key, so new versions install over old ones.
             # 64-bit and 32-bit ARM so older/cheaper phones can install it too.
@@ -367,13 +456,13 @@ jobs:
             done
             find gen/android/app/build/outputs/apk -name '*.apk' -print
             APK=$(find gen/android/app/build/outputs/apk -name '*release*.apk' | head -1)
-            echo "$KEYSTORE_B64" | base64 -d > /tmp/outhouse.jks
+            (umask 077; echo "$KEYSTORE_B64" | base64 -d > "$KS")
             # Align first (16 KB pages for native libs where zipalign supports it), then sign (v1+v2+v3).
-            "$BT/zipalign" -f -P 16 4 "$APK" /tmp/aligned.apk 2>/dev/null || "$BT/zipalign" -f -p 4 "$APK" /tmp/aligned.apk
-            "$BT/apksigner" sign --ks /tmp/outhouse.jks --ks-pass env:KS_PASS --key-pass env:KS_PASS \
+            "$BT/zipalign" -f -P 16 4 "$APK" "$RUNNER_TEMP/aligned.apk" 2>/dev/null || "$BT/zipalign" -f -p 4 "$APK" "$RUNNER_TEMP/aligned.apk"
+            "$BT/apksigner" sign --ks "$KS" --ks-pass env:KS_PASS --key-pass env:KS_PASS \
               --ks-key-alias outhouse --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
-              --out "$GITHUB_WORKSPACE/Outhouse-Android.apk" /tmp/aligned.apk
-            rm -f /tmp/outhouse.jks
+              --out "$GITHUB_WORKSPACE/Outhouse-Android.apk" "$RUNNER_TEMP/aligned.apk"
+            rm -f "$KS"
           else
             echo "::warning::ANDROID_KEYSTORE_BASE64 isn't set, so this is a debug build that can't update in place."
             npm run tauri -- android build --apk --debug --target aarch64 armv7
@@ -412,13 +501,20 @@ jobs:
           name: Outhouse-Android-APK
           path: Outhouse-Android.apk
           if-no-files-found: error
+      - name: Clean up (signing key, temp files, background processes)
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/outhouse.jks" /tmp/outhouse.jks "$RUNNER_TEMP/aligned.apk" /tmp/aligned.apk
+          # Gradle's daemon would otherwise stay running on a self-hosted runner.
+          [ -x desktop/src-tauri/gen/android/gradlew ] && (cd desktop/src-tauri/gen/android && ./gradlew --stop >/dev/null 2>&1) || true
+          [ -f ci/runner-cleanup.sh ] && bash ci/runner-cleanup.sh --end || true
 
   dast:
     name: DAST (OWASP ZAP against a test server)
     needs: changes
     # Nightly, by hand, or on main when server code changed.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.ref == 'refs/heads/main' && needs.changes.outputs.server == 'true')
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.RUNNER_LINUX || (vars.SELF_HOSTED_ONLY == 'true' && '["self-hosted","linux","outhouse"]') || '"ubuntu-latest"') }}
     services:
       postgres:
         image: postgres:17
@@ -432,6 +528,8 @@ jobs:
           --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - name: Clear leftovers from earlier runs (self-hosted runners)
+        run: bash ci/runner-cleanup.sh
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build
@@ -453,15 +551,22 @@ jobs:
       - name: Server log
         if: always()
         run: tail -200 /tmp/dast-server.log 2>/dev/null || true
+      - name: Clean up (ZAP containers, test server, temp files)
+        if: always()
+        run: if [ -f ci/runner-cleanup.sh ]; then bash ci/runner-cleanup.sh --end; fi
 
   security:
     name: Security (cargo audit, vendored scripts)
     needs: changes
     # Nightly, by hand, or when dependencies / vendored scripts change.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.deps == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.RUNNER_LINUX || (vars.SELF_HOSTED_ONLY == 'true' && '["self-hosted","linux","outhouse"]') || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@v4
+      - name: Clear leftovers from earlier runs (self-hosted runners)
+        run: bash ci/runner-cleanup.sh
+      # Preinstalled on GitHub's runners; makes sure cargo is there on a self-hosted one.
+      - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
@@ -485,17 +590,23 @@ jobs:
             exit 1
           fi
           echo "web/vendor/livekit-client.umd.js is livekit-client $V, byte for byte"
+      - name: Clean up temp files
+        if: always()
+        run: if [ -f ci/runner-cleanup.sh ]; then bash ci/runner-cleanup.sh --end; fi
 
   release:
     name: Publish downloads (Releases → "latest")
     needs: [server, desktop, android]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.RUNNER_LINUX_LIGHT || vars.RUNNER_LINUX || (vars.SELF_HOSTED_ONLY == 'true' && '["self-hosted","linux","outhouse"]') || '"ubuntu-latest"') }}
     permissions:
       contents: write
     env:
       VERSION: 0.2.${{ github.run_number }}
     steps:
+      # A self-hosted runner keeps its work folder: start from an empty one.
+      - name: Start clean
+        run: rm -rf dl out
       - uses: actions/download-artifact@v4
         with:
           path: dl

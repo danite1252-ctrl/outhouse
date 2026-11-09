@@ -380,3 +380,7 @@ sends, so the sign-in limits see the real address.
   covers it.
 - **The old Windows setup:** your PC copy still works for development
   (`.\start.ps1`); it's a separate database from the server's.
+
+## Running CI on your own machines
+
+To stop paying for GitHub Actions minutes, run the builds on your own Linux/WSL and Windows machines: see [ci-runner/README.md](ci-runner/README.md).
