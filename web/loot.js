@@ -111,7 +111,9 @@ function renderComp(ev, c, extra, rerender) {
   return el("div", { class: "comp-inner" },
     el("div", { class: "comp-top" }, roles, toggle),
     ...classes, armour,
-    c.missing.length ? el("div", { class: "comp-missing" }, el("strong", {}, "Missing: "), c.missing.join(" · ")) : null,
+    // Raid leaders already have this line at the top of the card.
+    c.missing.length && (extra || !canManageEvent(ev) || eventWhen(ev).over)
+      ? el("div", { class: "comp-missing" }, el("strong", {}, "Missing: "), c.missing.join(" · ")) : null,
     el("div", { class: "comp-groups" }, groups),
     el("p", { class: "muted small comp-foot" }, c.era === "tbc" ? "The Burning Crusade buffs. Hover or tap one to see who brings it." : "Classic-era buffs (WoW: Forever and Classic Era). Hover or tap one to see who brings it."));
 }
@@ -257,7 +259,7 @@ async function openLoot(ev, tab = "reserve") {
   loot.dialog?.close();
   const dialog = raidWindow("loot-dialog", () => { if (loot.dialog === dialog) { loot.dialog = null; hideItemTip(); } });
   Object.assign(loot, { dialog, ev, tab, table: null, awards: [], found: null, finding: false });
-  loot.root = el("div", { class: "loot" });
+  loot.root = el("div", { class: "loot-root" });
   loot.search = el("input", { type: "search", class: "loot-search", placeholder: "Search the list, or paste a Wowhead link or item ID", maxlength: 200, "aria-label": "Find an item" });
   loot.search.addEventListener("input", () => { loot.found = null; drawLootList(); });
   loot.search.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); lookUpItem(); } });
@@ -473,7 +475,7 @@ function drawAllTab(ev, manager) {
   }, label)));
   const tools = manager ? el("div", { class: "loot-tools" },
     el("button", { type: "button", class: `ev-btn${ev.reserves_locked ? " on" : ""}`, onclick: () => setLock(!ev.reserves_locked) }, ev.reserves_locked ? "🔓 Unlock" : "🔒 Lock reserves"),
-    ev.reserve_lock_override != null ? el("button", { type: "button", class: "ev-btn ghost", title: "Lock and unlock on the raid's own schedule again", onclick: () => setLock(null) }, "Automatic") : null,
+    ev.reserve_lock_override != null ? el("button", { type: "button", class: "ev-btn ghost", title: "Lock and unlock on the raid's own schedule again", onclick: () => setLock(null) }, "Auto lock") : null,
     el("button", { type: "button", class: "ev-btn", onclick: () => exportReserves("csv") }, "⬇ CSV"),
     el("button", { type: "button", class: "ev-btn", onclick: () => exportReserves("text") }, "📋 Copy list")) : null;
   let content;
@@ -795,5 +797,6 @@ openProfile = async function (userId, anchor) {
   if (r.bottom > window.innerHeight - 8) pop.style.top = `${Math.max(8, window.innerHeight - r.height - 8)}px`;
 };
 
-// Tooltips don't outlive what they point at.
+// Tooltips don't outlive what they point at (or a tap somewhere else).
 document.addEventListener("scroll", hideItemTip, true);
+document.addEventListener("pointerdown", (e) => { if (!e.target.closest?.(".item-name")) hideItemTip(); }, true);

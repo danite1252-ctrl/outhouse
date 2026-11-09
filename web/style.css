@@ -1686,7 +1686,7 @@ dialog.nick-dialog .nick-reset:disabled { opacity: .45; cursor: default; }
 
 dialog.loot-dialog { width: min(760px, 96vw); }
 dialog.loot-dialog[open] { display: flex; flex-direction: column; max-height: 92vh; }
-.loot { display: flex; flex-direction: column; gap: 10px; min-height: 0; flex: 1; }
+.loot-root { display: flex; flex-direction: column; gap: 10px; min-height: 0; flex: 1; }
 .loot-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
 .loot-head h2 { margin: 0 0 2px; }
 .loot-sub { color: var(--glow); margin-top: 2px; }
@@ -1706,9 +1706,9 @@ dialog.loot-dialog[open] { display: flex; flex-direction: column; max-height: 92
 .loot-group { display: grid; gap: 4px; }
 .loot-group-head { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
 .loot-group.found { padding: 8px; border: 1px dashed #a335ee88; border-radius: 10px; }
-.loot-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 8px; background: var(--night); border: 1px solid var(--line); }
+.loot-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 8px; background: var(--night); border: 1px solid var(--line); }
 .loot-row.mine { border-color: #a335ee; background: rgba(163, 53, 238, .08); }
-.loot-row-main { display: grid; min-width: 0; }
+.loot-row-main { display: grid; min-width: 0; flex: 1 1 200px; }
 .loot-row-meta { font-size: 11px; }
 .loot-row .sr-pick { min-width: 96px; }
 .loot-lookup { text-align: left; border: 1px dashed var(--line); background: none; border-radius: 8px; padding: 8px 10px; font-size: 13px; color: var(--glow); }
@@ -1728,6 +1728,7 @@ dialog.loot-dialog[open] { display: flex; flex-direction: column; max-height: 92
 .loot-give-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
 .loot-give input { height: 36px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); min-width: 0; }
 .loot-give .primary { height: 36px; }
+.loot-give .select { height: 36px; font-size: 14px; }
 .won-list { display: grid; gap: 4px; }
 .won-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; border-radius: 8px; background: var(--night); border: 1px solid var(--line); font-size: 13px; }
 .won-who { font-weight: 700; }
@@ -1755,8 +1756,8 @@ dialog.loot-log-dialog[open] { display: flex; flex-direction: column; gap: 10px;
   .comp-top { align-items: flex-start; }
   dialog.loot-dialog, dialog.loot-log-dialog { width: 100vw; max-width: none; height: 100dvh; max-height: none; border-radius: 0; padding: calc(var(--safe-top) + 12px) 12px calc(var(--safe-bottom) + 12px); }
   dialog.loot-dialog[open], dialog.loot-log-dialog[open] { max-height: none; }
-  .loot-row { grid-template-columns: minmax(0, 1fr) auto; }
-  .loot-row .sr-pick { grid-column: 1 / -1; width: 100%; }
+  .loot-row .sr-pick { flex: 1 1 100%; }
+  .loot-tools .ev-btn { padding: 5px 10px; font-size: 12px; }
   .sr-trow { grid-template-columns: minmax(0, 1fr); }
   .loot-give-row { grid-template-columns: 1fr; }
   .loot-log-filters { grid-template-columns: 1fr 1fr; }
