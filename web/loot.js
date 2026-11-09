@@ -175,6 +175,14 @@ function itemIcon(id, size = "") {
 
 let itemTip = null;
 function hideItemTip() { itemTip?.remove(); itemTip = null; }
+// Scrolling moves the tooltip with its item, and hides it once the item's gone.
+function followItemTip() {
+  const anchor = itemTip?.anchor;
+  if (!anchor) return;
+  const r = anchor.getBoundingClientRect();
+  if (!anchor.isConnected || r.bottom < 0 || r.top > window.innerHeight || !r.width) return hideItemTip();
+  placeTip(itemTip, anchor);
+}
 
 function placeTip(tip, anchor) {
   const r = anchor.getBoundingClientRect();
@@ -200,6 +208,7 @@ function showItemTip(anchor, id, name, quality, branch, { touch = false } = {}) 
     el("div", { class: "item-tip-head" }, itemIcon(id, "big"), el("strong", { class: `q${quality}` }, name)),
     el("div", { class: "item-tip-body muted small" }, "Loading…"));
   tip.dataset.item = id;
+  tip.anchor = anchor;
   itemTip = tip;
   ((typeof raidHost === "function" && raidHost()) || document.body).append(tip);
   placeTip(tip, anchor);
@@ -1032,5 +1041,5 @@ openProfile = async function (userId, anchor) {
 };
 
 // Tooltips don't outlive what they point at (or a tap somewhere else).
-document.addEventListener("scroll", hideItemTip, true);
+document.addEventListener("scroll", followItemTip, true);
 document.addEventListener("pointerdown", (e) => { if (!e.target.closest?.(".item-name, .item-tip")) hideItemTip(); }, true);
