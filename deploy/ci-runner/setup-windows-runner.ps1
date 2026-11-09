@@ -51,8 +51,10 @@ if ($AfterConfig) {
     # first: with WSL installed, C:\Windows\System32\bash.exe (WSL) would otherwise run
     # the workflow's `shell: bash` steps inside Linux.
     $pathFile = Join-Path $RunnerDir ".path"
-    if (-not (Test-Path $pathFile)) { throw "$pathFile isn't there yet: run config.cmd first." }
-    $p = (Get-Content $pathFile -Raw).Trim()
+    if (-not (Test-Path (Join-Path $RunnerDir ".runner"))) { throw "The runner isn't registered yet: run config.cmd first." }
+    # The Windows runner doesn't always write .path; it reads it when present,
+    # so start from the machine PATH if it's missing.
+    $p = if (Test-Path $pathFile) { (Get-Content $pathFile -Raw).Trim() } else { [Environment]::GetEnvironmentVariable("Path", "Machine") }
     $parts = @($GitBin) + ($p -split ";" | Where-Object { $_ -and ($_ -ne $GitBin) })
     Set-Content -Path $pathFile -Value ($parts -join ";") -NoNewline
     Write-Host "Git's bash is first in $pathFile"
