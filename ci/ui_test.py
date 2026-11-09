@@ -2528,15 +2528,18 @@ with sync_playwright() as p:
         tp.wait_for_selector(".threads-panel .thread-card.archived:has-text('MC loot')")
         tp.wait_for_timeout(200)
         tp.screenshot(path=f"{SHOTS}/{shot}-{label}-archived-threads.png")
-        if label == "botsmod-threads":
-            tp.click(".threads-panel .thread-card.archived")
-            tp.wait_for_selector(".thread-archived-bar:has-text('archived')", timeout=10000)
-            tp.wait_for_selector(".thread-panel .tmsg:has-text('Bindings')")
-            tp.screenshot(path=f"{SHOTS}/2523-desktop-archived-thread-banner.png")
-            tp.click(".thread-archived-bar .tab-unarchive")
-            tp.wait_for_selector(".thread-archived-bar", state="detached", timeout=5000)
-            assert api("GET", f"/api/threads/{t_old['id']}", None, TOKEN)["archived"] is False
         tp.close()
+    tp = bm_page(erin["token"], "botsmod-unarchive", games["id"], viewport={"width": 1280, "height": 800})
+    tp.click("#threads-btn")
+    tp.click(".threads-panel .archived-toggle")
+    tp.click(".threads-panel .thread-card.archived")
+    tp.wait_for_selector(".thread-archived-bar:has-text('archived')", timeout=10000)
+    tp.wait_for_selector(".thread-panel .tmsg:has-text('Bindings')")
+    tp.screenshot(path=f"{SHOTS}/2523-desktop-archived-thread-banner.png")
+    tp.click(".thread-archived-bar .tab-unarchive")
+    tp.wait_for_selector(".thread-archived-bar", state="detached", timeout=5000)
+    assert api("GET", f"/api/threads/{t_old['id']}", None, TOKEN)["archived"] is False
+    tp.close()
 
     # Phone and Android: bot buttons and the open dice menu, ephemeral reply, automod settings.
     for label, kw, shot in (("botsmod-phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True}, 2530),

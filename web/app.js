@@ -831,7 +831,7 @@ function emojiLabel(emoji) {
 function renderText(text) {
   const out = [];
   const usernames = new Set(state.members.map((m) => m.username));
-  const pattern = /(https?:\/\/[^\s<]+)|`([^`\n]+)`|<@(&?)(\d+)>|<:([a-z0-9_]{2,32}):(\d+)>|(@[\w.]+)/g;
+  const pattern = /(https?:\/\/[^\s<]+)|`([^`\n]+)`|<@(&?)(\d+)>|<:([a-z0-9_]{2,32}):(\d+)>|(@[\w.]+)|\*\*([^*\n](?:[^\n]*?[^*\n])??)\*\*/g;
   let last = 0;
   for (const m of text.matchAll(pattern)) {
     if (m.index > last) out.push(text.slice(last, m.index));
@@ -839,6 +839,8 @@ function renderText(text) {
     else if (m[5]) out.push(customEmoji(m[5], m[6]));
     else if (m[2]) out.push(el("code", {}, m[2]));
     else if (m[4]) out.push(mentionPill(m[3] ? "role" : "user", m[4]));
+    // **bold** (bots love it), with mentions and links inside still working.
+    else if (m[8]) out.push(el("strong", {}, renderText(m[8])));
     else {
       const name = m[7].slice(1).toLowerCase();
       out.push(name === "everyone" || name === "here" || usernames.has(name) ? el("span", { class: "mention" }, m[7]) : m[7]);

@@ -74,7 +74,7 @@ function renderSelectMenu(m, c) {
   const values = selectedValues(m, c);
   const chosen = c.options.filter((o) => values.includes(o.value));
   const label = chosen.length
-    ? el("span", { class: "mc-select-value" }, chosen.map((o, i) => [i ? ", " : null, componentEmoji(o.emoji), o.label]))
+    ? el("span", { class: "mc-select-value" }, chosen.flatMap((o, i) => [i ? ", " : null, componentEmoji(o.emoji), o.label]))
     : el("span", { class: "mc-select-placeholder" }, c.placeholder || (c.max_values > 1 ? "Pick some options" : "Make a selection"));
   const trigger = el("button", {
     type: "button",
@@ -219,7 +219,9 @@ async function useComponent(m, c, values) {
       if (componentState.get(key) === "failed") { componentState.delete(key); redrawMessage(m); }
     }, 6000);
   } else {
+    // Answered: the menu is ready for another pick (unless the bot changed it).
     componentState.delete(key);
+    componentPicks.delete(key);
   }
   redrawMessage(m);
 }
