@@ -323,7 +323,8 @@ internet and no port opened on the server. It's capped at **1 CPU and
 1 GB of memory** (`cpus: "1.0"`, `mem_limit: 1g`), runs at low priority with
 one thread, and checks **one picture at a time**. Checking happens in the
 background *after* the upload is saved, so chat never waits for it. On a
-small VM it idles at about 175 MB and takes roughly 0.05–0.3 s of one CPU per
+small VM it uses about 85–100 MB (150 MB or so while reading a 12-megapixel
+photo) and takes roughly 0.05–0.3 s of one CPU per
 picture (big photos are shrunk before the model sees them, and every scan
 has a hard 20-second limit). If it's down (restarting, out of memory, being
 rebuilt) uploads still work: pictures wait in the queue, Outhouse retries
@@ -335,7 +336,7 @@ restart, and **Server status** shows *Detector offline* and the queue length.
 12 MB ONNX, CPU only via onnxruntime). The score is the highest confidence
 for an *exposed* breast, genitals, buttocks or anus. It's downloaded while
 the image builds (from PyPI, checked against a pinned SHA-256; it isn't in
-git), and the image is about 300 MB. **Licence:** NudeNet's code and
+git), and the image is about 430 MB. **Licence:** NudeNet's code and
 weights are under the **GNU AGPL-3.0** (the copy in the package says so,
 even though PyPI's summary says MIT; the YOLOv8 base is AGPL-3.0 too).
 Using it unmodified on your own server is fine; if you ever change the
