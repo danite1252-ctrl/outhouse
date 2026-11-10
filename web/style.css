@@ -2356,7 +2356,12 @@ img.mc-emoji { width: 18px; height: 18px; object-fit: contain; }
 
 /* ---- Safety: reports and the site owner's console (safety.js) ---- */
 .auth-hint { margin-top: -8px !important; font-size: 12px; text-align: left !important; }
-dialog.report-dialog { width: min(480px, 94vw); max-height: 92vh; overflow-y: auto; }
+dialog.report-dialog { width: min(600px, 94vw); max-height: 94vh; overflow-y: auto; }
+dialog.report-dialog.sc-form { width: min(460px, 94vw); }
+@media (min-width: 640px) {
+  .rp-options { grid-template-columns: 1fr 1fr; }
+  .rp-option.rp-child { grid-column: 1 / -1; }
+}
 dialog.report-dialog textarea, .sc-note textarea { width: 100%; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--night); color: var(--text); font: inherit; resize: vertical; outline: none; }
 dialog.report-dialog textarea:focus { border-color: var(--ember); }
 dialog.report-dialog select { width: 100%; }

@@ -3639,7 +3639,7 @@ with sync_playwright() as p:
     rp.screenshot(path=f"{SHOTS}/3501-report-dialog-desktop.png")
     rp.click("dialog.report-dialog button[type=submit]")
     rp.wait_for_selector(".toast:has-text('Your report was sent')", timeout=10000)
-    rp.wait_for_selector(f"#msg-{gary_msg['id']}.blocked-hidden", timeout=10000)
+    rp.wait_for_selector(f"#msg-{gary_msg['id']}.blocked-hidden", state="attached", timeout=10000)
     rp.close()
     reps = api("GET", "/api/safety/reports?status=open", None, TOKEN)["reports"]
     assert any(r["target_id"] == gary_msg["id"] and r["category"] == "harassment" for r in reps), reps[:3]
