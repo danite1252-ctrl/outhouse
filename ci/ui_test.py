@@ -3552,13 +3552,16 @@ with sync_playwright() as p:
     assert cv.evaluate(f"[...state.voiceStates.keys()].includes({json.dumps(HUSH)})") is False
     cv.wait_for_timeout(1500)
     assert cv.evaluate("state.voice.lastEntrance?.user_id ?? null") != GRIM, "Grim's entrance sound reached Carol"
+    cv.eval_on_selector(grim_row, "e => e.scrollIntoView({block: 'center'})")
     cv.screenshot(path=f"{SHOTS}/3560-desktop-voice-blocked.png")
     cv.click(f"{grim_row} .bv-show")
     cv.wait_for_selector(f"{grim_row}:not(.blocked-voice):has-text('Grim')", timeout=5000)
+    cv.eval_on_selector(grim_row, "e => e.scrollIntoView({block: 'center'})")
     cv.screenshot(path=f"{SHOTS}/3561-desktop-voice-blocked-shown.png")
     # Grim on a phone: Carol (who blocked him) is "Someone (blocked)" there.
     gv.wait_for_selector(f"#voice-channels .voice-user.hidden-voice[data-id='{CAROL}']:has-text('Someone (blocked)')", timeout=20000)
     assert gv.evaluate(f"[...state.voiceStates.keys()].includes({json.dumps(CAROL)})") is False
+    gv.eval_on_selector(f"#voice-channels .voice-user.hidden-voice[data-id='{CAROL}']", "e => e.scrollIntoView({block: 'center'})")
     gv.wait_for_timeout(400)
     gv.screenshot(path=f"{SHOTS}/3562-phone-voice-blocked-by.png")
     # Hush blocked Carol, so she's folded in Hush's list.
