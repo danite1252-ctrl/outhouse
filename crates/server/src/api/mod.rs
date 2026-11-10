@@ -26,6 +26,7 @@ pub mod polls;
 mod profiles;
 pub mod raid_settings;
 mod roles;
+pub mod safety;
 pub mod scheduled;
 mod search;
 mod softres;
@@ -447,6 +448,34 @@ pub fn router(state: AppState) -> Router {
             patch(scheduled::update).delete(scheduled::delete),
         )
         .route("/api/scheduled/{id}/send", post(scheduled::send_now))
+        // Safety: reports, the site owner's console, teen protections
+        .route("/api/reports", post(safety::create))
+        .route("/api/users/{id}/contact", get(safety::contact))
+        .route("/api/safety/summary", get(safety::summary))
+        .route("/api/safety/reports", get(safety::list))
+        .route("/api/safety/reports/{id}", get(safety::get))
+        .route(
+            "/api/safety/reports/{id}/actions",
+            post(safety::report_action),
+        )
+        .route("/api/safety/reports/{id}/export", get(safety::export))
+        .route(
+            "/api/safety/reports/{id}/files/{key}",
+            get(safety::report_file),
+        )
+        .route("/api/safety/users", get(safety::find_users))
+        .route("/api/safety/users/{id}", get(safety::get_user))
+        .route(
+            "/api/safety/users/{id}/actions",
+            post(safety::user_action_route),
+        )
+        .route("/api/safety/log", get(safety::get_log))
+        .route(
+            "/api/safety/settings",
+            get(safety::get_settings).put(safety::set_settings),
+        )
+        .route("/api/safety/guilds/{id}/family", put(safety::set_family))
+        .route("/api/safety/digest", get(safety::digest))
         // GIFs, files, gateway
         .route("/api/gifs", get(gifs::search))
         .route("/files/{key}/{name}", get(files::serve))

@@ -203,6 +203,117 @@ sounds, voice mutes/moves/disconnects, bots, webhooks, feeds, cancelled
 raids and badges. Entries are kept for 90 days (`AUDIT_RETENTION_DAYS` in
 `.env` changes that).
 
+## Safety & reports
+Outhouse has a report button so you (the site owner) hear about anything
+nasty and can deal with the account. This is how it works and what to do;
+it's general information, not legal advice.
+
+**Who's the site owner?** The first account made on the server, unless
+`SITE_OWNER` in `.env` names others (usernames or IDs, comma-separated).
+Only site owners see reports. Outhouse admins don't (you stay the final say).
+
+**Reporting.** Anyone can report a message (channels, DMs, group DMs,
+threads: right-click or ⋯ → **Report message**, ⚑ in threads), a file, a
+sticker or custom emoji on a message, a person (their profile card's ⋯, or
+right-click them → **Report…**) or a whole outhouse (right-click its icon).
+They pick a category (child safety; sexual content; harassment; hate or
+threats; self-harm; spam or scams; illegal activity; impersonation; other),
+can add up to 1000 characters of detail and tick **Block this person too**.
+The person reported is never told who reported them. Someone can send 20
+reports an hour (`REPORTS_PER_HOUR`); a second report of the same thing adds
+to the first (the count shows how many people reported it).
+
+**Evidence.** When something is reported the server keeps a snapshot: the
+message text, who sent it and when, where (outhouse, channel, thread or the
+people in the DM), the 10 messages before and after it, the files' names,
+sizes and SHA-256 hashes, and any later edits or deletion. Deleting the
+message doesn't delete the snapshot, and the files stay on disk until you
+close the report.
+
+**Child-safety reports** go to the top of the list. Straight away:
+- the files are **quarantined**: nobody can download them, not you, not the
+  person who sent them, not admins (`/files/…` answers *451 removed pending
+  review*), but they stay on the server, unchanged, as evidence;
+- the message (and any forwarded copies of the files) is hidden from
+  everyone;
+- you get the shield badge on the left rail, a push notification (if you
+  turned those on), a desktop notification in the Windows app, and an alert
+  to the same ntfy topic / webhook as the uptime alerts (`ALERT_NTFY_URL`,
+  `ALERT_WEBHOOK_URL`). The alert never contains any of the content.
+
+The review screen never shows a child-safety report's pictures or video:
+just the file name, type, size and SHA-256. **Don't view, download, copy,
+screenshot or forward suspected child sexual abuse material, even to report
+it.** Report it instead:
+- **Australian Centre to Counter Child Exploitation (ACCCE):** https://www.accce.gov.au/report
+- **eSafety Commissioner:** https://www.esafety.gov.au/report
+- **A child in immediate danger: call 000.**
+- Outside Australia: the NCMEC CyberTipline (US) https://report.cybertip.org, or local police.
+
+**What to give police.** In the report press **Export evidence package**:
+a JSON file with the report, the snapshot and context, who reported it and
+when, the reported account's history, the safety log and each file's name,
+size, storage key and SHA-256. It never contains the files. If police ask
+for the files, follow their instructions; they're in the server's upload
+volume (inside the server container at `/data/uploads/<storage key>`).
+They can check a copy hasn't changed against the package's hash:
+```bash
+docker compose exec server sha256sum /data/uploads/<storage key>
+```
+Nightly backups (and off-site copies) include the upload folder, so older
+backups keep a copy until they're rotated out; tell police that too.
+
+**The console** (the shield on the left rail, or Outhouse settings →
+**Reports**): open / in review / closed lists (child safety first, then the
+most serious, newest first), and each report's snapshot, context, files,
+reporters, the reported person's history (account age, age group, outhouses,
+messages in the last 30 days, other reports about them, reports they've
+made; Outhouse doesn't record IP addresses, though Apache's access logs may
+have them for recent weeks) and actions:
+- **Mark in review**, **Close…** (with a note of what you did), **Dismiss…**
+  (a mistake: a dismissed child-safety report unlocks its files and shows the
+  message again), **Reopen**;
+- **Delete message**, **Remove files** (the report keeps its copy);
+- **Warn…** (a DM from *Outhouse Safety*), **Time out…**, **Kick…**, **Ban…**
+  in one of their outhouses;
+- **Suspend account…** for 1–90 days or permanently: they're signed out
+  everywhere at once, can't sign in (they see the reason), their bots'
+  tokens are revoked (reset them after), their profile is hidden, and their
+  messages stay for evidence unless you tick "hide all their messages".
+  **Lift suspension** undoes it;
+- **Hide all their messages** / **Show their messages again** (child-safety
+  evidence stays hidden);
+- **Add note** (private), **Export evidence package**, and for a closed
+  child-safety report **Delete evidence files** once police have what they
+  need (the names and hashes stay).
+
+Everything done is in the **Safety log** (kept for good). **People** finds
+any account to set their age group or act without a report. **This week**
+shows new accounts and reports; Outhouse Safety also DMs it to you weekly.
+
+**Age groups and teens.** Sign-up asks for a date of birth: under 13s can't
+make an account, 13–17 are *teens*, 18+ *adults*. Only the age group is
+stored, never the date. Accounts made before this count as adults: set
+anyone's age group in the console (People). For teens, by default:
+- friend requests only from people they share an outhouse with **and** who
+  are friends of friends or in an outhouse you mark as **family** (Teen
+  protections → Family outhouses);
+- adults can't start a DM with a teen they aren't friends with (they see
+  "This person can't receive messages from you"), and existing one-to-one
+  DMs stop if they're no longer friends; teens' DMs start as friends-only;
+- age-restricted (18+) channels stay closed to them, even if they click
+  "I'm 18+";
+- they can always report and block.
+
+Each of these can be switched off under **Teen protections** (as can asking
+for a date of birth at sign-up).
+
+**Workflow, in short:** check the shield when it lights up (red = child
+safety) → read the snapshot and context → act (warn, delete, time out,
+suspend) → for child safety, report to the ACCCE / eSafety (000 if a child
+is in danger) and export the evidence package → note what you did and close
+the report → once police are done, delete the evidence files.
+
 ## WoW tools (optional settings)
 The group finder (🔎 / `/lfg`), `/item`, `/char`, characters on profiles and
 Wowhead / Warcraft Logs / Raider.IO link cards work out of the box. Item cards

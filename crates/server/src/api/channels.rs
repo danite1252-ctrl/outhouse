@@ -306,6 +306,12 @@ pub async fn accept_age_gate(
     if access.channel.guild_id == outhouse_common::models::DM_GUILD {
         return Err(AppError::NotFound);
     }
+    // Teens can't open 18+ channels, whatever they click.
+    if crate::api::safety::teen_kept_from_adult_channels(&st.db, user.id).await? {
+        return Err(AppError::Refused(
+            "This channel is for adults (18+) only.".into(),
+        ));
+    }
     sqlx::query(
         "INSERT INTO channel_age_accepts (channel_id, user_id) VALUES ($1, $2)
          ON CONFLICT DO NOTHING",

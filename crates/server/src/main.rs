@@ -81,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
     audit::spawn_pruner(state.clone());
     api::threads::spawn_archiver(state.clone());
     armory::spawn_refresher(state.clone());
+    api::safety::spawn_digest(state.clone());
     // `/` is the welcome page (it sends signed-in people and the apps on to
     // `/app`); `/app` and `/login` are the web client. Everything else is a
     // plain file from the web folder.

@@ -29,6 +29,8 @@ PUSH=http://127.0.0.1:8097
 python3 ci/push_mock.py 8097 >/tmp/push-mock.log 2>&1 &
 PUSH_PID=$!
 export PUSH_EXTRA_ENDPOINTS=$PUSH/push/
+# Child-safety reports alert the owner through the deploy kit's alert settings.
+export ALERT_NTFY_URL=$PUSH/alert/safety-ntfy ALERT_WEBHOOK_URL=$PUSH/alert/safety-hook
 # Where backup.sh would leave its status (read by the server status page).
 STATUS_DIR=$(mktemp -d)
 export BACKUP_STATUS_FILE=$STATUS_DIR/backup.json OUTHOUSE_VERSION=smoke-test
@@ -72,9 +74,9 @@ fail_call() {
 enc() { jq -rn --arg v "$1" '$v|@uri'; }
 
 step "register two users"
-A=$(call POST /api/auth/register '{"username":"alice","password":"password123","display_name":"Alice"}')
+A=$(call POST /api/auth/register '{"username":"alice","password":"password123","birth_date":"1990-01-01","display_name":"Alice"}')
 TOKEN_A=$(jq -r .token <<<"$A"); ALICE=$(jq -r .user.id <<<"$A")
-B=$(call POST /api/auth/register '{"username":"bob","password":"password123","display_name":"Bob"}')
+B=$(call POST /api/auth/register '{"username":"bob","password":"password123","birth_date":"1990-01-01","display_name":"Bob"}')
 TOKEN_B=$(jq -r .token <<<"$B"); BOB=$(jq -r .user.id <<<"$B")
 # Signing out also closes that session's open gateway connection (checked
 # in the security section near the end; the server re-checks every 30 s).
@@ -182,7 +184,7 @@ TOKEN=$TOKEN_B
 call GET "/api/guilds/$GUILD/search?q=loot+council" | jq -e '.total == 0' >/dev/null
 call GET "/api/users/@me/unread" | jq -e --arg id "$SECRET" '[.channels[] | select(.channel_id == $id)] | length == 0' >/dev/null
 TOKEN=$TOKEN_A
-OUT=$(call POST /api/auth/register '{"username":"outsider","password":"password123"}' | jq -r .token)
+OUT=$(call POST /api/auth/register '{"username":"outsider","password":"password123","birth_date":"1990-01-01"}' | jq -r .token)
 TOKEN=$OUT; fail_call GET "/api/guilds/$GUILD/search?q=onyxia"; TOKEN=$TOKEN_A
 
 step "unread and mention counts"
@@ -274,7 +276,7 @@ fail_call GET "/api/channels/$PINS/messages?before=notanid"
 
 step "direct messages"
 TOKEN=$OUT; OUTSIDER=$(call GET /api/users/@me | jq -r .id); TOKEN=$TOKEN_A
-C3=$(call POST /api/auth/register '{"username":"carl","password":"password123","display_name":"Carl"}')
+C3=$(call POST /api/auth/register '{"username":"carl","password":"password123","birth_date":"1990-01-01","display_name":"Carl"}')
 TOKEN_C=$(jq -r .token <<<"$C3"); CARL=$(jq -r .user.id <<<"$C3")
 TOKEN=$TOKEN_C; call POST "/api/invites/$CODE" >/dev/null
 call POST /api/push/subscriptions "$(curl -fsS "$PUSH/new/carl")" >/dev/null; TOKEN=$TOKEN_A
@@ -1740,7 +1742,7 @@ TOKEN=$TOKEN_B; DELB=$(call POST "/api/channels/$CHAN/messages" '{"content":"bob
 call DELETE "/api/channels/$CHAN/messages/$DEL" >/dev/null    # your own: not logged
 call DELETE "/api/channels/$CHAN/messages/$DELB" >/dev/null   # someone else's: logged
 call GET "/api/guilds/$GUILD/audit-log?action=message_delete" | jq -e --arg b "$BOB" '.entries[0].target_id == $b and (.entries[0].details | contains("bob says rude words")) and all(.entries[]; .details | contains("“rude words”") | not)' >/dev/null
-KR=$(call POST /api/auth/register '{"username":"kickme","password":"password123"}')
+KR=$(call POST /api/auth/register '{"username":"kickme","password":"password123","birth_date":"1990-01-01"}')
 TOKEN=$(jq -r .token <<<"$KR"); call POST "/api/invites/$CODE" >/dev/null; TOKEN=$TOKEN_A
 KICKED=$(jq -r .user.id <<<"$KR")
 call DELETE "/api/guilds/$GUILD/members/$KICKED" >/dev/null
@@ -2206,7 +2208,7 @@ fail_call GET "/api/invites/..%2Fetc"
 fail_call POST "/api/invites/$C1"
 IU=()
 for n in 1 2 3; do
-  R=$(call POST /api/auth/register "{\"username\":\"invitee$n\",\"password\":\"password123\",\"display_name\":\"Invitee $n\"}")
+  R=$(call POST /api/auth/register "{\"username\":\"invitee$n\",\"password\":\"password123\",\"birth_date\":\"1990-01-01\",\"display_name\":\"Invitee $n\"}")
   IU+=("$(jq -r .token <<<"$R")")
 done
 TOKEN=${IU[0]}; call POST "/api/invites/$C1" | jq -e --arg g "$IGUILD" '.id == $g' >/dev/null
@@ -2703,7 +2705,7 @@ kill $GW_LOGOUT_PID 2>/dev/null || true
 
 step "security: sign-in brute-force limits (per account and per address)"
 TOKEN=""
-call POST /api/auth/register '{"username":"lockme","password":"password123"}' >/dev/null
+call POST /api/auth/register '{"username":"lockme","password":"password123","birth_date":"1990-01-01"}' >/dev/null
 xff_login() { # xff_login IP USER PASSWORD -> HTTP status
   curl -sS -o /tmp/body -w "%{http_code}" -H "Content-Type: application/json" -H "X-Forwarded-For: $1" \
     -d '{"username":"'"$2"'","password":"'"$3"'"}' "$BASE/api/auth/login"
@@ -2727,11 +2729,11 @@ code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Content-Type: application/jso
 step "security: sign-up and invite look-up limits"
 for i in $(seq 1 20); do
   code=$(curl -sS -o /dev/null -w "%{http_code}" -H "Content-Type: application/json" -H "X-Forwarded-For: 203.0.113.60" \
-    -d '{"username":"!","password":"password123"}' "$BASE/api/auth/register")
+    -d '{"username":"!","password":"password123","birth_date":"1990-01-01"}' "$BASE/api/auth/register")
   [ "$code" = 400 ]
 done
 code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Content-Type: application/json" -H "X-Forwarded-For: 203.0.113.60" \
-  -d '{"username":"toomany","password":"password123"}' "$BASE/api/auth/register")
+  -d '{"username":"toomany","password":"password123","birth_date":"1990-01-01"}' "$BASE/api/auth/register")
 [ "$code" = 429 ] || { echo "sign-up limit: $code"; cat /tmp/body; exit 1; }
 for i in $(seq 1 120); do
   code=$(curl -sS -o /dev/null -w "%{http_code}" -H "X-Forwarded-For: 203.0.113.70" "$BASE/api/invites/zzzz$i")
@@ -2754,16 +2756,16 @@ for mode in invite closed; do
   R="http://127.0.0.1:$PORT"
   curl -fsS "$R/api/auth/registration" | jq -e --arg m "$mode" '.mode == $m' >/dev/null
   reg() { curl -sS -o /tmp/body -w "%{http_code}" -H "Content-Type: application/json" -d "$1" "$R/api/auth/register"; }
-  [ "$(reg '{"username":"reg'"$mode"'1","password":"password123"}')" = 403 ] || { echo "$mode: signed up without an invite"; cat /tmp/body; exit 1; }
-  [ "$(reg '{"username":"reg'"$mode"'2","password":"password123","invite":"nope1234"}')" = 403 ]
+  [ "$(reg '{"username":"reg'"$mode"'1","password":"password123","birth_date":"1990-01-01"}')" = 403 ] || { echo "$mode: signed up without an invite"; cat /tmp/body; exit 1; }
+  [ "$(reg '{"username":"reg'"$mode"'2","password":"password123","birth_date":"1990-01-01","invite":"nope1234"}')" = 403 ]
   if [ "$mode" = invite ]; then
     grep -q "need an invite" /tmp/body
-    [ "$(reg '{"username":"reginvite3","password":"password123","invite":"'"$REG_INV"'"}')" = 200 ] || { cat /tmp/body; exit 1; }
+    [ "$(reg '{"username":"reginvite3","password":"password123","birth_date":"1990-01-01","invite":"'"$REG_INV"'"}')" = 200 ] || { cat /tmp/body; exit 1; }
     T3=$(jq -r .token /tmp/body)
     curl -fsS -X POST -H "Authorization: Bearer $T3" "$R/api/invites/$REG_INV" | jq -e --arg g "$GUILD" '.id == $g' >/dev/null
   else
     grep -q "closed" /tmp/body
-    [ "$(reg '{"username":"regclosed3","password":"password123","invite":"'"$REG_INV"'"}')" = 403 ]
+    [ "$(reg '{"username":"regclosed3","password":"password123","birth_date":"1990-01-01","invite":"'"$REG_INV"'"}')" = 403 ]
   fi
   # Signing in still works.
   curl -fsS -H "Content-Type: application/json" -d '{"username":"bob","password":"password123"}' "$R/api/auth/login" >/dev/null
@@ -2944,7 +2946,7 @@ TOKEN=$TOKEN_A
 AM=$(call POST "/api/guilds/$GUILD/channels" '{"name":"automod-test"}' | jq -r .id)
 AML=$(call POST "/api/guilds/$GUILD/channels" '{"name":"mod-log"}' | jq -r .id)
 call GET "/api/channels/$AM/automod" | jq -e '(.word_filter | not) and (.spam_filter | not) and .exempt_moderators and .use_default_words and .whole_word' >/dev/null
-DORA=$(TOKEN="" call POST /api/auth/register '{"username":"dora","password":"password123","display_name":"Dora"}')
+DORA=$(TOKEN="" call POST /api/auth/register '{"username":"dora","password":"password123","birth_date":"1990-01-01","display_name":"Dora"}')
 TOKEN_D=$(jq -r .token <<<"$DORA"); DORA_ID=$(jq -r .user.id <<<"$DORA")
 AMINV=$(call POST "/api/guilds/$GUILD/invites" | jq -r .code)
 TOKEN=$TOKEN_D; call POST "/api/invites/$AMINV" >/dev/null
@@ -3160,5 +3162,311 @@ TOKEN=$TOKEN_C; call DELETE "/api/users/@me/blocks/$ALICE" >/dev/null; call DELE
 TOKEN=$TOKEN_B; call POST /api/voice/leave >/dev/null
 TOKEN=$TOKEN_A
 kill $VB_A $VB_B 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Safety: reports, the site owner's console, suspensions, teen protections
+# (feat-reports). Alice is the site owner here (the first account).
+# ---------------------------------------------------------------------------
+UPLOADS=${UPLOAD_DIR:-data/uploads}
+xreg() { # xreg N JSON -> HTTP status (body in /tmp/body); each N its own address
+  curl -sS -o /tmp/body -w "%{http_code}" -H "Content-Type: application/json" -H "X-Forwarded-For: 198.18.7.$1" -d "$2" "$BASE/api/auth/register"
+}
+tok() { local t=$1; shift; TOKEN=$t "$@"; } # tok TOKEN call|fail_call|status ...
+fupload() { # fupload TOKEN CHANNEL TEXT -> message JSON in /tmp/body
+  local c; c=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $1" -F "content=$3" -F "files=@/tmp/pixel.png;type=image/png" "$BASE/api/channels/$2/messages/upload")
+  [[ "$c" == 2* ]] || { echo "upload -> $c"; cat /tmp/body; exit 1; }
+}
+report() { # report TOKEN KIND ID CATEGORY [DETAILS] -> HTTP status (body in /tmp/body)
+  tok "$1" status POST /api/reports "$(jq -nc --arg k "$2" --arg i "$3" --arg c "$4" --arg d "${5:-}" '{target_kind:$k,target_id:$i,category:$c,details:$d}')"
+}
+report_id() { # report_id KIND ID -> the open report about it (as the owner)
+  psql "$DATABASE_URL" -tAc "SELECT id FROM reports WHERE target_kind = '$1' AND target_id = $2 AND status <> 'closed'"
+}
+act() { # act REPORT JSON -> report detail (as the owner)
+  tok "$TOKEN_A" call POST "/api/safety/reports/$1/actions" "$2"
+}
+
+step "safety: sign-up asks for a date of birth; only the age group is kept"
+TEEN_DOB=$(date -u -d '15 years ago' +%F); KID_DOB=$(date -u -d '10 years ago' +%F)
+[ "$(xreg 1 '{"username":"nodob","password":"password123"}')" = 400 ] && grep -q "date of birth" /tmp/body
+[ "$(xreg 2 '{"username":"kiddo","password":"password123","birth_date":"'"$KID_DOB"'"}')" = 403 ] && grep -q "13 or older" /tmp/body
+[ "$(xreg 3 '{"username":"oddone","password":"password123","birth_date":"31/12/1990"}')" = 400 ]
+[ "$(xreg 4 '{"username":"futurekid","password":"password123","birth_date":"2999-01-01"}')" = 400 ]
+psql "$DATABASE_URL" -tAc "SELECT count(*) FROM users WHERE username IN ('nodob','kiddo','oddone','futurekid')" | grep -qx 0
+[ "$(xreg 5 '{"username":"tia","password":"password123","display_name":"Tia","birth_date":"'"$TEEN_DOB"'"}')" = 200 ]
+TOKEN_T=$(jq -r .token /tmp/body); TIA=$(jq -r .user.id /tmp/body)
+[ "$(xreg 6 '{"username":"adam","password":"password123","display_name":"Adam","birth_date":"1985-06-01"}')" = 200 ]
+TOKEN_AD=$(jq -r .token /tmp/body); ADAM=$(jq -r .user.id /tmp/body)
+[ "$(xreg 7 '{"username":"fran","password":"password123","display_name":"Fran","birth_date":"1979-02-02"}')" = 200 ]
+TOKEN_F=$(jq -r .token /tmp/body); FRAN=$(jq -r .user.id /tmp/body)
+psql "$DATABASE_URL" -tAc "SELECT age_bracket || ',' || dm_privacy FROM users WHERE id = $TIA" | grep -qx "teen,friends"
+psql "$DATABASE_URL" -tAc "SELECT age_bracket FROM users WHERE id = $ADAM" | grep -qx adult
+psql "$DATABASE_URL" -tAc "SELECT age_bracket FROM users WHERE id = $ALICE" | grep -qx adult   # older accounts: adults
+psql "$DATABASE_URL" -tAc "SELECT count(*) FROM information_schema.columns WHERE table_name = 'users' AND column_name ILIKE '%birth%'" | grep -qx 0
+
+step "safety: teens only hear from people they share an outhouse with (friends of friends or family)"
+SG=$(tok "$TOKEN_A" call POST /api/guilds '{"name":"Safety Test"}' | jq -r .id)
+SCH=$(tok "$TOKEN_A" call GET "/api/guilds/$SG/channels" | jq -r '[.[] | select(.kind == 0)][0].id')
+SINV=$(tok "$TOKEN_A" call POST "/api/guilds/$SG/invites" | jq -r .code)
+for t in "$TOKEN_T" "$TOKEN_AD" "$TOKEN_F"; do tok "$t" call POST "/api/invites/$SINV" >/dev/null; done
+# Adults who aren't their friend can't DM a teen (nor a teen them)...
+[ "$(tok "$TOKEN_AD" status POST /api/dms '{"user_ids":["'"$TIA"'"]}')" = 403 ] && grep -q "can't receive messages from you" /tmp/body
+tok "$TOKEN_AD" call GET "/api/users/$TIA/contact" | jq -e '(.can_message | not) and .reason == "This person can'"'"'t receive messages from you."' >/dev/null
+[ "$(tok "$TOKEN_T" status POST /api/dms '{"user_ids":["'"$ADAM"'"]}')" = 403 ]
+tok "$TOKEN_AD" call GET "/api/users/$FRAN/contact" | jq -e '.can_message' >/dev/null
+# ...or send them a friend request (no friend in common, no family outhouse),
+[ "$(tok "$TOKEN_AD" status PUT "/api/users/@me/relationships/$TIA")" = 403 ]
+# and nobody they don't share an outhouse with can.
+[ "$(tok "$TOKEN_B" status PUT "/api/users/@me/relationships/$TIA")" = 403 ]
+# A family outhouse lets them ask; once friends they can DM.
+tok "$TOKEN_B" fail_call PUT "/api/safety/guilds/$SG/family" '{"family":true}'
+tok "$TOKEN_A" call PUT "/api/safety/guilds/$SG/family" '{"family":true}' >/dev/null
+tok "$TOKEN_AD" call PUT "/api/users/@me/relationships/$TIA" | jq -e '.kind == "outgoing"' >/dev/null
+tok "$TOKEN_T" call PUT "/api/users/@me/relationships/$ADAM" | jq -e '.kind == "friend"' >/dev/null
+TDM=$(tok "$TOKEN_AD" call POST /api/dms '{"user_ids":["'"$TIA"'"]}' | jq -r .id)
+tok "$TOKEN_AD" call POST "/api/channels/$TDM/messages" '{"content":"hi Tia, dinner at 6"}' >/dev/null
+tok "$TOKEN_A" call PUT "/api/safety/guilds/$SG/family" '{"family":false}' >/dev/null
+# Friends of friends (and sharing an outhouse) may ask too: Fran is Adam's friend.
+tok "$TOKEN_F" call PUT "/api/users/@me/relationships/$ADAM" >/dev/null; tok "$TOKEN_AD" call PUT "/api/users/@me/relationships/$FRAN" >/dev/null
+tok "$TOKEN_F" call PUT "/api/users/@me/relationships/$TIA" | jq -e '.kind == "outgoing"' >/dev/null
+tok "$TOKEN_T" call DELETE "/api/users/@me/relationships/$FRAN" >/dev/null
+# Group DMs: every adult in it must be the teen's friend.
+[ "$(tok "$TOKEN_AD" status POST /api/dms '{"user_ids":["'"$TIA"'","'"$FRAN"'"]}')" = 403 ]
+GDM=$(tok "$TOKEN_AD" call POST /api/dms '{"user_ids":["'"$FRAN"'","'"$ALICE"'"]}' | jq -r .id)
+[ "$(tok "$TOKEN_AD" status POST "/api/dms/$GDM/recipients" '{"user_id":"'"$TIA"'"}')" = 403 ]
+# An adult the owner later marks as a teen's... existing DM: sending is checked too.
+tok "$TOKEN_A" call POST "/api/safety/users/$FRAN/actions" '{"action":"set_age","bracket":"teen"}' | jq -e '.age_bracket == "teen"' >/dev/null
+FDM=$(tok "$TOKEN_AD" call POST /api/dms '{"user_ids":["'"$FRAN"'"]}' | jq -r .id)   # friends: fine
+tok "$TOKEN_AD" call DELETE "/api/users/@me/relationships/$FRAN" >/dev/null
+[ "$(tok "$TOKEN_AD" status POST "/api/channels/$FDM/messages" '{"content":"still there?"}')" = 403 ]
+tok "$TOKEN_A" call POST "/api/safety/users/$FRAN/actions" '{"action":"set_age","bracket":"adult"}' >/dev/null
+# The owner can switch the limits off (and back on).
+tok "$TOKEN_A" call PUT /api/safety/settings '{"teen_contact_limits":false}' | jq -e '(.teen_contact_limits | not) and .teen_block_adult_channels' >/dev/null
+tok "$TOKEN_B" call GET "/api/users/$TIA/contact" | jq -e '.can_message' >/dev/null
+tok "$TOKEN_A" call PUT /api/safety/settings '{"teen_contact_limits":true}' >/dev/null
+tok "$TOKEN_B" fail_call GET /api/safety/settings
+tok "$TOKEN_B" fail_call PUT /api/safety/settings '{"teen_contact_limits":false}'
+
+step "safety: teens can't open 18+ channels, whatever they click"
+NS=$(tok "$TOKEN_A" call POST "/api/guilds/$SG/channels" '{"name":"after-dark"}' | jq -r .id)
+tok "$TOKEN_A" call PATCH "/api/channels/$NS" '{"content_mode":"nsfw"}' >/dev/null
+tok "$TOKEN_AD" call PUT "/api/channels/$NS/age-gate" >/dev/null
+tok "$TOKEN_AD" call GET "/api/channels/$NS/messages" >/dev/null
+[ "$(tok "$TOKEN_T" status PUT "/api/channels/$NS/age-gate")" = 403 ] && grep -q "adults (18+) only" /tmp/body
+[ "$(tok "$TOKEN_T" status GET "/api/channels/$NS/messages")" = 403 ]
+# Even an old "I'm 18+" from before doesn't count while the protection is on.
+tok "$TOKEN_A" call PUT /api/safety/settings '{"teen_block_adult_channels":false}' >/dev/null
+tok "$TOKEN_T" call PUT "/api/channels/$NS/age-gate" >/dev/null
+tok "$TOKEN_T" call GET "/api/channels/$NS/messages" >/dev/null
+tok "$TOKEN_A" call PUT /api/safety/settings '{"teen_block_adult_channels":true}' >/dev/null
+[ "$(tok "$TOKEN_T" status GET "/api/channels/$NS/messages")" = 403 ]
+
+step "safety: report a message, dedupe, anonymity, owner-only console"
+SINV2=$(tok "$TOKEN_A" call POST "/api/guilds/$GUILD/invites" | jq -r .code)
+tok "$TOKEN_T" call POST "/api/invites/$SINV2" >/dev/null
+M1=$(tok "$TOKEN_B" call POST "/api/channels/$CHAN/messages" '{"content":"cheap gold at scam.example, DM me"}' | jq -r .id)
+[ "$(report "$TOKEN_D" message "$M1" spam "selling gold again")" = 201 ] && jq -e '.ok and (.duplicate | not)' /tmp/body >/dev/null
+[ "$(report "$TOKEN_D" message "$M1" spam)" = 200 ] && jq -e '.duplicate' /tmp/body >/dev/null   # once per person
+[ "$(report "$TOKEN_B" message "$M1" spam)" = 400 ]                                                # not your own
+[ "$(report "$OUT" message "$M1" spam)" = 404 ]                                                    # can't see it
+[ "$(report "$TOKEN_D" message "$M1" nonsense)" = 400 ]
+[ "$(report "$TOKEN_D" message "$M1" spam "$(head -c 1001 /dev/zero | tr '\0' x)")" = 400 ]
+[ "$(report "$TOKEN_T" message "$M1" harassment)" = 200 ]                                          # teens can report too
+R1=$(report_id message "$M1")
+for path in /api/safety/summary "/api/safety/reports" "/api/safety/reports/$R1" "/api/safety/reports/$R1/export" \
+            /api/safety/users "/api/safety/users/$BOB" /api/safety/log /api/safety/digest; do
+  tok "$TOKEN_B" fail_call GET "$path"; tok "$TOKEN_D" fail_call GET "$path"
+done
+tok "$TOKEN_B" fail_call POST "/api/safety/reports/$R1/actions" '{"action":"dismiss"}'
+tok "$TOKEN_B" fail_call POST "/api/safety/users/$DORA_ID/actions" '{"action":"suspend"}'
+tok "$TOKEN_A" call GET "/api/safety/reports?status=open" | jq -e --arg r "$R1" --arg b "$BOB" '
+  .reports[] | select(.id == $r) | .report_count == 2 and .category == "spam" and .reported_user.id == $b
+  and (.place | test("#general")) and (.preview | test("cheap gold"))' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/reports/$R1" | jq -e --arg d "$DORA_ID" '
+  (.reporters | length) == 2 and .reporters[0].id == $d and .reporters[0].details == "selling gold again"
+  and .snapshot.message.content == "cheap gold at scam.example, DM me" and .subject.username == "bob"
+  and (.snapshot.context | length) >= 1 and (.snapshot.context | length) <= 20' >/dev/null
+
+step "safety: the snapshot survives edits and deletion; files are kept until the report closes"
+tok "$TOKEN_B" call PATCH "/api/channels/$CHAN/messages/$M1" '{"content":"nothing to see here"}' >/dev/null
+tok "$TOKEN_B" call DELETE "/api/channels/$CHAN/messages/$M1" >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/reports/$R1" | jq -e --arg b "$BOB" '
+  .snapshot.message.content == "cheap gold at scam.example, DM me" and .snapshot.edits[0].before == "cheap gold at scam.example, DM me"
+  and .snapshot.edits[0].after == "nothing to see here" and .snapshot.deleted.by == $b and (.message_live | not)' >/dev/null
+fupload "$TOKEN_B" "$CHAN" "rude picture"; M2=$(jq -r .id /tmp/body); K2=$(jq -r '.attachments[0].url | split("/")[2]' /tmp/body)
+[ "$(report "$TOKEN_D" message "$M2" harassment)" = 201 ]; R2=$(report_id message "$M2")
+tok "$TOKEN_B" call DELETE "/api/channels/$CHAN/messages/$M2" >/dev/null
+[ -f "$UPLOADS/$K2" ] || { echo "a reported file was deleted with its message"; exit 1; }
+tok "$TOKEN_A" call GET "/api/safety/reports/$R2" | jq -e --arg k "$K2" '.files[0].key == $k and .files[0].viewable and .files[0].on_disk and (.files[0].sha256 | length) == 64' >/dev/null
+[ "$(tok "$TOKEN_A" status GET "/api/safety/reports/$R2/files/$K2")" = 200 ]
+[ "$(tok "$TOKEN_B" status GET "/api/safety/reports/$R2/files/$K2")" = 403 ]
+act "$R2" '{"action":"close","text":"Warned them"}' | jq -e '.report.status == "closed" and .report.resolution == "Warned them"' >/dev/null
+[ ! -f "$UPLOADS/$K2" ] || { echo "the file outlived its closed report"; exit 1; }
+act "$R2" '{"action":"reopen"}' | jq -e '.report.status == "review"' >/dev/null
+act "$R2" '{"action":"close"}' >/dev/null
+
+step "safety: every kind of thing can be reported (files, DMs, threads, people, stickers, emoji, outhouses)"
+fupload "$TOKEN_B" "$CHAN" "a file"; A3=$(jq -r '.attachments[0].id' /tmp/body)
+[ "$(report "$TOKEN_D" attachment "$A3" sexual)" = 201 ]
+tok "$TOKEN_A" call GET "/api/safety/reports/$(report_id attachment "$A3")" | jq -e --arg a "$A3" '.snapshot.focus_attachment_id == $a and (.files | length) == 1 and .report.priority == 1' >/dev/null
+DDM=$(tok "$TOKEN_D" call POST /api/dms '{"user_ids":["'"$BOB"'"]}' | jq -r .id)
+DM1=$(tok "$TOKEN_B" call POST "/api/channels/$DDM/messages" '{"content":"send me pics"}' | jq -r .id)
+[ "$(report "$TOKEN_D" message "$DM1" harassment)" = 201 ]
+[ "$(report "$TOKEN_A" message "$DM1" harassment)" = 404 ]   # not in that DM
+tok "$TOKEN_A" call GET "/api/safety/reports/$(report_id message "$DM1")" | jq -e '.snapshot.place.dm and (.snapshot.place.participants | length) == 2 and .report.place == "Direct message"' >/dev/null
+RT=$(tok "$TOKEN_A" call POST "/api/channels/$CHAN/threads" '{"name":"Report thread"}' | jq -r .id)
+TM=$(tok "$TOKEN_B" call POST "/api/channels/$CHAN/messages" '{"content":"thread nastiness","thread_id":"'"$RT"'"}' | jq -r .id)
+[ "$(report "$TOKEN_D" message "$TM" hate)" = 201 ]
+tok "$TOKEN_A" call GET "/api/safety/reports/$(report_id message "$TM")" | jq -e '.snapshot.place.thread_name == "Report thread" and .report.priority == 1' >/dev/null
+[ "$(report "$TOKEN_D" user "$BOB" impersonation "pretending to be the GM")" = 201 ]
+[ "$(report "$TOKEN_D" user "$DORA_ID" spam)" = 400 ]       # not yourself
+supload "$TOKEN_A" /tmp/pixel.png "Report me"; RSTK=$(jq -r .id /tmp/body)
+[ "$(report "$TOKEN_D" sticker "$RSTK" other)" = 201 ]
+code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $TOKEN_A" -F "name=reportme" -F "file=@/tmp/pixel.png;type=image/png" "$BASE/api/guilds/$GUILD/emojis")
+[[ "$code" == 2* ]] || { echo "emoji upload -> $code"; cat /tmp/body; exit 1; }; REMO=$(jq -r .id /tmp/body)
+[ "$(report "$TOKEN_D" emoji "$REMO" hate)" = 201 ]
+[ "$(report "$TOKEN_D" guild "$GUILD" other "whole place is a mess")" = 201 ]
+[ "$(report "$TOKEN_T" guild "$IGUILD" other)" = 404 ]      # not a member
+[ "$(report "$TOKEN_D" message 12345 spam)" = 404 ]
+[ "$(report "$TOKEN_D" banana "$BOB" spam)" = 400 ]
+tok "$TOKEN_A" call GET "/api/safety/reports?status=open" | jq -e '[.reports[].target_kind] | (index("user") and index("sticker") and index("emoji") and index("guild") and index("attachment"))' >/dev/null
+# The sticker's file is kept while the report is open, even if the sticker goes.
+SKEY=$(psql "$DATABASE_URL" -tAc "SELECT storage_key FROM stickers WHERE id = $RSTK")
+tok "$TOKEN_A" call DELETE "/api/stickers/$RSTK" >/dev/null
+[ -f "$UPLOADS/$SKEY" ] || { echo "reported sticker's file was deleted"; exit 1; }
+
+step "safety: child-safety reports quarantine files (451 for everyone), hide the message and alert the owner"
+node ci/gateway_probe.mjs "$BASE" "$TOKEN_A" /tmp/gw-safety-owner.jsonl 60 & SP1=$!
+node ci/gateway_probe.mjs "$BASE" "$TOKEN_D" /tmp/gw-safety-dora.jsonl 60 & SP2=$!
+wait_for /tmp/gw-safety-owner.jsonl '.t == "READY"'; wait_for /tmp/gw-safety-dora.jsonl '.t == "READY"'
+fupload "$TOKEN_B" "$CHAN" "look at this"; M3=$(jq -r .id /tmp/body); K3=$(jq -r '.attachments[0].url | split("/")[2]' /tmp/body); U3=$(jq -r '.attachments[0].url' /tmp/body)
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE$U3")" = 200 ]
+[ "$(report "$TOKEN_D" message "$M3" child_safety "an image of a child")" = 201 ]
+for who in "" "$TOKEN_A" "$TOKEN_B" "$TOKEN_D"; do
+  hdr=(); [ -n "$who" ] && hdr=(-H "Authorization: Bearer $who")
+  code=$(curl -sS -o /tmp/body -w '%{http_code}' ${hdr[@]+"${hdr[@]}"} "$BASE$U3")
+  [ "$code" = 451 ] && grep -q "removed pending review" /tmp/body || { echo "quarantined file -> $code"; exit 1; }
+done
+[ -f "$UPLOADS/$K3" ] || { echo "quarantined file isn't kept on disk"; exit 1; }
+for t in "$TOKEN_A" "$TOKEN_B" "$TOKEN_D"; do
+  tok "$t" call GET "/api/channels/$CHAN/messages?limit=100" | jq -e --arg m "$M3" 'all(.[]; .id != $m)' >/dev/null
+done
+[ "$(tok "$TOKEN_B" status PATCH "/api/channels/$CHAN/messages/$M3" '{"content":"edit it away"}')" = 404 ]
+wait_for /tmp/gw-safety-dora.jsonl '.t == "MESSAGE_DELETE" and .d.id == $m' --arg m "$M3"
+wait_for /tmp/gw-safety-owner.jsonl '.t == "REPORTS_CHANGED" and .d.alert and .d.urgent >= 1'
+for i in $(seq 1 20); do [ "$(curl -fsS "$PUSH/alerts/safety-ntfy" | jq length)" -ge 1 ] && break; sleep 0.5; done
+curl -fsS "$PUSH/alerts/safety-ntfy" | jq -e '.[0].title == "Outhouse: urgent safety report" and .[0].priority == "high" and (.[0].body | test("child-safety")) and (.[0].body | test("look at this") | not)' >/dev/null
+curl -fsS "$PUSH/alerts/safety-hook" | jq -e '.[0].body | fromjson | .content | test("urgent safety report")' >/dev/null
+R3=$(report_id message "$M3")
+tok "$TOKEN_A" call GET "/api/safety/reports?status=open" | jq -e --arg r "$R3" '.reports[0].id == $r and .reports[0].child_safety and .counts.urgent >= 1' >/dev/null
+SHA3=$(sha256sum "$UPLOADS/$K3" | cut -d' ' -f1)
+tok "$TOKEN_A" call GET "/api/safety/reports/$R3" | jq -e --arg h "$SHA3" '.report.child_safety and .message_hidden
+  and .files[0].quarantined and (.files[0].viewable | not) and .files[0].sha256 == $h and .snapshot.message.content == "look at this"' >/dev/null
+[ "$(tok "$TOKEN_A" status GET "/api/safety/reports/$R3/files/$K3")" = 451 ]
+code=$(curl -sS -D /tmp/headers -o /tmp/export.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN_A" "$BASE/api/safety/reports/$R3/export")
+[ "$code" = 200 ] && grep -qi 'content-disposition: attachment; filename="outhouse-report-' /tmp/headers
+jq -e --arg h "$SHA3" --arg k "$K3" '.format == "outhouse-evidence-package/1" and .files[0].sha256 == $h and .files[0].storage_key == null
+  and .files[0].key == $k and (.files_note | test("not in this package")) and .reported_account.username == "bob" and (.reporters | length) == 1' /tmp/export.json >/dev/null
+# Escalation: a spam report becomes child safety when someone says so (and gets quarantined).
+fupload "$TOKEN_B" "$CHAN" "another one"; M4=$(jq -r .id /tmp/body); U4=$(jq -r '.attachments[0].url' /tmp/body)
+[ "$(report "$TOKEN_D" message "$M4" spam)" = 201 ]
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE$U4")" = 200 ]
+[ "$(report "$TOKEN_T" message "$M4" child_safety)" = 200 ]
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE$U4")" = 451 ]
+R4=$(report_id message "$M4")
+tok "$TOKEN_A" call GET "/api/safety/reports/$R4" | jq -e '.report.category == "child_safety" and .report.priority == 0 and .report.report_count == 2' >/dev/null
+# Dismissing (a mistake) brings the file and message back.
+act "$R4" '{"action":"dismiss","text":"A cat picture"}' | jq -e '.report.status == "closed" and (.files[0].quarantined | not)' >/dev/null
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE$U4")" = 200 ]
+tok "$TOKEN_D" call GET "/api/channels/$CHAN/messages?limit=100" | jq -e --arg m "$M4" 'any(.[]; .id == $m)' >/dev/null
+# Closing a real one keeps the evidence (still quarantined, still on disk) until it's deleted on purpose.
+tok "$TOKEN_A" fail_call POST "/api/safety/reports/$R3/actions" '{"action":"delete_evidence"}'   # close it first
+act "$R3" '{"action":"close","text":"Reported to the ACCCE"}' >/dev/null
+[ -f "$UPLOADS/$K3" ] && [ "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE$U3")" = 451 ]
+act "$R3" '{"action":"delete_evidence"}' | jq -e '.report.evidence_released and (.files[0].on_disk | not) and (.files[0].sha256 | length) == 64' >/dev/null
+[ ! -f "$UPLOADS/$K3" ] && [ "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE$U3")" = 451 ]
+kill $SP1 $SP2 2>/dev/null || true
+
+step "safety: rate limit per reporter"
+[ "$(xreg 8 '{"username":"rachel","password":"password123","birth_date":"1990-03-03"}')" = 200 ]
+TOKEN_R=$(jq -r .token /tmp/body)
+tok "$TOKEN_R" call POST "/api/invites/$SINV2" >/dev/null
+RL=()
+for i in $(seq 1 21); do RL+=("$(tok "$TOKEN_B" call POST "/api/channels/$CHAN/messages" '{"content":"spam '"$i"'"}' | jq -r .id)"); done
+for i in $(seq 0 19); do [ "$(report "$TOKEN_R" message "${RL[$i]}" spam)" = 201 ]; done
+[ "$(report "$TOKEN_R" message "${RL[20]}" spam)" = 429 ] && grep -q "000" /tmp/body
+psql "$DATABASE_URL" -qc "UPDATE reports SET status = 'closed', closed_at = now(), resolution = 'smoke test' WHERE id IN (SELECT report_id FROM report_reporters WHERE reporter_id = (SELECT id FROM users WHERE username = 'rachel'))"
+
+step "safety: owner actions (delete, remove files, warn, timeout, kick, ban, notes)"
+M5=$(tok "$TOKEN_B" call POST "/api/channels/$CHAN/messages" '{"content":"delete me please"}' | jq -r .id)
+[ "$(report "$TOKEN_D" message "$M5" harassment)" = 201 ]; R5=$(report_id message "$M5")
+act "$R5" '{"action":"delete_message"}' | jq -e '(.message_live | not) and .report.status == "review" and .snapshot.message.content == "delete me please"' >/dev/null
+tok "$TOKEN_D" call GET "/api/channels/$CHAN/messages?limit=100" | jq -e --arg m "$M5" 'all(.[]; .id != $m)' >/dev/null
+fupload "$TOKEN_B" "$CHAN" "keep the words"; M6=$(jq -r .id /tmp/body)
+[ "$(report "$TOKEN_D" message "$M6" sexual)" = 201 ]; R6=$(report_id message "$M6")
+act "$R6" '{"action":"remove_attachment"}' >/dev/null
+tok "$TOKEN_D" call GET "/api/channels/$CHAN/messages?limit=100" | jq -e --arg m "$M6" '.[] | select(.id == $m) | (.attachments | length) == 0 and .content == "keep the words"' >/dev/null
+act "$R6" '{"action":"warn","text":"Please keep pictures family-friendly."}' >/dev/null
+SBOT=$(psql "$DATABASE_URL" -tAc "SELECT safety_bot_id FROM site_settings")
+WDM=$(tok "$TOKEN_B" call GET /api/dms | jq -r --arg s "$SBOT" '.[] | select(any(.recipients[]; .id == $s)) | .id')
+tok "$TOKEN_B" call GET "/api/channels/$WDM/messages" | jq -e '.[-1].author_display_name == "Outhouse Safety" and (.[-1].content | test("family-friendly"))
+  and (.[-1].content | test("Dora|dora") | not)' >/dev/null
+act "$R6" '{"action":"timeout","guild_id":"'"$GUILD"'","minutes":10}' >/dev/null
+tok "$TOKEN_A" call GET "/api/guilds/$GUILD/members" | jq -e --arg b "$BOB" '.[] | select(.id == $b) | .timeout_until != null' >/dev/null
+tok "$TOKEN_A" call POST "/api/guilds/$GUILD/members/$BOB/timeout" '{"minutes":0}' >/dev/null
+act "$R6" '{"action":"note","text":"Second time this month."}' | jq -e 'any(.log[]; .action == "note" and .details == "Second time this month.") and any(.log[]; .action == "warn")' >/dev/null
+[ "$(xreg 9 '{"username":"kev","password":"password123","birth_date":"1990-04-04"}')" = 200 ]
+TOKEN_K=$(jq -r .token /tmp/body); KEV=$(jq -r .user.id /tmp/body)
+tok "$TOKEN_K" call POST "/api/invites/$SINV2" >/dev/null
+tok "$TOKEN_A" call POST "/api/safety/users/$KEV/actions" '{"action":"kick","guild_id":"'"$GUILD"'"}' >/dev/null
+tok "$TOKEN_A" call GET "/api/guilds/$GUILD/members" | jq -e --arg k "$KEV" 'all(.[]; .id != $k)' >/dev/null
+tok "$TOKEN_K" call POST "/api/invites/$SINV2" >/dev/null
+tok "$TOKEN_A" call POST "/api/safety/users/$KEV/actions" '{"action":"ban","guild_id":"'"$GUILD"'","text":"spam bot"}' >/dev/null
+tok "$TOKEN_A" call GET "/api/guilds/$GUILD/bans" | jq -e --arg k "$KEV" 'any(.[]; .id == $k and (.reason | test("spam bot")))' >/dev/null
+tok "$TOKEN_K" fail_call POST "/api/invites/$SINV2"
+tok "$TOKEN_A" call DELETE "/api/guilds/$GUILD/bans/$KEV" >/dev/null
+tok "$TOKEN_A" fail_call POST "/api/safety/users/$ALICE/actions" '{"action":"suspend"}'           # not yourself
+tok "$TOKEN_A" call GET "/api/guilds/$GUILD/audit-log?action=member_ban" | jq -e --arg k "$KEV" '.entries[0].target_id == $k and (.entries[0].details | test("Outhouse Safety"))' >/dev/null
+
+step "safety: suspending an account signs it out everywhere, stops its bots and hides its profile"
+[ "$(xreg 10 '{"username":"sam","password":"password123","display_name":"Sam","birth_date":"1990-05-05"}')" = 200 ]
+TOKEN_S=$(jq -r .token /tmp/body); SAM=$(jq -r .user.id /tmp/body)
+tok "$TOKEN_S" call POST "/api/invites/$SINV2" >/dev/null
+SAMG=$(tok "$TOKEN_S" call POST /api/guilds '{"name":"Sam Place"}' | jq -r .id)
+SAMBOT=$(tok "$TOKEN_S" call POST "/api/guilds/$SAMG/bots" '{"name":"Sambot"}' | jq -r .token)
+curl -fsS -H "Authorization: Bot $SAMBOT" "$BASE/api/users/@me" >/dev/null
+SM1=$(tok "$TOKEN_S" call POST "/api/channels/$CHAN/messages" '{"content":"hello from sam"}' | jq -r .id)
+[ "$(report "$TOKEN_D" user "$SAM" harassment)" = 201 ]; RS=$(report_id user "$SAM")
+node ci/gateway_probe.mjs "$BASE" "$TOKEN_S" /tmp/gw-sam.jsonl 60 & SP3=$!
+wait_for /tmp/gw-sam.jsonl '.t == "READY"'
+act "$RS" '{"action":"suspend","days":7,"text":"Harassing people","hide_messages":true}' | jq -e '.subject.suspended and (.subject.suspended_label | startswith("until"))' >/dev/null
+wait_for /tmp/gw-sam.jsonl '.t == "INVALID_SESSION"'
+for i in $(seq 1 20); do kill -0 $SP3 2>/dev/null || break; sleep 0.25; done
+kill -0 $SP3 2>/dev/null && { echo "the suspended account's gateway stayed open"; exit 1; }
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN_S" "$BASE/api/users/@me")" = 401 ]
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bot $SAMBOT" "$BASE/api/users/@me")" = 401 ]
+code=$(curl -sS -o /tmp/body -w '%{http_code}' -H "Content-Type: application/json" -d '{"username":"sam","password":"password123"}' "$BASE/api/auth/login")
+[ "$code" = 403 ] && grep -q "suspended until" /tmp/body && grep -q "Harassing people" /tmp/body
+tok "$TOKEN_D" call GET "/api/channels/$CHAN/messages?limit=100" | jq -e --arg m "$SM1" 'all(.[]; .id != $m)' >/dev/null
+[ "$(tok "$TOKEN_D" status GET "/api/profiles/$SAM")" = 404 ]
+tok "$TOKEN_A" call GET "/api/profiles/$SAM" >/dev/null
+psql "$DATABASE_URL" -tAc "SELECT count(*) FROM sessions WHERE user_id = $SAM" | grep -qx 0
+# Permanently, then lifted: they sign in again; messages come back when shown again.
+act "$RS" '{"action":"suspend","text":"for good"}' | jq -e '.subject.suspended_label == "permanently"' >/dev/null
+act "$RS" '{"action":"unsuspend"}' | jq -e '.subject.suspended | not' >/dev/null
+TOKEN_S=$(TOKEN="" call POST /api/auth/login '{"username":"sam","password":"password123"}' | jq -r .token)
+tok "$TOKEN_S" call GET /api/users/@me >/dev/null
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bot $SAMBOT" "$BASE/api/users/@me")" = 401 ]   # reset after a suspension
+tok "$TOKEN_D" call GET "/api/channels/$CHAN/messages?limit=100" | jq -e --arg m "$SM1" 'all(.[]; .id != $m)' >/dev/null
+act "$RS" '{"action":"unhide_messages"}' >/dev/null
+tok "$TOKEN_D" call GET "/api/channels/$CHAN/messages?limit=100" | jq -e --arg m "$SM1" 'any(.[]; .id == $m)' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/log" | jq -e '[.entries[].action] | (index("suspend") and index("unsuspend") and index("quarantine") and index("delete_evidence") and index("export"))' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/users?q=sam" | jq -e --arg s "$SAM" 'any(.[]; .id == $s)' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/users/$SAM" | jq -e '(.reports | length) == 1 and .bots == 1 and (.ip_note | test("doesn'"'"'t record"))' >/dev/null
+tok "$TOKEN_A" call GET /api/safety/digest | jq -e 'any(.new_accounts[]; .username == "tia" and .age_bracket == "teen") and .reports_total >= 10' >/dev/null
+tok "$TOKEN_A" call GET /api/safety/summary | jq -e '.open >= 1' >/dev/null
+# A teen can report and block anyone.
+[ "$(report "$TOKEN_T" user "$ADAM" harassment)" = 201 ]
+tok "$TOKEN_T" call PUT "/api/users/@me/blocks/$ADAM" >/dev/null
 
 echo "Smoke test passed."
