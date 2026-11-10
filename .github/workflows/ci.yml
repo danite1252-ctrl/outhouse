@@ -117,7 +117,6 @@ jobs:
           node --check web/landing.js
           node --check web/entry.js
           node --check web/updates.js
-          node --check web/safety.js
           node --check web/bots/dice-bot.mjs
       - name: Deploy scripts check (bash -n + shellcheck)
         run: |

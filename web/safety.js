@@ -281,15 +281,15 @@ if (typeof openTarget === "function") {
 
 // ---------- small helpers ----------
 
-const when = (iso) => (iso ? new Date(iso).toLocaleString([], { day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" }) : "");
-const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
-const statusLabel = { open: "Open", review: "In review", closed: "Closed" };
+const scWhen = (iso) => (iso ? new Date(iso).toLocaleString([], { day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" }) : "");
+const scPlural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const SC_STATUS = { open: "Open", review: "In review", closed: "Closed" };
 
 function catChip(r) {
   return el("span", { class: `rp-chip cat-${r.category}` }, r.child_safety ? "⚠ " : "", r.category_label || REPORT_LABEL[r.category] || r.category);
 }
 
-function section(title, ...children) {
+function scSection(title, ...children) {
   return el("section", { class: "sc-section" }, el("h3", {}, title), ...children);
 }
 
@@ -369,7 +369,7 @@ function reportRow(r, onOpen) {
   return el("button", { class: `sc-row${r.child_safety ? " child" : ""}`, "data-report": r.id, onclick: () => onOpen(r.id) },
     el("div", { class: "sc-row-top" }, catChip(r),
       r.report_count > 1 ? el("span", { class: "sc-count", title: "Reports of this" }, `×${r.report_count}`) : null,
-      el("span", { class: "sc-when" }, when(r.created_at))),
+      el("span", { class: "sc-when" }, scWhen(r.created_at))),
     el("div", { class: "sc-row-who" },
       r.reported_user ? el("strong", {}, r.reported_user.display_name || "Deleted account") : null,
       r.reported_user?.username ? el("span", { class: "muted" }, ` @${r.reported_user.username}`) : null,
@@ -420,8 +420,8 @@ function snapshotView(d) {
       el("div", { class: "sc-meta" },
         el("strong", {}, m.author?.display_name || "?"), el("span", { class: "muted" }, ` @${m.author?.username || "?"}`),
         m.author?.bot ? el("span", { class: "bot-tag" }, "BOT") : null,
-        el("span", { class: "muted" }, ` · ${when(m.created_at)}`),
-        m.edited_at ? el("span", { class: "muted" }, ` · edited ${when(m.edited_at)}`) : null),
+        el("span", { class: "muted" }, ` · ${scWhen(m.created_at)}`),
+        m.edited_at ? el("span", { class: "muted" }, ` · edited ${scWhen(m.edited_at)}`) : null),
       el("div", { class: "muted small" }, r.place || "",
         s.place?.dm && s.place.participants?.length ? ` (${s.place.participants.join(", ")})` : ""),
       m.content ? el("div", { class: "sc-content" }, m.content) : el("div", { class: "muted small" }, "(no text)"),
@@ -429,23 +429,23 @@ function snapshotView(d) {
       m.forward ? el("div", { class: "muted small" }, `Forwarded from ${m.forward.author_display_name || "someone"}: ${m.forward.content || ""}`) : null,
       focus ? el("div", { class: "muted small" }, "This report is about one of its files.") : null,
       s.edits?.length ? el("div", { class: "sc-edits" }, el("strong", {}, "Edited after it was reported:"),
-        s.edits.map((e) => el("div", { class: "sc-edit" }, el("span", { class: "muted small" }, when(e.at)), el("div", {}, el("del", {}, e.before)), el("div", {}, e.after)))) : null,
-      s.deleted ? el("div", { class: "sc-deleted" }, `Deleted ${when(s.deleted.at)}${s.deleted.by === m.author?.id ? " by its author" : ""}. The snapshot above is what it said.`) : null,
+        s.edits.map((e) => el("div", { class: "sc-edit" }, el("span", { class: "muted small" }, scWhen(e.at)), el("div", {}, el("del", {}, e.before)), el("div", {}, e.after)))) : null,
+      s.deleted ? el("div", { class: "sc-deleted" }, `Deleted ${scWhen(s.deleted.at)}${s.deleted.by === m.author?.id ? " by its author" : ""}. The snapshot above is what it said.`) : null,
       !d.message_live && !s.deleted ? el("div", { class: "sc-deleted" }, "The message is gone now. The snapshot above is what it said.") : null,
       d.message_hidden ? el("div", { class: "sc-hidden-note" }, "🔒 Hidden from everyone pending your review.") : null,
     ];
   }
   if (s.kind === "user") {
     const u = s.user || {};
-    return [el("div", { class: "sc-meta" }, el("strong", {}, u.display_name), el("span", { class: "muted" }, ` @${u.username}`), el("span", { class: "muted" }, ` · joined ${when(u.created_at)}`)),
+    return [el("div", { class: "sc-meta" }, el("strong", {}, u.display_name), el("span", { class: "muted" }, ` @${u.username}`), el("span", { class: "muted" }, ` · joined ${scWhen(u.created_at)}`)),
       u.about_me ? el("div", { class: "sc-content" }, u.about_me) : el("div", { class: "muted small" }, "(no “about me”)")];
   }
   if (s.kind === "sticker" || s.kind === "emoji") {
-    return [el("div", { class: "sc-meta" }, el("strong", {}, `${s.kind === "sticker" ? "Sticker" : "Emoji"} :${s.art?.name || ""}:`), el("span", { class: "muted" }, ` in ${s.place?.guild_name || "?"} · added ${when(s.art?.created_at)}`))];
+    return [el("div", { class: "sc-meta" }, el("strong", {}, `${s.kind === "sticker" ? "Sticker" : "Emoji"} :${s.art?.name || ""}:`), el("span", { class: "muted" }, ` in ${s.place?.guild_name || "?"} · added ${scWhen(s.art?.created_at)}`))];
   }
   if (s.kind === "guild") {
     const g = s.guild || {};
-    return [el("div", { class: "sc-meta" }, el("strong", {}, g.name), el("span", { class: "muted" }, ` · ${plural(g.members || 0, "member")} · made ${when(g.created_at)}`)),
+    return [el("div", { class: "sc-meta" }, el("strong", {}, g.name), el("span", { class: "muted" }, ` · ${scPlural(g.members || 0, "member")} · made ${scWhen(g.created_at)}`)),
       g.channels?.length ? el("div", { class: "muted small" }, `Channels: ${g.channels.map((c) => `#${c}`).join(", ")}`) : null];
   }
   return [];
@@ -483,9 +483,9 @@ function contextView(d) {
   if (!ctx?.length) return null;
   const m = d.snapshot.message;
   const line = (c, reported) => el("div", { class: `sc-ctx${reported ? " reported" : ""}` },
-    el("span", { class: "sc-ctx-time" }, when(c.created_at)),
+    el("span", { class: "sc-ctx-time" }, scWhen(c.created_at)),
     el("strong", {}, c.author_name || c.author?.display_name || "?"),
-    el("span", { class: "sc-ctx-text" }, c.content || (c.files ? `(${plural(c.files, "file")})` : ""), c.files && c.content ? ` (+${plural(c.files, "file")})` : ""));
+    el("span", { class: "sc-ctx-text" }, c.content || (c.files ? `(${scPlural(c.files, "file")})` : ""), c.files && c.content ? ` (+${scPlural(c.files, "file")})` : ""));
   return el("div", { class: "sc-context" },
     ctx.filter((c) => c.before).map((c) => line(c, false)),
     line({ ...m, author_name: m.author?.display_name }, true),
@@ -499,7 +499,7 @@ function logView(entries) {
     el("div", { class: "audit-main" },
       el("div", { class: "audit-line" }, el("strong", {}, e.actor_name), el("span", { class: "audit-action" }, ` ${e.action.replace(/_/g, " ")}`), e.target_name ? el("span", { class: "audit-action" }, ` · ${e.target_name}`) : null),
       e.details ? el("div", { class: "audit-details" }, e.details) : null),
-    el("time", { class: "audit-time", title: new Date(e.created_at).toLocaleString() }, when(e.created_at)))));
+    el("time", { class: "audit-time", title: new Date(e.created_at).toLocaleString() }, scWhen(e.created_at)))));
 }
 
 // Someone's history and the account actions (used on reports and People).
@@ -514,7 +514,7 @@ function subjectView(u, act) {
       u.suspended ? el("span", { class: "rp-chip cat-child_safety" }, `Suspended ${u.suspended_label}`) : null),
     u.suspended && u.suspended_reason ? el("div", { class: "muted small" }, `Reason: ${u.suspended_reason}`) : null,
     el("div", { class: "status-grid" },
-      item("Account age", `${plural(u.account_age_days, "day")} (since ${new Date(u.created_at).toLocaleDateString()})`),
+      item("Account age", `${scPlural(u.account_age_days, "day")} (since ${new Date(u.created_at).toLocaleDateString()})`),
       item("Age group", ageSel),
       item("Messages (30 days)", String(u.messages_30d)),
       item("Hidden messages", String(u.hidden_messages), u.hidden_messages ? "warn" : ""),
@@ -523,7 +523,7 @@ function subjectView(u, act) {
       item("Bots they own", String(u.bots)),
       item("IP addresses", u.ip_note, "unknown")),
     el("div", { class: "muted small" }, "Outhouses: ", u.outhouses.length ? u.outhouses.map((o) => `${o.name}${o.owner ? " (owner)" : ""}${o.family ? " (family)" : ""}${o.timeout_until ? " (timed out)" : ""}`).join(", ") : "none"),
-    others.length ? el("div", { class: "muted small" }, "Reports: ", others.slice(0, 10).map((o) => `${o.category_label} (${statusLabel[o.status] || o.status}, ${new Date(o.created_at).toLocaleDateString()})`).join(" · ")) : null);
+    others.length ? el("div", { class: "muted small" }, "Reports: ", others.slice(0, 10).map((o) => `${o.category_label} (${SC_STATUS[o.status] || o.status}, ${new Date(o.created_at).toLocaleDateString()})`).join(" · ")) : null);
 }
 
 // Buttons for the account actions; `act(body, done)` posts one.
@@ -603,22 +603,22 @@ async function drawReportDetail(page, id, { back, stillMine, openUser }) {
     page.replaceChildren(
       el("div", { class: "sc-back" }, el("button", { class: "ghost", onclick: back }, "← All reports")),
       el("h2", {}, `Report: ${r.category_label}`),
-      el("div", { class: "sc-head" }, catChip(r), el("span", { class: `rp-chip st-${r.status}` }, statusLabel[r.status] || r.status),
-        el("span", { class: "muted small" }, `${plural(r.report_count, "report")} · first ${when(r.created_at)}${closed && r.closed_at ? ` · closed ${when(r.closed_at)}${r.closed_by_name ? ` by ${r.closed_by_name}` : ""}` : ""}`)),
+      el("div", { class: "sc-head" }, catChip(r), el("span", { class: `rp-chip st-${r.status}` }, SC_STATUS[r.status] || r.status),
+        el("span", { class: "muted small" }, `${scPlural(r.report_count, "report")} · first ${scWhen(r.created_at)}${closed && r.closed_at ? ` · closed ${scWhen(r.closed_at)}${r.closed_by_name ? ` by ${r.closed_by_name}` : ""}` : ""}`)),
       closed && r.resolution ? el("div", { class: "sc-row-res" }, `✓ ${r.resolution}`) : null,
       r.child_safety ? childSafetyNotice() : null,
-      section("What was reported", ...snapshotView(d)),
-      d.files.length ? section("Files", filesView(d, r.id)) : null,
-      d.snapshot?.context?.length ? section("Around it (10 messages before and after)", contextView(d)) : null,
-      section(`Reported by (${d.reporters.length})`,
+      scSection("What was reported", ...snapshotView(d)),
+      d.files.length ? scSection("Files", filesView(d, r.id)) : null,
+      d.snapshot?.context?.length ? scSection("Around it (10 messages before and after)", contextView(d)) : null,
+      scSection(`Reported by (${d.reporters.length})`,
         el("p", { class: "muted small", style: "margin:0" }, "Never shown to the person reported."),
         el("div", { class: "sc-reporters" }, d.reporters.map((p) => el("div", { class: "sc-reporter" },
           el("strong", {}, p.display_name || "Deleted account"), p.username ? el("span", { class: "muted" }, ` @${p.username}`) : null,
-          el("span", { class: "muted" }, ` · ${p.category_label} · ${when(p.created_at)}`),
+          el("span", { class: "muted" }, ` · ${p.category_label} · ${scWhen(p.created_at)}`),
           p.details ? el("div", { class: "sc-content small" }, p.details) : null)))),
-      d.subject ? section(`About ${d.subject.display_name}`, subjectView(d.subject, act),
+      d.subject ? scSection(`About ${d.subject.display_name}`, subjectView(d.subject, act),
         el("div", {}, el("button", { class: "link", onclick: () => openUser(d.subject.id) }, "Open their page in People"))) : null,
-      section("Actions",
+      scSection("Actions",
         el("div", { class: "sc-actions" },
           r.status === "open" ? el("button", { class: "ghost", onclick: () => act({ action: "review" }, "Marked as in review.") }, "Mark in review") : null,
           !closed ? el("button", { class: "primary sc-close", onclick: async () => {
@@ -642,7 +642,7 @@ async function drawReportDetail(page, id, { back, stillMine, openUser }) {
             if (await confirmBox("Delete the evidence files?", "Only do this once police (or the eSafety Commissioner) have what they need or have told you it's not needed. The files are deleted from the server for good; their names and SHA-256 hashes stay in the report.", "Delete files for good")) act({ action: "delete_evidence" }, "Evidence files deleted.");
           } }, "Delete evidence files…") : null),
         d.subject ? accountActions(d.subject, act, r.guild_id) : null),
-      section("Notes and history", noteBox(act), logView(d.log)));
+      scSection("Notes and history", noteBox(act), logView(d.log)));
   };
   render(d);
 }
@@ -663,7 +663,7 @@ async function drawPeople(page, { stillMine, openReport, userId }) {
       subjectView(u, act),
       accountActions(u, act),
       u.reports.length ? el("div", { class: "sc-list" }, u.reports.map((r) => el("button", { class: "sc-row", onclick: () => openReport(r.id) },
-        el("div", { class: "sc-row-top" }, el("span", { class: `rp-chip cat-${r.category}` }, r.category_label), el("span", { class: "sc-when" }, `${statusLabel[r.status] || r.status} · ${when(r.created_at)}`))))) : null,
+        el("div", { class: "sc-row-top" }, el("span", { class: `rp-chip cat-${r.category}` }, r.category_label), el("span", { class: "sc-when" }, `${SC_STATUS[r.status] || r.status} · ${scWhen(r.created_at)}`))))) : null,
       noteBox(act),
       logView(u.log));
     paint(u);
@@ -723,7 +723,7 @@ async function drawTeenSettings(page, stillMine) {
         o.family = !o.family;
         btn.classList.toggle("on", o.family);
       } });
-      return el("div", { class: "sc-toggle-row" }, el("div", {}, el("div", { class: "sc-toggle-title" }, o.name), el("div", { class: "muted small" }, plural(o.members, "member"))), btn);
+      return el("div", { class: "sc-toggle-row" }, el("div", {}, el("div", { class: "sc-toggle-title" }, o.name), el("div", { class: "muted small" }, scPlural(o.members, "member"))), btn);
     })));
 }
 
@@ -744,7 +744,7 @@ async function drawDigest(page, stillMine) {
     d.new_accounts.length ? el("div", { class: "sc-list" }, d.new_accounts.map((a) => el("div", { class: "sc-row static" },
       el("div", { class: "sc-row-who" }, el("strong", {}, a.display_name), el("span", { class: "muted" }, ` @${a.username}`),
         a.age_bracket === "teen" ? el("span", { class: "rp-chip" }, "Teen") : null,
-        el("span", { class: "sc-when" }, when(a.created_at)))))) : el("p", { class: "muted" }, "Nobody new this week."));
+        el("span", { class: "sc-when" }, scWhen(a.created_at)))))) : el("p", { class: "muted" }, "Nobody new this week."));
 }
 
 async function drawSafetyLog(page, stillMine) {
