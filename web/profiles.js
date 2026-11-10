@@ -105,6 +105,10 @@ profileCard = function (p, opts = {}) {
   }
   actions?.append(el("button", { class: "ghost pc-full", onclick: () => { closePopover(); openFullProfile(p.id); } }, "View full profile"));
   card.querySelector(".pc-cant")?.remove();
+  // Online or not (the server leaves it out where you mayn't see it).
+  if (typeof p.online === "boolean") {
+    card.querySelector(".pc-user")?.append(el("span", { class: `pc-status${p.online ? " on" : ""}` }, p.online ? " · Online" : " · Offline"));
+  }
   if (!p.bot) body?.append(cardMessageBox(p, card));
   return card;
 };

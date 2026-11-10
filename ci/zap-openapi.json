@@ -532,6 +532,61 @@
      }
     }
    }
+  },
+  "/api/users/{user}/profile/full": {
+   "get": {
+    "summary": "full profile",
+    "parameters": [
+     {
+      "name": "user",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "__USER__"
+      },
+      "example": "__USER__"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/users/{user}/contact": {
+   "get": {
+    "summary": "can I message them",
+    "parameters": [
+     {
+      "name": "user",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "__USER__"
+      },
+      "example": "__USER__"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/dms/requests": {
+   "get": {
+    "summary": "message requests",
+    "parameters": [],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
   }
  }
 }

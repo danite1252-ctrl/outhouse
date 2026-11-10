@@ -2637,3 +2637,6 @@ dialog.profile-page .settings-main { padding: 0 0 24px; }
   .mr-actions button { flex: 1 1 auto; }
 }
 dialog.profile-page .settings-page > h3 { margin: 4px 0 0; }
+.pc-status.on { color: var(--vacant); }
+.fp-names-top { text-shadow: 0 1px 3px #000c; }
+.fp-names-top .pc-badges { text-shadow: none; }
