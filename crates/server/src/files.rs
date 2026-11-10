@@ -41,6 +41,9 @@ pub async fn serve(
     if key.len() != 24 || !key.bytes().all(|b| b.is_ascii_alphanumeric()) {
         return Err(AppError::NotFound);
     }
+    if crate::api::safety::is_quarantined(&st.db, &key).await {
+        return Err(AppError::Removed);
+    }
     let row = sqlx::query_as::<_, FileRow>(
         "SELECT filename, content_type FROM attachments WHERE storage_key = $1
          UNION ALL
@@ -91,6 +94,10 @@ pub(crate) async fn send_file(
     filename: &str,
     content_type: &str,
 ) -> AppResult<Response> {
+    // Held back pending a safety review: nobody gets it (it stays on disk).
+    if crate::api::safety::is_quarantined(&st.db, key).await {
+        return Err(AppError::Removed);
+    }
     let data = tokio::fs::read(st.config.upload_dir.join(key))
         .await
         .map_err(|_| AppError::NotFound)?;

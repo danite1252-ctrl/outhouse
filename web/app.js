@@ -407,6 +407,10 @@ function showAuth() {
 function setAuthMode(isRegister) {
   registering = isRegister;
   $("display-name-field").hidden = !isRegister;
+  // Sign-ups give a date of birth (only the age group is kept).
+  $("birth-date-field").hidden = !isRegister;
+  $("birth-date-hint").hidden = !isRegister;
+  $("birth-date-field").querySelector("input").required = isRegister;
   $("auth-submit").textContent = isRegister ? "Create account" : "Sign in";
   $("auth-toggle").textContent = isRegister ? "Already have an account? Sign in" : "New here? Create an account";
   $("auth-subtitle").textContent = isRegister ? "Grab a spot out the back." : "Welcome back. Pull up a seat.";
@@ -421,6 +425,7 @@ $("auth-form").addEventListener("submit", async (e) => {
   const body = { username: form.get("username"), password: form.get("password") };
   if (registering) {
     body.display_name = form.get("display_name") || null;
+    body.birth_date = form.get("birth_date") || null;
     // Servers that only take sign-ups by invite (REGISTRATION=invite) check this.
     try { const invite = sessionStorage.getItem("outhouse_pending_invite"); if (invite) body.invite = invite; } catch { /* storage blocked */ }
   }
@@ -2826,6 +2831,8 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
     }
     if (state.siteOwner && typeof drawServerStatus === "function") {
       nav.append(el("h3", {}, "SERVER"), el("button", { class: activeTab === "status" ? "active" : "", onclick: () => draw("status") }, "Server status"));
+      // Safety reports from the whole server (safety.js).
+      if (typeof drawReportsTab === "function") nav.append(el("button", { class: activeTab === "reports" ? "active" : "", onclick: () => draw("reports") }, "Reports"));
     }
     const page = settingsPage(main);
     if (activeTab === "bans") return drawBans(page);
@@ -2835,6 +2842,7 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
     if (activeTab === "badges") return drawBadgeSettings(page);
     if (activeTab === "raids") return drawRaidSettings(page);
     if (activeTab === "status") return drawServerStatus(page);
+    if (activeTab === "reports") return drawReportsTab(page);
     if (activeTab === "integrations") return drawIntegrations(page);
     if (activeTab === "bots") return drawBots(page);
     if (activeTab === "emoji") return drawEmojiSettings(page);

@@ -23,6 +23,8 @@
     <p class="muted" id="auth-subtitle">Welcome back. Pull up a seat.</p>
     <label>Username<input name="username" autocomplete="username" required minlength="2" maxlength="32"></label>
     <label id="display-name-field" hidden>Display name<input name="display_name" maxlength="32" placeholder="What friends call you"></label>
+    <label id="birth-date-field" hidden>Date of birth<input name="birth_date" type="date" autocomplete="bday" min="1900-01-01"></label>
+    <p class="muted small auth-hint" id="birth-date-hint" hidden>Only used to work out your age group; the date itself isn't kept. You need to be 13 or older.</p>
     <label>Password<input name="password" type="password" autocomplete="current-password" required minlength="8"></label>
     <p class="error" id="auth-error" role="alert"></p>
     <button type="submit" class="primary" id="auth-submit">Sign in</button>
@@ -143,6 +145,7 @@
 <script src="voicemsg.js"></script>
 <script src="social.js"></script>
 <script src="updates.js"></script>
+<script src="safety.js"></script>
 <script src="entry.js"></script>
 </body>
 </html>

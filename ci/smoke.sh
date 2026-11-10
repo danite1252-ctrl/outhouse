@@ -72,9 +72,9 @@ fail_call() {
 enc() { jq -rn --arg v "$1" '$v|@uri'; }
 
 step "register two users"
-A=$(call POST /api/auth/register '{"username":"alice","password":"password123","display_name":"Alice"}')
+A=$(call POST /api/auth/register '{"username":"alice","password":"password123","birth_date":"1990-01-01","display_name":"Alice"}')
 TOKEN_A=$(jq -r .token <<<"$A"); ALICE=$(jq -r .user.id <<<"$A")
-B=$(call POST /api/auth/register '{"username":"bob","password":"password123","display_name":"Bob"}')
+B=$(call POST /api/auth/register '{"username":"bob","password":"password123","birth_date":"1990-01-01","display_name":"Bob"}')
 TOKEN_B=$(jq -r .token <<<"$B"); BOB=$(jq -r .user.id <<<"$B")
 # Signing out also closes that session's open gateway connection (checked
 # in the security section near the end; the server re-checks every 30 s).
@@ -182,7 +182,7 @@ TOKEN=$TOKEN_B
 call GET "/api/guilds/$GUILD/search?q=loot+council" | jq -e '.total == 0' >/dev/null
 call GET "/api/users/@me/unread" | jq -e --arg id "$SECRET" '[.channels[] | select(.channel_id == $id)] | length == 0' >/dev/null
 TOKEN=$TOKEN_A
-OUT=$(call POST /api/auth/register '{"username":"outsider","password":"password123"}' | jq -r .token)
+OUT=$(call POST /api/auth/register '{"username":"outsider","password":"password123","birth_date":"1990-01-01"}' | jq -r .token)
 TOKEN=$OUT; fail_call GET "/api/guilds/$GUILD/search?q=onyxia"; TOKEN=$TOKEN_A
 
 step "unread and mention counts"
@@ -274,7 +274,7 @@ fail_call GET "/api/channels/$PINS/messages?before=notanid"
 
 step "direct messages"
 TOKEN=$OUT; OUTSIDER=$(call GET /api/users/@me | jq -r .id); TOKEN=$TOKEN_A
-C3=$(call POST /api/auth/register '{"username":"carl","password":"password123","display_name":"Carl"}')
+C3=$(call POST /api/auth/register '{"username":"carl","password":"password123","birth_date":"1990-01-01","display_name":"Carl"}')
 TOKEN_C=$(jq -r .token <<<"$C3"); CARL=$(jq -r .user.id <<<"$C3")
 TOKEN=$TOKEN_C; call POST "/api/invites/$CODE" >/dev/null
 call POST /api/push/subscriptions "$(curl -fsS "$PUSH/new/carl")" >/dev/null; TOKEN=$TOKEN_A
@@ -1691,7 +1691,7 @@ TOKEN=$TOKEN_B; DELB=$(call POST "/api/channels/$CHAN/messages" '{"content":"bob
 call DELETE "/api/channels/$CHAN/messages/$DEL" >/dev/null    # your own: not logged
 call DELETE "/api/channels/$CHAN/messages/$DELB" >/dev/null   # someone else's: logged
 call GET "/api/guilds/$GUILD/audit-log?action=message_delete" | jq -e --arg b "$BOB" '.entries[0].target_id == $b and (.entries[0].details | contains("bob says rude words")) and all(.entries[]; .details | contains("“rude words”") | not)' >/dev/null
-KR=$(call POST /api/auth/register '{"username":"kickme","password":"password123"}')
+KR=$(call POST /api/auth/register '{"username":"kickme","password":"password123","birth_date":"1990-01-01"}')
 TOKEN=$(jq -r .token <<<"$KR"); call POST "/api/invites/$CODE" >/dev/null; TOKEN=$TOKEN_A
 KICKED=$(jq -r .user.id <<<"$KR")
 call DELETE "/api/guilds/$GUILD/members/$KICKED" >/dev/null
@@ -2157,7 +2157,7 @@ fail_call GET "/api/invites/..%2Fetc"
 fail_call POST "/api/invites/$C1"
 IU=()
 for n in 1 2 3; do
-  R=$(call POST /api/auth/register "{\"username\":\"invitee$n\",\"password\":\"password123\",\"display_name\":\"Invitee $n\"}")
+  R=$(call POST /api/auth/register "{\"username\":\"invitee$n\",\"password\":\"password123\",\"birth_date\":\"1990-01-01\",\"display_name\":\"Invitee $n\"}")
   IU+=("$(jq -r .token <<<"$R")")
 done
 TOKEN=${IU[0]}; call POST "/api/invites/$C1" | jq -e --arg g "$IGUILD" '.id == $g' >/dev/null
@@ -2654,7 +2654,7 @@ kill $GW_LOGOUT_PID 2>/dev/null || true
 
 step "security: sign-in brute-force limits (per account and per address)"
 TOKEN=""
-call POST /api/auth/register '{"username":"lockme","password":"password123"}' >/dev/null
+call POST /api/auth/register '{"username":"lockme","password":"password123","birth_date":"1990-01-01"}' >/dev/null
 xff_login() { # xff_login IP USER PASSWORD -> HTTP status
   curl -sS -o /tmp/body -w "%{http_code}" -H "Content-Type: application/json" -H "X-Forwarded-For: $1" \
     -d '{"username":"'"$2"'","password":"'"$3"'"}' "$BASE/api/auth/login"
@@ -2678,11 +2678,11 @@ code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Content-Type: application/jso
 step "security: sign-up and invite look-up limits"
 for i in $(seq 1 20); do
   code=$(curl -sS -o /dev/null -w "%{http_code}" -H "Content-Type: application/json" -H "X-Forwarded-For: 203.0.113.60" \
-    -d '{"username":"!","password":"password123"}' "$BASE/api/auth/register")
+    -d '{"username":"!","password":"password123","birth_date":"1990-01-01"}' "$BASE/api/auth/register")
   [ "$code" = 400 ]
 done
 code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Content-Type: application/json" -H "X-Forwarded-For: 203.0.113.60" \
-  -d '{"username":"toomany","password":"password123"}' "$BASE/api/auth/register")
+  -d '{"username":"toomany","password":"password123","birth_date":"1990-01-01"}' "$BASE/api/auth/register")
 [ "$code" = 429 ] || { echo "sign-up limit: $code"; cat /tmp/body; exit 1; }
 for i in $(seq 1 120); do
   code=$(curl -sS -o /dev/null -w "%{http_code}" -H "X-Forwarded-For: 203.0.113.70" "$BASE/api/invites/zzzz$i")
@@ -2705,16 +2705,16 @@ for mode in invite closed; do
   R="http://127.0.0.1:$PORT"
   curl -fsS "$R/api/auth/registration" | jq -e --arg m "$mode" '.mode == $m' >/dev/null
   reg() { curl -sS -o /tmp/body -w "%{http_code}" -H "Content-Type: application/json" -d "$1" "$R/api/auth/register"; }
-  [ "$(reg '{"username":"reg'"$mode"'1","password":"password123"}')" = 403 ] || { echo "$mode: signed up without an invite"; cat /tmp/body; exit 1; }
-  [ "$(reg '{"username":"reg'"$mode"'2","password":"password123","invite":"nope1234"}')" = 403 ]
+  [ "$(reg '{"username":"reg'"$mode"'1","password":"password123","birth_date":"1990-01-01"}')" = 403 ] || { echo "$mode: signed up without an invite"; cat /tmp/body; exit 1; }
+  [ "$(reg '{"username":"reg'"$mode"'2","password":"password123","birth_date":"1990-01-01","invite":"nope1234"}')" = 403 ]
   if [ "$mode" = invite ]; then
     grep -q "need an invite" /tmp/body
-    [ "$(reg '{"username":"reginvite3","password":"password123","invite":"'"$REG_INV"'"}')" = 200 ] || { cat /tmp/body; exit 1; }
+    [ "$(reg '{"username":"reginvite3","password":"password123","birth_date":"1990-01-01","invite":"'"$REG_INV"'"}')" = 200 ] || { cat /tmp/body; exit 1; }
     T3=$(jq -r .token /tmp/body)
     curl -fsS -X POST -H "Authorization: Bearer $T3" "$R/api/invites/$REG_INV" | jq -e --arg g "$GUILD" '.id == $g' >/dev/null
   else
     grep -q "closed" /tmp/body
-    [ "$(reg '{"username":"regclosed3","password":"password123","invite":"'"$REG_INV"'"}')" = 403 ]
+    [ "$(reg '{"username":"regclosed3","password":"password123","birth_date":"1990-01-01","invite":"'"$REG_INV"'"}')" = 403 ]
   fi
   # Signing in still works.
   curl -fsS -H "Content-Type: application/json" -d '{"username":"bob","password":"password123"}' "$R/api/auth/login" >/dev/null
@@ -2895,7 +2895,7 @@ TOKEN=$TOKEN_A
 AM=$(call POST "/api/guilds/$GUILD/channels" '{"name":"automod-test"}' | jq -r .id)
 AML=$(call POST "/api/guilds/$GUILD/channels" '{"name":"mod-log"}' | jq -r .id)
 call GET "/api/channels/$AM/automod" | jq -e '(.word_filter | not) and (.spam_filter | not) and .exempt_moderators and .use_default_words and .whole_word' >/dev/null
-DORA=$(TOKEN="" call POST /api/auth/register '{"username":"dora","password":"password123","display_name":"Dora"}')
+DORA=$(TOKEN="" call POST /api/auth/register '{"username":"dora","password":"password123","birth_date":"1990-01-01","display_name":"Dora"}')
 TOKEN_D=$(jq -r .token <<<"$DORA"); DORA_ID=$(jq -r .user.id <<<"$DORA")
 AMINV=$(call POST "/api/guilds/$GUILD/invites" | jq -r .code)
 TOKEN=$TOKEN_D; call POST "/api/invites/$AMINV" >/dev/null

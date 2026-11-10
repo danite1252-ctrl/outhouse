@@ -197,7 +197,7 @@ pub async fn search(
     }
 
     let mut qb = QueryBuilder::<Postgres>::new(
-        "SELECT m.id, count(*) OVER () AS total FROM messages m WHERE m.channel_id = ANY(",
+        "SELECT m.id, count(*) OVER () AS total FROM messages m WHERE NOT m.safety_hidden AND m.channel_id = ANY(",
     );
     qb.push_bind(channel_ids);
     qb.push(")");

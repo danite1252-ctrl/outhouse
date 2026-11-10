@@ -42,8 +42,8 @@ def wait_for_server():
 
 wait_for_server()
 suffix = str(int(time.time()))[-6:]
-carol = api("POST", "/api/auth/register", {"username": "carolui", "password": "password123", "display_name": "Carol"})
-dave = api("POST", "/api/auth/register", {"username": f"dave{suffix}", "password": "password123", "display_name": "Dave"})
+carol = api("POST", "/api/auth/register", {"username": "carolui", "password": "password123", "birth_date": "1990-01-01", "display_name": "Carol"})
+dave = api("POST", "/api/auth/register", {"username": f"dave{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": "Dave"})
 TOKEN = carol["token"]
 guild = api("POST", "/api/guilds", {"name": "UI Test Guild"}, TOKEN)
 chan = api("POST", f"/api/guilds/{guild['id']}/channels", {"name": "raids"}, TOKEN)
@@ -119,7 +119,7 @@ def upload(path, fields, files, token):
         return json.loads(res.read().decode())
 
 
-erin = api("POST", "/api/auth/register", {"username": f"erin{suffix}", "password": "password123", "display_name": "Erin"})
+erin = api("POST", "/api/auth/register", {"username": f"erin{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": "Erin"})
 api("POST", f"/api/invites/{code}", None, erin["token"])
 upload(f"/api/guilds/{guild['id']}/emojis", {"name": "pog"}, {"file": ("pog.png", make_png(), "image/png")}, TOKEN)
 api("POST", f"/api/channels/{chan['id']}/messages", {"content": "Who's bringing fire resist gear?"}, dave["token"])
@@ -199,7 +199,7 @@ def make_wav(seconds, rate=8000):
             + b"data" + struct.pack("<I", n) + data)
 
 
-frank = api("POST", "/api/auth/register", {"username": f"frank{suffix}", "password": "password123", "display_name": "Frank"})
+frank = api("POST", "/api/auth/register", {"username": f"frank{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": "Frank"})
 api("POST", f"/api/invites/{code}", None, frank["token"])
 FRANK = frank["user"]["id"]
 comms = api("POST", f"/api/guilds/{guild['id']}/channels", {"name": "Raid comms", "kind": 2}, TOKEN)
@@ -1712,9 +1712,9 @@ with sync_playwright() as p:
     # ---- Raid managers by role, characters on sign-ups, invite lists ----
     raid_leader = api("POST", f"/api/guilds/{G}/roles", {"name": "Raid leader", "color": 0x4F7FD0}, TOKEN)
     api("PUT", f"/api/guilds/{G}/members/{DAVE}/roles/{raid_leader['id']}", None, TOKEN)
-    gus = api("POST", "/api/auth/register", {"username": f"gus{suffix}", "password": "password123", "display_name": "Gus"})
-    hank = api("POST", "/api/auth/register", {"username": f"hank{suffix}", "password": "password123", "display_name": "Hank"})
-    ivy = api("POST", "/api/auth/register", {"username": f"ivy{suffix}", "password": "password123", "display_name": "Ivy"})
+    gus = api("POST", "/api/auth/register", {"username": f"gus{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": "Gus"})
+    hank = api("POST", "/api/auth/register", {"username": f"hank{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": "Hank"})
+    ivy = api("POST", "/api/auth/register", {"username": f"ivy{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": "Ivy"})
     for u in (gus, hank, ivy):
         api("POST", f"/api/invites/{code}", None, u["token"])
     hammer = api("POST", "/api/users/@me/characters", {"name": "Hammer", "last_name": "Stonefist", "race": "Dwarf", "class": "Paladin", "level": 60}, hank["token"])
@@ -2582,8 +2582,8 @@ with sync_playwright() as p:
     # ---- Friends, voice messages, stickers, forwarding, scheduled messages ----
     soc = api("POST", f"/api/guilds/{G}/channels", {"name": "hangout"}, TOKEN)
     SOC = soc["id"]
-    gwen = api("POST", "/api/auth/register", {"username": f"gwen{suffix}", "password": "password123", "display_name": "Gwen"})
-    grim = api("POST", "/api/auth/register", {"username": f"grim{suffix}", "password": "password123", "display_name": "Grim"})
+    gwen = api("POST", "/api/auth/register", {"username": f"gwen{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": "Gwen"})
+    grim = api("POST", "/api/auth/register", {"username": f"grim{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": "Grim"})
     api("POST", f"/api/invites/{code}", None, grim["token"])
     GRIM = grim["user"]["id"]
     # Dave and Carol are friends, Erin asked Carol, Carol asked Frank, Carol blocked Grim.
@@ -2899,7 +2899,7 @@ with sync_playwright() as p:
     rc_users = []
     for i, (name, char, cls, spec, role) in enumerate(RC_PEOPLE):
         ip = f"198.18.{1 + i // 12}.{10 + i}"
-        u = api_from(ip, "POST", "/api/auth/register", {"username": f"rc{i}x{suffix}", "password": "password123", "display_name": name})
+        u = api_from(ip, "POST", "/api/auth/register", {"username": f"rc{i}x{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": name})
         api_from(ip, "POST", f"/api/invites/{rcode}", None, u["token"])
         cid = None
         if char:

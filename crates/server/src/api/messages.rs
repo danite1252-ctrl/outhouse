@@ -204,7 +204,7 @@ pub(crate) async fn hydrate(db: &PgPool, rows: Vec<MessageRow>) -> AppResult<Vec
              JOIN users u ON u.id = m.author_id
              JOIN channels ch ON ch.id = m.channel_id
              LEFT JOIN guild_members gm ON gm.guild_id = ch.guild_id AND gm.user_id = m.author_id
-             WHERE m.id = ANY($1)",
+             WHERE m.id = ANY($1) AND NOT m.safety_hidden",
         )
         .bind(&reply_ids[..])
         .fetch_all(db)
@@ -356,7 +356,8 @@ pub(crate) async fn hydrate(db: &PgPool, rows: Vec<MessageRow>) -> AppResult<Vec
 }
 
 pub async fn fetch_message(db: &PgPool, message_id: i64) -> AppResult<Message> {
-    let sql = format!("{MESSAGE_SELECT} WHERE m.id = $1");
+    // Messages hidden pending a safety review are gone for everyone.
+    let sql = format!("{MESSAGE_SELECT} WHERE m.id = $1 AND NOT m.safety_hidden");
     let row = sqlx::query_as::<_, MessageRow>(&sql)
         .bind(message_id)
         .fetch_optional(db)
@@ -638,11 +639,13 @@ pub async fn list(
         let older_sql = format!(
             "{MESSAGE_SELECT}
              WHERE m.channel_id = $1 AND m.id <= $2 AND m.thread_id IS NOT DISTINCT FROM $4::BIGINT
+               AND NOT m.safety_hidden
              ORDER BY m.id DESC LIMIT $3"
         );
         let newer_sql = format!(
             "{MESSAGE_SELECT}
              WHERE m.channel_id = $1 AND m.id > $2 AND m.thread_id IS NOT DISTINCT FROM $4::BIGINT
+               AND NOT m.safety_hidden
              ORDER BY m.id ASC LIMIT $3"
         );
         let newer_count = limit / 2;
@@ -667,7 +670,7 @@ pub async fn list(
     let sql = format!(
         "{MESSAGE_SELECT}
          WHERE m.channel_id = $1 AND ($2::BIGINT IS NULL OR m.id < $2)
-           AND m.thread_id IS NOT DISTINCT FROM $4::BIGINT
+           AND m.thread_id IS NOT DISTINCT FROM $4::BIGINT AND NOT m.safety_hidden
          ORDER BY m.id DESC LIMIT $3"
     );
     let mut rows = sqlx::query_as::<_, MessageRow>(&sql)
@@ -783,6 +786,18 @@ pub(crate) async fn check_dm_blocks(
         return Err(AppError::Refused(
             "You can't message this person right now.".into(),
         ));
+    }
+    // Teen protections apply to existing DMs too (e.g. after the site
+    // owner sets someone's age group).
+    let other: Option<i64> = sqlx::query_scalar(
+        "SELECT user_id FROM dm_participants WHERE channel_id = $1 AND user_id <> $2 LIMIT 1",
+    )
+    .bind(access.channel.id)
+    .bind(user_id)
+    .fetch_optional(&st.db)
+    .await?;
+    if let Some(other) = other {
+        crate::api::safety::check_teen_dm(&st.db, user_id, other).await?;
     }
     Ok(())
 }
@@ -1292,6 +1307,10 @@ fn clean_waveform(raw: &str) -> Option<String> {
 /// (a forwarded message shares its original's files).
 pub(crate) async fn remove_unused_files(st: &AppState, keys: Vec<String>) {
     for key in keys {
+        // Evidence for a safety report stays until the report is closed.
+        if crate::api::safety::file_retained(&st.db, &key).await {
+            continue;
+        }
         let used: bool =
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM attachments WHERE storage_key = $1)")
                 .bind(&key)
@@ -1373,6 +1392,9 @@ pub async fn edit(
     .execute(&st.db)
     .await?;
     if text_changed {
+        if original.content != content {
+            crate::api::safety::note_edit(&st, message_id, &original.content, &content).await;
+        }
         sqlx::query("DELETE FROM message_embeds WHERE message_id = $1")
             .bind(message_id)
             .execute(&st.db)
@@ -1413,6 +1435,7 @@ pub async fn delete(
         .bind(message_id)
         .execute(&st.db)
         .await?;
+    crate::api::safety::note_deleted(&st, message_id, user.id).await;
     remove_unused_files(&st, keys).await;
     if msg.author_id != user.id {
         crate::audit::Entry::new(access.channel.guild_id, user.id, "message_delete")
@@ -1606,7 +1629,7 @@ pub async fn list_pins(
     access.require(p::READ_HISTORY)?;
     let sql = format!(
         "{MESSAGE_SELECT}
-         WHERE m.channel_id = $1 AND m.pinned_at IS NOT NULL
+         WHERE m.channel_id = $1 AND m.pinned_at IS NOT NULL AND NOT m.safety_hidden
          ORDER BY m.pinned_at DESC, m.id DESC LIMIT 100"
     );
     let rows = sqlx::query_as::<_, MessageRow>(&sql)
