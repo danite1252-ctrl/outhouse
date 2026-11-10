@@ -49,6 +49,14 @@ pub async fn get(
     .fetch_optional(&st.db)
     .await?
     .ok_or(AppError::NotFound)?;
+    // Suspended accounts' profiles are hidden (except from the site owner).
+    if row.id != user.id
+        && super::safety::hidden_profiles(&st.db, user.id, &[row.id])
+            .await?
+            .contains(&row.id)
+    {
+        return Err(AppError::NotFound);
+    }
     Ok(Json(Profile {
         id: row.id,
         username: row.username,
@@ -114,7 +122,10 @@ async fn replace_image(
             .bind(&old)
             .execute(&st.db)
             .await?;
-        let _ = tokio::fs::remove_file(st.config.upload_dir.join(&old)).await;
+        // Kept while a safety report refers to it.
+        if !crate::api::safety::file_retained(&st.db, &old).await {
+            let _ = tokio::fs::remove_file(st.config.upload_dir.join(&old)).await;
+        }
     }
     refresh_my_guilds(st, user_id).await
 }

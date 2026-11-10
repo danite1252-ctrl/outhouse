@@ -83,6 +83,8 @@ pub async fn check_can_dm(db: &PgPool, me: i64, other: i64) -> AppResult<()> {
             "You can't message this person right now.".into(),
         ));
     }
+    // Teen protections (see api::safety).
+    super::safety::check_teen_dm(db, me, other).await?;
     let privacy: Option<String> = sqlx::query_scalar("SELECT dm_privacy FROM users WHERE id = $1")
         .bind(other)
         .fetch_optional(db)
@@ -325,6 +327,9 @@ async fn befriend(st: &AppState, me: i64, me_bot: bool, other: i64) -> AppResult
         return relationship(st, me, other, "outgoing").await;
     }
 
+    // Teens only get requests from people they share an outhouse with who
+    // are friends of friends or in a family outhouse (api::safety).
+    super::safety::check_teen_friend_request(&st.db, me, other).await?;
     let allowed = match privacy.as_str() {
         "nobody" => false,
         "shared" => {

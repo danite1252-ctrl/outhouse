@@ -1330,6 +1330,10 @@ pub struct RegisterRequest {
     /// (`REGISTRATION=invite`).
     #[serde(default)]
     pub invite: Option<String>,
+    /// `YYYY-MM-DD`. Only the age group worked out from it is kept (13–17
+    /// or 18+); under 13s can't sign up.
+    #[serde(default)]
+    pub birth_date: Option<String>,
 }
 
 /// Change your own account. Leave out anything you're not changing.
