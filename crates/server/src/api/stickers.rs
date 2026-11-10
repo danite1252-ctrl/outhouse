@@ -276,6 +276,15 @@ pub async fn create(
         let _ = tokio::fs::remove_file(st.config.upload_dir.join(&key)).await;
         return Err(e.into());
     }
+    crate::api::detector::track_upload(
+        &st,
+        crate::api::detector::KIND_STICKER,
+        &key,
+        content_type,
+        user.id,
+        Some(guild_id),
+    )
+    .await;
     st.dispatch(
         Audience::Guild(guild_id),
         ServerEvent::StickersChanged { guild_id },
@@ -400,7 +409,7 @@ pub async fn serve(State(st): State<AppState>, Path(id): Path<String>) -> AppRes
             .fetch_optional(&st.db)
             .await?
             .ok_or(AppError::NotFound)?;
-    crate::files::send_file(&st, &key, &name, &content_type).await
+    crate::files::send_public_file(&st, &key, &name, &content_type).await
 }
 
 #[derive(Deserialize)]

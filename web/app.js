@@ -2907,6 +2907,8 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
       nav.append(el("h3", {}, "SERVER"), el("button", { class: activeTab === "status" ? "active" : "", onclick: () => draw("status") }, "Server status"));
       // Safety reports from the whole server (safety.js).
       if (typeof drawReportsTab === "function") nav.append(el("button", { class: activeTab === "reports" ? "active" : "", onclick: () => draw("reports") }, "Reports"));
+      // This outhouse's image detector settings (detector.js).
+      if (typeof drawDetectorGuildSettings === "function") nav.append(el("button", { class: activeTab === "detector" ? "active" : "", onclick: () => draw("detector") }, "Image detector"));
     }
     const page = settingsPage(main);
     if (activeTab === "bans") return drawBans(page);
@@ -2917,6 +2919,7 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
     if (activeTab === "raids") return drawRaidSettings(page);
     if (activeTab === "status") return drawServerStatus(page);
     if (activeTab === "reports") return drawReportsTab(page);
+    if (activeTab === "detector") return drawDetectorGuildSettings(page);
     if (activeTab === "integrations") return drawIntegrations(page);
     if (activeTab === "bots") return drawBots(page);
     if (activeTab === "emoji") return drawEmojiSettings(page);

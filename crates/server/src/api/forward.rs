@@ -171,6 +171,13 @@ pub async fn forward(
         targets.push(access);
     }
 
+    // Pictures still being checked or held can't go anywhere yet; flagged
+    // ones only to other adult-only 18+ channels.
+    let keys: Vec<String> = files.iter().map(|f| f.storage_key.clone()).collect();
+    let channels: Vec<&outhouse_common::models::Channel> =
+        targets.iter().map(|t| &t.channel).collect();
+    crate::api::detector::check_forward(&st, &keys, &channels).await?;
+
     let mut sent = Vec::with_capacity(targets.len());
     for access in &targets {
         let reused = files

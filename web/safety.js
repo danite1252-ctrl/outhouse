@@ -351,7 +351,9 @@ async function openSafetyConsole(tab = "open", reportId = null) {
       el("h3", {}, "REPORTS"),
       navBtn("open", "Open", id ? null : key), navBtn("review", "In review", id ? null : key), navBtn("closed", "Closed", id ? null : key),
       el("h3", {}, "SAFETY"),
-      navBtn("people", "People", key), navBtn("teens", "Teen protections", key), navBtn("digest", "This week", key),
+      navBtn("people", "People", key), navBtn("teens", "Teen protections", key),
+      typeof drawDetectorSettings === "function" ? navBtn("detector", "Image detector", key) : null,
+      navBtn("digest", "This week", key),
       navBtn("log", "Safety log", key), navBtn("police", "Reporting to police", key));
     const page = settingsPage(main);
     const stillMine = () => mine === drawing;
@@ -362,6 +364,7 @@ async function openSafetyConsole(tab = "open", reportId = null) {
       return drawPeople(page, { stillMine, openReport: (rid) => draw("open", rid), userId });
     }
     if (key === "teens") return drawTeenSettings(page, stillMine);
+    if (key === "detector" && typeof drawDetectorSettings === "function") return drawDetectorSettings(page, stillMine);
     if (key === "digest") return drawDigest(page, stillMine);
     if (key === "log") return drawSafetyLog(page, stillMine);
     if (key === "police") return drawPoliceGuide(page);
@@ -611,13 +614,15 @@ async function drawReportDetail(page, id, { back, stillMine, openUser }) {
       el("div", { class: "sc-back" }, el("button", { class: "ghost", onclick: back }, "← All reports")),
       el("h2", {}, `Report: ${r.category_label}`),
       el("div", { class: "sc-head" }, catChip(r), el("span", { class: `rp-chip st-${r.status}` }, SC_STATUS[r.status] || r.status),
-        el("span", { class: "muted small" }, `${scPlural(r.report_count, "report")} · first ${scWhen(r.created_at)}${closed && r.closed_at ? ` · closed ${scWhen(r.closed_at)}${r.closed_by_name ? ` by ${r.closed_by_name}` : ""}` : ""}`)),
+        el("span", { class: "muted small" }, `${r.source === "detector" ? "Flagged by the image detector" : scPlural(r.report_count, "report")} · first ${scWhen(r.created_at)}${closed && r.closed_at ? ` · closed ${scWhen(r.closed_at)}${r.closed_by_name ? ` by ${r.closed_by_name}` : ""}` : ""}`)),
       closed && r.resolution ? el("div", { class: "sc-row-res" }, `✓ ${r.resolution}`) : null,
       r.child_safety ? childSafetyNotice() : null,
+      // Pictures the image detector flagged (detector.js).
+      typeof detectorReportPanel === "function" ? detectorReportPanel(d, act) : null,
       scSection("What was reported", ...snapshotView(d)),
       d.files.length ? scSection("Files", filesView(d, r.id)) : null,
       d.snapshot?.context?.length ? scSection("Around it (10 messages before and after)", contextView(d)) : null,
-      scSection(`Reported by (${d.reporters.length})`,
+      r.source === "detector" && !d.reporters.length ? null : scSection(`Reported by (${d.reporters.length})`,
         el("p", { class: "muted small", style: "margin:0" }, "Never shown to the person reported."),
         el("div", { class: "sc-reporters" }, d.reporters.map((p) => el("div", { class: "sc-reporter" },
           el("strong", {}, p.display_name || "Deleted account"), p.username ? el("span", { class: "muted" }, ` @${p.username}`) : null,

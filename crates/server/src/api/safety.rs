@@ -414,6 +414,18 @@ async fn log(
     }
 }
 
+/// The safety log, for other modules (the image detector).
+pub(crate) async fn log_action(
+    st: &AppState,
+    actor: Option<i64>,
+    action: &str,
+    report_id: Option<i64>,
+    target_user: Option<i64>,
+    details: impl Into<String>,
+) {
+    log(st, actor, action, report_id, target_user, details).await
+}
+
 // ---- Owners and alerts ----------------------------------------------------------
 
 /// Everyone who counts as the site owner (see `is_site_owner`).
@@ -671,7 +683,7 @@ fn short(text: &str, max: usize) -> String {
 
 async fn message_target(
     st: &AppState,
-    reporter: i64,
+    reporter: Option<i64>,
     message_id: i64,
     focus_attachment: Option<i64>,
 ) -> AppResult<Target> {
@@ -690,8 +702,11 @@ async fn message_target(
     .fetch_optional(&st.db)
     .await?
     .ok_or(AppError::NotFound)?;
-    // You can only report what you can see (DMs: you're in it).
-    crate::perms::channel_access(&st.db, m.channel_id, reporter).await?;
+    // You can only report what you can see (DMs: you're in it). The image
+    // detector (no reporter) sees everything.
+    if let Some(reporter) = reporter {
+        crate::perms::channel_access(&st.db, m.channel_id, reporter).await?;
+    }
     let attachments = sqlx::query_as::<_, SnapAttachment>(
         "SELECT id, storage_key, filename, content_type, size FROM attachments
          WHERE message_id = $1 ORDER BY id",
@@ -818,8 +833,8 @@ struct SnapUser {
     created_at: DateTime<Utc>,
 }
 
-async fn user_target(st: &AppState, reporter: i64, user_id: i64) -> AppResult<Target> {
-    if user_id == reporter {
+async fn user_target(st: &AppState, reporter: Option<i64>, user_id: i64) -> AppResult<Target> {
+    if Some(user_id) == reporter {
         return Err(AppError::BadRequest("You can't report yourself.".into()));
     }
     let u = sqlx::query_as::<_, SnapUser>(
@@ -1028,7 +1043,7 @@ pub async fn create(
     .await?;
     // Check access every time (so a duplicate can't be used to probe).
     let target = match kind {
-        "message" => message_target(&st, user.id, req.target_id, None).await?,
+        "message" => message_target(&st, Some(user.id), req.target_id, None).await?,
         "attachment" => {
             let message_id: i64 =
                 sqlx::query_scalar("SELECT message_id FROM attachments WHERE id = $1")
@@ -1036,9 +1051,9 @@ pub async fn create(
                     .fetch_optional(&st.db)
                     .await?
                     .ok_or(AppError::NotFound)?;
-            message_target(&st, user.id, message_id, Some(req.target_id)).await?
+            message_target(&st, Some(user.id), message_id, Some(req.target_id)).await?
         }
-        "user" => user_target(&st, user.id, req.target_id).await?,
+        "user" => user_target(&st, Some(user.id), req.target_id).await?,
         "sticker" | "emoji" => art_target(&st, kind, req.target_id).await?,
         _ => guild_target(&st, user.id, req.target_id).await?,
     };
@@ -1239,6 +1254,124 @@ async fn quarantine(st: &AppState, report_id: i64) -> AppResult<()> {
     Ok(())
 }
 
+/// A picture the image detector flagged (see `api::detector`).
+pub(crate) struct DetectorTarget {
+    pub scan_id: i64,
+    pub storage_key: String,
+    /// attachment, avatar, banner, emoji or sticker
+    pub kind: String,
+    pub message_id: Option<i64>,
+    pub uploader_id: Option<i64>,
+    pub guild_id: Option<i64>,
+    /// "sexual" (flagged) or "other" (couldn't be checked)
+    pub category: &'static str,
+    /// Score, labels and the one-line summary, kept in the snapshot.
+    pub detector: Value,
+}
+
+/// The image detector flagged a picture: a report in the owner's console
+/// (source "detector", never child safety), with the usual snapshot.
+pub(crate) async fn detector_report(st: &AppState, t: DetectorTarget) -> AppResult<()> {
+    let target = match t.kind.as_str() {
+        super::detector::KIND_ATTACHMENT => {
+            let Some(message_id) = t.message_id else {
+                return Ok(());
+            };
+            let attachment: Option<i64> = sqlx::query_scalar(
+                "SELECT id FROM attachments WHERE message_id = $1 AND storage_key = $2 LIMIT 1",
+            )
+            .bind(message_id)
+            .bind(&t.storage_key)
+            .fetch_optional(&st.db)
+            .await?;
+            match message_target(st, None, message_id, attachment).await {
+                Ok(target) => target,
+                // The message is gone already: nothing left to hold.
+                Err(AppError::NotFound) => return Ok(()),
+                Err(e) => return Err(e),
+            }
+        }
+        super::detector::KIND_AVATAR | super::detector::KIND_BANNER => {
+            let Some(uploader) = t.uploader_id else {
+                return Ok(());
+            };
+            user_target(st, None, uploader).await?
+        }
+        kind @ (super::detector::KIND_EMOJI | super::detector::KIND_STICKER) => {
+            let table = if kind == "emoji" {
+                "emojis"
+            } else {
+                "stickers"
+            };
+            let id: Option<i64> =
+                sqlx::query_scalar(&format!("SELECT id FROM {table} WHERE storage_key = $1"))
+                    .bind(&t.storage_key)
+                    .fetch_optional(&st.db)
+                    .await?;
+            let Some(id) = id else {
+                return Ok(());
+            };
+            art_target(st, kind, id).await?
+        }
+        _ => return Ok(()),
+    };
+    let mut snapshot = target.snapshot;
+    snapshot["detector"] = t.detector.clone();
+    snapshot["detector"]["kind"] = json!(t.kind);
+    let id = st.ids.next_id();
+    let inserted: Option<i64> = sqlx::query_scalar(
+        "INSERT INTO reports (id, target_kind, target_id, category, priority, reported_user_id,
+                              guild_id, channel_id, message_id, snapshot, source, report_count)
+         VALUES ($1, 'file', $2, $3, $4, $5, $6, $7, $8, $9, 'detector', 0)
+         ON CONFLICT (target_kind, target_id) WHERE status <> 'closed' DO NOTHING
+         RETURNING id",
+    )
+    .bind(id)
+    .bind(t.scan_id)
+    .bind(t.category)
+    .bind(priority(t.category))
+    .bind(target.reported_user_id.or(t.uploader_id))
+    .bind(target.guild_id.or(t.guild_id))
+    .bind(target.channel_id)
+    .bind(target.message_id)
+    .bind(SqlJson(snapshot))
+    .fetch_optional(&st.db)
+    .await?;
+    if inserted.is_none() {
+        return Ok(()); // already reported
+    }
+    // Only the flagged file (the report keeps it on disk while it's open).
+    if let Some(f) = target.files.iter().find(|f| f.key == t.storage_key) {
+        let hash = sha256_of(st, &f.key).await;
+        sqlx::query(
+            "INSERT INTO report_files (report_id, storage_key, filename, content_type, size, sha256)
+             VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+        )
+        .bind(id)
+        .bind(&f.key)
+        .bind(&f.filename)
+        .bind(&f.content_type)
+        .bind(f.size)
+        .bind(hash)
+        .execute(&st.db)
+        .await?;
+    }
+    log(
+        st,
+        None,
+        "detector",
+        Some(id),
+        target.reported_user_id.or(t.uploader_id),
+        t.detector["summary"]
+            .as_str()
+            .unwrap_or("Flagged by the image detector")
+            .to_string(),
+    )
+    .await;
+    notify_owners(st, false);
+    Ok(())
+}
+
 /// A reported message was edited: keep what it said before and after.
 pub async fn note_edit(st: &AppState, message_id: i64, before: &str, after: &str) {
     let entry = json!([{ "at": Utc::now(), "before": before, "after": after }]);
@@ -1305,11 +1438,12 @@ struct ReportRow {
     reported_username: Option<String>,
     reported_name: Option<String>,
     closed_by_name: Option<String>,
+    source: String,
 }
 
 const REPORT_SELECT: &str = "SELECT r.id, r.target_kind, r.target_id, r.category, r.priority,
         r.status, r.reported_user_id, r.guild_id, r.message_id, r.snapshot, r.report_count,
-        r.created_at, r.updated_at, r.closed_at, r.resolution, r.evidence_released,
+        r.created_at, r.updated_at, r.closed_at, r.resolution, r.evidence_released, r.source,
         u.username AS reported_username, u.display_name AS reported_name,
         cb.display_name AS closed_by_name
     FROM reports r
@@ -1383,7 +1517,13 @@ fn report_json(r: &ReportRow) -> Value {
             "display_name": r.reported_name,
         })),
         "place": place_label(&r.snapshot.0),
-        "preview": preview(&r.snapshot.0),
+        "preview": if r.source == "detector" {
+            let line = r.snapshot.0["detector"]["summary"].as_str().unwrap_or("Flagged by the image detector");
+            format!("{line} · {}", preview(&r.snapshot.0))
+        } else {
+            preview(&r.snapshot.0)
+        },
+        "source": r.source,
     })
 }
 
@@ -1451,23 +1591,33 @@ async fn report_files(st: &AppState, r: &ReportRow) -> AppResult<Vec<Value>> {
     .fetch_all(&st.db)
     .await?;
     let child = r.category == CHILD_SAFETY;
-    Ok(files
-        .into_iter()
-        .map(|f| {
-            let on_disk = st.config.upload_dir.join(&f.storage_key).is_file();
-            json!({
-                "key": f.storage_key,
-                "filename": f.filename,
-                "content_type": f.content_type,
-                "size": f.size,
-                "sha256": f.sha256,
-                "quarantined": f.quarantined,
-                "on_disk": on_disk,
-                // Never for child-safety reports (or anything quarantined).
-                "viewable": !child && !f.quarantined && on_disk,
-            })
-        })
-        .collect())
+    let mut out = Vec::with_capacity(files.len());
+    for f in files {
+        let on_disk = st.config.upload_dir.join(&f.storage_key).is_file();
+        // The image detector's result, as metadata only (it scans files it
+        // hasn't seen, quarantined ones included; nothing is shown).
+        let detector = if on_disk {
+            super::detector::file_summary(st, &f.storage_key, &f.content_type).await
+        } else {
+            json!({ "status": "skipped", "summary": "Detector: the file is gone", "near_zero": false })
+        };
+        let teen_hold = !super::detector::owner_may_view(&st.db, &f.storage_key).await;
+        out.push(json!({
+            "key": f.storage_key,
+            "filename": f.filename,
+            "content_type": f.content_type,
+            "size": f.size,
+            "sha256": f.sha256,
+            "quarantined": f.quarantined,
+            "on_disk": on_disk,
+            // Never for child-safety reports (or anything quarantined), nor
+            // pictures the detector holds in a teen context.
+            "viewable": !child && !f.quarantined && on_disk && !teen_hold,
+            "teen_hold": teen_hold,
+            "detector": detector,
+        }));
+    }
+    Ok(out)
 }
 
 #[derive(sqlx::FromRow)]
@@ -1640,8 +1790,14 @@ async fn detail_json(st: &AppState, id: i64) -> AppResult<Value> {
         }
         None => false,
     };
+    let detector = if r.source == "detector" && r.target_kind == "file" {
+        super::detector::report_panel(&st.db, r.target_id).await
+    } else {
+        None
+    };
     Ok(json!({
         "report": report_json(&r),
+        "detector": detector,
         "snapshot": r.snapshot.0,
         "files": report_files(st, &r).await?,
         "message_live": message_live,
@@ -1690,6 +1846,10 @@ pub async fn report_file(
     .fetch_optional(&st.db)
     .await?;
     let (filename, content_type) = file.ok_or(AppError::NotFound)?;
+    // A picture held in a teen context is never shown, not even here.
+    if !super::detector::owner_may_view(&st.db, &key).await {
+        return Err(AppError::Held);
+    }
     crate::files::send_file(&st, &key, &filename, &content_type).await
 }
 
@@ -1856,6 +2016,41 @@ pub async fn report_action(
             )
             .await;
         }
+        "approve_file" | "keep_blurred" | "remove_file" => {
+            if r.target_kind != "file" {
+                return Err(AppError::BadRequest(
+                    "That's only for pictures the image detector flagged.".into(),
+                ));
+            }
+            let what = super::detector::owner_decision(&st, r.target_id, &req.action).await?;
+            if r.status != "closed" {
+                sqlx::query(
+                    "UPDATE reports SET status = 'closed', closed_at = now(), closed_by = $2,
+                            resolution = $3, updated_at = now()
+                     WHERE id = $1",
+                )
+                .bind(id)
+                .bind(me)
+                .bind(&what)
+                .execute(&st.db)
+                .await?;
+                let keys: Vec<String> =
+                    sqlx::query_scalar("SELECT storage_key FROM report_files WHERE report_id = $1")
+                        .bind(id)
+                        .fetch_all(&st.db)
+                        .await?;
+                super::messages::remove_unused_files(&st, keys).await;
+            }
+            log(
+                &st,
+                Some(me),
+                &req.action,
+                Some(id),
+                r.reported_user_id,
+                what,
+            )
+            .await;
+        }
         "delete_evidence" => {
             if r.status != "closed" {
                 return Err(AppError::BadRequest(
@@ -1876,7 +2071,10 @@ pub async fn report_action(
         }
     }
     // Doing something about an open report puts it in review.
-    if !matches!(req.action.as_str(), "dismiss" | "close" | "reopen" | "note") {
+    if !matches!(
+        req.action.as_str(),
+        "dismiss" | "close" | "reopen" | "note" | "approve_file" | "keep_blurred" | "remove_file"
+    ) {
         sqlx::query("UPDATE reports SET status = 'review', updated_at = now() WHERE id = $1 AND status = 'open'")
             .bind(id)
             .execute(&st.db)
@@ -2323,7 +2521,7 @@ async fn delete_message(st: &AppState, message_id: i64) -> AppResult<bool> {
 }
 
 /// Removes one (or every) file from a message; the report keeps them.
-async fn remove_attachments(
+pub(crate) async fn remove_attachments(
     st: &AppState,
     message_id: i64,
     attachment_id: Option<i64>,

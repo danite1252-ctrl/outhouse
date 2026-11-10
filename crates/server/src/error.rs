@@ -23,6 +23,9 @@ pub enum AppError {
     /// A file held back pending a safety review (HTTP 451, for everyone).
     #[error("This file was removed pending review.")]
     Removed,
+    /// A picture the image detector is holding back (HTTP 451 too).
+    #[error("This picture is held for review.")]
+    Held,
     #[error("{0}")]
     Conflict(String),
     /// Not allowed, with a reason to show (e.g. sign-ups are closed).
@@ -47,7 +50,7 @@ impl IntoResponse for AppError {
             }
             AppError::NotFound | AppError::Db(sqlx::Error::RowNotFound) => StatusCode::NOT_FOUND,
             AppError::Conflict(_) => StatusCode::CONFLICT,
-            AppError::Removed => StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS,
+            AppError::Removed | AppError::Held => StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS,
             AppError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
             AppError::Db(_) | AppError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };

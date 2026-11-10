@@ -3784,6 +3784,19 @@ with sync_playwright() as p:
         with urllib.request.urlopen(req) as res:
             return json.loads(res.read().decode())
 
+    def wait_checked(channel_id, message_id, token, want=None, timeout=30):
+        """Waits until the image detector has finished with a message's pictures."""
+        end = time.time() + timeout
+        while True:
+            msgs = api("GET", f"/api/channels/{channel_id}/messages?limit=50", None, token)
+            m = next((x for x in msgs if x["id"] == message_id), None)
+            holds = [(a.get("hold") or {}).get("state") for a in (m or {}).get("attachments", [])]
+            if m and ((want is None and "checking" not in holds) or (want is not None and want in holds)):
+                return m
+            if time.time() > end:
+                sys.exit(f"pictures in {message_id} never finished checking: {holds}")
+            time.sleep(0.3)
+
     teen_dob = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 15 * 365.25 * 86400))
     tess = reg_from("198.18.9.1", f"tess{suffix}", "Tess", teen_dob)
     gary = reg_from("198.18.9.2", f"gary{suffix}", "Gary")
@@ -3796,6 +3809,9 @@ with sync_playwright() as p:
     gary_msg = api("POST", f"/api/channels/{rep_chan['id']}/messages", {"content": "hey kid, want free gold? add me and DM me your password"}, gary["token"])
     cs_msg = upload(f"/api/channels/{rep_chan['id']}/messages/upload", {"content": "look what I found"},
                     {"files": ("photo.png", make_png(64), "image/png")}, gary["token"])
+    # A teen (Tess) can see this channel, so the picture shows once the image
+    # detector has checked it.
+    cs_msg = wait_checked(rep_chan["id"], cs_msg["id"], gary["token"])
     cs_url = cs_msg["attachments"][0]["url"]
     api("POST", f"/api/channels/{rep_chan['id']}/messages", {"content": "That's not ok, reporting it."}, hal["token"])
     api("POST", "/api/reports", {"target_kind": "message", "target_id": cs_msg["id"], "category": "child_safety",
@@ -3928,6 +3944,143 @@ with sync_playwright() as p:
     tp.wait_for_timeout(200)
     tp.screenshot(path=f"{SHOTS}/3508-teen-cant-message.png")
     tp.close()
+
+    # ---- The image detector (detector.js): held / checking / blurred pictures,
+    # the owner's console, settings, and the score line on child-safety reports.
+    # Test mode: a PNG with a marker tEXt chunk scores 0.97 (solid magenta, harmless).
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from detector_images import png as dt_png
+    flag_png = dt_png(240, 160, (255, 0, 255), "flag")
+    slow_png = dt_png(240, 160, (90, 90, 90), "slow")
+    calm_png = make_png(96)
+    dguild = api("POST", "/api/guilds", {"name": "Detector UI"}, TOKEN)
+    dchan = api("POST", f"/api/guilds/{dguild['id']}/channels", {"name": "pics"}, TOKEN)
+    dcode = api("POST", f"/api/guilds/{dguild['id']}/invites", None, TOKEN)["code"]
+    for u in (dave, erin):
+        api("POST", f"/api/invites/{dcode}", None, u["token"])
+    api("POST", f"/api/channels/{dchan['id']}/messages", {"content": "Post your raid screenshots here"}, dave["token"])
+    held_msg = upload(f"/api/channels/{dchan['id']}/messages/upload", {"content": "from the beach trip"},
+                      {"files": ("beach.png", flag_png, "image/png")}, erin["token"])
+    held_msg = wait_checked(dchan["id"], held_msg["id"], erin["token"], want="held")
+
+    def dt_page(token, guild_id, channel_id, vp=None, label="detector"):
+        pg = browser.new_page(viewport=vp or {"width": 1280, "height": 800})
+        watch(pg, label)
+        pg.add_init_script(f"localStorage.setItem('outhouse_token', {json.dumps(token)}); localStorage.setItem('outhouse_guild', {json.dumps(guild_id)}); localStorage.setItem('outhouse_channel_{guild_id}', {json.dumps(channel_id)});")
+        pg.goto(BASE + "/")
+        pg.wait_for_selector("#messages .msg", timeout=15000)
+        return pg
+
+    # Someone else: "Held for review", no way to look, no picture requested.
+    dv = dt_page(dave["token"], dguild["id"], dchan["id"], label="detector-viewer")
+    dv_files = []
+    dv.on("request", lambda r: "/files/" in r.url and dv_files.append(r.url))
+    dv.wait_for_selector(f"#msg-{held_msg['id']} .dt-hold:has-text('Held for review')", timeout=10000)
+    assert dv.query_selector(f"#msg-{held_msg['id']} .dt-hold .dt-show") is None, "a viewer can reveal a held picture"
+    assert dv.query_selector(f"#msg-{held_msg['id']} .attachments img") is None, "held picture shown"
+    dv.wait_for_timeout(300)
+    dv.screenshot(path=f"{SHOTS}/3601-detector-held-placeholder.png")
+    # The sender can look (only they see it).
+    ev = dt_page(erin["token"], dguild["id"], dchan["id"], label="detector-sender")
+    ev.wait_for_selector(f"#msg-{held_msg['id']} .dt-hold .dt-show", timeout=10000)
+    ev.screenshot(path=f"{SHOTS}/3602-detector-held-sender.png")
+    ev.click(f"#msg-{held_msg['id']} .dt-hold .dt-show")
+    ev.wait_for_selector(f"#msg-{held_msg['id']} .dt-revealed img", timeout=10000)
+    assert ev.evaluate(f"document.querySelector('#msg-{held_msg['id']} .dt-revealed img').src.startsWith('blob:')")
+    ev.wait_for_timeout(300)
+    ev.screenshot(path=f"{SHOTS}/3603-detector-sender-revealed.png")
+    ev.close()
+    # Pins: a held picture is a chip, not a thumbnail.
+    api("PUT", f"/api/channels/{dchan['id']}/pins/{held_msg['id']}", None, TOKEN)
+
+    # Blur only (this outhouse): a blurred picture anyone can click through.
+    api("PUT", f"/api/safety/guilds/{dguild['id']}/detector", {"action": "blur"}, TOKEN)
+    blur_msg = upload(f"/api/channels/{dchan['id']}/messages/upload", {"content": "sunset"},
+                      {"files": ("sunset.png", flag_png, "image/png")}, erin["token"])
+    blur_msg = wait_checked(dchan["id"], blur_msg["id"], dave["token"], want="blur")
+    dv.wait_for_selector(f"#msg-{blur_msg['id']} .dt-blur .dt-cover", timeout=10000)
+    dv.wait_for_timeout(300)
+    dv.screenshot(path=f"{SHOTS}/3604-detector-blurred.png")
+    dv.click(f"#msg-{blur_msg['id']} .dt-blur .dt-cover")
+    dv.wait_for_selector(f"#msg-{blur_msg['id']} .dt-blur.shown img")
+    api("PUT", f"/api/safety/guilds/{dguild['id']}/detector", {"action": "default"}, TOKEN)
+    assert not any(held_msg["attachments"][0]["id"] in u or "beach" in u for u in dv_files), dv_files
+
+    # A teen sees "Checking…" until a picture's been checked, then the picture.
+    tchan = api("POST", f"/api/guilds/{guild['id']}/channels", {"name": "photo-wall"}, TOKEN)
+    api("POST", f"/api/channels/{tchan['id']}/messages", {"content": "Share your pet photos!"}, hal["token"])
+    tv = dt_page(tess["token"], guild["id"], tchan["id"], label="detector-teen")
+    slow_msg = upload(f"/api/channels/{tchan['id']}/messages/upload", {"content": "my dog"},
+                      {"files": ("dog.png", slow_png, "image/png")}, hal["token"])
+    tv.wait_for_selector(f"#msg-{slow_msg['id']} .dt-hold.dt-checking:has-text('Checking')", timeout=10000)
+    tv.screenshot(path=f"{SHOTS}/3605-detector-checking-teen.png")
+    tv.wait_for_selector(f"#msg-{slow_msg['id']} .attachments img", timeout=30000)
+    assert tv.query_selector(f"#msg-{slow_msg['id']} .dt-hold") is None
+    tv.close()
+
+    # The owner's console: the detector report, its panel, Approve releases it live.
+    op = dt_page(TOKEN, dguild["id"], dchan["id"], label="detector-owner")
+    op.evaluate("openSafetyConsole()")
+    op.wait_for_selector("dialog.safety-console .sc-row.dt-report", timeout=10000)
+    op.wait_for_timeout(300)
+    op.screenshot(path=f"{SHOTS}/3606-detector-console-list.png")
+    op.click("dialog.safety-console .sc-row.dt-report:has-text('from the beach trip')")
+    op.wait_for_selector("dialog.safety-console .dt-approve", timeout=10000)
+    panel = op.inner_text("dialog.safety-console")
+    for needle in ("Image detector", "Detector: 0.97", "Approve (release)", "Keep blurred", "Remove file", "aid, not a guarantee"):
+        assert needle in panel, needle
+    op.wait_for_timeout(200)
+    op.screenshot(path=f"{SHOTS}/3607-detector-report-detail.png")
+    op.click("dialog.safety-console .dt-approve")
+    op.click("dialog[open] button[type=submit]:has-text('Approve')")
+    op.wait_for_selector("dialog.safety-console .sc-row-res:has-text('Approved')", timeout=10000)
+    op.keyboard.press("Escape")
+    dv.wait_for_selector(f"#msg-{held_msg['id']} .attachments > img", timeout=10000)
+    assert dv.query_selector(f"#msg-{held_msg['id']} .dt-hold") is None, "still held after approval"
+    dv.wait_for_timeout(300)
+    dv.screenshot(path=f"{SHOTS}/3608-detector-approved-live.png")
+    dv.close()
+
+    # Settings: site-wide (Reports → Image detector), this outhouse's, Server status.
+    op.evaluate("openSafetyConsole('detector')")
+    op.wait_for_selector("dialog.safety-console h2:text-is('Image detector')", timeout=10000)
+    op.wait_for_selector("dialog.safety-console .dt-health .status-item.good", timeout=10000)
+    op.wait_for_timeout(300)
+    op.screenshot(path=f"{SHOTS}/3609-detector-settings.png")
+    op.keyboard.press("Escape")
+    op.evaluate("openSettings('detector')")
+    op.wait_for_selector("dialog.settings .settings-main h2:text-is('Image detector')", timeout=10000)
+    op.wait_for_selector("dialog.settings .settings-main .dt-select")
+    op.wait_for_timeout(300)
+    op.screenshot(path=f"{SHOTS}/3610-detector-outhouse-settings.png")
+    op.keyboard.press("Escape")
+    op.evaluate("openSettings('status')")
+    op.wait_for_selector("dialog.settings .dt-status .dt-health", timeout=10000)
+    op.evaluate("document.querySelector('dialog.settings .dt-status').scrollIntoView({block: 'center'})")
+    op.wait_for_timeout(300)
+    op.screenshot(path=f"{SHOTS}/3611-detector-server-status.png")
+    op.keyboard.press("Escape")
+
+    # Child safety: the score line (metadata only); the file stays locked, never shown.
+    cat_msg = upload(f"/api/channels/{dchan['id']}/messages/upload", {"content": "my cat"},
+                     {"files": ("cat.png", calm_png, "image/png")}, erin["token"])
+    cat_msg = wait_checked(dchan["id"], cat_msg["id"], erin["token"])
+    api("POST", "/api/reports", {"target_kind": "message", "target_id": cat_msg["id"], "category": "child_safety",
+                                 "details": "testing a false report"}, dave["token"])
+    seen_files.clear()
+    op.on("request", lambda r: "/files/" in r.url and seen_files.append(r.url))
+    op.evaluate("openSafetyConsole()")
+    op.wait_for_selector("dialog.safety-console .sc-row.child:has-text('Erin')", timeout=10000)
+    op.click("dialog.safety-console .sc-row.child:has-text('Erin') >> nth=0")
+    op.wait_for_selector("dialog.safety-console .dt-score:has-text('nothing explicit found')", timeout=30000)
+    assert op.query_selector("dialog.safety-console .sc-files img, dialog.safety-console .sc-files video") is None, "child-safety media shown"
+    guide = op.inner_text("dialog.safety-console .dt-score")
+    assert "dismiss it without viewing" in guide, guide
+    op.evaluate("document.querySelector('dialog.safety-console .sc-files').scrollIntoView({block: 'center'})")
+    op.wait_for_timeout(300)
+    op.screenshot(path=f"{SHOTS}/3612-child-safety-detector-score.png")
+    assert not any("cat.png" in u for u in seen_files), seen_files
+    op.close()
 
     # Sign-up asks for a date of birth; under 13s are turned away.
     sp_ = browser.new_page(viewport={"width": 1280, "height": 800})

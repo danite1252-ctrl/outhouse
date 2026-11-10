@@ -308,6 +308,100 @@ anyone's age group in the console (People). For teens, by default:
 Each of these can be switched off under **Teen protections** (as can asking
 for a date of birth at sign-up).
 
+### Image detector
+
+A small nudity detector checks uploaded pictures: message attachments,
+avatars, banners, custom emoji and stickers (PNG, JPEG, WebP and GIF; for
+an animation the first frame and a couple from the middle). It runs
+**entirely on your server**: no picture is ever sent anywhere else, and
+Outhouse stores only the score, the labels and what was decided, never a
+copy or thumbnail. Link previews of pictures on other websites aren't checked.
+
+**How it runs.** A separate container, `detector` (built from
+`deploy/detector`), on an internal Docker network with no way out to the
+internet and no port opened on the server. It's capped at **1 CPU and
+1 GB of memory** (`cpus: "1.0"`, `mem_limit: 1g`), runs at low priority with
+one thread, and checks **one picture at a time**. Checking happens in the
+background *after* the upload is saved, so chat never waits for it. On a
+small VM it idles at about 175 MB and takes roughly 0.05–0.3 s of one CPU per
+picture (big photos are shrunk before the model sees them, and every scan
+has a hard 20-second limit). If it's down (restarting, out of memory, being
+rebuilt) uploads still work: pictures wait in the queue, Outhouse retries
+with growing gaps (up to 5 minutes), carries on where it left off after a
+restart, and **Server status** shows *Detector offline* and the queue length.
+
+**The model.** [NudeNet](https://github.com/notAI-tech/NudeNet) 3.4.2's
+`320n` detector (a YOLOv8n trained to spot exposed and covered body parts;
+12 MB ONNX, CPU only via onnxruntime). The score is the highest confidence
+for an *exposed* breast, genitals, buttocks or anus. It's downloaded while
+the image builds (from PyPI, checked against a pinned SHA-256; it isn't in
+git), and the image is about 300 MB. **Licence:** NudeNet's code and
+weights are under the **GNU AGPL-3.0** (the copy in the package says so,
+even though PyPI's summary says MIT; the YOLOv8 base is AGPL-3.0 too).
+Using it unmodified on your own server is fine; if you ever change the
+detector and let people outside use it, or hand the image to someone else,
+the AGPL asks you to offer them the source. The licence text is in the
+image at `/models/LICENSE-nudenet.txt`.
+
+**What happens to a flagged picture** (score at or above your threshold):
+- **In an 18+ channel where everyone who can see it is an adult:** posted as normal.
+- **Sent to or from a teen** (DMs, group DMs, any channel a teen can see):
+  fully held. Teens never receive it; everyone else sees *Held for review*;
+  nobody can open it (you included) and a **detector report** (category
+  *Sexual or explicit content*, never child safety) lands in Reports.
+- **Anywhere else:** *Held for review* for everyone except the sender, who
+  can still look at it, as can you; plus a detector report. Or, if you pick
+  **Blur only**, it's blurred with *click to show* for everyone.
+- **Avatars, banners, emoji and stickers:** replaced by a placeholder
+  (an orange shield) until you approve them.
+- **While a picture is being checked:** pictures to or from teens show
+  *Checking…* for a moment instead (in a channel a teen can see, that's for
+  everyone in it); adults elsewhere see them straight away.
+
+On a detector report you can **Approve (release)** (it appears for everyone
+at once, live), **Keep blurred** (*Keep hidden* for avatars and the like;
+pictures to or from teens stay held), **Remove file** (taken out of every
+message it's in, or the avatar/emoji/sticker removed), plus the usual
+warn / time out / suspend actions. Held pictures can't be forwarded; a
+picture that was only allowed because it's in an adult-only 18+ channel can
+only be forwarded to another one.
+
+**Child-safety reports** show the detector's result for each file as a
+line of text, e.g. *Detector: 0.02 — nothing explicit found*. If a file was
+never checked it's checked then (the quarantined copy is read on the
+server; it's still never shown or served, `/files/…` still answers 451).
+A score near zero suggests a false report: you can dismiss it without
+viewing anything. The detector looks for nudity only and can't tell anyone's
+age, so a high score isn't proof of anything either; follow the steps above.
+
+**Settings** (site owner only): Reports → **Image detector** for the whole
+site, and Outhouse settings → **Image detector** for each outhouse.
+- **Check uploaded pictures:** on by default, site-wide and per outhouse.
+- **Sensitivity:** Low (score ≥ 0.85), **Medium** (≥ 0.60, the default),
+  High (≥ 0.40: catches more, more false alarms).
+- **Outside 18+ channels:** **Hold for approval** (default) or **Blur only**
+  (viewers can click through). Teen rules always apply whatever you pick.
+- **Hold images for teens until checked:** on by default (per outhouse, and
+  site-wide for DMs).
+- To run without it at all, put `DETECTOR_URL=off` in `.env`.
+
+**It's an aid, not a guarantee.** It misses things (drawings, odd angles,
+small or cropped pictures) and flags harmless ones (swimwear, babies in the
+bath, skin-coloured objects, art). People can still report anything it
+misses, and a false alarm costs one click to approve.
+
+**Checking it works in production** (with harmless pictures only): add
+`DETECTOR_THRESHOLD=0.001` to `deploy/.env` and run
+`docker compose up -d server`. That flags nearly every picture, so post any
+harmless photo (a cup of tea) in a test channel or DM with a test account: it
+should show *Held for review*, the report should appear in Reports with its
+score, and **Approve** should bring it back. (Server status shows a red
+*Test threshold* line while it's set.) Then delete the line from `.env`, run
+`docker compose up -d server` again and approve or remove the test picture.
+**Server status** also shows whether the detector is online, its model and
+how many pictures are waiting. The first deploy after this update builds the
+detector image too (a few extra minutes; it downloads about 80 MB from PyPI).
+
 **Workflow, in short:** check the shield when it lights up (red = child
 safety) → read the snapshot and context → act (warn, delete, time out,
 suspend) → for child safety, report to the ACCCE / eSafety (000 if a child

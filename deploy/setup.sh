@@ -186,6 +186,17 @@ say "Building and starting Outhouse (the first build takes a few minutes)..."
 $DOCKER compose up -d --build
 # LiveKit only reads its settings at start-up.
 $DOCKER compose restart livekit >/dev/null
+# The image detector (deploy/detector): say whether it came up. Uploads work
+# either way; pictures wait in its queue until it's running.
+for _ in $(seq 1 30); do
+  [ "$($DOCKER inspect -f '{{.State.Health.Status}}' "$($DOCKER compose ps -q detector 2>/dev/null)" 2>/dev/null)" = healthy ] && break
+  sleep 2
+done
+if [ "$($DOCKER inspect -f '{{.State.Health.Status}}' "$($DOCKER compose ps -q detector 2>/dev/null)" 2>/dev/null)" = healthy ]; then
+  echo "Image detector: running (Outhouse settings → Server status shows it too)."
+else
+  echo "Image detector: not running yet. Uploads still work; check with: $DOCKER compose logs detector"
+fi
 
 if [ -n "${GITHUB_TOKEN:-}" ]; then
   say "Fetching the latest app builds (then every 10 minutes)..."

@@ -206,6 +206,21 @@ pub struct Attachment {
     /// A voice message's waveform: base64 of up to 64 loudness bytes (0–255).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waveform: Option<String>,
+    /// The image detector is holding this picture back (see
+    /// [`AttachmentHold`]); `url` is empty unless it's `blur`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold: Option<AttachmentHold>,
+}
+
+/// Why a picture isn't shown as normal.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AttachmentHold {
+    /// "checking" (still being scanned), "held" (held for review) or
+    /// "blur" (blurred; anyone can click through).
+    pub state: String,
+    /// Who may look anyway: "anyone" (blur), "sender_owner" (the sender
+    /// and the site owner, through `/api/attachments/{id}/reveal`) or "none".
+    pub reveal: String,
 }
 
 /// A link preview, an inline image/GIF, or a rich card from a webhook or feed.

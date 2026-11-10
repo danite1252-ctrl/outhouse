@@ -85,6 +85,14 @@ services:
       REPORTS_PER_HOUR: ${REPORTS_PER_HOUR:-}
       # backup.sh leaves its result here; Outhouse settings → Server status shows it.
       BACKUP_STATUS_FILE: /app/status/backup.json
+      # The image detector below (see README "Safety & reports" → "Image detector").
+      # Set DETECTOR_URL=off in .env to run without it.
+      DETECTOR_URL: ${DETECTOR_URL:-http://detector:8095}
+      # Only for checking it works (README): flag nearly everything, e.g. 0.001.
+      DETECTOR_THRESHOLD: ${DETECTOR_THRESHOLD:-}
+    networks:
+      - default
+      - detector
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -93,6 +101,33 @@ services:
       - ./updates:/app/web/updates:ro
       # Backup and health status written by backup.sh (read-only in here).
       - ./status:/app/status:ro
+
+  # The image detector: a small nudity model (NudeNet 320n on onnxruntime,
+  # CPU only) that the server asks about uploaded pictures, one at a time.
+  # Pictures never leave this machine: it's on an internal network with no
+  # way out and no published port. Capped at 1 CPU and 1 GB so chat always
+  # comes first; if it's down, uploads still work and pictures wait.
+  detector:
+    build: ./detector
+    image: outhouse-detector:local
+    restart: unless-stopped
+    cpus: "1.0"
+    mem_limit: 1g
+    networks:
+      - detector
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8095/health', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
 
   # Voice. Host networking lets LiveKit offer both the server's home-network
   # address (for people at home) and your public address (for everyone else).
@@ -138,6 +173,12 @@ services:
     volumes:
       - ./Caddyfile.behind-proxy:/etc/caddy/Caddyfile:ro
       - caddy_config:/config
+
+networks:
+  default:
+  # Server <-> detector only; nothing on it can reach the internet.
+  detector:
+    internal: true
 
 volumes:
   pgdata:

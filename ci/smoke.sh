@@ -34,15 +34,45 @@ export ALERT_NTFY_URL=$PUSH/alert/safety-ntfy ALERT_WEBHOOK_URL=$PUSH/alert/safe
 # Where backup.sh would leave its status (read by the server status page).
 STATUS_DIR=$(mktemp -d)
 export BACKUP_STATUS_FILE=$STATUS_DIR/backup.json OUTHOUSE_VERSION=smoke-test
+# The image detector sidecar (deploy/detector) in test mode: CI starts it as the
+# "outhouse-detector" container on 127.0.0.1:8095 (see ci.yml). To run this
+# script without Docker, set SMOKE_DETECTOR_CMD to start it another way, e.g.
+#   SMOKE_DETECTOR_CMD="env DETECTOR_MODEL=/path/320n.onnx python3 deploy/detector/detector.py"
+export DETECTOR_URL=${DETECTOR_URL:-http://127.0.0.1:8095}
+DETECTOR_PID=""
+detector_start() {
+  if [ -n "${SMOKE_DETECTOR_CMD:-}" ]; then
+    # shellcheck disable=SC2086
+    DETECTOR_TEST_MODE=1 DETECTOR_BIND=127.0.0.1 DETECTOR_PORT=8095 DETECTOR_TEST_SLOW_SECS=4 $SMOKE_DETECTOR_CMD >/tmp/detector.log 2>&1 &
+    DETECTOR_PID=$!
+  else
+    docker start outhouse-detector >/dev/null
+  fi
+  for _ in $(seq 1 90); do curl -fsS "$DETECTOR_URL/health" >/dev/null 2>&1 && return 0; sleep 1; done
+  echo "the image detector didn't start"; docker logs outhouse-detector 2>&1 | tail -20 || true; return 1
+}
+detector_stop() {
+  if [ -n "$DETECTOR_PID" ]; then kill "$DETECTOR_PID" 2>/dev/null || true; wait "$DETECTOR_PID" 2>/dev/null || true; DETECTOR_PID=""
+  else docker stop -t 2 outhouse-detector >/dev/null; fi
+  for _ in $(seq 1 20); do curl -fsS "$DETECTOR_URL/health" >/dev/null 2>&1 || return 0; sleep 0.5; done
+}
+if [ -n "${SMOKE_DETECTOR_CMD:-}" ]; then detector_start; fi
+curl -fsS "$DETECTOR_URL/health" | jq -e '.ok and .test_mode' >/dev/null || { echo "the image detector (test mode) isn't running at $DETECTOR_URL"; exit 1; }
+python3 ci/detector_images.py /tmp/dt >/dev/null
+# Gateway probe files from an earlier run would satisfy "wait for READY" before the new probe starts.
+rm -f /tmp/gw-*.jsonl
 ./target/debug/outhouse-server >"$LOG" 2>&1 &
 SERVER=$!
-trap 'kill $SERVER $MOCK_PID $LK_PID $PUSH_PID 2>/dev/null || true' EXIT
+trap 'kill $SERVER $MOCK_PID $LK_PID $PUSH_PID $DETECTOR_PID 2>/dev/null || true' EXIT
 
 for i in $(seq 1 60); do
   curl -fsS "$BASE/api/health" >/dev/null 2>&1 && break
   if ! kill -0 $SERVER 2>/dev/null; then echo "server exited:"; cat "$LOG"; exit 1; fi
   sleep 1
 done
+# The detector is switched on in its own section near the end (the older
+# sections check pictures straight after uploading them).
+psql "$DATABASE_URL" -qc "UPDATE site_settings SET detector_enabled = false"
 
 TOKEN=""
 # call METHOD PATH [JSON]  -> prints the body; fails on any non-2xx
@@ -251,7 +281,7 @@ call GET /api/users/@me | jq -e '.bot == true' >/dev/null
 TOKEN=$TOKEN_A
 OUTHOUSE_URL=$BASE OUTHOUSE_BOT_TOKEN=$BOT_TOKEN node web/bots/dice-bot.mjs >/tmp/bot.log 2>&1 &
 BOT_PID=$!
-trap 'kill $SERVER $BOT_PID 2>/dev/null || true' EXIT
+trap 'kill $SERVER $BOT_PID $MOCK_PID $LK_PID $PUSH_PID $DETECTOR_PID 2>/dev/null || true' EXIT
 for i in $(seq 1 20); do
   call GET "/api/guilds/$GUILD/commands" | jq -e 'length == 3' >/dev/null 2>&1 && break
   sleep 1
@@ -3478,5 +3508,208 @@ tok "$TOKEN_A" call DELETE "/api/channels/$UC/messages/$U2" >/dev/null
 tok "$TOKEN_B" call GET "/api/users/@me/unread" | jq -e --arg c "$UC" --arg m "$U1" '.channels[] | select(.channel_id == $c) | .last_message_id == $m' >/dev/null
 tok "$TOKEN_A" call DELETE "/api/channels/$UC/messages/$U1" >/dev/null
 tok "$TOKEN_B" call GET "/api/users/@me/unread" | jq -e --arg c "$UC" '.channels[] | select(.channel_id == $c) | .last_message_id == null' >/dev/null
+
+# ---------------------------------------------------------------------------
+# The image detector (feat-detector): a local model in a sidecar, test mode
+# (a PNG with a marker tEXt chunk scores 0.97; everything else is low).
+# No real explicit pictures anywhere.
+# ---------------------------------------------------------------------------
+DT=/tmp/dt
+dtupload() { # dtupload TOKEN CHANNEL FILE TEXT -> HTTP status (message JSON in /tmp/body)
+  curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $1" -F "content=$4" -F "files=@$3;type=image/png" "$BASE/api/channels/$2/messages/upload"
+}
+dtkey() { psql "$DATABASE_URL" -tAc "SELECT storage_key FROM attachments WHERE message_id = $1 ORDER BY id LIMIT 1"; }
+dtscan() { psql "$DATABASE_URL" -tAc "SELECT status || ',' || hold FROM file_scans WHERE storage_key = '$1'"; }
+dtwait() { # dtwait KEY "status,hold" -> waits up to 30 s
+  for _ in $(seq 1 120); do [ "$(dtscan "$1")" = "$2" ] && return 0; sleep 0.25; done
+  echo "scan of $1 is '$(dtscan "$1")', wanted '$2'"; tail -20 "$LOG"; return 1
+}
+dtreport() { psql "$DATABASE_URL" -tAc "SELECT r.id FROM reports r JOIN file_scans f ON f.id = r.target_id WHERE r.target_kind = 'file' AND f.storage_key = '$1' AND r.status <> 'closed'"; }
+dtfile() { curl -sS -o /tmp/dtfile -w "%{http_code}" ${2:+-H "Authorization: Bearer $2"} "$BASE$1"; }
+
+step "detector: owner-only settings, switched on"
+tok "$TOKEN_B" fail_call GET /api/safety/detector
+tok "$TOKEN_B" fail_call PUT /api/safety/detector '{"enabled":true}'
+tok "$TOKEN_A" fail_call PUT /api/safety/detector '{"sensitivity":"extreme"}'
+tok "$TOKEN_A" call PUT /api/safety/detector '{"enabled":true}' | jq -e '.enabled and .sensitivity == "medium" and .action == "hold" and .hold_teens' >/dev/null
+tok "$TOKEN_A" call GET /api/safety/detector | jq -e '.health.configured and .health.online and .health.test_mode and .thresholds.medium == 0.6 and (.outhouses | length) >= 1' >/dev/null
+DG=$(tok "$TOKEN_A" call POST /api/guilds '{"name":"Detector Test"}' | jq -r .id)
+DCH=$(tok "$TOKEN_A" call GET "/api/guilds/$DG/channels" | jq -r '[.[] | select(.kind == 0)][0].id')
+DINV=$(tok "$TOKEN_A" call POST "/api/guilds/$DG/invites" | jq -r .code)
+for t in "$TOKEN_B" "$TOKEN_D"; do tok "$t" call POST "/api/invites/$DINV" >/dev/null; done
+tok "$TOKEN_B" fail_call GET "/api/safety/guilds/$DG/detector"
+tok "$TOKEN_A" call GET "/api/safety/guilds/$DG/detector" | jq -e '.enabled and .sensitivity == null and .effective.sensitivity == "medium" and .hold_teens' >/dev/null
+tok "$TOKEN_A" call GET "/api/guilds/$DG/server-status" | jq -e '.detector.configured and .detector.online and .detector.queue >= 0' >/dev/null
+
+step "detector: a clean picture is shown as normal"
+[ "$(dtupload "$TOKEN_B" "$DCH" "$DT/plain.png" "holiday snap")" = 200 ]
+DM0=$(jq -r .id /tmp/body); DK0=$(dtkey "$DM0")
+jq -e '.attachments[0].url != "" and (.attachments[0].hold == null)' /tmp/body >/dev/null   # adults only: no waiting
+dtwait "$DK0" "clean,none"
+psql "$DATABASE_URL" -tAc "SELECT score < 0.1 AND model LIKE 'nudenet-320n%' AND scanned_at IS NOT NULL FROM file_scans WHERE storage_key = '$DK0'" | grep -qx t
+[ "$(dtfile "/files/$DK0/plain.png")" = 200 ] && cmp -s /tmp/dtfile "$DT/plain.png"
+
+step "detector: flagged in an ordinary channel -> held for review + a detector report"
+rm -f /tmp/gw-dt-dora.jsonl; node ci/gateway_probe.mjs "$BASE" "$TOKEN_D" /tmp/gw-dt-dora.jsonl 90 & DTP1=$!
+wait_for /tmp/gw-dt-dora.jsonl '.t == "READY"'
+[ "$(dtupload "$TOKEN_B" "$DCH" "$DT/flag.png" "look")" = 200 ]
+DM1=$(jq -r .id /tmp/body); DK1=$(dtkey "$DM1"); DA1=$(jq -r '.attachments[0].id' /tmp/body)
+dtwait "$DK1" "flagged,held"
+for t in "$TOKEN_B" "$TOKEN_D" "$TOKEN_A"; do
+  tok "$t" call GET "/api/channels/$DCH/messages?limit=20" | jq -e --arg m "$DM1" '.[] | select(.id == $m) | .attachments[0].url == "" and .attachments[0].hold.state == "held" and .attachments[0].hold.reveal == "sender_owner"' >/dev/null
+done
+wait_for /tmp/gw-dt-dora.jsonl '.t == "MESSAGE_UPDATE" and .d.id == $m and .d.attachments[0].hold.state == "held" and .d.attachments[0].url == ""' --arg m "$DM1"
+# Nobody gets it by its link; the sender and the site owner can look (and that's logged).
+[ "$(dtfile "/files/$DK1/flag.png")" = 451 ] && grep -q "held for review" /tmp/dtfile
+[ "$(dtfile "/api/attachments/$DA1/reveal" "$TOKEN_D")" = 451 ]
+[ "$(dtfile "/api/attachments/$DA1/reveal" "$TOKEN_B")" = 200 ] && cmp -s /tmp/dtfile "$DT/flag.png"
+[ "$(dtfile "/api/attachments/$DA1/reveal" "$TOKEN_A")" = 200 ]
+[ "$(dtfile "/api/attachments/$DA1/reveal" "$OUT")" = 404 ]
+tok "$TOKEN_A" call GET "/api/safety/log" | jq -e '.entries[0].action == "view_held"' >/dev/null
+# Can't be forwarded while it's held.
+[ "$(tok "$TOKEN_B" status POST "/api/channels/$DCH/messages/$DM1/forward" '{"destinations":["'"$DCH"'"]}')" = 403 ] && grep -q "held for review" /tmp/body
+DR1=$(dtreport "$DK1"); [ -n "$DR1" ]
+tok "$TOKEN_A" call GET "/api/safety/reports?status=open" | jq -e --arg r "$DR1" '.reports[] | select(.id == $r) | .source == "detector" and .category == "sexual"
+  and (.child_safety | not) and (.preview | startswith("Detector: 0.97")) and .reported_user.username == "bob"' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/reports/$DR1" | jq -e --arg k "$DK1" '.detector.status == "flagged" and .detector.hold == "held" and .detector.score > 0.9
+  and (.detector.teen | not) and .detector.viewable and (.files | length) == 1 and .files[0].key == $k and .files[0].viewable
+  and (.files[0].detector.summary | startswith("Detector: 0.97")) and .snapshot.detector.score > 0.9 and (.reporters | length) == 0' >/dev/null
+tok "$TOKEN_B" fail_call POST "/api/safety/reports/$DR1/actions" '{"action":"approve_file"}'
+
+step "detector: approving releases it live to open clients"
+act "$DR1" '{"action":"approve_file"}' | jq -e '.report.status == "closed" and (.report.resolution | test("Approved")) and .detector.review == "approved" and .detector.hold == "none"' >/dev/null
+wait_for /tmp/gw-dt-dora.jsonl '.t == "MESSAGE_UPDATE" and .d.id == $m and .d.attachments[0].url != "" and .d.attachments[0].hold == null' --arg m "$DM1"
+[ "$(dtfile "/files/$DK1/flag.png")" = 200 ]
+[ -f "$UPLOADS/$DK1" ] || { echo "an approved picture was deleted when its report closed"; exit 1; }
+kill $DTP1 2>/dev/null || true
+
+step "detector: an 18+ channel where everyone is an adult -> posted as normal"
+DNS=$(tok "$TOKEN_A" call POST "/api/guilds/$DG/channels" '{"name":"grown-ups"}' | jq -r .id)
+tok "$TOKEN_A" call PATCH "/api/channels/$DNS" '{"content_mode":"nsfw"}' >/dev/null
+tok "$TOKEN_B" call PUT "/api/channels/$DNS/age-gate" >/dev/null
+[ "$(dtupload "$TOKEN_B" "$DNS" "$DT/flag.png" "fine in here")" = 200 ]
+DM2=$(jq -r .id /tmp/body); DK2=$(dtkey "$DM2")
+dtwait "$DK2" "flagged,none"
+psql "$DATABASE_URL" -tAc "SELECT adult_only AND NOT teen FROM file_scans WHERE storage_key = '$DK2'" | grep -qx t
+tok "$TOKEN_B" call GET "/api/channels/$DNS/messages" | jq -e --arg m "$DM2" '.[] | select(.id == $m) | .attachments[0].url != "" and .attachments[0].hold == null' >/dev/null
+[ "$(dtfile "/files/$DK2/flag.png")" = 200 ]
+[ -z "$(dtreport "$DK2")" ] || { echo "a picture in an adult-only 18+ channel was reported"; exit 1; }
+# It can only be forwarded to another adult-only 18+ channel.
+[ "$(tok "$TOKEN_B" status POST "/api/channels/$DNS/messages/$DM2/forward" '{"destinations":["'"$DCH"'"]}')" = 403 ]
+
+step "detector: sent to a teen -> fully held (the teen never gets it, nobody can look)"
+# Tia blocked Adam at the end of the safety section: make them friends again.
+tok "$TOKEN_T" call DELETE "/api/users/@me/blocks/$ADAM" >/dev/null
+tok "$TOKEN_A" call PUT "/api/safety/guilds/$SG/family" '{"family":true}' >/dev/null
+tok "$TOKEN_AD" status PUT "/api/users/@me/relationships/$TIA" >/dev/null
+tok "$TOKEN_T" status PUT "/api/users/@me/relationships/$ADAM" >/dev/null
+tok "$TOKEN_A" call PUT "/api/safety/guilds/$SG/family" '{"family":false}' >/dev/null
+rm -f /tmp/gw-dt-tia.jsonl; node ci/gateway_probe.mjs "$BASE" "$TOKEN_T" /tmp/gw-dt-tia.jsonl 90 & DTP2=$!
+wait_for /tmp/gw-dt-tia.jsonl '.t == "READY"'
+[ "$(dtupload "$TOKEN_AD" "$TDM" "$DT/flag.png" "for you")" = 200 ]
+DM3=$(jq -r .id /tmp/body); DK3=$(dtkey "$DM3"); DA3=$(jq -r '.attachments[0].id' /tmp/body)
+# Held as "Checking…" from the start (pictures to or from teens wait for the check).
+jq -e '.attachments[0].url == "" and .attachments[0].hold.state == "checking"' /tmp/body >/dev/null
+dtwait "$DK3" "flagged,held"
+psql "$DATABASE_URL" -tAc "SELECT teen AND NOT teen_author FROM file_scans WHERE storage_key = '$DK3'" | grep -qx t
+tok "$TOKEN_T" call GET "/api/channels/$TDM/messages" | jq -e --arg m "$DM3" '.[] | select(.id == $m) | .attachments[0].url == "" and .attachments[0].hold.state == "held" and .attachments[0].hold.reveal == "none"' >/dev/null
+for t in "$TOKEN_T" "$TOKEN_AD" "$TOKEN_A"; do [ "$(dtfile "/api/attachments/$DA3/reveal" "$t")" = 451 ]; done
+[ "$(dtfile "/files/$DK3/flag.png")" = 451 ]
+sleep 1
+jq -r 'select(.t == "MESSAGE_CREATE" or .t == "MESSAGE_UPDATE") | .d.attachments[]?.url' /tmp/gw-dt-tia.jsonl | grep -q "$DK3" && { echo "the teen was sent the held picture's link"; exit 1; }
+DR3=$(dtreport "$DK3"); [ -n "$DR3" ]
+tok "$TOKEN_A" call GET "/api/safety/reports/$DR3" | jq -e '.detector.teen and (.detector.viewable | not) and (.files[0].viewable | not) and .files[0].teen_hold and (.report.child_safety | not)' >/dev/null
+[ "$(tok "$TOKEN_A" status GET "/api/safety/reports/$DR3/files/$DK3")" = 451 ]
+# Keeping it: it stays held (never just blurred) because a teen is involved.
+act "$DR3" '{"action":"keep_blurred"}' | jq -e '.detector.hold == "held" and .report.status == "closed"' >/dev/null
+# From a teen: held for the adult too.
+[ "$(dtupload "$TOKEN_T" "$TDM" "$DT/flag.png" "from me")" = 200 ]
+DK4=$(dtkey "$(jq -r .id /tmp/body)"); dtwait "$DK4" "flagged,held"
+psql "$DATABASE_URL" -tAc "SELECT teen_author FROM file_scans WHERE storage_key = '$DK4'" | grep -qx t
+# A clean picture to a teen shows once it's been checked (slow on purpose: "Checking…" first).
+[ "$(dtupload "$TOKEN_AD" "$TDM" "$DT/slow.png" "dinner")" = 200 ]
+DM5=$(jq -r .id /tmp/body); DK5=$(dtkey "$DM5")
+jq -e '.attachments[0].hold.state == "checking"' /tmp/body >/dev/null
+[ "$(dtfile "/files/$DK5/slow.png")" = 451 ]
+dtwait "$DK5" "clean,none"
+wait_for /tmp/gw-dt-tia.jsonl '.t == "MESSAGE_UPDATE" and .d.id == $m and .d.attachments[0].url != "" and .d.attachments[0].hold == null' --arg m "$DM5"
+kill $DTP2 2>/dev/null || true
+# A channel a teen can see counts too (Tia is in the first test outhouse).
+[ "$(dtupload "$TOKEN_B" "$CHAN" "$DT/flag.png" "in general")" = 200 ]
+jq -e '.attachments[0].hold.state == "checking"' /tmp/body >/dev/null
+DK6=$(dtkey "$(jq -r .id /tmp/body)"); dtwait "$DK6" "flagged,held"
+psql "$DATABASE_URL" -tAc "SELECT teen FROM file_scans WHERE storage_key = '$DK6'" | grep -qx t
+
+step "detector: blur only (click through), per-outhouse settings, switched off"
+tok "$TOKEN_A" call PUT "/api/safety/guilds/$DG/detector" '{"action":"blur"}' | jq -e '.action == "blur" and .effective.action == "blur"' >/dev/null
+[ "$(dtupload "$TOKEN_D" "$DCH" "$DT/flag.png" "blurry")" = 200 ]
+DM7=$(jq -r .id /tmp/body); DK7=$(dtkey "$DM7")
+dtwait "$DK7" "flagged,blur"
+tok "$TOKEN_B" call GET "/api/channels/$DCH/messages" | jq -e --arg m "$DM7" '.[] | select(.id == $m) | .attachments[0].url != "" and .attachments[0].hold.state == "blur" and .attachments[0].hold.reveal == "anyone"' >/dev/null
+[ "$(dtfile "/files/$DK7/flag.png")" = 200 ]
+[ -n "$(dtreport "$DK7")" ]
+tok "$TOKEN_A" call PUT "/api/safety/guilds/$DG/detector" '{"action":"default","enabled":false}' | jq -e '(.enabled | not) and .action == null' >/dev/null
+[ "$(dtupload "$TOKEN_D" "$DCH" "$DT/flag.png" "not checked")" = 200 ]
+DK8=$(dtkey "$(jq -r .id /tmp/body)"); dtwait "$DK8" "skipped,none"
+tok "$TOKEN_A" call PUT "/api/safety/guilds/$DG/detector" '{"enabled":true}' >/dev/null
+tok "$TOKEN_A" call PUT "/api/safety/detector" '{"sensitivity":"low"}' | jq -e '.sensitivity == "low"' >/dev/null
+tok "$TOKEN_A" call PUT "/api/safety/detector" '{"sensitivity":"medium"}' >/dev/null
+
+step "detector: avatars, emoji and stickers are hidden (placeholder) until approved"
+code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $TOKEN_D" -F "file=@$DT/avatar-flag.png;type=image/png" "$BASE/api/users/@me/avatar")
+[ "$code" = 200 ]; AVK=$(jq -r '.avatar_url // empty' /tmp/body | cut -d/ -f3)
+[ -n "$AVK" ] || AVK=$(psql "$DATABASE_URL" -tAc "SELECT avatar_key FROM users WHERE id = $DORA_ID")
+dtwait "$AVK" "flagged,hidden"
+code=$(curl -sS -D /tmp/headers -o /tmp/dtfile -w "%{http_code}" "$BASE/files/$AVK/avatar")
+[ "$code" = 200 ] && grep -qi "content-type: image/svg+xml" /tmp/headers && grep -qi "cache-control: no-store" /tmp/headers && grep -q "<svg" /tmp/dtfile
+code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $TOKEN_A" -F "name=dtflag" -F "file=@$DT/avatar-flag.png;type=image/png" "$BASE/api/guilds/$DG/emojis")
+[ "$code" = 200 ]; DEMO=$(jq -r .id /tmp/body); DEK=$(psql "$DATABASE_URL" -tAc "SELECT storage_key FROM emojis WHERE id = $DEMO")
+dtwait "$DEK" "flagged,hidden"
+curl -fsS "$BASE/emojis/$DEMO" | grep -q "<svg"
+DRA=$(dtreport "$AVK"); [ -n "$DRA" ]
+tok "$TOKEN_A" call GET "/api/safety/reports/$DRA" | jq -e '.detector.kind == "avatar" and .report.target_kind == "file" and .snapshot.kind == "user"' >/dev/null
+act "$DRA" '{"action":"approve_file"}' >/dev/null
+curl -fsS "$BASE/files/$AVK/avatar" -o /tmp/dtfile && cmp -s /tmp/dtfile "$DT/avatar-flag.png"
+act "$(dtreport "$DEK")" '{"action":"remove_file"}' | jq -e '.report.status == "closed" and (.report.resolution | test("Removed"))' >/dev/null
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/emojis/$DEMO")" = 404 ]
+
+step "detector: a child-safety report shows the detector score while the file stays quarantined (451, owner included)"
+[ "$(dtupload "$TOKEN_D" "$DCH" "$DT/plain2.png" "a cat")" = 200 ]
+DM9=$(jq -r .id /tmp/body); DK9=$(dtkey "$DM9"); dtwait "$DK9" "clean,none"
+# Never scanned before (as if uploaded while the detector was off): it's scanned for the review screen.
+psql "$DATABASE_URL" -qc "DELETE FROM file_scans WHERE storage_key = '$DK9'"
+[ "$(report "$TOKEN_B" message "$DM9" child_safety "false alarm test")" = 201 ]; DR9=$(report_id message "$DM9")
+for _ in $(seq 1 60); do
+  tok "$TOKEN_A" call GET "/api/safety/reports/$DR9" > /tmp/dtr.json
+  jq -e '.files[0].detector.status == "clean"' /tmp/dtr.json >/dev/null && break; sleep 0.5
+done
+jq -e '.report.child_safety and .files[0].quarantined and (.files[0].viewable | not) and .files[0].detector.near_zero
+  and (.files[0].detector.summary | test("^Detector: 0\\.0[0-9] — nothing explicit found$"))' /tmp/dtr.json >/dev/null
+psql "$DATABASE_URL" -tAc "SELECT kind || ',' || apply_hold || ',' || hold FROM file_scans WHERE storage_key = '$DK9'" | grep -qx "report,false,none"
+for who in "" "$TOKEN_A" "$TOKEN_D"; do [ "$(dtfile "/files/$DK9/plain2.png" "$who")" = 451 ]; done
+[ "$(tok "$TOKEN_A" status GET "/api/safety/reports/$DR9/files/$DK9")" = 451 ]
+[ "$(dtfile "/api/attachments/$(psql "$DATABASE_URL" -tAc "SELECT id FROM attachments WHERE storage_key = '$DK9'")/reveal" "$TOKEN_A")" = 451 ]
+act "$DR9" '{"action":"dismiss","text":"Detector 0.0x, a cat"}' >/dev/null
+
+step "detector: when it's down uploads still work, Server status says offline, and the queue catches up"
+detector_stop
+tok "$TOKEN_A" call GET "/api/guilds/$DG/server-status" | jq -e '.detector.configured and (.detector.online | not)' >/dev/null
+[ "$(dtupload "$TOKEN_B" "$DCH" "$DT/plain.png" "while it's down")" = 200 ]
+jq -e '.attachments[0].url != ""' /tmp/body >/dev/null              # adults: shown while waiting
+DK10=$(dtkey "$(jq -r .id /tmp/body)")
+[ "$(dtupload "$TOKEN_AD" "$TDM" "$DT/plain.png" "to a teen while it's down")" = 200 ]
+jq -e '.attachments[0].hold.state == "checking"' /tmp/body >/dev/null   # teens: held until checked
+DK11=$(dtkey "$(jq -r .id /tmp/body)")
+for _ in $(seq 1 40); do
+  [ "$(psql "$DATABASE_URL" -tAc "SELECT attempts > 0 AND error LIKE 'The detector didn''t answer%' FROM file_scans WHERE storage_key = '$DK10'")" = t ] && break; sleep 0.5
+done
+dtscan "$DK10" | grep -qx "pending,none"
+tok "$TOKEN_A" call GET "/api/guilds/$DG/server-status" | jq -e '(.detector.online | not) and .detector.queue >= 2 and (.detector.last_error | length) > 0' >/dev/null
+detector_start
+tok "$TOKEN_A" call PUT /api/safety/detector '{}' >/dev/null      # saving the settings retries straight away
+dtwait "$DK10" "clean,none"; dtwait "$DK11" "clean,none"
+tok "$TOKEN_A" call GET "/api/guilds/$DG/server-status" | jq -e '.detector.online and (.detector.last_error == null)' >/dev/null
+# Leave it as the UI test expects: on, medium, hold for approval.
+tok "$TOKEN_A" call PUT /api/safety/detector '{"enabled":true,"sensitivity":"medium","action":"hold","hold_teens":true}' >/dev/null
 
 echo "Smoke test passed."

@@ -58,7 +58,7 @@ pub async fn serve(
     .fetch_optional(&st.db)
     .await?
     .ok_or(AppError::NotFound)?;
-    send_file(&st, &key, &row.filename, &row.content_type).await
+    send_public_file(&st, &key, &row.filename, &row.content_type).await
 }
 
 /// A custom emoji's picture, by emoji ID (`/emojis/{id}`), so messages only
@@ -78,7 +78,7 @@ pub async fn serve_emoji(
     .fetch_optional(&st.db)
     .await?
     .ok_or(AppError::NotFound)?;
-    send_file(&st, &row.storage_key, &row.name, &row.content_type).await
+    send_public_file(&st, &row.storage_key, &row.name, &row.content_type).await
 }
 
 #[derive(sqlx::FromRow)]
@@ -86,6 +86,42 @@ struct EmojiFileRow {
     storage_key: String,
     name: String,
     content_type: String,
+}
+
+/// A file for anyone with its link (`/files`, `/emojis`, `/stickers`):
+/// nothing the image detector is holding back. Avatars, banners, emoji and
+/// stickers it holds become a placeholder; message files are refused (the
+/// sender and site owner use `/api/attachments/{id}/reveal`).
+pub(crate) async fn send_public_file(
+    st: &AppState,
+    key: &str,
+    filename: &str,
+    content_type: &str,
+) -> AppResult<Response> {
+    if crate::api::safety::is_quarantined(&st.db, key).await {
+        return Err(AppError::Removed);
+    }
+    match crate::api::detector::gate(&st.db, key).await {
+        crate::api::detector::Gate::Held => Err(AppError::Held),
+        crate::api::detector::Gate::Placeholder => Response::builder()
+            .header(CONTENT_TYPE, "image/svg+xml")
+            .header(X_CONTENT_TYPE_OPTIONS, "nosniff")
+            .header(CONTENT_SECURITY_POLICY, "default-src 'none'; sandbox")
+            .header(CACHE_CONTROL, "no-store")
+            .body(Body::from(crate::api::detector::PLACEHOLDER_SVG))
+            .map_err(|e| AppError::Other(e.into())),
+        crate::api::detector::Gate::Open { settled } => {
+            let mut res = send_file(st, key, filename, content_type).await?;
+            if !settled {
+                // Not scanned yet: don't let browsers keep it for good.
+                res.headers_mut().insert(
+                    CACHE_CONTROL,
+                    axum::http::HeaderValue::from_static("private, no-cache"),
+                );
+            }
+            Ok(res)
+        }
+    }
 }
 
 pub(crate) async fn send_file(

@@ -177,6 +177,19 @@ async fn upload(st: &AppState, user_id: i64, kind: &str, mut form: Multipart) ->
         .bind(content_type)
         .execute(&st.db)
         .await?;
+        crate::api::detector::track_upload(
+            st,
+            if kind == "banner" {
+                crate::api::detector::KIND_BANNER
+            } else {
+                crate::api::detector::KIND_AVATAR
+            },
+            &key,
+            content_type,
+            user_id,
+            None,
+        )
+        .await;
         return replace_image(st, user_id, kind, Some(key)).await;
     }
     Err(AppError::BadRequest("Choose a picture to upload.".into()))

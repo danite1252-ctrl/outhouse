@@ -2473,3 +2473,43 @@ button.sc-row:hover { border-color: var(--muted); }
   .sc-when { margin-left: 0; padding-left: 0; }
   .sc-row-top { flex-wrap: wrap; }
 }
+
+/* ---------- Image detector: held pictures, the console, settings (detector.js) ---------- */
+.dt-hold { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; max-width: min(420px, 100%); padding: 12px 14px; border-radius: 10px;
+  border: 1px dashed color-mix(in srgb, var(--ember) 55%, var(--line)); background: repeating-linear-gradient(45deg, var(--night) 0 10px, color-mix(in srgb, var(--ember) 7%, var(--night)) 10px 20px);
+  color: var(--muted); font-size: 13px; }
+.dt-hold > svg { color: var(--ember); flex: 0 0 auto; }
+.dt-hold-text { display: grid; gap: 2px; min-width: 0; flex: 1 1 180px; }
+.dt-hold-text strong { color: var(--text); font: 700 14px/1.2 Montserrat, Inter, sans-serif; letter-spacing: .01em; }
+.dt-hold-sub { font-size: 12px; }
+.dt-hold .dt-show { height: 30px; padding: 0 10px; color: var(--glow); border-color: var(--ember); }
+.dt-checking { border-style: solid; border-color: var(--line); }
+.dt-spinner { width: 16px; height: 16px; flex: 0 0 16px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--ember); animation: dt-spin 0.9s linear infinite; }
+@keyframes dt-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .dt-spinner { animation: none; border-top-color: var(--glow); } }
+.dt-blur { position: relative; display: inline-block; max-width: min(420px, 100%); border-radius: 8px; overflow: hidden; }
+.dt-blur img { display: block; max-width: 100%; max-height: 320px; border-radius: 8px; border: 1px solid var(--line); filter: blur(22px) saturate(.5); transform: scale(1.05); }
+.dt-blur.shown img { filter: none; transform: none; cursor: zoom-in; }
+.dt-cover { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 0 12px; text-align: center; border: 0; background: #12121499; color: var(--text); font: 700 12px Montserrat, Inter, sans-serif; letter-spacing: .04em; }
+.dt-cover svg { color: var(--ember); }
+.dt-cover:hover .dt-cover-text { color: var(--glow); }
+.dt-revealed { display: grid; gap: 4px; justify-items: start; }
+.dt-revealed img { max-width: min(420px, 100%); max-height: 320px; border-radius: 8px; border: 2px solid var(--ember); cursor: zoom-in; display: block; }
+.dt-revealed-note { font-size: 11px; font-weight: 700; color: var(--glow); letter-spacing: .03em; }
+.sp-card .dt-blur-thumb { filter: blur(14px) saturate(.5); }
+.dt-card-chip { display: inline-flex; align-items: center; gap: 4px; color: var(--glow); }
+.dt-card-chip svg { width: 14px; height: 14px; color: var(--ember); }
+.rp-chip.dt-chip { background: color-mix(in srgb, var(--ember) 28%, var(--raised)); }
+.rp-chip.dt-chip svg { width: 13px; height: 13px; }
+.dt-score { display: grid; gap: 4px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); font-size: 13px; }
+.dt-score.low { border-color: color-mix(in srgb, var(--vacant) 45%, var(--line)); }
+.dt-score.high { border-color: color-mix(in srgb, var(--ember) 60%, var(--line)); }
+.dt-score-line { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.dt-score-line svg { color: var(--ember); flex: 0 0 auto; }
+.dt-score.low .dt-score-line svg { color: var(--vacant); }
+.dt-guide { font-size: 12px; color: var(--muted); }
+.dt-actions .primary { padding: 0 14px; height: 34px; }
+.dt-intro { margin: 0; }
+.dt-select { height: 34px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--night); color: var(--text); max-width: 260px; }
+.dt-status { display: grid; gap: 8px; }
+.dt-status h3 { margin: 4px 0 0; font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }

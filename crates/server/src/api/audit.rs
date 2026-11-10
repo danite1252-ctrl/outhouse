@@ -158,6 +158,8 @@ pub struct ServerStatus {
     pub voice_configured: bool,
     /// None when the backup status file can't be read (e.g. running on a PC).
     pub backup: Option<BackupStatus>,
+    /// The image detector: set up, online, queue length, last error.
+    pub detector: serde_json::Value,
 }
 
 /// Reads the server's version: `OUTHOUSE_VERSION`, else the VERSION file
@@ -293,6 +295,7 @@ pub async fn server_status(
         voice_configured: st.config.livekit_api_key.is_some()
             && st.config.livekit_api_secret.is_some(),
         backup: read_backup_status().await,
+        detector: super::detector::health(&st).await,
     }))
 }
 

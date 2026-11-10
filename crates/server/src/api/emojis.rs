@@ -311,6 +311,15 @@ pub async fn create(
         let _ = tokio::fs::remove_file(st.config.upload_dir.join(&key)).await;
         return Err(e.into());
     }
+    crate::api::detector::track_upload(
+        &st,
+        crate::api::detector::KIND_EMOJI,
+        &key,
+        content_type,
+        user.id,
+        Some(guild_id),
+    )
+    .await;
     st.dispatch(
         Audience::Guild(guild_id),
         ServerEvent::EmojisChanged { guild_id },

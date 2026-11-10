@@ -211,11 +211,21 @@ pub(crate) async fn hydrate(db: &PgPool, rows: Vec<MessageRow>) -> AppResult<Vec
         .await?
     };
 
+    // Pictures the image detector is holding back (no link unless blurred).
+    let keys: Vec<String> = attachments.iter().map(|a| a.storage_key.clone()).collect();
+    let holds = crate::api::detector::holds_for(db, &keys).await?;
     let mut att_map: HashMap<i64, Vec<Attachment>> = HashMap::new();
     for a in attachments {
+        let hold = holds.get(&a.storage_key).cloned();
+        let hidden = hold.as_ref().is_some_and(|h| h.state != "blur");
         att_map.entry(a.message_id).or_default().push(Attachment {
             id: a.id,
-            url: attachment_url(&a.storage_key, &a.filename),
+            url: if hidden {
+                String::new()
+            } else {
+                attachment_url(&a.storage_key, &a.filename)
+            },
+            hold,
             filename: a.filename,
             content_type: a.content_type,
             size: a.size,
@@ -988,6 +998,15 @@ pub(crate) async fn create_message_ex(
         .await?;
     }
     tx.commit().await?;
+    // New pictures go in the image detector's queue (scanned in the
+    // background; pictures to or from teens are held until then).
+    if !files.is_empty() {
+        let new_files: Vec<(String, String)> = files
+            .iter()
+            .map(|f| (f.storage_key.clone(), f.content_type.clone()))
+            .collect();
+        crate::api::detector::track_message_files(st, &access.channel, user, id, &new_files).await;
+    }
 
     let message = fetch_message(&st.db, id).await?;
     st.dispatch(
@@ -1311,12 +1330,19 @@ pub(crate) async fn remove_unused_files(st: &AppState, keys: Vec<String>) {
         if crate::api::safety::file_retained(&st.db, &key).await {
             continue;
         }
-        let used: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM attachments WHERE storage_key = $1)")
-                .bind(&key)
-                .fetch_one(&st.db)
-                .await
-                .unwrap_or(true);
+        // Still a message's file, someone's avatar or banner, an emoji, a
+        // sticker or a sound (closing a report about one mustn't delete it).
+        let used: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM attachments WHERE storage_key = $1)
+                 OR EXISTS(SELECT 1 FROM profile_files WHERE storage_key = $1)
+                 OR EXISTS(SELECT 1 FROM emojis WHERE storage_key = $1)
+                 OR EXISTS(SELECT 1 FROM stickers WHERE storage_key = $1)
+                 OR EXISTS(SELECT 1 FROM sounds WHERE storage_key = $1)",
+        )
+        .bind(&key)
+        .fetch_one(&st.db)
+        .await
+        .unwrap_or(true);
         if !used {
             let _ = tokio::fs::remove_file(st.config.upload_dir.join(key)).await;
         }

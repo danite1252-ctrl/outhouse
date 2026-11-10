@@ -128,6 +128,8 @@ jobs:
           node --check web/landing.js
           node --check web/entry.js
           node --check web/updates.js
+          node --check web/safety.js
+          node --check web/detector.js
           node --check web/bots/dice-bot.mjs
       - name: Deploy scripts check (bash -n + shellcheck)
         run: |
@@ -149,9 +151,28 @@ jobs:
           else
             echo "::warning::python3 -m venv failed; using the system Python"
           fi
+      - name: Image detector sidecar (build the image, start it in test mode)
+        run: |
+          # The same image deploy/docker-compose.yml builds (the model is downloaded and
+          # checked against its SHA-256 while it builds), with the same 1 CPU / 1 GB caps.
+          for i in 1 2 3; do
+            docker build -t outhouse-detector:ci deploy/detector && break
+            [ "$i" = 3 ] && exit 1
+            echo "::warning::Detector image build attempt $i failed; retrying in 20s"; sleep 20
+          done
+          docker image ls outhouse-detector:ci --format 'Detector image: {{.Repository}}:{{.Tag}} {{.Size}}'
+          docker rm -f outhouse-detector >/dev/null 2>&1 || true
+          docker run -d --name outhouse-detector --network host --cpus 1 --memory 1g \
+            -e DETECTOR_TEST_MODE=1 -e DETECTOR_BIND=127.0.0.1 -e DETECTOR_PORT=8095 -e DETECTOR_TEST_SLOW_SECS=4 \
+            outhouse-detector:ci >/dev/null
+          for i in $(seq 1 90); do curl -fsS http://127.0.0.1:8095/health >/dev/null 2>&1 && break; sleep 1; done
+          curl -fsS http://127.0.0.1:8095/health || { docker logs outhouse-detector; exit 1; }
+          echo
+          docker stats --no-stream --format 'Idle: {{.Name}} CPU {{.CPUPerc}} RAM {{.MemUsage}}' outhouse-detector
       - name: Smoke test (real server + Postgres)
         env:
           DATABASE_URL: postgres://outhouse:outhouse@localhost:5432/outhouse
+          DETECTOR_URL: http://127.0.0.1:8095
           BIND_ADDR: 127.0.0.1:8080
           WEB_DIR: web
           UPLOAD_DIR: /tmp/outhouse-uploads
@@ -177,6 +198,8 @@ jobs:
           LINK_PREVIEWS_OFFLINE: "1"
           # Carol is the site owner here (smoke-test users came first).
           SITE_OWNER: carolui
+          # The image detector sidecar (test mode) started above.
+          DETECTOR_URL: http://127.0.0.1:8095
           BNET_CLIENT_ID: mock-id
           BNET_CLIENT_SECRET: mock-secret
           BNET_OAUTH_URL: http://127.0.0.1:8099/oauth
@@ -236,6 +259,9 @@ jobs:
           cat /tmp/outhouse-server.log 2>/dev/null || true
           cat /tmp/ui-server.log 2>/dev/null || true
           docker logs livekit 2>&1 | tail -80 || true
+          echo "== image detector"
+          docker stats --no-stream --format '{{.Name}} CPU {{.CPUPerc}} RAM {{.MemUsage}}' outhouse-detector 2>/dev/null || true
+          docker logs outhouse-detector 2>&1 | tail -30 || true
       - name: Clean up (containers, background processes, temp files)
         if: always()
         run: if [ -f ci/runner-cleanup.sh ]; then bash ci/runner-cleanup.sh --end; else docker rm -f livekit 2>/dev/null || true; fi

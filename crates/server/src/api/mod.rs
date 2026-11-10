@@ -8,6 +8,7 @@ mod bnet;
 mod bots;
 mod channels;
 pub mod components;
+pub mod detector;
 mod dms;
 pub mod emojis;
 pub mod events;
@@ -476,6 +477,16 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/safety/guilds/{id}/family", put(safety::set_family))
         .route("/api/safety/digest", get(safety::digest))
+        // The image detector (site owner's settings; revealing held pictures)
+        .route(
+            "/api/safety/detector",
+            get(detector::get_settings).put(detector::set_settings),
+        )
+        .route(
+            "/api/safety/guilds/{id}/detector",
+            get(detector::get_guild_settings).put(detector::set_guild_settings),
+        )
+        .route("/api/attachments/{id}/reveal", get(detector::reveal))
         // GIFs, files, gateway
         .route("/api/gifs", get(gifs::search))
         .route("/files/{key}/{name}", get(files::serve))
