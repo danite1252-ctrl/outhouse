@@ -3470,6 +3470,8 @@ with sync_playwright() as p:
         if label == "desktop":
             pg.click(".thread-panel .thread-send-later")
         else:
+            # Phones show Send (instead of only the mic) once there's text.
+            pg.wait_for_selector(".thread-panel .thread-composer button.send", state="visible", timeout=5000)
             sbox = pg.query_selector(".thread-panel .thread-composer button.send").bounding_box()
             sptr = {"pointerType": "touch", "pointerId": 9, "isPrimary": True, "clientX": sbox["x"] + 10, "clientY": sbox["y"] + 10, "bubbles": True}
             pg.dispatch_event(".thread-panel .thread-composer button.send", "pointerdown", sptr)

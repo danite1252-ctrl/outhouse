@@ -159,6 +159,13 @@ threadComposer = function (...args) {
     menu(r.right - 180, r.top - 110);
   } }, "▾");
   send.after(more);
+  // With the voice-message mic beside it, phones only show Send once there's
+  // something to send (like the main composer): keep "has-text" up to date.
+  const syncText = () => form.classList.toggle("has-text", !!ta.value.trim() || thread.files.length > 0);
+  for (const type of ["input", "keyup", "change"]) form.addEventListener(type, syncText);
+  form.addEventListener("paste", () => setTimeout(syncText, 0));
+  form.addEventListener("submit", () => setTimeout(syncText, 0));
+  wrap.addEventListener("click", () => setTimeout(syncText, 0)); // removing a file chip
   // Press and hold Send on touch screens.
   let timer = null;
   let longPressed = false;
