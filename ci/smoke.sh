@@ -3469,4 +3469,14 @@ tok "$TOKEN_A" call GET /api/safety/summary | jq -e '.open >= 1' >/dev/null
 [ "$(report "$TOKEN_T" user "$ADAM" harassment)" = 201 ]
 tok "$TOKEN_T" call PUT "/api/users/@me/blocks/$ADAM" >/dev/null
 
+step "Deleting a channel's newest message moves its newest back, so it can't stay unread"
+UC=$(tok "$TOKEN_A" call POST "/api/guilds/$GUILD/channels" '{"name":"unread-fix"}' | jq -r .id)
+U1=$(tok "$TOKEN_A" call POST "/api/channels/$UC/messages" '{"content":"first"}' | jq -r .id)
+U2=$(tok "$TOKEN_A" call POST "/api/channels/$UC/messages" '{"content":"second"}' | jq -r .id)
+tok "$TOKEN_B" call GET "/api/users/@me/unread" | jq -e --arg c "$UC" --arg m "$U2" '.channels[] | select(.channel_id == $c) | .last_message_id == $m' >/dev/null
+tok "$TOKEN_A" call DELETE "/api/channels/$UC/messages/$U2" >/dev/null
+tok "$TOKEN_B" call GET "/api/users/@me/unread" | jq -e --arg c "$UC" --arg m "$U1" '.channels[] | select(.channel_id == $c) | .last_message_id == $m' >/dev/null
+tok "$TOKEN_A" call DELETE "/api/channels/$UC/messages/$U1" >/dev/null
+tok "$TOKEN_B" call GET "/api/users/@me/unread" | jq -e --arg c "$UC" '.channels[] | select(.channel_id == $c) | .last_message_id == null' >/dev/null
+
 echo "Smoke test passed."

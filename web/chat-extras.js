@@ -6,6 +6,7 @@
 // Unread markers and mention counts
 // ======================================================================
 
+state.goneIds = new Set(); // messages deleted or hidden while you're here
 state.unread = new Map(); // channelId -> { guild_id, last_message_id, last_read_id, mentions, direct }
 // Threads with replies you haven't read: threadId -> { channel_id, guild_id, last_message_id, last_read_id, mentions }
 state.threadUnread = new Map();
@@ -39,6 +40,8 @@ function loadUnread() {
     for (const ch of state.channels) {
       const u = state.unread.get(ch.id);
       if (u?.last_read_id && (!ch.last_read_id || idGt(u.last_read_id, ch.last_read_id))) ch.last_read_id = u.last_read_id;
+      // Its newest message was deleted or hidden: take the server's newest instead.
+      if (u && ch.last_message_id && state.goneIds.has(ch.last_message_id)) ch.last_message_id = u.last_message_id;
     }
     refreshUnreadUi();
   }, 150);

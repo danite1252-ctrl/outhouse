@@ -566,13 +566,19 @@ function handleEvent({ t, d }) {
       onMessageChanged(d.channel_id);
       break;
     }
-    case "MESSAGE_DELETE":
+    case "MESSAGE_DELETE": {
       if (d.channel_id === state.channelId) {
         state.messages = state.messages.filter((m) => m.id !== d.id);
         renderMessages();
       }
       onMessageChanged(d.channel_id);
+      // If that was the channel's newest message, the server has moved its
+      // "newest" back; fetch it so the channel doesn't stay unread.
+      state.goneIds.add(d.id);
+      const gone = state.channels.find((c) => c.id === d.channel_id);
+      if (gone?.last_message_id === d.id || state.unread.get(d.channel_id)?.last_message_id === d.id) loadUnread();
       break;
+    }
     case "CHANNEL_ACK":
       onChannelAck(d);
       break;
@@ -664,11 +670,16 @@ function ackChannel() {
   clearTimeout(ackTimer);
   ackTimer = setTimeout(() => {
     const ch = state.channels.find((c) => c.id === state.channelId);
-    const last = state.messages[state.messages.length - 1];
-    if (!ch || !last || (ch.last_read_id && !idGt(last.id, ch.last_read_id))) return;
-    ch.last_read_id = last.id;
-    noteChannelRead(ch.id, last.id);
-    api("POST", `/api/channels/${ch.id}/ack`, { message_id: last.id }).catch(() => {});
+    if (!ch) return;
+    // Read up to the newest message shown. At the bottom, also cover the
+    // channel's newest message even if it isn't shown to you (held for review,
+    // from someone blocked) or the channel is empty, so it can't stay unread.
+    let upto = state.messages[state.messages.length - 1]?.id;
+    if (!state.detached && ch.last_message_id && (!upto || idGt(ch.last_message_id, upto))) upto = ch.last_message_id;
+    if (!upto || (ch.last_read_id && !idGt(upto, ch.last_read_id))) return;
+    ch.last_read_id = upto;
+    noteChannelRead(ch.id, upto);
+    api("POST", `/api/channels/${ch.id}/ack`, { message_id: upto }).catch(() => {});
     renderChannels();
   }, 400);
 }
