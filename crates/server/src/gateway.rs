@@ -204,6 +204,11 @@ async fn run(socket: WebSocket, st: AppState) -> anyhow::Result<()> {
                                 _ => {}
                             }
                             send(&mut sink, &d.event).await?;
+                            // Suspended: the connection closes straight away.
+                            if matches!(d.event, ServerEvent::InvalidSession { .. }) {
+                                let _ = sink.send(WsMessage::Close(None)).await;
+                                break;
+                            }
                         }
                     }
                     Err(RecvError::Lagged(missed)) => {

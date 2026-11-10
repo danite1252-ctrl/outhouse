@@ -110,6 +110,8 @@ pub async fn register(
     validate_username(&username)?;
     check_new_password(&req.password)?;
     check_registration_allowed(&st, req.invite.as_deref()).await?;
+    // Only the age group is kept (never the date); under 13s are turned away.
+    let bracket = super::safety::signup_bracket(&st.db, req.birth_date.as_deref()).await?;
     let display_name = req
         .display_name
         .as_deref()
@@ -122,14 +124,15 @@ pub async fn register(
 
     let hash = auth::hash_password(req.password).await?;
     let result = sqlx::query_as::<_, User>(
-        "INSERT INTO users (id, username, display_name, password_hash)
-         VALUES ($1, $2, $3, $4)
+        "INSERT INTO users (id, username, display_name, password_hash, age_bracket, dm_privacy)
+         VALUES ($1, $2, $3, $4, $5, CASE WHEN $5 = 'teen' THEN 'friends' ELSE 'everyone' END)
          RETURNING id, username, display_name",
     )
     .bind(st.ids.next_id())
     .bind(&username)
     .bind(&display_name)
     .bind(&hash)
+    .bind(bracket)
     .fetch_one(&st.db)
     .await;
 
@@ -215,6 +218,10 @@ pub async fn login(
     if !auth::verify_password(req.password, row.password_hash).await {
         tracing::info!(%ip, user = %username, "failed sign-in");
         return Err(failed());
+    }
+    if let Some(why) = super::safety::suspension_message(&st.db, row.id).await? {
+        tracing::info!(%ip, user = %username, "suspended account tried to sign in");
+        return Err(AppError::Refused(why));
     }
     let user = auth::fetch_user(&st.db, row.id).await?;
     let token = auth::create_session(&st.db, user.id).await?;

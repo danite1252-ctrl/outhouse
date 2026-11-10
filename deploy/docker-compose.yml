@@ -76,6 +76,13 @@ services:
       # Android App Links for invite links: the app's signing certificate SHA-256
       # (blank = the Outhouse release key; "off" = no App Links).
       ANDROID_CERT_SHA256: ${ANDROID_CERT_SHA256:-}
+      # Safety reports (see README "Safety & reports"): who the site owner is
+      # (usernames or IDs, comma-separated; blank = the first account made), and
+      # child-safety reports also alert the same ntfy / webhook as healthcheck.sh.
+      SITE_OWNER: ${SITE_OWNER:-}
+      ALERT_NTFY_URL: ${ALERT_NTFY_URL:-}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      REPORTS_PER_HOUR: ${REPORTS_PER_HOUR:-}
       # backup.sh leaves its result here; Outhouse settings → Server status shows it.
       BACKUP_STATUS_FILE: /app/status/backup.json
     extra_hosts:

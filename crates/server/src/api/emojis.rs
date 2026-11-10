@@ -400,7 +400,10 @@ pub async fn delete(
         )
         .save(&st)
         .await;
-    let _ = tokio::fs::remove_file(st.config.upload_dir.join(key)).await;
+    // Kept while a safety report refers to it.
+    if !crate::api::safety::file_retained(&st.db, &key).await {
+        let _ = tokio::fs::remove_file(st.config.upload_dir.join(&key)).await;
+    }
     st.dispatch(
         Audience::Guild(guild_id),
         ServerEvent::EmojisChanged { guild_id },

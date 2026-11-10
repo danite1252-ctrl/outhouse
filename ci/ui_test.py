@@ -43,8 +43,8 @@ def wait_for_server():
 
 wait_for_server()
 suffix = str(int(time.time()))[-6:]
-carol = api("POST", "/api/auth/register", {"username": "carolui", "password": "password123", "display_name": "Carol"})
-dave = api("POST", "/api/auth/register", {"username": f"dave{suffix}", "password": "password123", "display_name": "Dave"})
+carol = api("POST", "/api/auth/register", {"username": "carolui", "password": "password123", "birth_date": "1990-01-01", "display_name": "Carol"})
+dave = api("POST", "/api/auth/register", {"username": f"dave{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": "Dave"})
 TOKEN = carol["token"]
 guild = api("POST", "/api/guilds", {"name": "UI Test Guild"}, TOKEN)
 chan = api("POST", f"/api/guilds/{guild['id']}/channels", {"name": "raids"}, TOKEN)
@@ -120,7 +120,7 @@ def upload(path, fields, files, token):
         return json.loads(res.read().decode())
 
 
-erin = api("POST", "/api/auth/register", {"username": f"erin{suffix}", "password": "password123", "display_name": "Erin"})
+erin = api("POST", "/api/auth/register", {"username": f"erin{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": "Erin"})
 api("POST", f"/api/invites/{code}", None, erin["token"])
 upload(f"/api/guilds/{guild['id']}/emojis", {"name": "pog"}, {"file": ("pog.png", make_png(), "image/png")}, TOKEN)
 api("POST", f"/api/channels/{chan['id']}/messages", {"content": "Who's bringing fire resist gear?"}, dave["token"])
@@ -200,7 +200,7 @@ def make_wav(seconds, rate=8000):
             + b"data" + struct.pack("<I", n) + data)
 
 
-frank = api("POST", "/api/auth/register", {"username": f"frank{suffix}", "password": "password123", "display_name": "Frank"})
+frank = api("POST", "/api/auth/register", {"username": f"frank{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": "Frank"})
 api("POST", f"/api/invites/{code}", None, frank["token"])
 FRANK = frank["user"]["id"]
 comms = api("POST", f"/api/guilds/{guild['id']}/channels", {"name": "Raid comms", "kind": 2}, TOKEN)
@@ -1727,9 +1727,9 @@ with sync_playwright() as p:
     # ---- Raid managers by role, characters on sign-ups, invite lists ----
     raid_leader = api("POST", f"/api/guilds/{G}/roles", {"name": "Raid leader", "color": 0x4F7FD0}, TOKEN)
     api("PUT", f"/api/guilds/{G}/members/{DAVE}/roles/{raid_leader['id']}", None, TOKEN)
-    gus = api("POST", "/api/auth/register", {"username": f"gus{suffix}", "password": "password123", "display_name": "Gus"})
-    hank = api("POST", "/api/auth/register", {"username": f"hank{suffix}", "password": "password123", "display_name": "Hank"})
-    ivy = api("POST", "/api/auth/register", {"username": f"ivy{suffix}", "password": "password123", "display_name": "Ivy"})
+    gus = api("POST", "/api/auth/register", {"username": f"gus{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": "Gus"})
+    hank = api("POST", "/api/auth/register", {"username": f"hank{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": "Hank"})
+    ivy = api("POST", "/api/auth/register", {"username": f"ivy{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": "Ivy"})
     for u in (gus, hank, ivy):
         api("POST", f"/api/invites/{code}", None, u["token"])
     hammer = api("POST", "/api/users/@me/characters", {"name": "Hammer", "last_name": "Stonefist", "race": "Dwarf", "class": "Paladin", "level": 60}, hank["token"])
@@ -2597,8 +2597,8 @@ with sync_playwright() as p:
     # ---- Friends, voice messages, stickers, forwarding, scheduled messages ----
     soc = api("POST", f"/api/guilds/{G}/channels", {"name": "hangout"}, TOKEN)
     SOC = soc["id"]
-    gwen = api("POST", "/api/auth/register", {"username": f"gwen{suffix}", "password": "password123", "display_name": "Gwen"})
-    grim = api("POST", "/api/auth/register", {"username": f"grim{suffix}", "password": "password123", "display_name": "Grim"})
+    gwen = api("POST", "/api/auth/register", {"username": f"gwen{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": "Gwen"})
+    grim = api("POST", "/api/auth/register", {"username": f"grim{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": "Grim"})
     api("POST", f"/api/invites/{code}", None, grim["token"])
     GRIM = grim["user"]["id"]
     # Dave and Carol are friends, Erin asked Carol, Carol asked Frank, Carol blocked Grim.
@@ -2914,7 +2914,7 @@ with sync_playwright() as p:
     rc_users = []
     for i, (name, char, cls, spec, role) in enumerate(RC_PEOPLE):
         ip = f"198.18.{1 + i // 12}.{10 + i}"
-        u = api_from(ip, "POST", "/api/auth/register", {"username": f"rc{i}x{suffix}", "password": "password123", "display_name": name})
+        u = api_from(ip, "POST", "/api/auth/register", {"username": f"rc{i}x{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": name})
         api_from(ip, "POST", f"/api/invites/{rcode}", None, u["token"])
         cid = None
         if char:
@@ -3532,7 +3532,7 @@ with sync_playwright() as p:
 
     # Blocked people in voice: Carol blocked Grim (social section); Hush blocks Carol.
     api("POST", f"/api/guilds/{G}/channels", {"name": "Quiet corner", "kind": 2}, TOKEN)
-    hush = api("POST", "/api/auth/register", {"username": f"hush{suffix}", "password": "password123", "display_name": "Hush"})
+    hush = api("POST", "/api/auth/register", {"username": f"hush{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": "Hush"})
     api("POST", f"/api/invites/{code}", None, hush["token"])
     HUSH = hush["user"]["id"]
     api("PUT", f"/api/users/@me/blocks/{CAROL}", None, hush["token"])
@@ -3773,6 +3773,176 @@ with sync_playwright() as p:
     assert box and box["y"] < 56 and head["x"] + head["width"] - (box["x"] + box["width"]) < 80, f"update button not at the top right on Home: {box} in {head}"
     hm.screenshot(path=f"{SHOTS}/3441-home-update-available.png")
     hm.close()
+
+    # ---- Safety: reports, the owner's console, suspension, teen protections (safety.js) ----
+    def reg_from(ip, name, display, dob="1990-01-01"):
+        """A sign-up from its own address (sign-ups are limited per address)."""
+        req = urllib.request.Request(BASE + "/api/auth/register", method="POST", data=json.dumps(
+            {"username": name, "password": "password123", "display_name": display, "birth_date": dob}).encode())
+        req.add_header("Content-Type", "application/json")
+        req.add_header("X-Forwarded-For", ip)
+        with urllib.request.urlopen(req) as res:
+            return json.loads(res.read().decode())
+
+    teen_dob = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 15 * 365.25 * 86400))
+    tess = reg_from("198.18.9.1", f"tess{suffix}", "Tess", teen_dob)
+    gary = reg_from("198.18.9.2", f"gary{suffix}", "Gary")
+    hal = reg_from("198.18.9.3", f"hal{suffix}", "Hal")
+    rita = reg_from("198.18.9.4", f"rita{suffix}", "Rita")
+    for u in (tess, gary, hal, rita):
+        api("POST", f"/api/invites/{code}", None, u["token"])
+    rep_chan = api("POST", f"/api/guilds/{guild['id']}/channels", {"name": "report-test"}, TOKEN)
+    api("POST", f"/api/channels/{rep_chan['id']}/messages", {"content": "Evening all, raid at 8?"}, hal["token"])
+    gary_msg = api("POST", f"/api/channels/{rep_chan['id']}/messages", {"content": "hey kid, want free gold? add me and DM me your password"}, gary["token"])
+    cs_msg = upload(f"/api/channels/{rep_chan['id']}/messages/upload", {"content": "look what I found"},
+                    {"files": ("photo.png", make_png(64), "image/png")}, gary["token"])
+    cs_url = cs_msg["attachments"][0]["url"]
+    api("POST", f"/api/channels/{rep_chan['id']}/messages", {"content": "That's not ok, reporting it."}, hal["token"])
+    api("POST", "/api/reports", {"target_kind": "message", "target_id": cs_msg["id"], "category": "child_safety",
+                                 "details": "Picture of a child, sent to the channel"}, hal["token"])
+    api("POST", "/api/reports", {"target_kind": "user", "target_id": gary["user"]["id"], "category": "spam"}, hal["token"])
+
+    def safety_page(token, vp=None, mobile=False, channel=None):
+        pg = browser.new_page(viewport=vp or {"width": 1280, "height": 800}, is_mobile=mobile, has_touch=mobile)
+        watch(pg, f"safety-{'phone' if mobile else 'desktop'}")
+        pg.add_init_script(f"localStorage.setItem('outhouse_token', {json.dumps(token)}); localStorage.setItem('outhouse_guild', {json.dumps(guild['id'])}); localStorage.setItem('outhouse_channel_{guild['id']}', {json.dumps(channel or rep_chan['id'])});")
+        pg.goto(BASE + "/")
+        pg.wait_for_selector("#messages .msg", timeout=15000)
+        return pg
+
+    # Report dialog (desktop): right-click Gary's message → Report message.
+    rp = safety_page(rita["token"])
+    rp.wait_for_selector(f"#msg-{gary_msg['id']}")
+    rp.click(f"#msg-{gary_msg['id']} .msg-text", button="right")
+    rp.click(".menu button:has-text('Report message')")
+    rp.wait_for_selector("dialog.report-dialog[open]")
+    assert rp.inner_text("dialog.report-dialog .rp-option >> nth=0").startswith("Child safety"), "child safety isn't first"
+    rp.click("dialog.report-dialog .rp-option:has-text('Harassment or bullying')")
+    rp.fill("dialog.report-dialog textarea", "Asking a kid for their password in #report-test.")
+    rp.check("dialog.report-dialog .rp-block")
+    rp.screenshot(path=f"{SHOTS}/3501-report-dialog-desktop.png")
+    rp.click("dialog.report-dialog button[type=submit]")
+    rp.wait_for_selector(".toast:has-text('Your report was sent')", timeout=10000)
+    rp.wait_for_selector(f"#msg-{gary_msg['id']}.blocked-hidden", state="attached", timeout=10000)
+    # Thread replies: right-click in the thread panel → Report message.
+    rthread = api("POST", f"/api/channels/{rep_chan['id']}/threads", {"name": "Report thread"}, hal["token"])
+    treply = api("POST", f"/api/channels/{rep_chan['id']}/messages", {"content": "nasty thread reply", "thread_id": rthread["id"]}, hal["token"])
+    rp.evaluate(f"openThread({json.dumps(rthread['id'])})")
+    rp.wait_for_selector(f"#tmsg-{treply['id']}", timeout=10000)
+    rp.click(f"#tmsg-{treply['id']} .msg-text", button="right")
+    rp.click(".menu button:has-text('Report message')")
+    rp.wait_for_selector("dialog.report-dialog[open]")
+    rp.click("dialog.report-dialog .rp-option:has-text('Spam or scams')")
+    rp.click("dialog.report-dialog button[type=submit]")
+    rp.wait_for_selector("dialog.report-dialog", state="detached", timeout=10000)
+    rp.close()
+    reps = api("GET", "/api/safety/reports?status=open", None, TOKEN)["reports"]
+    assert any(r["target_id"] == gary_msg["id"] and r["category"] == "harassment" for r in reps), reps[:3]
+    assert reps[0]["child_safety"], "child-safety report isn't first"
+    # The quarantined picture is gone for everyone, and its message is hidden.
+    try:
+        urllib.request.urlopen(BASE + cs_url)
+        errors.append("quarantined file was served")
+    except urllib.error.HTTPError as e:
+        assert e.code == 451, e.code
+
+    # Report dialog (phone): the profile card's ⋯ → Report…, child safety picked.
+    pp = safety_page(rita["token"], {"width": 390, "height": 844}, mobile=True)
+    pp.evaluate(f"openProfile({json.dumps(hal['user']['id'])}, document.querySelector('#messages .msg .msg-author'))")
+    pp.wait_for_selector(".profile-card .pc-more")
+    pp.click(".profile-card .pc-more")
+    pp.click(".menu button:has-text('Report…')")
+    pp.wait_for_selector("dialog.report-dialog[open]")
+    pp.click("dialog.report-dialog .rp-option:has-text('Child safety')")
+    pp.wait_for_selector("dialog.report-dialog .rp-urgent:not([hidden])")
+    pp.screenshot(path=f"{SHOTS}/3502-report-dialog-phone.png")
+    pp.click("dialog.report-dialog button:has-text('Cancel')")
+    pp.wait_for_selector("dialog.report-dialog", state="detached")
+    pp.close()
+
+    # The owner's inbox: shield on the rail with a count, child safety first.
+    op = safety_page(TOKEN)
+    seen_files = []
+    op.on("request", lambda r: "/files/" in r.url and seen_files.append(r.url))
+    op.wait_for_selector("#safety-btn .mention-badge.urgent", timeout=10000)
+    op.click("#safety-btn")
+    op.wait_for_selector("dialog.safety-console .sc-row.child", timeout=10000)
+    op.wait_for_timeout(300)
+    op.screenshot(path=f"{SHOTS}/3503-owner-inbox.png")
+    # Child-safety detail: a locked placeholder and the authority links, never the picture.
+    op.click("dialog.safety-console .sc-row.child >> nth=0")
+    op.wait_for_selector("dialog.safety-console .sc-child-warning", timeout=10000)
+    op.wait_for_selector("dialog.safety-console .sc-locked")
+    assert op.query_selector("dialog.safety-console .sc-files img, dialog.safety-console .sc-files video") is None, "child-safety media shown"
+    assert op.query_selector("dialog.safety-console .sc-file button:has-text('Show')") is None, "child-safety file has a Show button"
+    warn = op.inner_text("dialog.safety-console .sc-child-warning")
+    for needle in ("accce.gov.au/report", "esafety.gov.au/report", "000", "report.cybertip.org", "Do not view, download"):
+        assert needle in warn, needle
+    assert "sha-256" in op.inner_text("dialog.safety-console .sc-files").lower()
+    op.screenshot(path=f"{SHOTS}/3504-report-detail-child-safety.png")
+    op.evaluate("document.querySelector('dialog.safety-console .sc-files').scrollIntoView({block: 'start'})")
+    op.wait_for_timeout(200)
+    op.screenshot(path=f"{SHOTS}/3510-report-detail-files-locked.png")
+    assert not any("photo" in u or cs_url in u for u in seen_files), seen_files
+    # Suspension: from Gary's spam report.
+    op.click("dialog.safety-console .sc-back button")
+    op.click("dialog.safety-console .sc-row:has-text('Spam or scams'):has-text('Gary')")
+    op.wait_for_selector("dialog.safety-console .sc-suspend", timeout=10000)
+    op.click("dialog.safety-console .sc-suspend")
+    op.wait_for_selector("dialog.sc-form[open]")
+    op.select_option("dialog.sc-form select", "7")
+    op.fill("dialog.sc-form input[type=text]", "Asking kids for passwords")
+    op.check("dialog.sc-form input[type=checkbox]")
+    op.screenshot(path=f"{SHOTS}/3505-suspend-dialog.png")
+    op.click("dialog.sc-form button[type=submit]")
+    op.wait_for_selector("dialog.safety-console .rp-chip:has-text('Suspended until')", timeout=10000)
+    op.wait_for_timeout(300)
+    op.screenshot(path=f"{SHOTS}/3506-suspended.png")
+    try:
+        api("GET", "/api/users/@me", None, gary["token"])
+        errors.append("suspended account still signed in")
+    except urllib.error.HTTPError as e:
+        assert e.code == 401, e.code
+    op.keyboard.press("Escape")
+    # Outhouse settings → Reports (site owner only).
+    op.evaluate("openSettings('reports')")
+    op.wait_for_selector("dialog.settings .settings-main h2:text-is('Reports')", timeout=10000)
+    op.wait_for_selector("dialog.settings .settings-main .sc-row")
+    op.keyboard.press("Escape")
+    op.close()
+    # Phone: the console fits.
+    opp = safety_page(TOKEN, {"width": 390, "height": 844}, mobile=True)
+    opp.evaluate("openSafetyConsole()")
+    opp.wait_for_selector("dialog.safety-console .sc-row", timeout=10000)
+    opp.wait_for_timeout(300)
+    opp.screenshot(path=f"{SHOTS}/3507-owner-inbox-phone.png")
+    opp.close()
+    # Not the owner: no shield, and the console's API says no.
+    assert api("GET", "/api/users/@me/site-owner", None, dave["token"])["site_owner"] is False
+
+    # A teen: adults who aren't their friend see "This person can't receive messages from you".
+    tp = safety_page(hal["token"])
+    tp.evaluate(f"openProfile({json.dumps(tess['user']['id'])}, document.querySelector('#messages .msg .msg-author'))")
+    tp.wait_for_selector(".profile-card .pc-cant:has-text(\"This person can't receive messages from you.\")", timeout=10000)
+    assert tp.is_disabled(".profile-card .pc-message")
+    tp.wait_for_timeout(200)
+    tp.screenshot(path=f"{SHOTS}/3508-teen-cant-message.png")
+    tp.close()
+
+    # Sign-up asks for a date of birth; under 13s are turned away.
+    sp_ = browser.new_page(viewport={"width": 1280, "height": 800})
+    watch(sp_, "signup-age")
+    # Its own address for the sign-up limit (only on Outhouse's API, not other sites).
+    sp_.route(BASE + "/api/auth/**", lambda route: route.continue_(headers={**route.request.headers, "x-forwarded-for": "198.18.9.20"}))
+    sp_.goto(BASE + "/app?register")
+    sp_.wait_for_selector("input[name=birth_date]", timeout=10000)
+    sp_.fill("input[name=username]", f"littlekid{suffix}")
+    sp_.fill("input[name=password]", "password123")
+    sp_.fill("input[name=birth_date]", time.strftime("%Y-%m-%d", time.gmtime(time.time() - 9 * 365.25 * 86400)))
+    sp_.click("#auth-submit")
+    sp_.wait_for_selector("#auth-error:has-text('13 or older')", timeout=10000)
+    sp_.screenshot(path=f"{SHOTS}/3509-signup-under-13.png")
+    sp_.close()
 
     browser.close()
 

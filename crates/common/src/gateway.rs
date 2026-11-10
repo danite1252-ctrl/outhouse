@@ -325,7 +325,16 @@ pub enum ServerEvent {
         #[serde(with = "as_string")]
         channel_id: i64,
     },
-    /// Identify failed or the session expired; sign in again.
+    /// Safety reports changed (sent to the site owner only): how many are
+    /// waiting, how many are child-safety reports, and whether this is a new
+    /// urgent one (show an alert).
+    ReportsChanged {
+        open: i64,
+        urgent: i64,
+        alert: bool,
+    },
+    /// Identify failed, the session expired or the account was suspended;
+    /// sign in again.
     InvalidSession {
         reason: String,
     },

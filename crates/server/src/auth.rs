@@ -128,7 +128,8 @@ pub async fn delete_other_sessions(db: &PgPool, user_id: i64, keep_token: &str) 
     Ok(())
 }
 
-/// The user for a login token or a bot token.
+/// The user for a login token or a bot token. Suspended accounts (and bots
+/// whose owner is suspended) get nothing.
 pub async fn user_for_token(db: &PgPool, token: &str) -> AppResult<Option<User>> {
     let token = token.strip_prefix("Bot ").unwrap_or(token).trim();
     let sql = format!(
@@ -137,7 +138,10 @@ pub async fn user_for_token(db: &PgPool, token: &str) -> AppResult<Option<User>>
              SELECT user_id FROM sessions WHERE token_hash = $1 AND expires_at > now()
              UNION ALL
              SELECT user_id FROM bots WHERE token_hash = $1
-             LIMIT 1)"
+             LIMIT 1)
+           AND (u.suspended_until IS NULL OR u.suspended_until <= now())
+           AND NOT EXISTS (SELECT 1 FROM bots b JOIN users o ON o.id = b.owner_id
+                           WHERE b.user_id = u.id AND o.suspended_until > now())"
     );
     let user = sqlx::query_as::<_, User>(&sql)
         .bind(token_hash(token))

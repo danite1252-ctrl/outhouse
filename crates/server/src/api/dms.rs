@@ -307,6 +307,10 @@ pub async fn create(
         for &other in &ids {
             super::friends::check_can_dm(&st.db, user.id, other).await?;
         }
+        // Everyone in a group with a teen must be allowed to message them.
+        let mut everyone = ids.clone();
+        everyone.push(user.id);
+        super::safety::check_group_teens(&st.db, &everyone).await?;
         let id = st.ids.next_id();
         let name = clean_name(req.name.as_deref().unwrap_or(""));
         let mut tx = st.db.begin().await?;
@@ -385,6 +389,11 @@ pub async fn add_recipient(
     }
     check_reachable(&st.db, user.id, &[req.user_id]).await?;
     super::friends::check_can_dm(&st.db, user.id, req.user_id).await?;
+    // The newcomer and everyone already there, where either is a teen.
+    for &other in &current {
+        super::safety::check_teen_dm(&st.db, other, req.user_id).await?;
+        super::safety::check_teen_dm(&st.db, req.user_id, other).await?;
+    }
     sqlx::query(
         "INSERT INTO dm_participants (channel_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
     )

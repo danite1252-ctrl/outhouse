@@ -224,14 +224,18 @@ pub fn is_age_gated(channel: &Channel) -> bool {
 }
 
 /// May this user see this channel's messages? False only for an
-/// age-restricted channel they haven't accepted (bots always may).
+/// age-restricted channel they haven't accepted (bots always may), and
+/// always false there for teens (unless the site owner turned that off).
 /// Used for the gateway, push notifications and the API.
 pub async fn content_allowed(db: &PgPool, channel_id: i64, user_id: i64) -> bool {
     let ok: Option<bool> = sqlx::query_scalar(
         "SELECT c.content_mode <> 'nsfw' OR c.kind <> 0 OR c.guild_id IS NULL
-                OR EXISTS(SELECT 1 FROM users u WHERE u.id = $2 AND u.is_bot)
-                OR EXISTS(SELECT 1 FROM channel_age_accepts a
-                          WHERE a.channel_id = c.id AND a.user_id = $2)
+                OR ((EXISTS(SELECT 1 FROM users u WHERE u.id = $2 AND u.is_bot)
+                     OR EXISTS(SELECT 1 FROM channel_age_accepts a
+                               WHERE a.channel_id = c.id AND a.user_id = $2))
+                    AND NOT EXISTS(SELECT 1 FROM users t, site_settings s
+                                   WHERE t.id = $2 AND s.id = 1 AND t.age_bracket = 'teen'
+                                     AND NOT t.is_bot AND s.teen_block_adult_channels))
          FROM channels c WHERE c.id = $1",
     )
     .bind(channel_id)
@@ -256,9 +260,12 @@ pub async fn drop_age_gated(
     let gated: Vec<i64> = sqlx::query_scalar(
         "SELECT c.id FROM channels c
          WHERE c.id = ANY($1) AND c.kind = 0 AND c.content_mode = 'nsfw'
-           AND NOT EXISTS(SELECT 1 FROM users u WHERE u.id = $2 AND u.is_bot)
-           AND NOT EXISTS(SELECT 1 FROM channel_age_accepts a
-                          WHERE a.channel_id = c.id AND a.user_id = $2)",
+           AND ((NOT EXISTS(SELECT 1 FROM users u WHERE u.id = $2 AND u.is_bot)
+                 AND NOT EXISTS(SELECT 1 FROM channel_age_accepts a
+                                WHERE a.channel_id = c.id AND a.user_id = $2))
+                OR EXISTS(SELECT 1 FROM users t, site_settings s
+                          WHERE t.id = $2 AND s.id = 1 AND t.age_bracket = 'teen'
+                            AND NOT t.is_bot AND s.teen_block_adult_channels))",
     )
     .bind(&channel_ids[..])
     .bind(user_id)
