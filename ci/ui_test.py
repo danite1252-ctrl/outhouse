@@ -3685,6 +3685,9 @@ with sync_playwright() as p:
         assert needle in warn, needle
     assert "sha-256" in op.inner_text("dialog.safety-console .sc-files").lower()
     op.screenshot(path=f"{SHOTS}/3504-report-detail-child-safety.png")
+    op.evaluate("document.querySelector('dialog.safety-console .sc-files').scrollIntoView({block: 'start'})")
+    op.wait_for_timeout(200)
+    op.screenshot(path=f"{SHOTS}/3510-report-detail-files-locked.png")
     assert not any("photo" in u or cs_url in u for u in seen_files), seen_files
     # Suspension: from Gary's spam report.
     op.click("dialog.safety-console .sc-back button")
@@ -3732,8 +3735,10 @@ with sync_playwright() as p:
     tp.close()
 
     # Sign-up asks for a date of birth; under 13s are turned away.
-    sp_ = browser.new_page(viewport={"width": 1280, "height": 800}, extra_http_headers={"X-Forwarded-For": "198.18.9.20"})
+    sp_ = browser.new_page(viewport={"width": 1280, "height": 800})
     watch(sp_, "signup-age")
+    # Its own address for the sign-up limit (only on Outhouse's API, not other sites).
+    sp_.route(BASE + "/api/auth/**", lambda route: route.continue_(headers={**route.request.headers, "x-forwarded-for": "198.18.9.20"}))
     sp_.goto(BASE + "/app?register")
     sp_.wait_for_selector("input[name=birth_date]", timeout=10000)
     sp_.fill("input[name=username]", f"littlekid{suffix}")

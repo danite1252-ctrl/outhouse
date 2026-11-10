@@ -2381,6 +2381,7 @@ dialog.report-dialog select { width: 100%; }
 .danger-fill { background: var(--occupied) !important; }
 .report-btn { font-size: 14px; }
 .pc-cant { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
+.profile-card .pc-message:disabled { opacity: .4; cursor: not-allowed; filter: grayscale(.6); }
 .rail-btn.safety { color: var(--glow); display: grid; place-items: center; }
 .rail-btn.safety.urgent { color: var(--occupied); }
 .rail-btn .mention-badge.rail-badge { position: absolute; right: -4px; bottom: -4px; margin: 0; border: 3px solid var(--panel); height: 22px; line-height: 16px; border-radius: 11px; }
