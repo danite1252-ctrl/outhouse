@@ -2353,3 +2353,19 @@ img.mc-emoji { width: 18px; height: 18px; object-fit: contain; }
 .new-divider::before, .new-divider::after { content: ""; flex: 1; height: 1px; background: var(--ember, #FF6B35); opacity: .7; }
 .new-divider::after { flex: 0 0 0; }
 .new-divider span { padding: 1px 6px; border-radius: 4px; background: var(--ember, #FF6B35); color: #121214; }
+
+/* ---------- Thread panel parity, spoilers in pins/search, blocked people in voice (parity.js) ---------- */
+.thread-composer .send-more { height: 36px; align-self: center; margin-left: -4px; }
+.thread-composer .send-more:disabled { opacity: .4; cursor: default; }
+.thread-composer-wrap .thread-sched-bar { margin: 0 0 6px; font-size: 13px; }
+.sp-card.sp-spoilered { position: relative; }
+.sp-card.sp-spoilered .sp-text, .sp-card.sp-spoilered .sp-thumb, .sp-card.sp-spoilered .sp-files { filter: blur(8px) saturate(.6); user-select: none; }
+.sp-card .sp-spoiler-tag { justify-self: start; padding: 2px 10px; border-radius: 6px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .06em; }
+.sp-card.sp-spoilered:hover .sp-spoiler-tag { color: var(--text); border-color: var(--muted); }
+.sp-card .filtered-cover { justify-self: start; }
+.voice-user.blocked-voice { font-style: italic; }
+.voice-user.blocked-voice .bv-icon { width: 22px; height: 22px; flex: 0 0 22px; display: grid; place-items: center; font-size: 12px; font-style: normal; border-radius: 50%; background: var(--night); border: 1px dashed var(--line); box-shadow: 0 0 0 2px transparent; transition: box-shadow .1s; }
+.voice-user.blocked-voice.speaking .bv-icon { box-shadow: 0 0 0 2px var(--vacant); }
+.voice-user.blocked-voice .bv-show { font-style: normal; font-weight: 600; font-size: 12px; padding: 0; color: var(--glow); background: none; border: 0; }
+.voice-user.blocked-voice .bv-show:hover { text-decoration: underline; }
+.voice-user.hidden-voice { cursor: default; }

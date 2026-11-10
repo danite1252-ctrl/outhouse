@@ -468,6 +468,10 @@ pub struct ForwardInfo {
     pub embeds: Vec<Embed>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sticker: Option<StickerRef>,
+    /// It came out of a spoiler channel (or was a spoiler where it was
+    /// forwarded from), so clients blur it until it's clicked.
+    #[serde(default)]
+    pub source_spoiler: bool,
 }
 
 /// Where you stand with someone: "friend", "incoming" (they asked you),

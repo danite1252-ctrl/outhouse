@@ -508,6 +508,13 @@ pub async fn block(
             },
         );
     }
+    // ...and you vanish from their voice channel lists.
+    if let Some(v) = crate::api::voice::voice_state_of(&st, me) {
+        st.dispatch(
+            Audience::User(other),
+            crate::api::voice::voice_event(v.guild_id, me, None),
+        );
+    }
     Ok(Json(relationship(&st, me, other, "blocked").await?))
 }
 
@@ -534,6 +541,15 @@ pub async fn unblock(
                     online: true,
                 },
             );
+        }
+        // Back in their voice lists (if they can see that channel).
+        if let Some(v) = crate::api::voice::voice_state_of(&st, me) {
+            if crate::perms::can_view(&st.db, v.guild_id, v.channel_id, other).await {
+                st.dispatch(
+                    Audience::User(other),
+                    crate::api::voice::voice_event(v.guild_id, me, Some(&v)),
+                );
+            }
         }
     }
     Ok(StatusCode::NO_CONTENT)

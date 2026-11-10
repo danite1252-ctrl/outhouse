@@ -398,7 +398,8 @@ function renderScreens() {
     const video = el("video", { autoplay: true, playsinline: true });
     video.muted = true; // sound comes through the voice mix
     s.track.attach(video);
-    const name = s.local ? "You're sharing" : memberById(s.id)?.display_name ?? "Someone";
+    const hiddenName = !s.local && typeof voiceParticipantLabel === "function" ? voiceParticipantLabel(s.id) : null;
+    const name = s.local ? "You're sharing" : hiddenName ?? memberById(s.id)?.display_name ?? "Someone";
     const tools = el("div", { class: "st-tools" },
       el("button", { class: "st-btn", title: "Full screen", onclick: (e) => { e.stopPropagation(); node.requestFullscreen?.().catch(() => {}); } }, "⛶ Full screen"),
       el("button", { class: "st-btn", title: "Back to the chat", onclick: (e) => { e.stopPropagation(); focusScreen(null); } }, "✕"));
@@ -466,7 +467,7 @@ document.addEventListener("keydown", (e) => {
   let timer = null;
   document.addEventListener("pointerdown", (e) => {
     if (e.pointerType !== "touch") return;
-    const row = e.target.closest?.("#voice-channels .voice-user");
+    const row = e.target.closest?.("#voice-channels .voice-user:not(.hidden-voice)");
     if (!row) return;
     clearTimeout(timer);
     const { clientX, clientY } = e;

@@ -3093,4 +3093,71 @@ call PATCH "/api/threads/$T1" '{"locked":false}' | jq -e '.locked | not' >/dev/n
 kill $ARCH_PROBE 2>/dev/null || true
 call DELETE "/api/bots/$CB_ID" >/dev/null
 
+step "forwarded spoilers, thread send-later, blocked people in voice, filtered search results"
+TOKEN=$TOKEN_A
+SPC=$(call POST "/api/guilds/$GUILD/channels" '{"name":"spoiler-talk"}' | jq -r .id)
+call PATCH "/api/channels/$SPC" '{"content_mode":"spoiler"}' >/dev/null
+SPM=$(call POST "/api/channels/$SPC/messages" '{"content":"the twist: it was the innkeeper"}' | jq -r .id)
+LOUT=$(call POST "/api/guilds/$GUILD/channels" '{"name":"lounge"}' | jq -r .id)
+SF=$(call POST "/api/channels/$SPC/messages/$SPM/forward" '{"destinations":["'"$LOUT"'"]}')
+jq -e '.[0].forward.source_spoiler == true' <<<"$SF" >/dev/null
+SF1=$(jq -r '.[0].id' <<<"$SF")
+call GET "/api/channels/$LOUT/messages?limit=5" | jq -e --arg f "$SF1" '.[] | select(.id == $f) | .forward.source_spoiler' >/dev/null
+# Forwarded on again from an ordinary channel: still a spoiler.
+call POST "/api/channels/$LOUT/messages/$SF1/forward" '{"destinations":["'"$CHAN"'"]}' | jq -e '.[0].forward.source_spoiler' >/dev/null
+# Ordinary forwards aren't.
+NSM=$(call POST "/api/channels/$LOUT/messages" '{"content":"no secrets here"}' | jq -r .id)
+call POST "/api/channels/$LOUT/messages/$NSM/forward" '{"destinations":["'"$CHAN"'"]}' | jq -e '.[0].forward.source_spoiler == false' >/dev/null
+TOKEN=$OUT; fail_call POST "/api/channels/$SPC/messages/$SPM/forward" '{"destinations":["'"$LOUT"'"]}'; TOKEN=$TOKEN_A
+# Thread replies can be scheduled (the thread must be in that channel).
+LTH=$(call POST "/api/channels/$LOUT/threads" '{"name":"Plans"}' | jq -r .id)
+TLATER=$(date -u -d '+2 hours' +%Y-%m-%dT%H:%M:%SZ)
+TS1=$(call POST "/api/channels/$LOUT/scheduled" '{"content":"thread reminder","send_at":"'"$TLATER"'","thread_id":"'"$LTH"'"}')
+jq -e --arg t "$LTH" '.thread_id == $t' <<<"$TS1" >/dev/null
+call GET /api/users/@me/scheduled | jq -e --arg t "$LTH" 'any(.[]; .thread_id == $t)' >/dev/null
+call POST "/api/scheduled/$(jq -r .id <<<"$TS1")/send" | jq -e --arg t "$LTH" '.thread_id == $t and .content == "thread reminder"' >/dev/null
+call GET "/api/channels/$LOUT/messages?thread=$LTH" | jq -e 'any(.[]; .content == "thread reminder")' >/dev/null
+fail_call POST "/api/channels/$CHAN/scheduled" '{"content":"wrong place","send_at":"'"$TLATER"'","thread_id":"'"$LTH"'"}'
+TOKEN=$OUT; fail_call POST "/api/channels/$LOUT/scheduled" '{"content":"not mine","send_at":"'"$TLATER"'","thread_id":"'"$LTH"'"}'; TOKEN=$TOKEN_A
+# Search results carry automod's Filtered flag (the app covers them).
+call GET "/api/guilds/$GUILD/search?q=hidden" | jq -e 'any(.messages[]; .filtered and (.content | test("dang it")))' >/dev/null
+
+# Blocking in voice: someone who blocked you isn't in your voice lists or events.
+node ci/gateway_probe.mjs "$BASE" "$TOKEN_A" /tmp/gw-vb-alice.jsonl 40 &
+VB_A=$!
+node ci/gateway_probe.mjs "$BASE" "$TOKEN_B" /tmp/gw-vb-bob.jsonl 40 &
+VB_B=$!
+for i in $(seq 1 40); do grep -q '"READY"' /tmp/gw-vb-alice.jsonl 2>/dev/null && grep -q '"READY"' /tmp/gw-vb-bob.jsonl 2>/dev/null && break; sleep 0.25; done
+TOKEN=$TOKEN_B; call POST "/api/channels/$VOICE/voice/join" >/dev/null
+wait_for /tmp/gw-vb-alice.jsonl '.t == "VOICE_STATE_UPDATE" and .d.user_id == $b and .d.channel_id == $c' --arg b "$BOB" --arg c "$VOICE"
+TOKEN=$TOKEN_A; call GET "/api/guilds/$GUILD/voice" | jq -e --arg b "$BOB" 'any(.[]; .user_id == $b)' >/dev/null
+# Bob blocks Alice: he drops out of her list at once; Carl still sees him.
+TOKEN=$TOKEN_B; call PUT "/api/users/@me/blocks/$ALICE" >/dev/null
+wait_for /tmp/gw-vb-alice.jsonl '.t == "VOICE_STATE_UPDATE" and .d.user_id == $b and .d.channel_id == null' --arg b "$BOB"
+TOKEN=$TOKEN_A; call GET "/api/guilds/$GUILD/voice" | jq -e --arg b "$BOB" 'all(.[]; .user_id != $b)' >/dev/null
+TOKEN=$TOKEN_C; call GET "/api/guilds/$GUILD/voice" | jq -e --arg b "$BOB" 'any(.[]; .user_id == $b)' >/dev/null
+# His changes don't reach her.
+TOKEN=$TOKEN_B; call POST /api/voice/state '{"muted":true,"deafened":false,"streaming":false}' >/dev/null
+# Carl joins with an entrance sound after blocking Alice: Bob hears it, Alice doesn't.
+TOKEN=$TOKEN_C
+call PUT /api/users/@me/entrance-sound '{"builtin":"door"}' >/dev/null
+call PUT "/api/users/@me/blocks/$ALICE" >/dev/null
+call POST "/api/channels/$VOICE/voice/join" >/dev/null
+wait_for /tmp/gw-vb-bob.jsonl '.t == "ENTRANCE_SOUND" and .d.user_id == $c' --arg c "$CARL"
+wait_for /tmp/gw-vb-bob.jsonl '.t == "VOICE_STATE_UPDATE" and .d.user_id == $b and .d.muted' --arg b "$BOB"
+sleep 1
+jq -e -s --arg b "$BOB" --arg c "$CARL" '
+  ([.[] | select(.t == "VOICE_STATE_UPDATE" and .d.user_id == $b and .d.muted)] | length == 0)
+  and ([.[] | select(.t == "ENTRANCE_SOUND" and .d.user_id == $c)] | length == 0)
+  and ([.[] | select(.t == "VOICE_STATE_UPDATE" and .d.user_id == $c and .d.channel_id != null)] | length == 0)' /tmp/gw-vb-alice.jsonl >/dev/null \
+  || { echo "Alice was told about people who blocked her:"; cat /tmp/gw-vb-alice.jsonl | tail -5; exit 1; }
+# Unblocking: Bob's back in her list straight away (as he is now: muted).
+TOKEN=$TOKEN_B; call DELETE "/api/users/@me/blocks/$ALICE" >/dev/null
+wait_for /tmp/gw-vb-alice.jsonl '.t == "VOICE_STATE_UPDATE" and .d.user_id == $b and .d.channel_id == $c and .d.muted' --arg b "$BOB" --arg c "$VOICE"
+TOKEN=$TOKEN_A; call GET "/api/guilds/$GUILD/voice" | jq -e --arg b "$BOB" --arg c "$CARL" 'any(.[]; .user_id == $b) and all(.[]; .user_id != $c)' >/dev/null
+TOKEN=$TOKEN_C; call DELETE "/api/users/@me/blocks/$ALICE" >/dev/null; call DELETE /api/users/@me/entrance-sound >/dev/null; call POST /api/voice/leave >/dev/null
+TOKEN=$TOKEN_B; call POST /api/voice/leave >/dev/null
+TOKEN=$TOKEN_A
+kill $VB_A $VB_B 2>/dev/null || true
+
 echo "Smoke test passed."

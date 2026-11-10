@@ -94,7 +94,10 @@ pub async fn forward(
     }
 
     // A forward of a forward passes on the original snapshot.
-    let snapshot = match &original.forward {
+    // Out of a spoiler channel it stays blurred wherever it lands.
+    let from_spoiler = source.channel.guild_id != DM_GUILD
+        && source.channel.content_mode == outhouse_common::models::content_mode::SPOILER;
+    let mut snapshot = match &original.forward {
         Some(inner) => inner.clone(),
         None => {
             if original.content.trim().is_empty()
@@ -119,9 +122,11 @@ pub async fn forward(
                 content: original.content.clone(),
                 embeds: original.embeds.clone(),
                 sticker: original.sticker.clone(),
+                source_spoiler: false,
             }
         }
     };
+    snapshot.source_spoiler |= from_spoiler;
     let files = sqlx::query_as::<_, FileRow>(
         "SELECT storage_key, filename, content_type, size, voice, duration_ms, waveform
          FROM attachments WHERE message_id = $1 ORDER BY id",

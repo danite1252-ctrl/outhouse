@@ -156,8 +156,12 @@ async fn run(socket: WebSocket, st: AppState) -> anyhow::Result<()> {
                         let wanted = match d.audience {
                             Audience::Guild(id) => guild_ids.contains(&id) && match &d.event {
                                 // Who's in a voice channel you can't see stays private.
-                                ServerEvent::VoiceStateUpdate { channel_id: Some(c), .. } => {
+                                // So does someone who has blocked you (leaving is
+                                // always sent, so nobody gets stuck in a list).
+                                ServerEvent::VoiceStateUpdate { channel_id: Some(c), user_id: who, .. } => {
                                     perms::can_view(&st.db, id, *c, user.id).await
+                                        && (*who == user.id
+                                            || !crate::api::friends::has_blocked(&st.db, *who, user.id).await)
                                 }
                                 // People who blocked you don't show as online to you.
                                 ServerEvent::PresenceUpdate { user_id: who, online: true } => {
@@ -174,6 +178,19 @@ async fn run(socket: WebSocket, st: AppState) -> anyhow::Result<()> {
                                     && (guild_id == DM_GUILD
                                         || !carries_content(&d.event)
                                         || perms::content_allowed(&st.db, channel_id, user.id).await)
+                                    // No entrance sounds or soundboard clips between
+                                    // people where either has blocked the other.
+                                    && match &d.event {
+                                        ServerEvent::EntranceSound { user_id: who, .. }
+                                        | ServerEvent::SoundboardPlay { user_id: who, .. }
+                                            if *who != user.id =>
+                                        {
+                                            !crate::api::friends::blocked_either(&st.db, *who, user.id)
+                                                .await
+                                                .unwrap_or(false)
+                                        }
+                                        _ => true,
+                                    }
                             }
                         };
                         if wanted {

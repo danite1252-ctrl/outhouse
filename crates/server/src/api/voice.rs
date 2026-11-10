@@ -96,19 +96,24 @@ fn livekit_url(st: &AppState, headers: &HeaderMap) -> String {
     }
 }
 
+/// The gateway event for someone's voice state (`None`: they left).
+pub fn voice_event(guild_id: i64, user_id: i64, state: Option<&VoiceState>) -> ServerEvent {
+    ServerEvent::VoiceStateUpdate {
+        guild_id,
+        user_id,
+        channel_id: state.map(|s| s.channel_id),
+        muted: state.is_some_and(|s| s.muted),
+        deafened: state.is_some_and(|s| s.deafened),
+        server_muted: state.is_some_and(|s| s.server_muted),
+        server_deafened: state.is_some_and(|s| s.server_deafened),
+        streaming: state.is_some_and(|s| s.streaming),
+    }
+}
+
 fn announce(st: &AppState, guild_id: i64, user_id: i64, state: Option<&VoiceState>) {
     st.dispatch(
         Audience::Guild(guild_id),
-        ServerEvent::VoiceStateUpdate {
-            guild_id,
-            user_id,
-            channel_id: state.map(|s| s.channel_id),
-            muted: state.is_some_and(|s| s.muted),
-            deafened: state.is_some_and(|s| s.deafened),
-            server_muted: state.is_some_and(|s| s.server_muted),
-            server_deafened: state.is_some_and(|s| s.server_deafened),
-            streaming: state.is_some_and(|s| s.streaming),
-        },
+        voice_event(guild_id, user_id, state),
     );
 }
 
@@ -291,12 +296,14 @@ pub async fn list(
     Path(guild_id): Path<i64>,
 ) -> AppResult<Json<Vec<VoiceState>>> {
     let ctx = member_ctx(&st.db, guild_id, user.id).await?;
+    // People who blocked you aren't in your lists (like their presence).
+    let hidden = super::friends::blocked_by(&st.db, user.id).await?;
     let states: Vec<VoiceState> = st
         .voice
         .lock()
         .expect("voice lock")
         .values()
-        .filter(|v| v.guild_id == guild_id)
+        .filter(|v| v.guild_id == guild_id && !hidden.contains(&v.user_id))
         .cloned()
         .collect();
     // Only voice channels you can see (who's in a hidden one is private).

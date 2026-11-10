@@ -3399,6 +3399,185 @@ with sync_playwright() as p:
     dave_res = [r["item_id"] for r in api("GET", f"/api/events/{SRID}", None, TOKEN)["reserves"] if r["user_id"] == DAVE]
     assert sorted(dave_res) == [17076, 17204], dave_res
 
+    # ---- Thread panel parity, forwarded spoilers, pins/search covers, blocked people in voice (parity.js) ----
+    film = api("POST", f"/api/guilds/{G}/channels", {"name": "film-talk"}, TOKEN)
+    FILM = film["id"]
+    api("PATCH", f"/api/channels/{FILM}", {"content_mode": "spoiler"}, TOKEN)
+    twist = api("POST", f"/api/channels/{FILM}/messages", {"content": "Big reveal: the innkeeper was Onyxia all along"}, dave["token"])
+    api("PUT", f"/api/channels/{FILM}/pins/{twist['id']}", None, TOKEN)
+    lounge = api("POST", f"/api/guilds/{G}/channels", {"name": "lounge"}, TOKEN)
+    LG = lounge["id"]
+    api("POST", f"/api/channels/{LG}/messages", {"content": "Who's watching the new season tonight?"}, erin["token"])
+    fwd_sp = api("POST", f"/api/channels/{FILM}/messages/{twist['id']}/forward", {"destinations": [LG], "note": "Don't read this if you haven't seen it"}, dave["token"])[0]
+    assert fwd_sp["forward"]["source_spoiler"] is True, fwd_sp
+    mn_start = api("POST", f"/api/channels/{LG}/messages", {"content": "Plan for movie night"}, dave["token"])
+    mn = api("POST", f"/api/channels/{LG}/threads", {"name": "Movie night", "message_id": mn_start["id"]}, dave["token"])
+    api("POST", f"/api/channels/{LG}/messages", {"content": "Bring snacks, I'm doing popcorn", "thread_id": mn["id"]}, dave["token"])
+
+    def par_page(token, label, channel_id, **kw):
+        pg = browser.new_page(**kw)
+        watch(pg, label)
+        pg.add_init_script(f"localStorage.setItem('outhouse_token', {json.dumps(token)}); localStorage.setItem('outhouse_guild', {json.dumps(G)}); localStorage.setItem('outhouse_channel_{G}', {json.dumps(channel_id)});")
+        pg.goto(BASE + "/")
+        pg.wait_for_selector("#messages .msg", timeout=15000)
+        return pg
+
+    for label, kw, n in (("desktop", {"viewport": {"width": 1280, "height": 800}}, 3500),
+                         ("phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True}, 3530)):
+        pg = par_page(TOKEN, f"parity-{label}", LG, **kw)
+        # A forwarded spoiler stays blurred until it's clicked.
+        fsel = f"#msg-{fwd_sp['id']}"
+        pg.wait_for_selector(f"{fsel}.spoilered .spoiler-cover", timeout=10000)
+        pg.wait_for_timeout(300)
+        pg.screenshot(path=f"{SHOTS}/{n}-{label}-forwarded-spoiler.png")
+        pg.click(f"{fsel} .spoiler-cover")
+        pg.wait_for_selector(f"{fsel}:not(.spoilered)", timeout=5000)
+        pg.screenshot(path=f"{SHOTS}/{n + 1}-{label}-forwarded-spoiler-shown.png")
+
+        # Thread panel: Forward from the ↪ button (desktop) or the right-click menu.
+        pg.evaluate(f"openThread({json.dumps(mn['id'])})")
+        tm = ".thread-panel article.tmsg:has-text('popcorn')"
+        pg.wait_for_selector(tm, timeout=10000)
+        if label == "desktop":
+            pg.hover(tm)
+            pg.wait_for_selector(f"{tm} .msg-actions .fwd-btn", state="visible", timeout=5000)
+            pg.screenshot(path=f"{SHOTS}/{n + 2}-{label}-thread-forward-button.png")
+            pg.click(f"{tm} .msg-actions .fwd-btn")
+        else:
+            pg.click(tm, button="right")
+            pg.wait_for_selector(".menu button:has-text('Forward')", timeout=5000)
+            pg.screenshot(path=f"{SHOTS}/{n + 2}-{label}-thread-message-menu.png")
+            pg.click(".menu button:has-text('Forward')")
+        pg.wait_for_selector(".fwd-dialog[open] .fwd-row", timeout=10000)
+        pg.wait_for_selector(f".fwd-dialog input[data-target='{general['id']}']")
+        pg.check(f".fwd-dialog input[data-target='{general['id']}']")
+        pg.wait_for_timeout(300)
+        pg.screenshot(path=f"{SHOTS}/{n + 3}-{label}-thread-forward-dialog.png")
+        pg.click(".fwd-dialog button[type=submit]")
+        pg.wait_for_selector(".fwd-dialog", state="detached", timeout=10000)
+        got = api("GET", f"/api/channels/{general['id']}/messages?limit=5", None, TOKEN)
+        assert any((m.get("forward") or {}).get("content", "").startswith("Bring snacks") for m in got), got
+        if label == "desktop":
+            pg.click(tm, button="right")
+            pg.wait_for_selector(".menu button:has-text('Forward')", timeout=5000)
+            pg.wait_for_selector(".menu button:has-text('Copy message ID')")
+            pg.screenshot(path=f"{SHOTS}/{n + 4}-{label}-thread-message-menu.png")
+            pg.keyboard.press("Escape")
+
+        # Thread panel: Send later (the ▾, or press and hold Send on a phone).
+        tbox = ".thread-panel .thread-composer textarea"
+        pg.fill(tbox, f"Reminder: movie starts at 8 ({label})")
+        if label == "desktop":
+            pg.click(".thread-panel .thread-send-later")
+        else:
+            sbox = pg.query_selector(".thread-panel .thread-composer button.send").bounding_box()
+            sptr = {"pointerType": "touch", "pointerId": 9, "isPrimary": True, "clientX": sbox["x"] + 10, "clientY": sbox["y"] + 10, "bubbles": True}
+            pg.dispatch_event(".thread-panel .thread-composer button.send", "pointerdown", sptr)
+            pg.wait_for_selector(".menu button:has-text('Send later')", timeout=5000)
+            pg.dispatch_event(".thread-panel .thread-composer button.send", "pointerup", sptr)
+        pg.wait_for_selector(".menu button:has-text('Send later')", timeout=5000)
+        pg.screenshot(path=f"{SHOTS}/{n + 5}-{label}-thread-send-later-menu.png")
+        pg.click(".menu button:has-text('Send later')")
+        pg.wait_for_selector(".sched-dialog[open] .sched-preset", timeout=5000)
+        pg.click(".sched-dialog .sched-preset[data-choice='morning']")
+        pg.click(".sched-dialog button[type=submit]")
+        pg.wait_for_selector(".thread-panel .thread-sched-bar:has-text('1 scheduled in this thread')", timeout=10000)
+        assert pg.input_value(tbox) == ""
+        assert pg.query_selector("#sched-bar") is None, "a thread's scheduled message showed on the channel's bar"
+        mine = [x for x in api("GET", "/api/users/@me/scheduled", None, TOKEN) if x.get("thread_id") == mn["id"]]
+        assert len(mine) == 1 and label in mine[0]["content"], mine
+        pg.wait_for_timeout(300)
+        pg.screenshot(path=f"{SHOTS}/{n + 6}-{label}-thread-scheduled-bar.png")
+        pg.click(".thread-panel .thread-sched-bar")
+        pg.wait_for_selector(".sched-list .sched-item:has-text('movie starts at 8')", timeout=5000)
+        pg.wait_for_timeout(300)
+        pg.screenshot(path=f"{SHOTS}/{n + 7}-{label}-thread-scheduled-list.png")
+        pg.click(".sched-item:has-text('movie starts at 8') button:has-text('Cancel')")
+        pg.wait_for_selector(".sched-list p:has-text('Nothing scheduled in this thread')", timeout=5000)
+        pg.keyboard.press("Escape")
+        pg.wait_for_selector(".thread-panel .thread-sched-bar", state="detached", timeout=5000)
+        pg.evaluate("closeSidePanel()")
+
+        # Search: spoiler-channel results are blurred; automod's hidden ones are covered.
+        pg.evaluate("runSearch('innkeeper')")
+        pg.wait_for_selector(".sp-card.sp-spoilered:has-text('innkeeper') .sp-spoiler-tag", timeout=10000)
+        pg.wait_for_timeout(300)
+        pg.screenshot(path=f"{SHOTS}/{n + 8}-{label}-search-spoiler.png")
+        pg.evaluate("runSearch('pulled too early')")
+        pg.wait_for_selector(".sp-card .filtered-cover:has-text('Automod hid this message')", timeout=10000)
+        assert not pg.query_selector(".sp-card .sp-text:has-text('dang it')"), "filtered text shown in search"
+        pg.wait_for_timeout(300)
+        pg.screenshot(path=f"{SHOTS}/{n + 9}-{label}-search-filtered.png")
+        pg.click(".sp-card .filtered-cover .fc-show")
+        pg.wait_for_selector(".sp-card .sp-text:has-text('dang it')", timeout=5000)
+        assert pg.evaluate("sidePanel.kind") == "search", "Show it jumped away"
+        pg.screenshot(path=f"{SHOTS}/{n + 10}-{label}-search-filtered-shown.png")
+        pg.evaluate("closeSidePanel()")
+
+        # Pins in a spoiler channel: blurred until clicked (the first click doesn't jump).
+        pg.evaluate(f"selectChannel({json.dumps(FILM)})")
+        pg.wait_for_selector("#messages .msg.spoilered", timeout=10000)
+        pg.evaluate("openPins()")
+        pin = f".sp-card[data-id='{twist['id']}']"
+        pg.wait_for_selector(f"{pin}.sp-spoilered", timeout=10000)
+        pg.wait_for_timeout(300)
+        pg.screenshot(path=f"{SHOTS}/{n + 11}-{label}-pins-spoiler.png")
+        pg.click(pin)
+        pg.wait_for_selector(f"{pin}:not(.sp-spoilered)", timeout=5000)
+        assert pg.evaluate("sidePanel.kind") == "pins"
+        pg.screenshot(path=f"{SHOTS}/{n + 12}-{label}-pins-spoiler-shown.png")
+        pg.close()
+
+    # Blocked people in voice: Carol blocked Grim (social section); Hush blocks Carol.
+    api("POST", f"/api/guilds/{G}/channels", {"name": "Quiet corner", "kind": 2}, TOKEN)
+    hush = api("POST", "/api/auth/register", {"username": f"hush{suffix}", "password": "password123", "display_name": "Hush"})
+    api("POST", f"/api/invites/{code}", None, hush["token"])
+    HUSH = hush["user"]["id"]
+    api("PUT", f"/api/users/@me/blocks/{CAROL}", None, hush["token"])
+    api("PUT", "/api/users/@me/entrance-sound", {"builtin": "door"}, grim["token"])
+    cv = voice_page(TOKEN, "parity-carol-voice")
+    join(cv, "Quiet corner")
+    gv = voice_page(grim["token"], "parity-grim-phone", {"width": 390, "height": 844}, mobile=True)
+    join(gv, "Quiet corner", drawer=True)
+    hv = voice_page(hush["token"], "parity-hush-voice")
+    join(hv, "Quiet corner")
+    # Carol: Grim folds into "Blocked user" (no avatar); Hush is only "Someone (blocked)".
+    grim_row = f"#voice-channels .voice-user[data-id='{GRIM}']"
+    cv.wait_for_selector(f"{grim_row}.blocked-voice:has-text('Blocked user') .bv-show", timeout=10000)
+    assert not cv.query_selector(f"{grim_row} .avatar")
+    cv.wait_for_selector("#voice-channels .voice-user.hidden-voice:has-text('Someone (blocked)')", timeout=20000)
+    assert not cv.query_selector(f"#voice-channels .voice-user[data-id='{HUSH}']:not(.hidden-voice)"), "Hush shown by name"
+    assert cv.evaluate(f"[...state.voiceStates.keys()].includes({json.dumps(HUSH)})") is False
+    cv.wait_for_timeout(1500)
+    assert cv.evaluate("state.voice.lastEntrance?.user_id ?? null") != GRIM, "Grim's entrance sound reached Carol"
+    cv.screenshot(path=f"{SHOTS}/3560-desktop-voice-blocked.png")
+    cv.click(f"{grim_row} .bv-show")
+    cv.wait_for_selector(f"{grim_row}:not(.blocked-voice):has-text('Grim')", timeout=5000)
+    cv.screenshot(path=f"{SHOTS}/3561-desktop-voice-blocked-shown.png")
+    # Grim on a phone: Carol (who blocked him) is "Someone (blocked)" there.
+    gv.wait_for_selector(f"#voice-channels .voice-user.hidden-voice[data-id='{CAROL}']:has-text('Someone (blocked)')", timeout=20000)
+    assert gv.evaluate(f"[...state.voiceStates.keys()].includes({json.dumps(CAROL)})") is False
+    gv.wait_for_timeout(400)
+    gv.screenshot(path=f"{SHOTS}/3562-phone-voice-blocked-by.png")
+    # Hush blocked Carol, so she's folded in Hush's list.
+    hv.wait_for_selector(f"#voice-channels .voice-user.blocked-voice[data-id='{CAROL}']", timeout=10000)
+    # Privacy settings: the fold switch.
+    cv.evaluate("openUserSettings('privacy')")
+    cv.wait_for_selector("#voice-fold-blocked", timeout=10000)
+    cv.evaluate("document.querySelector('#voice-fold-blocked').scrollIntoView()")
+    cv.wait_for_timeout(300)
+    cv.screenshot(path=f"{SHOTS}/3563-desktop-privacy-voice-fold.png")
+    cv.uncheck("#voice-fold-blocked")
+    assert cv.evaluate("prefs.get('voice_fold_blocked', true)") is False
+    cv.keyboard.press("Escape")
+    cv.wait_for_selector(f"{grim_row}:not(.blocked-voice) .avatar", timeout=5000)
+    cv.evaluate("prefs.set('voice_fold_blocked', true)")
+    for pg_, tok in ((cv, TOKEN), (gv, grim["token"]), (hv, hush["token"])):
+        pg_.close()
+        api("POST", "/api/voice/leave", None, tok)
+    api("DELETE", f"/api/users/@me/blocks/{CAROL}", None, hush["token"])
+    api("DELETE", "/api/users/@me/entrance-sound", None, grim["token"])
+
     # ---- The orange update button (updates.js) ----
     # Windows app: a mocked app bridge (http://outhouse.localhost) that finds
     # an update, then downloads it with progress after "Update now".
