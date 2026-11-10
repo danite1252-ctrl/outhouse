@@ -626,7 +626,9 @@ jobs:
           set -o pipefail
           # RUSTSEC-2023-0071 (rsa, Marvin attack): only reached through sqlx-mysql, which
           # sqlx's lock file lists but Outhouse never builds or uses (Postgres only).
-          cargo audit --file Cargo.lock --ignore RUSTSEC-2023-0071 2>&1 | tee /tmp/audit-server.txt || AUDIT_FAIL=1
+          # RUSTSEC-2026-0459 (libsqlite3-sys, bundled SQLite): the same story, only through
+          # sqlx-sqlite, which isn't built either (`cargo tree -i libsqlite3-sys` is empty).
+          cargo audit --file Cargo.lock --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0459 2>&1 | tee /tmp/audit-server.txt || AUDIT_FAIL=1
           echo "---- desktop app ----"
           cargo audit --file desktop/src-tauri/Cargo.lock 2>&1 | tee /tmp/audit-desktop.txt || echo "::warning::cargo audit found problems in the desktop app's dependencies (see above)"
           if [ -n "$AUDIT_FAIL" ]; then echo "::error::cargo audit found vulnerable server dependencies"; exit 1; fi
