@@ -26,6 +26,7 @@ mod notifications;
 pub mod polls;
 mod profiles;
 pub mod raid_settings;
+pub mod requests;
 mod roles;
 pub mod safety;
 pub mod scheduled;
@@ -175,6 +176,15 @@ pub fn router(state: AppState) -> Router {
         )
         // Direct messages
         .route("/api/dms", get(dms::list).post(dms::create))
+        .route("/api/dms/requests", get(requests::list))
+        .route(
+            "/api/dms/requests/{id}/accept",
+            post(requests::accept_route),
+        )
+        .route(
+            "/api/dms/requests/{id}/ignore",
+            post(requests::ignore_route),
+        )
         .route("/api/dms/{id}", patch(dms::update))
         .route("/api/dms/{id}/recipients", post(dms::add_recipient))
         .route("/api/dms/{id}/recipients/@me", delete(dms::leave))
@@ -243,6 +253,7 @@ pub fn router(state: AppState) -> Router {
         )
         // Profiles
         .route("/api/profiles/{id}", get(profiles::get))
+        .route("/api/users/{id}/profile/full", get(profiles::full))
         .route(
             "/api/users/@me/avatar",
             post(profiles::upload_avatar)

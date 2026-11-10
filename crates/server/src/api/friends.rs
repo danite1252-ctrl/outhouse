@@ -101,6 +101,80 @@ pub async fn check_can_dm(db: &PgPool, me: i64, other: i64) -> AppResult<()> {
     Ok(())
 }
 
+/// Why `me` couldn't send `other` a friend request right now (None = they
+/// can, or they're already friends / have asked). The same rules as
+/// sending one, without sending it: for the profile page.
+pub async fn friend_request_refusal(db: &PgPool, me: i64, other: i64) -> AppResult<Option<String>> {
+    let target: Option<(bool, String)> =
+        sqlx::query_as("SELECT is_bot, friend_request_privacy FROM users WHERE id = $1")
+            .bind(other)
+            .fetch_optional(db)
+            .await?;
+    let Some((is_bot, privacy)) = target else {
+        return Err(AppError::NotFound);
+    };
+    if is_bot {
+        return Ok(Some("Bots don't do friends.".into()));
+    }
+    if me == other || are_friends(db, me, other).await? {
+        return Ok(None);
+    }
+    let asked: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM friend_requests
+                       WHERE (from_id = $1 AND to_id = $2) OR (from_id = $2 AND to_id = $1))",
+    )
+    .bind(me)
+    .bind(other)
+    .fetch_one(db)
+    .await?;
+    if asked {
+        return Ok(None);
+    }
+    let refused = || Some("They aren't taking friend requests from you right now.".to_string());
+    if has_blocked(db, me, other).await {
+        return Ok(Some("You've blocked them. Unblock them first.".into()));
+    }
+    if has_blocked(db, other, me).await {
+        return Ok(refused());
+    }
+    if let Err(AppError::Refused(reason)) =
+        super::safety::check_teen_friend_request(db, me, other).await
+    {
+        return Ok(Some(reason));
+    }
+    let allowed = match privacy.as_str() {
+        "nobody" => false,
+        "shared" => {
+            sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM guild_members a
+                           JOIN guild_members b ON a.guild_id = b.guild_id
+                           WHERE a.user_id = $1 AND b.user_id = $2)",
+            )
+            .bind(me)
+            .bind(other)
+            .fetch_one(db)
+            .await?
+        }
+        "friends_of_friends" => {
+            sqlx::query_scalar(
+                "WITH mine AS (
+                 SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS f
+                 FROM friendships WHERE user_a = $1 OR user_b = $1),
+             theirs AS (
+                 SELECT CASE WHEN user_a = $2 THEN user_b ELSE user_a END AS f
+                 FROM friendships WHERE user_a = $2 OR user_b = $2)
+             SELECT EXISTS(SELECT 1 FROM mine JOIN theirs USING (f))",
+            )
+            .bind(me)
+            .bind(other)
+            .fetch_one(db)
+            .await?
+        }
+        _ => true,
+    };
+    Ok(if allowed { None } else { refused() })
+}
+
 // ---- Loading ----------------------------------------------------------------------
 
 #[derive(sqlx::FromRow)]
@@ -313,6 +387,8 @@ async fn befriend(st: &AppState, me: i64, me_bot: bool, other: i64) -> AppResult
         .await?;
         announce(st, me, other, "friend").await?;
         announce(st, other, me, "friend").await?;
+        // Message requests between them go through now.
+        super::requests::accept_between(st, me, other).await?;
         return relationship(st, me, other, "friend").await;
     }
 
@@ -499,6 +575,7 @@ pub async fn block(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    super::requests::mark_blocked(&st, me, other).await?;
     announce(&st, me, other, "blocked").await?;
     if unfriended + requests > 0 {
         announce(&st, other, me, "none").await?;
@@ -567,14 +644,19 @@ pub async fn get_privacy(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
 ) -> AppResult<Json<PrivacySettings>> {
-    let (allow_dms, allow_friend_requests): (String, String) =
-        sqlx::query_as("SELECT dm_privacy, friend_request_privacy FROM users WHERE id = $1")
-            .bind(user.id)
-            .fetch_one(&st.db)
-            .await?;
+    let (allow_dms, allow_friend_requests, message_requests, teen): (String, String, String, bool) =
+        sqlx::query_as(
+            "SELECT dm_privacy, friend_request_privacy, message_requests, age_bracket = 'teen'
+             FROM users WHERE id = $1",
+        )
+        .bind(user.id)
+        .fetch_one(&st.db)
+        .await?;
     Ok(Json(PrivacySettings {
         allow_dms,
         allow_friend_requests,
+        message_requests,
+        teen,
     }))
 }
 
@@ -582,6 +664,7 @@ pub async fn get_privacy(
 pub struct PrivacyUpdate {
     allow_dms: Option<String>,
     allow_friend_requests: Option<String>,
+    message_requests: Option<String>,
 }
 
 /// `PUT /api/users/@me/privacy` `{"allow_dms"?, "allow_friend_requests"?}`
@@ -608,18 +691,31 @@ pub async fn set_privacy(
             ));
         }
     }
-    let (allow_dms, allow_friend_requests): (String, String) = sqlx::query_as(
-        "UPDATE users SET dm_privacy = COALESCE($2, dm_privacy),
-                friend_request_privacy = COALESCE($3, friend_request_privacy)
-         WHERE id = $1 RETURNING dm_privacy, friend_request_privacy",
-    )
-    .bind(user.id)
-    .bind(&req.allow_dms)
-    .bind(&req.allow_friend_requests)
-    .fetch_one(&st.db)
-    .await?;
+    if let Some(v) = &req.message_requests {
+        if !matches!(v.as_str(), "allow" | "block") {
+            return Err(AppError::BadRequest(
+                "message_requests is \"allow\" or \"block\".".into(),
+            ));
+        }
+    }
+    let (allow_dms, allow_friend_requests, message_requests, teen): (String, String, String, bool) =
+        sqlx::query_as(
+            "UPDATE users SET dm_privacy = COALESCE($2, dm_privacy),
+                friend_request_privacy = COALESCE($3, friend_request_privacy),
+                message_requests = COALESCE($4, message_requests)
+         WHERE id = $1
+         RETURNING dm_privacy, friend_request_privacy, message_requests, age_bracket = 'teen'",
+        )
+        .bind(user.id)
+        .bind(&req.allow_dms)
+        .bind(&req.allow_friend_requests)
+        .bind(&req.message_requests)
+        .fetch_one(&st.db)
+        .await?;
     Ok(Json(PrivacySettings {
         allow_dms,
         allow_friend_requests,
+        message_requests,
+        teen,
     }))
 }

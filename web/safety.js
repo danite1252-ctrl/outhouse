@@ -188,7 +188,8 @@ if (typeof threadMessage === "function") {
 const safetyBaseProfileCard = profileCard;
 profileCard = function (p, opts = {}) {
   const card = safetyBaseProfileCard(p, opts);
-  if (opts.preview || p.bot || p.id === state.me?.id) return card;
+  // Full profiles carry it already (profiles.js shows it under the message box).
+  if (opts.preview || p.bot || p.id === state.me?.id || "contact" in p) return card;
   const btn = card.querySelector(".pc-message");
   if (!btn) return card;
   api("GET", `/api/users/${p.id}/contact`).then((c) => {
@@ -335,14 +336,14 @@ function formDialog(title, fields, confirm, { intro = null, danger = false } = {
 
 // ---------- the console ----------
 
-async function openSafetyConsole(tab = "open", reportId = null) {
+async function openSafetyConsole(tab = "open", reportId = null, openPerson = null) {
   closeMenus();
   closePopover();
   document.querySelectorAll("dialog.settings").forEach((d) => d.close());
   const { dialog, nav, main } = settingsShell("Safety");
   dialog.classList.add("safety-console");
   let drawing = 0;
-  let personId = null; // People opens on this person
+  let personId = openPerson; // People opens on this person
   const navBtn = (key, label, current) => el("button", { class: current === key ? "active" : "", "data-tab": key, onclick: () => draw(key) }, label);
   const draw = async (key, id = null) => {
     const mine = ++drawing;
@@ -531,9 +532,14 @@ function subjectView(u, act) {
       item("Reports about them", String(others.length), others.length > 1 ? "warn" : ""),
       item("Reports they made", String(u.reports_made)),
       item("Bots they own", String(u.bots)),
+      u.message_requests ? item("Message requests sent",
+        `${u.message_requests.sent} (${u.message_requests.ignored} ignored, ${u.message_requests.blocked} blocked, ${u.message_requests.accepted} accepted; ${u.message_requests.last_day} today)`,
+        u.message_requests.ignored + u.message_requests.blocked >= 3 ? "warn" : "") : null,
       item("IP addresses", u.ip_note, "unknown")),
     el("div", { class: "muted small" }, "Outhouses: ", u.outhouses.length ? u.outhouses.map((o) => `${o.name}${o.owner ? " (owner)" : ""}${o.family ? " (family)" : ""}${o.timeout_until ? " (timed out)" : ""}`).join(", ") : "none"),
-    others.length ? el("div", { class: "muted small" }, "Reports: ", others.slice(0, 10).map((o) => `${o.category_label} (${SC_STATUS[o.status] || o.status}, ${new Date(o.created_at).toLocaleDateString()})`).join(" · ")) : null);
+    others.length ? el("div", { class: "muted small" }, "Reports: ", others.slice(0, 10).map((o) => `${o.category_label} (${SC_STATUS[o.status] || o.status}, ${new Date(o.created_at).toLocaleDateString()})`).join(" · ")) : null,
+    u.names ? el("details", { class: "sc-names" }, el("summary", {}, `Names they've gone by (${u.names.length})`),
+      typeof nameHistoryList === "function" ? nameHistoryList(u.names, "No name changes recorded.") : null) : null);
 }
 
 // Buttons for the account actions; `act(body, done)` posts one.

@@ -782,33 +782,20 @@ pub(crate) async fn check_dm_blocks(
     if access.channel.guild_id != DM_GUILD || access.channel.kind != channel_kind::DM {
         return Ok(());
     }
-    let blocked: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM dm_participants p
-                       JOIN user_blocks b ON (b.user_id = p.user_id AND b.blocked_id = $2)
-                                          OR (b.user_id = $2 AND b.blocked_id = p.user_id)
-                       WHERE p.channel_id = $1 AND p.user_id <> $2)",
-    )
-    .bind(access.channel.id)
-    .bind(user_id)
-    .fetch_one(&st.db)
-    .await?;
-    if blocked {
+    // The other person (still them while your message request waits).
+    let Some(other) =
+        crate::api::requests::other_person(&st.db, access.channel.id, user_id).await?
+    else {
+        return Ok(());
+    };
+    if crate::api::friends::blocked_either(&st.db, user_id, other).await? {
         return Err(AppError::Refused(
             "You can't message this person right now.".into(),
         ));
     }
     // Teen protections apply to existing DMs too (e.g. after the site
     // owner sets someone's age group).
-    let other: Option<i64> = sqlx::query_scalar(
-        "SELECT user_id FROM dm_participants WHERE channel_id = $1 AND user_id <> $2 LIMIT 1",
-    )
-    .bind(access.channel.id)
-    .bind(user_id)
-    .fetch_optional(&st.db)
-    .await?;
-    if let Some(other) = other {
-        crate::api::safety::check_teen_dm(&st.db, user_id, other).await?;
-    }
+    crate::api::safety::check_teen_dm(&st.db, user_id, other).await?;
     Ok(())
 }
 
@@ -884,6 +871,14 @@ pub(crate) async fn create_message_ex(
         crate::automod::Check::Send,
     )
     .await?;
+
+    // A one-to-one DM to someone you're not connected to is held as a
+    // message request (counted here; see api::requests).
+    let request = if guild_id == DM_GUILD && access.channel.kind == channel_kind::DM {
+        crate::api::requests::before_send(st, channel_id, user).await?
+    } else {
+        None
+    };
 
     // Files go to disk first, so a failed write never leaves a broken message.
     if !files.is_empty() {
@@ -1017,6 +1012,9 @@ pub(crate) async fn create_message_ex(
         ServerEvent::MessageCreate(message.clone()),
     );
     crate::push::spawn_message_push(st, guild_id, &message);
+    if let Some(request_id) = request {
+        crate::api::requests::after_send(st, request_id).await;
+    }
     if let Some(thread_id) = thread_id {
         announce_thread(st, guild_id, channel_id, thread_id).await?;
     }

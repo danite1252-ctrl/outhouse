@@ -59,6 +59,8 @@ detector_stop() {
 if [ -n "${SMOKE_DETECTOR_CMD:-}" ]; then detector_start; fi
 curl -fsS "$DETECTOR_URL/health" | jq -e '.ok and .test_mode' >/dev/null || { echo "the image detector (test mode) isn't running at $DETECTOR_URL"; exit 1; }
 python3 ci/detector_images.py /tmp/dt >/dev/null
+# Message requests: a small daily limit so the test can reach it (the default is 10).
+export MESSAGE_REQUESTS_PER_DAY=4 MESSAGE_REQUEST_MAX_MESSAGES=3
 # Gateway probe files from an earlier run would satisfy "wait for READY" before the new probe starts.
 rm -f /tmp/gw-*.jsonl
 ./target/debug/outhouse-server >"$LOG" 2>&1 &
@@ -338,7 +340,9 @@ fail_call POST "/api/channels/$DMID/events" '{"title":"Nope","starts_at":"'"$STA
 TOKEN=$OUT
 fail_call GET "/api/channels/$DMID/messages"
 fail_call POST "/api/channels/$DMID/messages" '{"content":"let me in"}'
-fail_call POST /api/dms '{"user_ids":["'"$ALICE"'"]}' # shares no outhouse
+# Shares no outhouse with Alice and isn't her friend: a message request (see the
+# message request sections near the end).
+call POST /api/dms '{"user_ids":["'"$ALICE"'"]}' | jq -e '.request == "outgoing"' >/dev/null
 TOKEN=$TOKEN_A
 fail_call POST /api/dms '{"user_ids":["'"$BOB"'","'"$OUTSIDER"'"]}'
 fail_call POST /api/dms '{"user_ids":[]}'
@@ -3272,7 +3276,7 @@ tok "$TOKEN_AD" call DELETE "/api/users/@me/relationships/$FRAN" >/dev/null
 tok "$TOKEN_A" call POST "/api/safety/users/$FRAN/actions" '{"action":"set_age","bracket":"adult"}' >/dev/null
 # The owner can switch the limits off (and back on).
 tok "$TOKEN_A" call PUT /api/safety/settings '{"teen_contact_limits":false}' | jq -e '(.teen_contact_limits | not) and .teen_block_adult_channels' >/dev/null
-tok "$TOKEN_B" call GET "/api/users/$TIA/contact" | jq -e '.can_message' >/dev/null
+tok "$TOKEN_B" call GET "/api/users/$TIA/contact" | jq -e '(.reason // "") | contains("can'"'"'t receive messages from you") | not' >/dev/null
 tok "$TOKEN_A" call PUT /api/safety/settings '{"teen_contact_limits":true}' >/dev/null
 tok "$TOKEN_B" fail_call GET /api/safety/settings
 tok "$TOKEN_B" fail_call PUT /api/safety/settings '{"teen_contact_limits":false}'
@@ -3508,6 +3512,205 @@ tok "$TOKEN_A" call DELETE "/api/channels/$UC/messages/$U2" >/dev/null
 tok "$TOKEN_B" call GET "/api/users/@me/unread" | jq -e --arg c "$UC" --arg m "$U1" '.channels[] | select(.channel_id == $c) | .last_message_id == $m' >/dev/null
 tok "$TOKEN_A" call DELETE "/api/channels/$UC/messages/$U1" >/dev/null
 tok "$TOKEN_B" call GET "/api/users/@me/unread" | jq -e --arg c "$UC" '.channels[] | select(.channel_id == $c) | .last_message_id == null' >/dev/null
+
+# ---------------------------------------------------------------------------
+# Full profiles, name history and DM message requests (feat-profiles)
+# ---------------------------------------------------------------------------
+step "profiles: name history (display names, nicknames) is recorded and shown by who can see it"
+[ "$(xreg 11 '{"username":"pia","password":"password123","display_name":"Pia","birth_date":"1991-03-03"}')" = 200 ]
+TOKEN_P=$(jq -r .token /tmp/body); PIA=$(jq -r .user.id /tmp/body)
+[ "$(xreg 12 '{"username":"quin","password":"password123","display_name":"Quin","birth_date":"1992-04-04"}')" = 200 ]
+TOKEN_Q=$(jq -r .token /tmp/body); QUIN=$(jq -r .user.id /tmp/body)
+[ "$(xreg 13 '{"username":"rex","password":"password123","display_name":"Rex","birth_date":"1993-05-05"}')" = 200 ]
+TOKEN_R=$(jq -r .token /tmp/body); REX=$(jq -r .user.id /tmp/body)
+# Pia and Quin share "Profile Porch"; Rex shares nothing with anyone.
+PG=$(tok "$TOKEN_P" call POST /api/guilds '{"name":"Profile Porch"}' | jq -r .id)
+PINV=$(tok "$TOKEN_P" call POST "/api/guilds/$PG/invites" | jq -r .code)
+tok "$TOKEN_Q" call POST "/api/invites/$PINV" >/dev/null
+# No earlier names yet.
+tok "$TOKEN_Q" call GET "/api/users/$PIA/profile/full" | jq -e '.level == "full" and .names == []' >/dev/null
+tok "$TOKEN_P" call PATCH /api/users/@me '{"display_name":"Pia Two"}' >/dev/null
+tok "$TOKEN_P" call PATCH /api/users/@me '{"display_name":"Pia Three"}' >/dev/null
+tok "$TOKEN_P" call PUT "/api/guilds/$PG/nickname" '{"nickname":"Porch Pia"}' >/dev/null
+# A nickname in an outhouse Quin isn't in.
+PG2=$(tok "$TOKEN_P" call POST /api/guilds '{"name":"Secret Shed"}' | jq -r .id)
+tok "$TOKEN_P" call PUT "/api/guilds/$PG2/nickname" '{"nickname":"Shed Pia"}' >/dev/null
+psql "$DATABASE_URL" -tAc "SELECT count(*) FROM name_history WHERE user_id = $PIA" | grep -qx 4
+# Quin (shares an outhouse): display names and the shared outhouse's nickname, newest first.
+tok "$TOKEN_Q" call GET "/api/users/$PIA/profile/full" | jq -e --arg g "$PG" '.level == "full" and (.names | length == 3)
+  and .names[0].kind == "nickname" and .names[0].new == "Porch Pia" and .names[0].guild_id == $g
+  and .names[1].old == "Pia Two" and .names[1].new == "Pia Three" and .names[2].old == "Pia"
+  and all(.names[]; .new != "Shed Pia") and (.outhouses | length == 1) and .outhouses[0].nickname == "Porch Pia"
+  and .outhouses[0].owner and (.outhouses[0].joined_at | length > 0) and (.contact.request | not) and .contact.can_message' >/dev/null
+# Pia and the site owner see all of it; the owner's console too.
+tok "$TOKEN_P" call GET "/api/users/$PIA/profile/full" | jq -e '.self and (.names | length == 4) and .contact == null' >/dev/null
+tok "$TOKEN_A" call GET "/api/users/$PIA/profile/full" | jq -e '.site_owner_view and .level == "full" and (.names | length == 4)' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/users/$PIA" | jq -e '(.names | length) == 4 and .message_requests.sent == 0' >/dev/null
+# Nobody can delete it (there's no way to), and someone with no link to Pia can't look at all.
+tok "$TOKEN_P" fail_call DELETE "/api/users/$PIA/profile/full"
+[ "$(tok "$TOKEN_R" status GET "/api/users/$PIA/profile/full")" = 404 ]
+# At most 20 shown; every change is kept.
+for i in $(seq 1 22); do tok "$TOKEN_Q" call PATCH /api/users/@me "{\"display_name\":\"Quin $i\"}" >/dev/null; done
+tok "$TOKEN_P" call GET "/api/users/$QUIN/profile/full" | jq -e '(.names | length) == 20 and .names[0].new == "Quin 22"' >/dev/null
+psql "$DATABASE_URL" -tAc "SELECT count(*) FROM name_history WHERE user_id = $QUIN" | grep -qx 22
+tok "$TOKEN_Q" call PATCH /api/users/@me '{"display_name":"Quin"}' >/dev/null
+
+step "message requests: a stranger's DM is held (no events, unread or pictures) until accepted"
+tok "$TOKEN_R" call GET "/api/users/$PIA/contact" | jq -e '.can_message and .request' >/dev/null
+tok "$TOKEN_Q" call GET "/api/users/$PIA/contact" | jq -e '.can_message and (.request | not)' >/dev/null
+node ci/gateway_probe.mjs "$BASE" "$TOKEN_P" /tmp/gw-req-pia.jsonl 40 &
+wait_for /tmp/gw-req-pia.jsonl '.t == "READY"'
+RDM=$(tok "$TOKEN_R" call POST /api/dms '{"user_ids":["'"$PIA"'"]}')
+jq -e --arg p "$PIA" '.request == "outgoing" and any(.recipients[]; .id == $p)' <<<"$RDM" >/dev/null
+RDMID=$(jq -r .id <<<"$RDM")
+tok "$TOKEN_R" call POST /api/dms '{"user_ids":["'"$PIA"'"]}' | jq -e --arg id "$RDMID" '.id == $id' >/dev/null # same one again
+# Nothing sent yet: nothing to show her.
+tok "$TOKEN_P" call GET /api/dms/requests | jq -e '.count == 0' >/dev/null
+tok "$TOKEN_R" call POST "/api/channels/$RDMID/messages" '{"content":"hi <@'"$PIA"'>, saw your raid post"}' >/dev/null
+fupload "$TOKEN_R" "$RDMID" "a picture"
+tok "$TOKEN_P" call GET /api/dms | jq -e --arg id "$RDMID" 'all(.[]; .id != $id)' >/dev/null
+tok "$TOKEN_P" call GET /api/users/@me/unread | jq -e --arg id "$RDMID" 'all(.channels[]; .channel_id != $id)' >/dev/null
+tok "$TOKEN_P" fail_call GET "/api/channels/$RDMID/messages"
+tok "$TOKEN_P" call GET /api/dms/requests | jq -e --arg r "$REX" --arg c "$RDMID" '.count == 1 and .requests[0].user.id == $r
+  and .requests[0].channel_id == $c and (.requests[0].messages | length == 2)
+  and (.requests[0].messages[0].content | startswith("hi @someone"))
+  and .requests[0].messages[1].pictures == 1 and (.requests[0].messages[1] | has("attachments") | not)' >/dev/null
+wait_for /tmp/gw-req-pia.jsonl '.t == "MESSAGE_REQUESTS" and .d.count == 1'
+grep -v '^$' /tmp/gw-req-pia.jsonl | jq -e --arg c "$RDMID" 'select(.t == "MESSAGE_CREATE" and .d.channel_id == $c)' >/dev/null && { echo "the request reached her gateway"; exit 1; }
+# Rex sees his messages normally, with the request noted.
+tok "$TOKEN_R" call GET "/api/channels/$RDMID/messages" | jq -e 'length == 2' >/dev/null
+tok "$TOKEN_R" call GET /api/dms | jq -e --arg id "$RDMID" '.[] | select(.id == $id) | .request == "outgoing"' >/dev/null
+# At most 3 messages to a request that hasn't been accepted.
+tok "$TOKEN_R" call POST "/api/channels/$RDMID/messages" '{"content":"third"}' >/dev/null
+[ "$(tok "$TOKEN_R" status POST "/api/channels/$RDMID/messages" '{"content":"fourth"}')" = 429 ] && grep -q "Wait for them to accept" /tmp/body
+tok "$TOKEN_R" call GET "/api/users/$PIA/contact" | jq -e '(.can_message | not) and .request and (.reason | test("Wait for them"))' >/dev/null
+# She can see who's asking (no name history or outhouses: they share none).
+tok "$TOKEN_P" call GET "/api/users/$REX/profile/full" | jq -e '.level == "limited" and .names == null and .outhouses == [] and .about_me == ""' >/dev/null
+# Accepting: she joins and gets everything (unread), and it's a normal DM for him.
+tok "$TOKEN_P" call POST "/api/dms/requests/$RDMID/accept" | jq -e '.request == null and (.recipients | length == 2)' >/dev/null
+tok "$TOKEN_P" call GET "/api/channels/$RDMID/messages" | jq -e 'length == 3' >/dev/null
+tok "$TOKEN_P" call GET /api/users/@me/unread | jq -e --arg id "$RDMID" 'any(.channels[]; .channel_id == $id)' >/dev/null
+tok "$TOKEN_P" call GET /api/dms/requests | jq -e '.count == 0' >/dev/null
+wait_for /tmp/gw-req-pia.jsonl '.t == "MESSAGE_REQUESTS" and .d.count == 0'
+tok "$TOKEN_R" call GET /api/dms | jq -e --arg id "$RDMID" '.[] | select(.id == $id) | .request == null' >/dev/null
+tok "$TOKEN_R" call POST "/api/channels/$RDMID/messages" '{"content":"thanks!"}' >/dev/null
+wait_for /tmp/gw-req-pia.jsonl '.t == "MESSAGE_CREATE" and .d.content == "thanks!"'
+tok "$TOKEN_A" call GET "/api/safety/users/$REX" | jq -e '.message_requests.sent == 1 and .message_requests.accepted == 1' >/dev/null
+
+step "message requests: ignore (sender isn't told), block, report; outhouse-mates aren't held"
+[ "$(xreg 14 '{"username":"sid","password":"password123","display_name":"Sid","birth_date":"1990-06-06"}')" = 200 ]
+TOKEN_SI=$(jq -r .token /tmp/body); SID=$(jq -r .user.id /tmp/body)
+SDM=$(tok "$TOKEN_SI" call POST /api/dms '{"user_ids":["'"$PIA"'"]}' | jq -r .id)
+tok "$TOKEN_SI" call POST "/api/channels/$SDM/messages" '{"content":"cheap gold, PM me"}' >/dev/null
+tok "$TOKEN_P" call GET /api/dms/requests | jq -e '.count == 1' >/dev/null
+tok "$TOKEN_P" call POST "/api/dms/requests/$SDM/ignore" >/dev/null
+tok "$TOKEN_P" call GET /api/dms/requests | jq -e '.count == 0' >/dev/null
+tok "$TOKEN_SI" call GET /api/dms | jq -e --arg id "$SDM" '.[] | select(.id == $id) | .request == "outgoing"' >/dev/null
+tok "$TOKEN_SI" call POST "/api/channels/$SDM/messages" '{"content":"still there?"}' >/dev/null
+tok "$TOKEN_P" call GET /api/dms/requests | jq -e '.count == 0' >/dev/null
+tok "$TOKEN_P" fail_call POST "/api/dms/requests/$SDM/accept" # ignored is gone from her list
+[ "$(xreg 15 '{"username":"tom","password":"password123","display_name":"Tom","birth_date":"1990-07-07"}')" = 200 ]
+TOKEN_TO=$(jq -r .token /tmp/body); TOM=$(jq -r .user.id /tmp/body)
+TOMDM=$(tok "$TOKEN_TO" call POST /api/dms '{"user_ids":["'"$PIA"'"]}' | jq -r .id)
+tok "$TOKEN_TO" call POST "/api/channels/$TOMDM/messages" '{"content":"hey"}' >/dev/null
+tok "$TOKEN_P" call PUT "/api/users/@me/blocks/$TOM" >/dev/null
+[ "$(report "$TOKEN_P" user "$TOM" spam)" = 201 ]
+tok "$TOKEN_P" call GET /api/dms/requests | jq -e '.count == 0' >/dev/null
+[ "$(tok "$TOKEN_TO" status POST "/api/channels/$TOMDM/messages" '{"content":"hello?"}')" = 403 ]
+tok "$TOKEN_TO" call GET "/api/users/$PIA/profile/full" | jq -e '.level == "minimal" and (has("about_me") | not) and (.contact.can_message | not)' >/dev/null
+tok "$TOKEN_P" call GET "/api/users/$TOM/profile/full" | jq -e '.level == "minimal" and .relationship == "blocked"' >/dev/null
+# Unblocked later: his next message is a new request (not lost), which she ignores.
+tok "$TOKEN_P" call DELETE "/api/users/@me/blocks/$TOM" >/dev/null
+tok "$TOKEN_TO" call POST "/api/channels/$TOMDM/messages" '{"content":"sorry, wrong person"}' >/dev/null
+tok "$TOKEN_TO" call GET /api/dms | jq -e --arg id "$TOMDM" '.[] | select(.id == $id) | .request == "outgoing"' >/dev/null
+tok "$TOKEN_P" call GET /api/dms/requests | jq -e --arg c "$TOMDM" '.count == 1 and .requests[0].channel_id == $c' >/dev/null
+tok "$TOKEN_P" call POST "/api/dms/requests/$TOMDM/ignore" >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/users/$SID" | jq -e '.message_requests.sent == 1 and .message_requests.ignored == 1' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/users/$TOM" | jq -e '.message_requests.sent == 2 and .message_requests.blocked == 1 and .message_requests.ignored == 1' >/dev/null
+# Outhouse-mates: delivered as normal.
+QDM=$(tok "$TOKEN_Q" call POST /api/dms '{"user_ids":["'"$PIA"'"]}')
+jq -e '.request == null and (.recipients | length == 2)' <<<"$QDM" >/dev/null; QDM=$(jq -r .id <<<"$QDM")
+tok "$TOKEN_Q" call POST "/api/channels/$QDM/messages" '{"content":"porch tonight?"}' >/dev/null
+tok "$TOKEN_P" call GET "/api/channels/$QDM/messages" | jq -e 'length == 1' >/dev/null
+# Group DMs: only friends and outhouse-mates, new or existing.
+[ "$(xreg 16 '{"username":"uma","password":"password123","display_name":"Uma","birth_date":"1990-08-08"}')" = 200 ]
+TOKEN_U=$(jq -r .token /tmp/body); UMA=$(jq -r .user.id /tmp/body)
+tok "$TOKEN_U" call POST "/api/invites/$PINV" >/dev/null
+[ "$(tok "$TOKEN_P" status POST /api/dms '{"user_ids":["'"$QUIN"'","'"$REX"'"]}')" = 403 ] && grep -q "Group DMs are only for friends" /tmp/body
+PGDM=$(tok "$TOKEN_P" call POST /api/dms '{"user_ids":["'"$QUIN"'","'"$UMA"'"]}' | jq -r .id)
+[ "$(tok "$TOKEN_P" status POST "/api/dms/$PGDM/recipients" '{"user_id":"'"$REX"'"}')" = 403 ] && grep -q "Group DMs are only for friends" /tmp/body
+
+step "message requests: friending or sharing an outhouse accepts them; older conversations are grandfathered"
+# Sid's ignored request goes through once they're friends.
+tok "$TOKEN_SI" call PUT "/api/users/@me/relationships/$PIA" | jq -e '.kind == "outgoing"' >/dev/null
+tok "$TOKEN_P" call PUT "/api/users/@me/relationships/$SID" | jq -e '.kind == "friend"' >/dev/null
+tok "$TOKEN_P" call GET /api/dms | jq -e --arg id "$SDM" 'any(.[]; .id == $id)' >/dev/null
+tok "$TOKEN_P" call GET "/api/channels/$SDM/messages" | jq -e 'length == 2' >/dev/null
+tok "$TOKEN_SI" call GET /api/dms | jq -e --arg id "$SDM" '.[] | select(.id == $id) | .request == null' >/dev/null
+# A new one, then joining her outhouse.
+[ "$(xreg 17 '{"username":"vic","password":"password123","display_name":"Vic","birth_date":"1990-09-09"}')" = 200 ]
+TOKEN_V=$(jq -r .token /tmp/body); VIC=$(jq -r .user.id /tmp/body)
+VDM=$(tok "$TOKEN_V" call POST /api/dms '{"user_ids":["'"$PIA"'"]}' | jq -r .id)
+tok "$TOKEN_V" call POST "/api/channels/$VDM/messages" '{"content":"hello from vic"}' >/dev/null
+tok "$TOKEN_P" call GET /api/dms/requests | jq -e '.count == 1' >/dev/null
+tok "$TOKEN_V" call POST "/api/invites/$PINV" >/dev/null
+tok "$TOKEN_P" call GET /api/dms/requests | jq -e '.count == 0' >/dev/null
+tok "$TOKEN_P" call GET "/api/channels/$VDM/messages" | jq -e 'length == 1' >/dev/null
+# Both have talked: still delivered after they stop sharing an outhouse.
+tok "$TOKEN_P" call POST "/api/channels/$QDM/messages" '{"content":"yes!"}' >/dev/null
+tok "$TOKEN_Q" call POST "/api/guilds/$PG/leave" >/dev/null
+tok "$TOKEN_Q" call POST "/api/channels/$QDM/messages" '{"content":"see you there"}' >/dev/null
+tok "$TOKEN_P" call GET "/api/channels/$QDM/messages" | jq -e 'length == 3' >/dev/null
+# Only one side ever talked: the next message after they stop sharing is a request again.
+UDM=$(tok "$TOKEN_U" call POST /api/dms '{"user_ids":["'"$PIA"'"]}' | jq -r .id)
+tok "$TOKEN_U" call POST "/api/channels/$UDM/messages" '{"content":"first"}' >/dev/null
+tok "$TOKEN_U" call POST "/api/guilds/$PG/leave" >/dev/null
+tok "$TOKEN_U" call GET "/api/users/$PIA/contact" | jq -e '.can_message and .request' >/dev/null
+tok "$TOKEN_U" call POST "/api/channels/$UDM/messages" '{"content":"second"}' >/dev/null
+tok "$TOKEN_U" call GET /api/dms | jq -e --arg id "$UDM" '.[] | select(.id == $id) | .request == "outgoing" and (.recipients | length == 2)' >/dev/null
+tok "$TOKEN_P" call GET /api/dms | jq -e --arg id "$UDM" 'all(.[]; .id != $id)' >/dev/null
+tok "$TOKEN_P" call GET /api/dms/requests | jq -e --arg c "$UDM" '.count == 1 and .requests[0].channel_id == $c and (.requests[0].messages | length == 2)' >/dev/null
+# Messaging them back from her side accepts it.
+tok "$TOKEN_P" call POST /api/dms '{"user_ids":["'"$UMA"'"]}' | jq -e --arg id "$UDM" '.id == $id and .request == null' >/dev/null
+tok "$TOKEN_P" call GET /api/dms/requests | jq -e '.count == 0' >/dev/null
+
+step "message requests: the privacy setting, the daily limit, and bots are never held"
+tok "$TOKEN_P" call GET /api/users/@me/privacy | jq -e '.message_requests == "allow"' >/dev/null
+tok "$TOKEN_P" call PUT /api/users/@me/privacy '{"message_requests":"block"}' | jq -e '.message_requests == "block" and .allow_dms == "everyone"' >/dev/null
+tok "$TOKEN_P" fail_call PUT /api/users/@me/privacy '{"message_requests":"maybe"}'
+[ "$(xreg 18 '{"username":"wes","password":"password123","display_name":"Wes","birth_date":"1990-10-10"}')" = 200 ]
+TOKEN_W=$(jq -r .token /tmp/body); WES=$(jq -r .user.id /tmp/body)
+[ "$(tok "$TOKEN_W" status POST /api/dms '{"user_ids":["'"$PIA"'"]}')" = 403 ] && grep -q "only takes messages from friends and people in their outhouses" /tmp/body
+tok "$TOKEN_W" call GET "/api/users/$PIA/contact" | jq -e '(.can_message | not) and .request' >/dev/null
+tok "$TOKEN_P" call PUT /api/users/@me/privacy '{"message_requests":"allow"}' >/dev/null
+# MESSAGE_REQUESTS_PER_DAY is 4 in this test.
+for who in "$QUIN" "$REX" "$SID" "$TOM"; do
+  D=$(tok "$TOKEN_W" call POST /api/dms '{"user_ids":["'"$who"'"]}' | jq -r .id)
+  tok "$TOKEN_W" call POST "/api/channels/$D/messages" '{"content":"hi, I am Wes"}' >/dev/null
+done
+[ "$(tok "$TOKEN_W" status POST /api/dms '{"user_ids":["'"$VIC"'"]}')" = 429 ] && grep -q "message requests today" /tmp/body
+tok "$TOKEN_W" call GET "/api/users/$VIC/contact" | jq -e '(.can_message | not) and (.reason | test("today"))' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/users/$WES" | jq -e '.message_requests.sent == 4 and .message_requests.last_day == 4' >/dev/null
+# Outhouse Safety (the server's helper) reaches Wes straight away.
+tok "$TOKEN_A" call POST "/api/safety/users/$WES/actions" '{"action":"warn","text":"Please slow down with the DMs."}' >/dev/null
+tok "$TOKEN_W" call GET /api/dms | jq -e 'any(.[]; .request == null and any(.recipients[]; .bot))' >/dev/null
+
+step "profiles: visibility for teens, blocks, suspensions and the site owner"
+# Fran (adult, not her friend) sees only Tia's name, picture and outhouses in common.
+tok "$TOKEN_F" call GET "/api/users/$TIA/profile/full" | jq -e '.level == "teen" and (has("about_me") | not) and (has("names") | not)
+  and (has("friends_in_common") | not) and (has("characters") | not) and (.outhouses | length >= 1) and (.outhouses[0] | has("roles") | not)' >/dev/null
+tok "$TOKEN_T" call GET "/api/users/$FRAN/profile/full" | jq -e '.level == "full"' >/dev/null
+# Tia blocked Adam (above): just a name and picture either way.
+tok "$TOKEN_AD" call GET "/api/users/$TIA/profile/full" | jq -e '.level == "minimal" and (has("outhouses") | not)' >/dev/null
+tok "$TOKEN_T" call GET "/api/users/$ADAM/profile/full" | jq -e '.level == "minimal" and .relationship == "blocked"' >/dev/null
+tok "$TOKEN_A" call GET "/api/users/$TIA/profile/full" | jq -e '.level == "full" and .site_owner_view' >/dev/null
+# Suspended: "This account is suspended" to everyone but the owner.
+tok "$TOKEN_A" call POST "/api/safety/users/$VIC/actions" '{"action":"suspend","days":1,"text":"profile test"}' >/dev/null
+tok "$TOKEN_P" call GET "/api/users/$VIC/profile/full" | jq -e '.level == "suspended" and .suspended and .avatar_url == null and (has("about_me") | not)' >/dev/null
+tok "$TOKEN_P" call GET "/api/users/$VIC/contact" | jq -e '(.can_message | not) and .reason == "This account is suspended."' >/dev/null
+tok "$TOKEN_A" call GET "/api/users/$VIC/profile/full" | jq -e '.level == "full" and .suspended' >/dev/null
+tok "$TOKEN_A" call POST "/api/safety/users/$VIC/actions" '{"action":"unsuspend"}' >/dev/null
+TOKEN=""; fail_call GET "/api/users/$PIA/profile/full"; TOKEN=$TOKEN_A
 
 # ---------------------------------------------------------------------------
 # The image detector (feat-detector): a local model in a sidecar, test mode

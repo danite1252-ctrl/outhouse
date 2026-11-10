@@ -433,6 +433,8 @@ pub async fn join(
 
     let guild = fetch_guild(&st.db, row.guild_id).await?;
     if joined {
+        // Message requests between them and people here go through now.
+        crate::api::requests::accept_for_new_member(&st, user.id, guild.id).await?;
         let mut member = fetch_member(&st.db, guild.id, user.id).await?;
         member.online = st.is_online(user.id);
         st.dispatch(

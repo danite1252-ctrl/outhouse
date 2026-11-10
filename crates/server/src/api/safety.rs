@@ -302,18 +302,24 @@ pub async fn teen_kept_from_adult_channels(db: &PgPool, user_id: i64) -> AppResu
 pub struct ContactInfo {
     pub can_message: bool,
     pub reason: Option<String>,
+    /// It would go as a message request (they're not your friend and share
+    /// no outhouse with you).
+    pub request: bool,
 }
 
-/// `GET /api/users/{id}/contact`: can I start a DM with them (teen rules)?
+/// `GET /api/users/{id}/contact`: can I message them right now (blocks,
+/// teen rules, privacy, suspensions, message request limits), and would it
+/// be a message request?
 pub async fn contact(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
     Path(other): Path<i64>,
 ) -> AppResult<Json<ContactInfo>> {
-    let reason = teen_dm_refusal(&st.db, user.id, other).await?;
+    let (reason, request) = super::requests::contact_status(&st, user.id, other).await?;
     Ok(Json(ContactInfo {
         can_message: reason.is_none(),
         reason,
+        request,
     }))
 }
 
@@ -1715,6 +1721,9 @@ async fn subject_json(st: &AppState, user_id: i64) -> AppResult<Value> {
         .bind(user_id)
         .fetch_all(&st.db)
         .await?;
+    // Every name they've gone by (the console sees all of it).
+    let names = super::profiles::name_history(&st.db, user_id, None, 200).await?;
+    let message_requests = super::requests::stats_for(&st.db, user_id).await?;
     Ok(json!({
         "id": u.id.to_string(),
         "username": u.username,
@@ -1741,6 +1750,8 @@ async fn subject_json(st: &AppState, user_id: i64) -> AppResult<Value> {
         "reports_made": reports_made,
         "ip_note": "Outhouse doesn't record IP addresses, so there are none to show here. The web server's own access logs (Apache) may have them for recent weeks.",
         "log": log.iter().map(log_json).collect::<Vec<_>>(),
+        "names": names,
+        "message_requests": message_requests,
     }))
 }
 

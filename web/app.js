@@ -327,7 +327,8 @@ document.addEventListener("keydown", (e) => {
 window.addEventListener("resize", () => {
   closeMenus();
   // The soundboard's bottom sheet on phones survives the on-screen keyboard.
-  if (!(popover?.classList.contains("sb-pop") && window.innerWidth <= 760)) closePopover();
+  // So does a profile card's (it has a message box).
+  if (!((popover?.classList.contains("sb-pop") || popover?.classList.contains("pc-sheet")) && window.innerWidth <= 760)) closePopover();
 });
 window.addEventListener("blur", () => closeMenus());
 

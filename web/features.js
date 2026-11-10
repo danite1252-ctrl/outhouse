@@ -48,8 +48,8 @@ function profileCard(p, { preview = false } = {}) {
       roles.length ? el("div", { class: "pc-section" }, el("h4", {}, "ROLES"),
         el("div", { class: "pc-roles" }, roles.map((r) => el("span", { class: "pc-role" },
           el("span", { class: "dot", style: `background:${hexColour(r.color) || "#a1a1aa"}` }), r.name)))) : null,
-      el("div", { class: "pc-section" }, el("h4", {}, "MEMBER SINCE"),
-        el("p", {}, `Outhouse: ${since(p.created_at)}`, member?.joined_at ? ` · ${currentGuild()?.name ?? "Here"}: ${since(member.joined_at)}` : "")),
+      p.created_at ? el("div", { class: "pc-section" }, el("h4", {}, "MEMBER SINCE"),
+        el("p", {}, `Outhouse: ${since(p.created_at)}`, member?.joined_at ? ` · ${currentGuild()?.name ?? "Here"}: ${since(member.joined_at)}` : "")) : null,
       preview ? null : el("div", { class: "pc-actions" },
         p.id === state.me.id
           ? el("button", { class: "ghost", onclick: () => { closePopover(); openUserSettings("look"); } }, "Edit profile")
@@ -65,7 +65,8 @@ function profileCard(p, { preview = false } = {}) {
 async function openProfile(userId, anchor) {
   if (!userId || !anchor) return;
   try {
-    const p = await api("GET", `/api/profiles/${userId}`);
+    // Everything you may see about them, decided by the server.
+    const p = await api("GET", `/api/users/${userId}/profile/full`);
     const pop = openPopover(anchor, profileCard(p), "below");
     pop.classList.add("profile-pop");
     // Keep it beside the thing you clicked and on screen.

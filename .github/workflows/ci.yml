@@ -130,6 +130,7 @@ jobs:
           node --check web/updates.js
           node --check web/safety.js
           node --check web/detector.js
+          node --check web/profiles.js
           node --check web/bots/dice-bot.mjs
       - name: Deploy scripts check (bash -n + shellcheck)
         run: |

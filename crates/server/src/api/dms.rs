@@ -1,7 +1,9 @@
 //! Direct messages: one-to-one and group conversations outside any
 //! outhouse. A DM is a channel with no outhouse plus a list of the people
 //! in it, so messages, uploads, reactions, edits and threads all reuse the
-//! normal message endpoints. You can message anyone you share an outhouse with.
+//! normal message endpoints. You can message anyone you share an outhouse
+//! with or are friends with; anyone else gets your message as a message
+//! request (api::requests) they can accept or ignore.
 
 use std::collections::HashMap;
 
@@ -70,9 +72,22 @@ async fn load_dms(st: &AppState, user_id: i64, only: Option<i64>) -> AppResult<V
         .bind(&ids)
         .fetch_all(&st.db)
         .await?;
+    // Requests you've sent that are still waiting: the person you wrote to
+    // isn't in the DM yet, but it's still "your DM with them".
+    let waiting_sql = format!(
+        "SELECT r.channel_id, {USER_COLUMNS}
+         FROM dm_requests r JOIN users u ON u.id = r.to_id
+         WHERE r.channel_id = ANY($1) AND r.from_id = $2 AND r.status IN ('pending', 'ignored')"
+    );
+    let waiting = sqlx::query_as::<_, RecipientRow>(&waiting_sql)
+        .bind(&ids)
+        .bind(user_id)
+        .fetch_all(&st.db)
+        .await?;
+    let requested: std::collections::HashSet<i64> = waiting.iter().map(|r| r.channel_id).collect();
     let hidden = super::friends::blocked_by(&st.db, user_id).await?;
     let mut by_channel: HashMap<i64, Vec<DmUser>> = HashMap::new();
-    for r in recipients {
+    for r in recipients.into_iter().chain(waiting) {
         by_channel.entry(r.channel_id).or_default().push(DmUser {
             online: !hidden.contains(&r.id) && st.is_online(r.id),
             id: r.id,
@@ -86,6 +101,7 @@ async fn load_dms(st: &AppState, user_id: i64, only: Option<i64>) -> AppResult<V
         .into_iter()
         .map(|r| DmChannel {
             recipients: by_channel.remove(&r.id).unwrap_or_default(),
+            request: requested.contains(&r.id).then(|| "outgoing".to_string()),
             id: r.id,
             kind: r.kind,
             name: r.name,
@@ -96,7 +112,7 @@ async fn load_dms(st: &AppState, user_id: i64, only: Option<i64>) -> AppResult<V
         .collect())
 }
 
-async fn dm_for(st: &AppState, channel_id: i64, user_id: i64) -> AppResult<DmChannel> {
+pub(crate) async fn dm_for(st: &AppState, channel_id: i64, user_id: i64) -> AppResult<DmChannel> {
     load_dms(st, user_id, Some(channel_id))
         .await?
         .pop()
@@ -113,7 +129,7 @@ async fn participants(db: &PgPool, channel_id: i64) -> AppResult<Vec<i64>> {
 }
 
 /// Sends everyone in the DM its new state.
-async fn announce(st: &AppState, channel_id: i64) -> AppResult<()> {
+pub(crate) async fn announce(st: &AppState, channel_id: i64) -> AppResult<()> {
     for user_id in participants(&st.db, channel_id).await? {
         if let Ok(dm) = dm_for(st, channel_id, user_id).await {
             st.dispatch(Audience::User(user_id), ServerEvent::DmUpdate(dm));
@@ -122,7 +138,8 @@ async fn announce(st: &AppState, channel_id: i64) -> AppResult<()> {
     Ok(())
 }
 
-/// Checks everyone in `ids` is a real person who shares an outhouse with you.
+/// Checks everyone in `ids` is a real person who shares an outhouse with
+/// you or is your friend (group DMs; one-to-one DMs can be requests).
 async fn check_reachable(db: &PgPool, me: i64, ids: &[i64]) -> AppResult<()> {
     let ok: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM users u
@@ -139,8 +156,9 @@ async fn check_reachable(db: &PgPool, me: i64, ids: &[i64]) -> AppResult<()> {
     .fetch_one(db)
     .await?;
     if ok as usize != ids.len() {
-        return Err(AppError::BadRequest(
-            "You can only message friends and people you share an outhouse with.".into(),
+        return Err(AppError::Refused(
+            "Group DMs are only for friends and people you share an outhouse with. Message them on their own first (as a message request), or add them as a friend."
+                .into(),
         ));
     }
     Ok(())
@@ -257,53 +275,10 @@ pub async fn create(
             "Group DMs can have up to {MAX_GROUP_DM} people."
         )));
     }
-    check_reachable(&st.db, user.id, &ids).await?;
-
     let channel_id = if ids.len() == 1 {
-        let other = ids[0];
-        let key = format!("{}:{}", user.id.min(other), user.id.max(other));
-        // Privacy and blocks decide who can start a conversation; an
-        // existing one can always be opened (sending is checked per message).
-        let existing: Option<i64> = sqlx::query_scalar("SELECT id FROM channels WHERE dm_key = $1")
-            .bind(&key)
-            .fetch_optional(&st.db)
-            .await?;
-        if existing.is_none() {
-            super::friends::check_can_dm(&st.db, user.id, other).await?;
-        }
-        let id: Option<i64> = sqlx::query_scalar(
-            "INSERT INTO channels (id, guild_id, name, kind, position, dm_key)
-             VALUES ($1, NULL, '', $2, 0, $3)
-             ON CONFLICT (dm_key) DO NOTHING
-             RETURNING id",
-        )
-        .bind(st.ids.next_id())
-        .bind(channel_kind::DM)
-        .bind(&key)
-        .fetch_optional(&st.db)
-        .await?;
-        match id {
-            Some(id) => {
-                sqlx::query(
-                    "INSERT INTO dm_participants (channel_id, user_id) VALUES ($1, $2), ($1, $3)",
-                )
-                .bind(id)
-                .bind(user.id)
-                .bind(other)
-                .execute(&st.db)
-                .await?;
-                announce(&st, id).await?;
-                id
-            }
-            // Already exists: just open it.
-            None => {
-                sqlx::query_scalar("SELECT id FROM channels WHERE dm_key = $1")
-                    .bind(&key)
-                    .fetch_one(&st.db)
-                    .await?
-            }
-        }
+        open_one_to_one(&st, user.id, ids[0]).await?
     } else {
+        check_reachable(&st.db, user.id, &ids).await?;
         for &other in &ids {
             super::friends::check_can_dm(&st.db, user.id, other).await?;
         }
@@ -343,6 +318,92 @@ pub async fn create(
         id
     };
     Ok(Json(dm_for(&st, channel_id, user.id).await?))
+}
+
+/// Opens (or starts) your one-to-one DM with `other`. Someone you're not
+/// friends with and share no outhouse with gets it as a message request.
+async fn open_one_to_one(st: &AppState, me: i64, other: i64) -> AppResult<i64> {
+    let target: Option<bool> = sqlx::query_scalar("SELECT is_bot FROM users WHERE id = $1")
+        .bind(other)
+        .fetch_optional(&st.db)
+        .await?;
+    let Some(other_bot) = target else {
+        return Err(AppError::BadRequest("Nobody has that ID.".into()));
+    };
+    if let Some(id) = super::requests::dm_between(&st.db, me, other).await? {
+        // Privacy and blocks decide who can start a conversation; an
+        // existing one can always be opened (sending is checked per message).
+        if is_dm_participant(&st.db, id, me).await? {
+            return Ok(id);
+        }
+        // You're not in it: they wrote to you as a request (messaging them
+        // back accepts it), or you blocked a request and changed your mind.
+        super::friends::check_can_dm(&st.db, me, other).await?;
+        match super::requests::open_request(&st.db, id).await? {
+            Some(r) if r.to_id == me => super::requests::accept(st, &r, false).await?,
+            _ => {
+                sqlx::query(
+                    "INSERT INTO dm_participants (channel_id, user_id) VALUES ($1, $2)
+                     ON CONFLICT DO NOTHING",
+                )
+                .bind(id)
+                .bind(me)
+                .execute(&st.db)
+                .await?;
+                announce(st, id).await?;
+            }
+        }
+        return Ok(id);
+    }
+    if other_bot {
+        return Err(AppError::BadRequest(
+            "Bots can't be messaged here. Use their commands in an outhouse.".into(),
+        ));
+    }
+    super::friends::check_can_dm(&st.db, me, other).await?;
+    let request = !super::requests::connected(&st.db, me, other).await?;
+    if request {
+        super::requests::check_new_request(&st.db, me, other).await?;
+    }
+    let key = format!("{}:{}", me.min(other), me.max(other));
+    let id: Option<i64> = sqlx::query_scalar(
+        "INSERT INTO channels (id, guild_id, name, kind, position, dm_key)
+         VALUES ($1, NULL, '', $2, 0, $3)
+         ON CONFLICT (dm_key) DO NOTHING
+         RETURNING id",
+    )
+    .bind(st.ids.next_id())
+    .bind(channel_kind::DM)
+    .bind(&key)
+    .fetch_optional(&st.db)
+    .await?;
+    let Some(id) = id else {
+        // Started a moment ago from the other side: open that one.
+        return Ok(
+            sqlx::query_scalar("SELECT id FROM channels WHERE dm_key = $1")
+                .bind(&key)
+                .fetch_one(&st.db)
+                .await?,
+        );
+    };
+    if request {
+        // Only you, until they accept.
+        sqlx::query("INSERT INTO dm_participants (channel_id, user_id) VALUES ($1, $2)")
+            .bind(id)
+            .bind(me)
+            .execute(&st.db)
+            .await?;
+        super::requests::open_for_new_dm(st, id, me, other).await?;
+    } else {
+        sqlx::query("INSERT INTO dm_participants (channel_id, user_id) VALUES ($1, $2), ($1, $3)")
+            .bind(id)
+            .bind(me)
+            .bind(other)
+            .execute(&st.db)
+            .await?;
+    }
+    announce(st, id).await?;
+    Ok(id)
 }
 
 /// `PATCH /api/dms/{id}` `{"name"}`: rename a group DM (anyone in it can).

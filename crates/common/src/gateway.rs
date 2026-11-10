@@ -265,6 +265,11 @@ pub enum ServerEvent {
         #[serde(with = "as_string")]
         id: i64,
     },
+    /// How many message requests are waiting for you (DMs from people who
+    /// aren't your friends and share no outhouse with you). Sent to you only.
+    MessageRequests {
+        count: i64,
+    },
     /// Custom emoji in this outhouse changed: re-fetch them.
     EmojisChanged {
         #[serde(with = "as_string")]

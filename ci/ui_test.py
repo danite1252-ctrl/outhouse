@@ -3939,8 +3939,9 @@ with sync_playwright() as p:
     # A teen: adults who aren't their friend see "This person can't receive messages from you".
     tp = safety_page(hal["token"])
     tp.evaluate(f"openProfile({json.dumps(tess['user']['id'])}, document.querySelector('#messages .msg .msg-author'))")
-    tp.wait_for_selector(".profile-card .pc-cant:has-text(\"This person can't receive messages from you.\")", timeout=10000)
+    tp.wait_for_selector(".profile-card .pc-msg-hint.cant:has-text(\"This person can't receive messages from you.\")", timeout=10000)
     assert tp.is_disabled(".profile-card .pc-message")
+    assert tp.is_disabled(".profile-card .pc-msg-input")
     tp.wait_for_timeout(200)
     tp.screenshot(path=f"{SHOTS}/3508-teen-cant-message.png")
     tp.close()
@@ -4096,6 +4097,132 @@ with sync_playwright() as p:
     sp_.wait_for_selector("#auth-error:has-text('13 or older')", timeout=10000)
     sp_.screenshot(path=f"{SHOTS}/3509-signup-under-13.png")
     sp_.close()
+
+    # ---- Profiles (profiles.js): left-click cards with a message box, the full
+    # profile page (someone else's and your own), and DM message requests.
+    pam = reg_from("198.18.12.1", f"pam{suffix}", "Pam")
+    stan = reg_from("198.18.12.2", f"stan{suffix}", "Stan")
+    tegan = reg_from("198.18.12.3", f"tegan{suffix}", "Tegan", time.strftime("%Y-%m-%d", time.gmtime(time.time() - 15 * 365.25 * 86400)))
+    PAM, STAN = pam["user"]["id"], stan["user"]["id"]
+    pguild = api("POST", "/api/guilds", {"name": "Profile Porch"}, TOKEN)
+    pchan = [c for c in api("GET", f"/api/guilds/{pguild['id']}/channels", None, TOKEN) if c["kind"] == 0][0]
+    pcode = api("POST", f"/api/guilds/{pguild['id']}/invites", None, TOKEN)["code"]
+    for u in (pam, tegan):
+        api("POST", f"/api/invites/{pcode}", None, u["token"])
+    api("PATCH", "/api/users/@me", {"display_name": "Pammy", "about_me": "Shadow priest. Bring your own mana.", "profile_theme": "dusk"}, pam["token"])
+    api("PATCH", "/api/users/@me", {"display_name": "Pam"}, pam["token"])
+    api("PUT", f"/api/guilds/{pguild['id']}/nickname", {"nickname": "Pam of the Porch"}, pam["token"])
+    api("POST", f"/api/channels/{pchan['id']}/messages", {"content": "Anyone keen for Scholo?"}, pam["token"])
+    api("POST", f"/api/channels/{pchan['id']}/messages", {"content": "can I come"}, tegan["token"])
+
+    def prof_page(token, label, **kw):
+        pg = browser.new_page(**kw)
+        watch(pg, label)
+        pg.add_init_script(f"localStorage.setItem('outhouse_token', {json.dumps(token)}); localStorage.setItem('outhouse_guild', {json.dumps(pguild['id'])}); localStorage.setItem('outhouse_channel_{pguild['id']}', {json.dumps(pchan['id'])});")
+        pg.goto(BASE + "/")
+        pg.wait_for_selector("#messages .msg:has-text('can I come')", timeout=15000)
+        pg.wait_for_timeout(300)
+        return pg
+
+    for label, kw, n in (("desktop", {"viewport": {"width": 1280, "height": 800}}, 0),
+                         ("phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True}, 1)):
+        pp = prof_page(TOKEN, f"profiles-{label}", **kw)
+        # Left-click a name on a message: the card, with "Message @Pam of the Porch" at the bottom.
+        pp.click("#messages .msg-author:has-text('Pam of the Porch') >> nth=0")
+        pp.wait_for_selector(".profile-pop .profile-card .pc-msg-input:not([disabled])", timeout=10000)
+        if label == "phone":
+            assert pp.evaluate("document.querySelector('.profile-pop').classList.contains('pc-sheet')"), "phone card isn't a bottom sheet"
+            pp.wait_for_timeout(400)  # it slides up
+            box = pp.query_selector(".profile-pop").bounding_box()
+            assert abs(box["y"] + box["height"] - 844) < 2 and box["width"] >= 389, f"phone sheet not at the bottom: {box}"
+        assert "Pam of the Porch" in pp.get_attribute(".pc-msg-input", "placeholder")
+        pp.wait_for_timeout(300)
+        pp.screenshot(path=f"{SHOTS}/3701-{label}-card-message-box.png")
+        pp.fill(".pc-msg-input", f"Count me in for Scholo ({label})")
+        pp.press(".pc-msg-input", "Enter")
+        pp.wait_for_selector(".pc-msg-status .pc-sent", timeout=10000)
+        pp.wait_for_selector(".pc-msg-status .pc-open-dm")
+        pp.wait_for_timeout(200)
+        pp.screenshot(path=f"{SHOTS}/3702-{label}-card-sent.png")
+        dms = api("GET", "/api/dms", None, pam["token"])
+        pdm = next(d for d in dms if any(r["id"] == CAROL for r in d["recipients"]))
+        msgs = api("GET", f"/api/channels/{pdm['id']}/messages", None, pam["token"])
+        assert any(m["content"] == f"Count me in for Scholo ({label})" for m in msgs), "the card's message didn't arrive"
+        pp.keyboard.press("Escape")
+        pp.wait_for_selector(".profile-pop", state="detached")
+        # A teen: the box is off, with the server's reason.
+        pp.click("#messages .msg-author:has-text('Tegan') >> nth=0")
+        pp.wait_for_selector(".profile-card .pc-msg-hint.cant:has-text(\"This person can't receive messages from you.\")", timeout=10000)
+        assert pp.is_disabled(".profile-card .pc-msg-input")
+        pp.wait_for_timeout(200)
+        pp.screenshot(path=f"{SHOTS}/3703-{label}-card-message-disabled.png")
+        pp.keyboard.press("Escape")
+        # The full profile page: names they've gone by, outhouses in common, actions.
+        pp.click("#messages .msg-author:has-text('Pam of the Porch') >> nth=0")
+        pp.wait_for_selector(".profile-card .pc-full", timeout=10000)
+        pp.click(".profile-card .pc-full")
+        pp.wait_for_selector("dialog.profile-page .fp-names .fp-name-row", timeout=10000)
+        assert pp.locator("dialog.profile-page .fp-name-row").count() == 3
+        pp.wait_for_selector("dialog.profile-page .fp-guild:has-text('Profile Porch'):has-text('Pam of the Porch')")
+        pp.wait_for_selector("dialog.profile-page .fp-actions button:has-text('Report')")
+        pp.wait_for_selector("dialog.profile-page .fp-safety:has-text('Open in Safety console')")
+        pp.wait_for_timeout(300)
+        pp.screenshot(path=f"{SHOTS}/3704-{label}-full-profile.png")
+        pp.evaluate("document.querySelector('dialog.profile-page .settings-main').scrollTo(0, 10000)")
+        pp.wait_for_timeout(300)
+        pp.screenshot(path=f"{SHOTS}/3705-{label}-full-profile-lower.png")
+        pp.click("dialog.profile-page .fp-back")
+        pp.wait_for_selector("dialog.profile-page", state="detached")
+        # Your own: the profile editor lives here.
+        pp.evaluate("openFullProfile(state.me.id)")
+        pp.wait_for_selector("dialog.profile-page .fp-self-edit", timeout=10000)
+        pp.wait_for_timeout(300)
+        pp.screenshot(path=f"{SHOTS}/3706-{label}-my-profile.png")
+        pp.click("dialog.profile-page .settings-nav button[data-section='edit']")
+        pp.wait_for_selector("dialog.profile-page .theme-grid", timeout=10000)
+        pp.click("dialog.profile-page .settings-nav button[data-section='names']")
+        pp.wait_for_selector("dialog.profile-page .fp-nicks h2", timeout=10000)
+        pp.wait_for_timeout(300)
+        pp.screenshot(path=f"{SHOTS}/3707-{label}-my-profile-names.png")
+        pp.keyboard.press("Escape")
+        pp.wait_for_selector("dialog.profile-page", state="detached")
+
+        # Stan shares nothing with Carol: his DM waits as a message request.
+        sdm = api("POST", "/api/dms", {"user_ids": [CAROL]}, stan["token"])
+        assert sdm["request"] == "outgoing"
+        api("POST", f"/api/channels/{sdm['id']}/messages", {"content": f"Hi Carol, any spots in the raid? ({label})"}, stan["token"])
+        upload(f"/api/channels/{sdm['id']}/messages/upload", {"content": "my gear"}, {"files": ("gear.png", make_png(48), "image/png")}, stan["token"])
+        pp.evaluate("openRequests()")
+        pp.wait_for_selector(f".mr-row[data-user='{STAN}'] .mr-files:has-text('1 picture')", timeout=10000)
+        assert pp.locator(f".mr-row[data-user='{STAN}'] img").count() == 0, "a request showed a picture"
+        if label == "desktop":
+            pp.wait_for_selector("#requests-row .quiet-badge:has-text('1')")
+        pp.wait_for_timeout(300)
+        pp.screenshot(path=f"{SHOTS}/3708-{label}-message-requests.png")
+        pp.click(f".mr-row[data-user='{STAN}'] .mr-accept")
+        pp.wait_for_selector(f"#messages article.msg:has-text('any spots in the raid? ({label})')", timeout=10000)
+        pp.wait_for_selector("#messages article.msg:has-text('my gear')", timeout=10000)
+        pp.wait_for_timeout(300)
+        pp.screenshot(path=f"{SHOTS}/3709-{label}-request-accepted.png")
+        assert api("GET", "/api/dms/requests", None, TOKEN)["count"] == 0
+        pp.close()
+        # Next round: a fresh request (the accepted DM stays a normal one).
+        if n == 0:
+            stan = reg_from("198.18.12.4", f"stan2{suffix}", "Stan Two")
+            STAN = stan["user"]["id"]
+
+    # The sender's side: their DM says it's waiting.
+    wes = reg_from("198.18.12.5", f"wes{suffix}", "Wes")
+    wdm = api("POST", "/api/dms", {"user_ids": [PAM]}, wes["token"])
+    api("POST", f"/api/channels/{wdm['id']}/messages", {"content": "hello Pam, from a stranger"}, wes["token"])
+    sp7 = browser.new_page(viewport={"width": 1280, "height": 800})
+    watch(sp7, "profiles-sender")
+    sp7.add_init_script(f"localStorage.setItem('outhouse_token', {json.dumps(wes['token'])}); localStorage.setItem('outhouse_guild', '@home'); localStorage.setItem('outhouse_dm', {json.dumps(wdm['id'])});")
+    sp7.goto(BASE + "/")
+    sp7.wait_for_selector("#dm-request-note:has-text('Sent as a message request')", timeout=15000)
+    sp7.wait_for_timeout(300)
+    sp7.screenshot(path=f"{SHOTS}/3710-desktop-sender-request-note.png")
+    sp7.close()
 
     browser.close()
 

@@ -507,6 +507,14 @@ pub struct PrivacySettings {
     /// Who may send you friend requests: "everyone", "shared" (people in
     /// your outhouses), "friends_of_friends" or "nobody".
     pub allow_friend_requests: String,
+    /// DMs from people you're not friends with and share no outhouse with:
+    /// "allow" (held as message requests) or "block" (refused).
+    #[serde(default)]
+    pub message_requests: String,
+    /// A teen account (stricter rules apply; the message request choice
+    /// isn't theirs to make).
+    #[serde(default)]
+    pub teen: bool,
 }
 
 /// A message you've scheduled to send later.
@@ -615,6 +623,10 @@ pub struct DmChannel {
     pub last_message_id: Option<i64>,
     #[serde(with = "option_as_string", default)]
     pub last_read_id: Option<i64>,
+    /// "outgoing" while your messages here wait as a message request (the
+    /// other person hasn't accepted yet); None otherwise.
+    #[serde(default)]
+    pub request: Option<String>,
 }
 
 /// A custom emoji uploaded to an outhouse. In messages it's written

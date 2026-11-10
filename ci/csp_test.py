@@ -169,6 +169,14 @@ with sync_playwright() as p:
     pg.wait_for_selector("dialog.settings", timeout=10000)
     pg.wait_for_timeout(500)
     pg.keyboard.press("Escape")
+    # Profile cards (left-click, message box) and the full profile page.
+    pg.click("#messages .msg-author >> nth=0")
+    pg.wait_for_selector(".profile-pop .profile-card .pc-full", timeout=10000)
+    pg.click(".profile-pop .pc-full")
+    pg.wait_for_selector("dialog.profile-page .fp-head", timeout=10000)
+    pg.wait_for_timeout(300)
+    pg.keyboard.press("Escape")
+    pg.wait_for_selector("dialog.profile-page", state="detached", timeout=10000)
     pg.click(".event-card .ev-comp > summary")
     pg.wait_for_selector(".event-card .comp-buff[data-buff='battle_shout'].yes", timeout=10000)
     pg.click(".event-card .ev-link.sr")
@@ -232,4 +240,4 @@ if problems:
     for line in problems:
         print("  " + line)
     sys.exit(1)
-print("CSP test passed: landing, sign-in, invite page, chat, voice, voice messages, stickers, forwarding, friends, settings, soft reserves and the update button work under the real policy.")
+print("CSP test passed: landing, sign-in, invite page, chat, voice, voice messages, stickers, forwarding, friends, settings, profiles, soft reserves and the update button work under the real policy.")

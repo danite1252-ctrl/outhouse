@@ -60,6 +60,10 @@ services:
       ARMORY_URL_TEMPLATE_TBC: ${ARMORY_URL_TEMPLATE_TBC:-}
       ARMORY_URL_TEMPLATE_ERA: ${ARMORY_URL_TEMPLATE_ERA:-}
       ARMORY_REFRESH_HOURS: ${ARMORY_REFRESH_HOURS:-}
+      # DM message requests (README "Profiles & message requests"): messages to a
+      # request that hasn't been accepted (default 3), new requests a day per person (10).
+      MESSAGE_REQUEST_MAX_MESSAGES: ${MESSAGE_REQUEST_MAX_MESSAGES:-}
+      MESSAGE_REQUESTS_PER_DAY: ${MESSAGE_REQUESTS_PER_DAY:-}
       WOWHEAD_URL: ${WOWHEAD_URL:-}
       WOWHEAD_BRANCH: ${WOWHEAD_BRANCH:-}
       WOWHEAD_TOOLTIP_URL: ${WOWHEAD_TOOLTIP_URL:-}
