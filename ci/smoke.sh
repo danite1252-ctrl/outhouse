@@ -3000,7 +3000,8 @@ call GET "/api/guilds/$GUILD/audit-log?action=automod_block" | jq -e --arg d "$D
   and (.entries[0].details | startswith("Blocked word (d*****t)")) and (.entries[0].details | length) < 120
   and any(.actions[]; .key == "automod_block")' >/dev/null || { call GET "/api/guilds/$GUILD/audit-log?action=automod_block" | jq '.entries[0]'; exit 1; }
 call GET "/api/guilds/$GUILD/audit-log?action=automod_update" | jq -e '.entries | length >= 3' >/dev/null
-for i in $(seq 1 20); do call GET "/api/channels/$AML/messages" | jq -e 'length > 0' >/dev/null && break; sleep 0.5; done
+# (Alerts are posted in the background: wait until the last one is complete, embed and all.)
+for i in $(seq 1 20); do call GET "/api/channels/$AML/messages" | jq -e 'length > 0 and (.[-1].embeds[0].title // "" | test("Automod blocked"))' >/dev/null && break; sleep 0.5; done
 call GET "/api/channels/$AML/messages" | jq -e '.[-1].author_bot and .[-1].author_display_name == "Automod"
   and (.[-1].embeds[0].title | test("Automod blocked")) and any(.[-1].embeds[0].fields[]; .name == "Rule")' >/dev/null
 # "Hide" lets it through behind a Filtered reveal.
