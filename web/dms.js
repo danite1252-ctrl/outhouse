@@ -382,7 +382,7 @@ MENUS.dm = (e, node) => {
   openMenu(e.clientX, e.clientY, [
     { label: "Mark as read", disabled: !dmUnread(dm), onClick: () => markDmRead(dm) },
     ...(typeof muteMenuItems === "function" ? muteMenuItems(dm.id, dmName(dm), "conversation") : []),
-    !group && other ? { label: "View profile", onClick: () => openProfile(other.id, node.closest?.(".dm-row") || $("channel-name")) } : null,
+    !group && other ? { label: "View profile", onClick: () => openFullProfile(other.id) } : null,
     group ? { label: "Rename group", onClick: () => renameGroup(dm) } : null,
     group ? { label: "Add people", disabled: dm.recipients.length >= MAX_GROUP, onClick: () => addPeople(dm) } : null,
     "sep",

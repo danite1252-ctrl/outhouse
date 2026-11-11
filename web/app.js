@@ -2721,7 +2721,7 @@ const MENUS = {
     if (!m) return;
     const assignable = state.roles.filter((r) => r.id !== state.guildId && myTop() > r.position).sort((a, b) => b.position - a.position);
     const items = [
-      { label: "View profile", onClick: () => openProfile(m.id, node) },
+      { label: "View profile", onClick: () => openFullProfile(m.id) },
       { label: "Mention", onClick: () => { input.value += `@${m.display_name} `; input.focus(); autosize(); } },
       "sep",
     ];
