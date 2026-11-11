@@ -6,11 +6,13 @@ mod audio;
 mod audit;
 mod auth;
 mod automod;
+mod cli;
 mod embeds;
 mod error;
 mod feeds;
 mod files;
 mod gateway;
+mod ipblock;
 mod ips;
 mod livekit;
 mod perms;
@@ -36,6 +38,13 @@ use crate::state::{AppState, Config};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
+    // `outhouse-server <command> ...`: one of the owner's server-side
+    // commands (see cli.rs), not the web server.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(command) = args.first().filter(|c| cli::COMMANDS.contains(&c.as_str())) {
+        let code = run_command(command, &args[1..]).await?;
+        std::process::exit(code);
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
@@ -85,6 +94,10 @@ async fn main() -> anyhow::Result<()> {
     api::safety::spawn_digest(state.clone());
     api::detector::spawn_worker(state.clone());
     ips::spawn_pruner(state.clone());
+    if let Err(e) = ipblock::reload(&state.db).await {
+        tracing::warn!(error = %e, "couldn't load the blocked networks");
+    }
+    ipblock::spawn_refresher(state.clone());
     // `/` is the welcome page (it sends signed-in people and the apps on to
     // `/app`); `/app` and `/login` are the web client. Everything else is a
     // plain file from the web folder.
@@ -112,6 +125,28 @@ async fn main() -> anyhow::Result<()> {
     })
     .await?;
     Ok(())
+}
+
+/// Runs a server-side command against the database and upload folder the
+/// server uses. Logs go to stderr so stdout carries only the output.
+async fn run_command(command: &str, args: &[String]) -> anyhow::Result<i32> {
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(EnvFilter::new("outhouse_server=warn"))
+        .init();
+    let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL is not set")?;
+    let db = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&database_url)
+        .await
+        .context("could not connect to Postgres")?;
+    let config = Config::from_env();
+    security::init(&config);
+    let mut state = AppState::new(db, config);
+    // A different ID worker from the running server's (0), so IDs made here
+    // (safety log entries) can never clash with its.
+    state.ids = std::sync::Arc::new(outhouse_common::id::SnowflakeGen::new(31));
+    cli::run(state, command, args).await
 }
 
 /// Makes browsers check for a newer app.js / style.css on every load instead

@@ -2,7 +2,7 @@
 
 mod account;
 mod attendance;
-mod audit;
+pub(crate) mod audit;
 mod badges;
 mod bnet;
 mod bots;
@@ -18,6 +18,7 @@ pub mod friends;
 mod gifs;
 pub mod guilds;
 pub mod invites;
+mod ipblocks;
 pub mod lfg;
 mod loot;
 pub mod members;
@@ -490,6 +491,16 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/safety/guilds/{id}/family", put(safety::set_family))
         .route("/api/safety/digest", get(safety::digest))
+        // Blocked networks (permanent suspensions; site owner only)
+        .route(
+            "/api/safety/users/{id}/ip-block-preview",
+            get(ipblocks::preview),
+        )
+        .route("/api/safety/users/{id}/ip-blocks", post(ipblocks::create))
+        .route("/api/safety/ip-blocks", get(ipblocks::list))
+        .route("/api/safety/ip-blocks/reload", post(ipblocks::reload_now))
+        .route("/api/safety/ip-blocks/{id}/remove", post(ipblocks::remove))
+        .route("/api/safety/ip-blocks/{id}/extend", post(ipblocks::extend))
         // The image detector (site owner's settings; revealing held pictures)
         .route(
             "/api/safety/detector",

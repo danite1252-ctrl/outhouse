@@ -3900,6 +3900,18 @@ with sync_playwright() as p:
     op.wait_for_timeout(200)
     op.screenshot(path=f"{SHOTS}/3510-report-detail-files-locked.png")
     assert not any("photo" in u or cs_url in u for u in seen_files), seen_files
+    # Child safety: "Suspend now" comes first (nothing happens automatically),
+    # and "Hand over to police" gives the server command with the report id.
+    op.wait_for_selector("dialog.safety-console .sc-suspend-now button.sc-suspend-now-btn")
+    assert "suspend the account now if in doubt" in op.inner_text("dialog.safety-console .sc-child-warning").lower()
+    op.evaluate("document.querySelector('dialog.safety-console .sc-suspend-now').scrollIntoView({block: 'start'})")
+    op.wait_for_timeout(200)
+    op.screenshot(path=f"{SHOTS}/3530-suspend-now.png")
+    ho = op.inner_text("dialog.safety-console .sc-handover")
+    assert f"./deploy/evidence-handover.sh {reps[0]['id']}" in ho and "never open it" in ho, ho
+    op.evaluate("document.querySelector('dialog.safety-console .sc-handover').scrollIntoView({block: 'start'})")
+    op.wait_for_timeout(200)
+    op.screenshot(path=f"{SHOTS}/3531-hand-over-to-police.png")
     # Suspension: from Gary's spam report.
     op.click("dialog.safety-console .sc-back button")
     op.click("dialog.safety-console .sc-row:has-text('Spam or scams'):has-text('Gary')")
@@ -3952,6 +3964,51 @@ with sync_playwright() as p:
             errors.append("someone other than the owner saw IP addresses")
         except urllib.error.HTTPError as e:
             assert e.code == 403, e.code
+    # "Suspend now" on a child-safety report, then permanent with their IP
+    # addresses blocked (ticked by default for child safety).
+    pete = reg_from("203.0.113.77", f"pete{suffix}", "Pete")
+    api("POST", f"/api/invites/{code}", None, pete["token"])
+    api_from("2001:db8:5:6::7", "POST", "/api/auth/login", {"username": f"pete{suffix}", "password": "password123"})
+    pete_msg = api("POST", f"/api/channels/{rep_chan['id']}/messages", {"content": "you can trust me, don't tell your parents"}, pete["token"])
+    api("POST", "/api/reports", {"target_kind": "message", "target_id": pete_msg["id"], "category": "child_safety"}, hal["token"])
+    pete_rep = next(r for r in api("GET", "/api/safety/reports?status=open", None, TOKEN)["reports"]
+                    if (r.get("reported_user") or {}).get("id") == pete["user"]["id"])
+    api("GET", "/api/users/@me", None, pete["token"])  # nothing automatic
+    op.evaluate(f"openSafetyConsole('open', {json.dumps(pete_rep['id'])})")
+    op.wait_for_selector("dialog.safety-console .sc-suspend-now-btn", timeout=10000)
+    op.click("dialog.safety-console .sc-suspend-now-btn")
+    op.click("dialog[open]:not(.safety-console) button[value=ok]")
+    op.wait_for_selector("dialog.safety-console .sc-suspended-panel:has-text('by you')", timeout=10000)
+    op.evaluate("document.querySelector('dialog.safety-console .sc-suspended-panel').scrollIntoView({block: 'start'})")
+    op.wait_for_timeout(300)
+    op.screenshot(path=f"{SHOTS}/3532-suspended-pending-review.png")
+    try:
+        api("POST", "/api/auth/login", {"username": f"pete{suffix}", "password": "password123"})
+        errors.append("an account suspended pending review signed in")
+    except urllib.error.HTTPError as e:
+        why = json.loads(e.read().decode()).get("error", "")
+        assert e.code == 403 and why == "This account has been suspended pending review of a report.", (e.code, why)
+    op.click("dialog.safety-console .sc-suspended-panel .sc-make-permanent")
+    op.wait_for_selector("dialog.sc-permanent-dialog[open] .sc-net:has-text('203.0.113.77/32')", timeout=10000)
+    op.wait_for_selector("dialog.sc-permanent-dialog .sc-net:has-text('2001:db8:5:6::/64')")
+    assert op.is_checked("dialog.sc-permanent-dialog .sc-block-box"), "blocking isn't ticked for a child-safety report"
+    assert "locked out" in op.inner_text("dialog.sc-permanent-dialog")
+    op.wait_for_timeout(200)
+    op.screenshot(path=f"{SHOTS}/3533-make-permanent-block-ips.png")
+    op.click("dialog.sc-permanent-dialog button[type=submit]")
+    op.wait_for_selector("dialog.safety-console .sc-suspended-panel h3:has-text('permanently')", timeout=10000)
+    try:
+        reg_from("203.0.113.77", f"peteagain{suffix}", "Pete again")
+        errors.append("a sign-up from a blocked network worked")
+    except urllib.error.HTTPError as e:
+        assert e.code == 403, e.code
+    op.click("dialog.safety-console button[data-tab=blocks]")
+    op.wait_for_selector("dialog.safety-console .sc-blocks td:has-text('203.0.113.77/32')", timeout=10000)
+    op.wait_for_selector("dialog.safety-console .sc-attempts td:has-text('Sign-up')")
+    op.wait_for_timeout(300)
+    op.screenshot(path=f"{SHOTS}/3534-blocked-networks.png")
+    for b in api("GET", "/api/safety/ip-blocks", None, TOKEN)["blocks"]:
+        api("POST", f"/api/safety/ip-blocks/{b['id']}/remove", None, TOKEN)
     op.keyboard.press("Escape")
     # Outhouse settings → Reports (site owner only).
     op.evaluate("openSettings('reports')")

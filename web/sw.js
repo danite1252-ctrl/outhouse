@@ -16,7 +16,7 @@ self.addEventListener("push", (e) => {
     tag: data.tag || undefined,
     renotify: !!data.tag,
     timestamp: Date.now(),
-    data: { url: data.url || "/", guild_id: data.guild_id, channel_id: data.channel_id, thread_id: data.thread_id || null },
+    data: { url: data.url || "/", guild_id: data.guild_id, channel_id: data.channel_id, thread_id: data.thread_id || null, report_id: data.report_id || null },
   }));
 });
 
@@ -29,7 +29,7 @@ self.addEventListener("notificationclick", (e) => {
     const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
     const open = windows.find((w) => new URL(w.url).origin === self.location.origin);
     if (open) {
-      open.postMessage({ type: "outhouse-open", guild_id: target.guild_id, channel_id: target.channel_id, thread_id: target.thread_id || null });
+      open.postMessage({ type: "outhouse-open", guild_id: target.guild_id, channel_id: target.channel_id, thread_id: target.thread_id || null, report_id: target.report_id || null });
       return open.focus();
     }
     return self.clients.openWindow(url);

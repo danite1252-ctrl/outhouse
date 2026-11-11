@@ -110,6 +110,11 @@ pub async fn register(
             "Lots of new accounts from here lately. Try again in an hour.".into(),
         ));
     }
+    // A blocked network (ipblock.rs): nobody signs up from it.
+    if let Some(block) = crate::ipblock::blocked(ip) {
+        crate::ipblock::record_attempt(&st, block, ip, "register", None, req.username.trim()).await;
+        return Err(AppError::Refused(crate::ipblock::SIGNUP_REFUSED.into()));
+    }
     let username = req.username.trim().to_lowercase();
     validate_username(&username)?;
     check_new_password(&req.password)?;
@@ -215,6 +220,20 @@ pub async fn login(
             .bind(&username)
             .fetch_optional(&st.db)
             .await?;
+    // A blocked network (ipblock.rs): only the site owner and accounts he
+    // exempted get past it. Checked before the password, so it says nothing
+    // about whether a guess was right.
+    if let Some(block) = crate::ipblock::blocked(ip) {
+        let uid = row.as_ref().map(|r| r.id);
+        let allowed = match uid {
+            Some(id) => crate::ipblock::exempt(&st.db, id).await,
+            None => false,
+        };
+        if !allowed {
+            crate::ipblock::record_attempt(&st, block, ip, "login", uid, &username).await;
+            return Err(AppError::Refused(crate::ipblock::USE_REFUSED.into()));
+        }
+    }
     let Some(row) = row else {
         auth::verify_password(req.password, dummy_hash().await?.clone()).await;
         return Err(failed());

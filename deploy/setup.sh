@@ -206,8 +206,8 @@ fi
 
 say "Scheduling a nightly backup (3:30 am, keeps 14)..."
 mkdir -p "$HOME/outhouse-backups"
-chmod +x backup.sh restore.sh healthcheck.sh 2>/dev/null || true
-sed -i 's/\r$//' backup.sh restore.sh healthcheck.sh 2>/dev/null || true
+chmod +x backup.sh restore.sh healthcheck.sh evidence-handover.sh 2>/dev/null || true
+sed -i 's/\r$//' backup.sh restore.sh healthcheck.sh evidence-handover.sh 2>/dev/null || true
 ( crontab -l 2>/dev/null | grep -v 'backup.sh\|fetch-updates.py\|healthcheck.sh' || true
   echo "30 3 * * * cd $(pwd) && ./backup.sh >> $HOME/outhouse-backups/backup.log 2>&1"
   echo "*/10 * * * * cd $(pwd) && python3 fetch-updates.py >> $HOME/outhouse-backups/updates.log 2>&1"

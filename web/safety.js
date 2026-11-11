@@ -242,20 +242,39 @@ async function loadSafetySummary() {
   renderSafetyBadge();
   if (owner && state.openReportsOnReady) {
     state.openReportsOnReady = false;
-    openSafetyConsole();
+    openSafetyConsole("open", state.openReportOnReady || null);
+    state.openReportOnReady = null;
   }
 }
 
-function safetyAlert() {
-  toast("⚠ Urgent: a child-safety report is waiting for you in Reports.");
+// What child-safety alerts say (police advice: suspend straight away).
+const SUSPEND_NUDGE = "Review and suspend the account now if in doubt.";
+
+// Opens the console on a report (from a notification).
+function openReportFromAlert(reportId) {
+  state.safety.pendingReport = null;
+  openSafetyConsole("open", reportId || null);
+}
+
+function safetyAlert(reportId = null) {
+  toast(`⚠ Urgent: a child-safety report is waiting in Reports. ${SUSPEND_NUDGE}`);
   const title = "Urgent safety report";
-  const body = "A child-safety report needs your review.";
+  const body = `A child-safety report needs your review. ${SUSPEND_NUDGE}`;
   if (typeof desktop !== "undefined" && desktop && typeof desktopInvoke === "function") {
     desktopInvoke("notify", { title, body });
+    // Clicking the app's notification brings the window forward: open the report then.
+    if (!document.hasFocus()) state.safety.pendingReport = reportId || "list";
   } else if ("Notification" in window && Notification.permission === "granted" && !document.hasFocus()) {
-    try { new Notification(title, { body, tag: "safety-report", icon: "/icons/icon-192.png" }); } catch { /* not allowed here */ }
+    try {
+      const n = new Notification(title, { body, tag: "safety-report", icon: "/icons/icon-192.png" });
+      n.onclick = () => { window.focus(); n.close(); openReportFromAlert(reportId); };
+    } catch { /* not allowed here */ }
   }
 }
+window.addEventListener("focus", () => {
+  const pending = state.safety.pendingReport;
+  if (pending) openReportFromAlert(pending === "list" ? null : pending);
+});
 
 const safetyBaseHandle = handleEvent;
 handleEvent = function (ev) {
@@ -264,7 +283,7 @@ handleEvent = function (ev) {
   if (ev.t === "REPORTS_CHANGED") {
     Object.assign(state.safety, { owner: true, open: ev.d.open, urgent: ev.d.urgent });
     renderSafetyBadge();
-    if (ev.d.alert) safetyAlert();
+    if (ev.d.alert) safetyAlert(ev.d.report_id || null);
     const open = document.querySelector("dialog.safety-console");
     if (open && open.dataset.view === "list") open.dispatchEvent(new Event("safety-refresh"));
   }
@@ -275,14 +294,16 @@ handleEvent = function (ev) {
   const q = new URLSearchParams(location.search);
   if (!q.has("reports")) return;
   state.openReportsOnReady = true;
+  state.openReportOnReady = /^\d+$/.test(q.get("report") || "") ? q.get("report") : null;
   q.delete("reports");
+  q.delete("report");
   const rest = q.toString();
   history.replaceState(null, "", location.pathname + (rest ? `?${rest}` : ""));
 })();
 if (typeof openTarget === "function") {
   const safetyBaseOpenTarget = openTarget;
   openTarget = function (target) {
-    if (target?.channel_id === "reports") return openSafetyConsole();
+    if (target?.channel_id === "reports") return openSafetyConsole("open", target.report_id || null);
     return safetyBaseOpenTarget(target);
   };
 }
@@ -352,7 +373,7 @@ async function openSafetyConsole(tab = "open", reportId = null, openPerson = nul
       el("h3", {}, "REPORTS"),
       navBtn("open", "Open", id ? null : key), navBtn("review", "In review", id ? null : key), navBtn("closed", "Closed", id ? null : key),
       el("h3", {}, "SAFETY"),
-      navBtn("people", "People", key), navBtn("teens", "Teen protections", key),
+      navBtn("people", "People", key), navBtn("blocks", "Blocked networks", key), navBtn("teens", "Teen protections", key),
       typeof drawDetectorSettings === "function" ? navBtn("detector", "Image detector", key) : null,
       navBtn("digest", "This week", key),
       navBtn("log", "Safety log", key), navBtn("police", "Reporting to police", key));
@@ -365,6 +386,7 @@ async function openSafetyConsole(tab = "open", reportId = null, openPerson = nul
       return drawPeople(page, { stillMine, openReport: (rid) => draw("open", rid), userId });
     }
     if (key === "teens") return drawTeenSettings(page, stillMine);
+    if (key === "blocks") return drawBlockedNetworks(page, { stillMine, openUser: (uid) => { personId = uid; draw("people"); }, redraw: () => draw("blocks") });
     if (key === "detector" && typeof drawDetectorSettings === "function") return drawDetectorSettings(page, stillMine);
     if (key === "digest") return drawDigest(page, stillMine);
     if (key === "log") return drawSafetyLog(page, stillMine);
@@ -400,6 +422,8 @@ async function drawReportList(page, status, { stillMine, openReport }) {
     el("h2", {}, titles[status]),
     el("p", { class: "muted small", style: "margin:0" },
       status === "closed" ? "The most recently closed first." : "Child-safety reports first, then the most serious, newest first. Only you (the site owner) can see these."),
+    status !== "closed" && data.counts.urgent ? el("div", { class: "sc-urgent-banner", role: "alert" },
+      el("strong", {}, `⚠ ${scPlural(data.counts.urgent, "child-safety report")} waiting. ${SUSPEND_NUDGE}`)) : null,
     status !== "closed" ? el("div", { class: "sc-counts" },
       el("span", {}, el("strong", {}, String(data.counts.open)), " open"),
       el("span", {}, el("strong", {}, String(data.counts.in_review)), " in review"),
@@ -414,12 +438,13 @@ async function drawReportList(page, status, { stillMine, openReport }) {
 function childSafetyNotice() {
   return el("div", { class: "sc-child-warning", role: "note" },
     el("strong", {}, "Suspected child sexual abuse material: don't look, don't share."),
+    el("p", { class: "sc-nudge" }, el("strong", {}, SUSPEND_NUDGE), " Police advice: suspend the reported account straight away; leaving it active once you know could be seen as helping. You can lift it after you've reviewed."),
     el("p", {}, "Pictures and videos from this report are locked away and are never shown here. Do not view, download, copy or forward suspected child sexual abuse material, not even to report it. Preserve it (Outhouse keeps the files unchanged on the server) and report it to the authorities:"),
     el("ul", {},
       AUTHORITY_LINKS.slice(0, 2).map(([label, href]) => el("li", {}, label, " — ", el("a", { href, target: "_blank", rel: "noopener noreferrer" }, href))),
       el("li", {}, el("strong", {}, "If a child is in immediate danger, call 000.")),
       el("li", {}, AUTHORITY_LINKS[2][0], " — ", el("a", { href: AUTHORITY_LINKS[2][1], target: "_blank", rel: "noopener noreferrer" }, AUTHORITY_LINKS[2][1]), ", or your local police.")),
-    el("p", {}, "“Export evidence package” gives police the details and SHA-256 hashes without the files. See “Reporting to police” for how they can get the files."));
+    el("p", {}, "“Export evidence package” gives police the details and SHA-256 hashes without the files. “Hand over to police” below explains how they get the files."));
 }
 
 function snapshotView(d) {
@@ -507,7 +532,7 @@ function contextView(d) {
 function logView(entries) {
   if (!entries?.length) return el("p", { class: "muted small", style: "margin:0" }, "Nothing yet.");
   return el("div", { class: "audit-list" }, entries.map((e) => el("div", { class: `audit-row${e.action === "note" ? " note" : ""}` },
-    el("div", { class: "audit-icon" }, { note: "📝", quarantine: "🔒", suspend: "⛔", warn: "⚠", ban: "🚫", kick: "👢", timeout: "⏳", dismiss: "✖", close: "✓", export: "📦", view_ips: "👁", ip_match: "🔗" }[e.action] || "•"),
+    el("div", { class: "audit-icon" }, { note: "📝", quarantine: "🔒", suspend: "⛔", warn: "⚠", ban: "🚫", kick: "👢", timeout: "⏳", dismiss: "✖", close: "✓", export: "📦", view_ips: "👁", ip_match: "🔗", handover: "📦", ip_block: "⛔", ip_unblock: "↩", ip_block_extend: "⏳", ip_exempt: "✓" }[e.action] || "•"),
     el("div", { class: "audit-main" },
       el("div", { class: "audit-line" }, el("strong", {}, e.actor_name), el("span", { class: "audit-action" }, ` ${e.action.replace(/_/g, " ")}`), e.target_name ? el("span", { class: "audit-action" }, ` · ${e.target_name}`) : null),
       e.details ? el("div", { class: "audit-details" }, e.details) : null),
@@ -543,8 +568,11 @@ function subjectView(u, act) {
 }
 
 // Buttons for the account actions; `act(body, done)` posts one.
-function accountActions(u, act, guildId = null) {
+function accountActions(u, act, guildId = null, ctx = null) {
   if (u.site_owner) return el("p", { class: "muted small", style: "margin:0" }, "Site owners can't be warned, timed out or suspended here.");
+  const lift = () => el("button", { class: "ghost", onclick: async () => {
+    if (await confirmBox(`Lift ${u.display_name}'s suspension?`, "They can sign in again. Their bots' tokens stay revoked until they reset them, and hidden messages stay hidden unless you show them again.", "Lift suspension")) act({ action: "unsuspend" }, "Suspension lifted.");
+  } }, "Lift suspension");
   const outhouses = u.outhouses.filter((o) => !o.owner);
   const pickOuthouse = () => ({ name: "guild_id", label: "Outhouse", type: "select", value: guildId, options: outhouses.map((o) => [o.id, o.name]) });
   return el("div", { class: "sc-actions" },
@@ -564,10 +592,10 @@ function accountActions(u, act, guildId = null) {
       const f = await formDialog(`Ban ${u.display_name}`, [pickOuthouse(), { name: "text", label: "Reason (shown in the outhouse's ban list)", type: "text" }], "Ban", { danger: true });
       if (f) act({ action: "ban", guild_id: f.guild_id, text: f.text }, "Banned.");
     } }, "Ban…") : null,
+    u.suspended && u.suspension_pending && ctx ? el("button", { class: "danger-btn sc-make-permanent", onclick: () => permanentDialog(u, ctx, { makePermanent: true }) }, "Make permanent…") : null,
+    u.suspended && u.suspended_permanently && ctx ? el("button", { class: "ghost sc-block-ips", onclick: () => permanentDialog(u, ctx, { makePermanent: false }) }, "Block IPs…") : null,
     u.suspended
-      ? el("button", { class: "ghost", onclick: async () => {
-        if (await confirmBox(`Lift ${u.display_name}'s suspension?`, "They can sign in again. Their bots' tokens stay revoked until they reset them, and hidden messages stay hidden unless you show them again.", "Lift suspension")) act({ action: "unsuspend" }, "Suspension lifted.");
-      } }, "Lift suspension")
+      ? lift()
       : el("button", { class: "danger-btn sc-suspend", onclick: async () => {
         const f = await formDialog(`Suspend ${u.display_name}`, [
           { name: "days", label: "For", type: "select", value: "", options: [["1", "1 day"], ["3", "3 days"], ["7", "1 week"], ["30", "30 days"], ["90", "90 days"], ["", "Permanently"]] },
@@ -580,8 +608,123 @@ function accountActions(u, act, guildId = null) {
       ? el("button", { class: "ghost", onclick: () => act({ action: "unhide_messages" }, "Their messages are back (child-safety evidence stays hidden).") }, "Show their messages again")
       : el("button", { class: "ghost", onclick: async () => {
         if (await confirmBox(`Hide all of ${u.display_name}'s messages?`, "Everyone stops seeing them, everywhere. They're kept for evidence and you can show them again.", "Hide messages")) act({ action: "hide_messages" }, "Their messages are hidden.");
-      } }, "Hide all their messages"));
+      } }, "Hide all their messages"),
+    exemptToggle(u, act));
 }
+
+// "Allow from blocked networks": the owner's way to let someone he knows is
+// innocent (family on the same connection) past a block.
+function exemptToggle(u, act) {
+  const btn = el("button", { type: "button", class: `toggle${u.ip_block_exempt ? " on" : ""}`, "aria-label": "Allow from blocked networks", "aria-pressed": String(!!u.ip_block_exempt), onclick: async () => {
+    const next = !u.ip_block_exempt;
+    if (next && !(await confirmBox(`Allow ${u.display_name} from blocked networks?`, "They can sign in and use Outhouse from a blocked address (e.g. family sharing a blocked connection). It's written to the safety log.", "Allow"))) return;
+    act({ action: "set_ip_exempt", exempt: next }, next ? "Allowed from blocked networks." : "No longer allowed from blocked networks.");
+  } });
+  return el("div", { class: "sc-toggle-row sc-exempt" },
+    el("div", {}, el("div", { class: "sc-toggle-title" }, "Allow from blocked networks"),
+      el("div", { class: "muted small" }, "For someone you know is innocent who shares a blocked connection. Off by default.")), btn);
+}
+
+// The suspension at the top of a child-safety report: "Suspend now" first.
+function suspendNowPanel(d, act, ctx) {
+  const u = d.subject;
+  if (!u || u.site_owner || u.bot) return null;
+  const guild = d.report.target_kind === "guild";
+  if (!u.suspended) {
+    return el("section", { class: "sc-section sc-suspend-now" },
+      el("h3", {}, guild ? "Suspend the outhouse owner now" : "Suspend now"),
+      el("p", { class: "sc-tight" }, `${SUSPEND_NUDGE} This suspends ${u.display_name} (@${u.username}) until you've reviewed it: they're signed out everywhere at once, can't sign in, their bots stop and their profile is hidden. Nothing else is hidden.`),
+      el("p", { class: "muted small sc-tight" }, "They only see “Suspended pending review of a report”: never what it's about or who reported it."),
+      el("div", { class: "sc-actions" }, el("button", { class: "primary danger-fill sc-suspend-now-btn", onclick: async () => {
+        if (await confirmBox(`Suspend ${u.display_name} now?`, "Until you've reviewed this report. They see only “Suspended pending review of a report”. You can lift it or make it permanent afterwards.", "Suspend now")) act({ action: "suspend_pending" }, "Suspended until you've reviewed it.");
+      } }, "Suspend now")));
+  }
+  const by = u.suspended_by && u.suspended_by === state.me?.id ? "you" : u.suspended_by_name || "the site owner";
+  return el("section", { class: "sc-section sc-suspended-panel" },
+    el("h3", {}, u.suspension_pending ? "Suspended until reviewed" : `Suspended ${u.suspended_label || ""}`),
+    el("p", { class: "sc-tight" }, u.suspended_at ? `Suspended at ${scWhen(u.suspended_at)} by ${by}.` : "Suspended.",
+      u.suspension_pending ? " They see only “Suspended pending review of a report”." : ""),
+    el("div", { class: "sc-actions" },
+      u.suspension_pending ? el("button", { class: "danger-btn sc-make-permanent", onclick: () => permanentDialog(u, ctx, { makePermanent: true }) }, "Make permanent…") : null,
+      u.suspended_permanently ? el("button", { class: "ghost sc-block-ips", onclick: () => permanentDialog(u, ctx, { makePermanent: false }) }, "Block IPs…") : null,
+      el("button", { class: "ghost", onclick: async () => {
+        if (await confirmBox(`Lift ${u.display_name}'s suspension?`, "They can sign in again. Their bots' tokens stay revoked until they reset them.", "Lift suspension")) act({ action: "unsuspend" }, "Suspension lifted.");
+      } }, "Lift suspension")));
+}
+
+// Make a suspension permanent (and block their networks), or just block a
+// permanently suspended person's networks. ctx: { post(body), refresh(), reportId }
+async function permanentDialog(u, ctx, { makePermanent }) {
+  const p = await tryApi("GET", `/api/safety/users/${u.id}/ip-block-preview`).catch(() => null);
+  if (!p) return;
+  const blockable = p.networks.filter((n) => !n.skip && !n.already_blocked);
+  const blockBox = el("input", { type: "checkbox", class: "sc-block-box", checked: makePermanent ? !!p.child_safety && blockable.length > 0 : blockable.length > 0, disabled: !blockable.length });
+  const ownBox = el("input", { type: "checkbox", class: "sc-own-box" });
+  const rows = p.networks.map((n) => {
+    const box = el("input", { type: "checkbox", value: n.network, checked: !n.skip && !n.already_blocked && !n.own, disabled: !!n.skip || n.already_blocked });
+    const why = n.skip ? `Skipped: ${n.skip}` : n.already_blocked ? "Already blocked" : n.own ? "⚠ One of your own addresses" : `Last seen ${scWhen(n.last_seen)}`;
+    return { n, box, row: el("label", { class: `sc-net${n.skip || n.already_blocked ? " skipped" : ""}${n.own ? " own" : ""}` }, box,
+      el("span", {}, el("code", {}, n.network), el("span", { class: "muted small" }, ` ${why}`),
+        n.ips.length > 1 || n.network.includes(":") ? el("span", { class: "muted small" }, ` (${n.ips.join(", ")})`) : null)) };
+  });
+  const anyOwn = p.networks.some((n) => n.own && !n.skip);
+  ownBox.addEventListener("change", () => rows.filter((r) => r.n.own && !r.n.skip).forEach((r) => { r.box.checked = ownBox.checked; }));
+  const duration = el("select", { "aria-label": "How long" }, el("option", { value: "" }, "Until I remove it"), el("option", { value: "365" }, "1 year"), el("option", { value: "90" }, "90 days"));
+  const reason = el("input", { type: "text", maxlength: 300, placeholder: makePermanent ? "Shown when they try to sign in (optional)" : "For your records (optional)" });
+  const netList = el("div", { class: "sc-nets" }, rows.length ? rows.map((r) => r.row) : el("p", { class: "muted small sc-tight" }, "No IP addresses recorded for them in the retention period."));
+  const blockPart = el("div", { class: "sc-block-part" },
+    el("label", { class: "rp-check" }, blockBox, el("span", {}, el("strong", {}, "Also block their IP addresses"), p.child_safety ? " (ticked because they have a child-safety report)" : "")),
+    el("div", { class: "sc-child-warning sc-block-note" }, el("strong", {}, "Everyone on these networks will be locked out."),
+      el("p", {}, "Nobody can sign up, sign in or use Outhouse from a blocked address: their household, and possibly a whole mobile network, school or workplace that shares it. People already signed in from it are signed out now. That's your choice under your safety policy. Changing networks or using a VPN can still get around it."),
+      el("p", {}, "Your own account always works, and in People you can “Allow from blocked networks” for someone you know is innocent. Private, home-network and proxy addresses are never blocked.")),
+    netList,
+    anyOwn ? el("label", { class: "rp-check sc-own-warning" }, ownBox, "Block my own address too (it locks out everyone at home except my account)") : null,
+    el("label", { class: "field" }, "For", duration));
+  const sync = () => { blockPart.querySelectorAll(".sc-nets input, select, .sc-own-box").forEach((x) => { x.disabled = !blockBox.checked || (x.closest(".sc-net")?.classList.contains("skipped") ?? false); }); };
+  blockBox.addEventListener("change", sync);
+  const dialog = el("dialog", { class: "report-dialog sc-form sc-permanent-dialog" },
+    el("form", { method: "dialog" },
+      el("h2", {}, makePermanent ? `Make ${u.display_name}'s suspension permanent` : `Block ${u.display_name}'s IP addresses`),
+      makePermanent ? el("p", { class: "muted small", style: "margin:0" }, "They stay signed out for good. They're never told what it was about or who reported them.") : null,
+      makePermanent ? el("label", { class: "field" }, "Reason", reason) : null,
+      blockPart,
+      el("div", { class: "row" },
+        el("button", { type: "button", class: "ghost", onclick: () => dialog.close("") }, "Cancel"),
+        el("button", { type: "submit", class: "primary danger-fill", value: "ok" }, makePermanent ? "Make permanent" : "Block"))));
+  sync();
+  dialog.addEventListener("close", async () => {
+    const ok = dialog.returnValue === "ok";
+    const chosen = rows.filter((r) => r.box.checked && !r.box.disabled).map((r) => r.n.network);
+    const includeOwn = anyOwn && ownBox.checked;
+    dialog.remove();
+    if (!ok) return;
+    if (makePermanent) {
+      const done = await ctx.post({ action: "make_permanent", text: reason.value.trim() }).catch(() => null);
+      if (!done) return;
+    }
+    let msg = makePermanent ? "Suspension made permanent." : "";
+    if (blockBox.checked && chosen.length) {
+      const r = await tryApi("POST", `/api/safety/users/${u.id}/ip-blocks`, { networks: chosen, days: duration.value ? Number(duration.value) : null, include_own: includeOwn, report_id: ctx.reportId || null, reason: reason.value.trim() || (p.child_safety ? "Child-safety report" : "Permanent suspension") }).catch(() => null);
+      if (r) msg = `${msg} Blocked ${scPlural(r.blocked.length, "network")}${r.signed_out ? `; ${scPlural(r.signed_out, "account")} signed out` : ""}.`.trim();
+    }
+    if (msg) toast(msg);
+    ctx.refresh();
+  });
+  document.body.append(dialog);
+  dialog.showModal();
+}
+
+// Refused attempts from blocked networks (theirs, or on networks blocked because of them).
+function attemptsView(list) {
+  if (!list?.length) return el("p", { class: "muted small sc-tight" }, "None.");
+  return el("div", { class: "sc-table-wrap" }, el("table", { class: "sc-table sc-attempts" },
+    el("thead", {}, el("tr", {}, ["When", "IP address", "Network", "What", "Account"].map((h) => el("th", {}, h)))),
+    el("tbody", {}, list.map((a) => el("tr", {},
+      el("td", {}, scWhen(a.created_at)), el("td", {}, el("code", {}, a.ip)), el("td", {}, el("code", {}, a.network)),
+      el("td", {}, ATTEMPT_KIND[a.kind] || a.kind),
+      el("td", {}, a.account_name ? `${a.account_name} (@${a.username})` : a.username ? `@${a.username} (tried)` : "—"))))));
+}
+const ATTEMPT_KIND = { register: "Sign-up", login: "Sign-in", request: "Using Outhouse", gateway: "Live connection" };
 
 function noteBox(act) {
   const text = el("textarea", { rows: 2, maxlength: 2000, placeholder: "A private note (only site owners see these)", "aria-label": "Private note" });
@@ -603,6 +746,22 @@ async function exportEvidence(id) {
   toast("Evidence package downloaded.");
 }
 
+// How police get the files: packed on the server, never opened by the owner.
+function handoverPanel(d) {
+  const r = d.report;
+  const any = !r.child_safety && !d.files.some((f) => f.quarantined);
+  const cmd = `cd ~/outhouse && ./deploy/evidence-handover.sh ${any ? "--any " : ""}${r.id}`;
+  return el("section", { class: "sc-section sc-handover" },
+    el("h3", {}, "Hand over to police"),
+    el("p", { class: "sc-tight" }, "Police get the original files straight from the server. You never need to open, view or download them, and you shouldn't. One command on the server packs them, unchanged, with the evidence package, a list of SHA-256 hashes and a note, into a single file only you can read, and writes it to the safety log."),
+    el("div", { class: "sc-cmd" }, el("code", { class: "sc-cmd-text" }, cmd),
+      el("button", { class: "ghost sc-copy", onclick: () => copy(cmd, "Command copied") }, "Copy")),
+    el("ol", { class: "sc-guide" },
+      el("li", {}, el("strong", {}, "Police download it under supervision: "), "connect to the server over SSH, run the command above, then let them copy the package file it prints (the .tar.gz in ~/outhouse-evidence) the way they ask, e.g. onto their own drive."),
+      el("li", {}, el("strong", {}, "Police give you a portal link: "), "run the same command, then upload the package file to their portal from the server. Only copy it to your PC (with scp) if you have to, and never open it.")),
+    el("p", { class: "muted small sc-tight" }, "It works for quarantined files too (nobody can download those over the web). Check the package against the SHA-256 the command prints. Do not open the files."));
+}
+
 async function drawReportDetail(page, id, { back, stillMine, openUser }) {
   const d = await tryApi("GET", `/api/safety/reports/${id}`).catch(() => null);
   if (!d || !stillMine()) return;
@@ -611,6 +770,11 @@ async function drawReportDetail(page, id, { back, stillMine, openUser }) {
   const act = async (body, done) => {
     const fresh = await tryApi("POST", `/api/safety/reports/${id}/actions`, body).catch(() => null);
     if (fresh) { if (done) toast(done); redraw(fresh); }
+  };
+  const ctx = {
+    reportId: id,
+    post: (body) => tryApi("POST", `/api/safety/reports/${id}/actions`, body),
+    refresh: async () => redraw(await tryApi("GET", `/api/safety/reports/${id}`).catch(() => null)),
   };
   const render = (d) => {
     const r = d.report;
@@ -623,10 +787,12 @@ async function drawReportDetail(page, id, { back, stillMine, openUser }) {
         el("span", { class: "muted small" }, `${r.source === "detector" ? "Flagged by the image detector" : r.source === "ip-match" ? "Same-IP hint (not a report)" : scPlural(r.report_count, "report")} · first ${scWhen(r.created_at)}${closed && r.closed_at ? ` · closed ${scWhen(r.closed_at)}${r.closed_by_name ? ` by ${r.closed_by_name}` : ""}` : ""}`)),
       closed && r.resolution ? el("div", { class: "sc-row-res" }, `✓ ${r.resolution}`) : null,
       r.child_safety ? childSafetyNotice() : null,
+      r.child_safety ? suspendNowPanel(d, act, ctx) : null,
       // Pictures the image detector flagged (detector.js).
       typeof detectorReportPanel === "function" ? detectorReportPanel(d, act) : null,
       r.source === "ip-match" ? scSection("Same IP address", ipMatchView(d, openUser)) : scSection("What was reported", ...snapshotView(d)),
       d.files.length ? scSection("Files", filesView(d, r.id)) : null,
+      d.files.length ? handoverPanel(d) : null,
       d.snapshot?.context?.length ? scSection("Around it (10 messages before and after)", contextView(d)) : null,
       (r.source === "detector" || r.source === "ip-match") && !d.reporters.length ? null : scSection(`Reported by (${d.reporters.length})`,
         el("p", { class: "muted small", style: "margin:0" }, "Never shown to the person reported."),
@@ -659,7 +825,7 @@ async function drawReportDetail(page, id, { back, stillMine, openUser }) {
           closed && r.child_safety && !r.evidence_released ? el("button", { class: "danger-btn", onclick: async () => {
             if (await confirmBox("Delete the evidence files?", "Only do this once police (or the eSafety Commissioner) have what they need or have told you it's not needed. The files are deleted from the server for good; their names and SHA-256 hashes stay in the report.", "Delete files for good")) act({ action: "delete_evidence" }, "Evidence files deleted.");
           } }, "Delete evidence files…") : null),
-        d.subject ? accountActions(d.subject, act, r.guild_id) : null),
+        d.subject ? accountActions(d.subject, act, r.guild_id, ctx) : null),
       scSection("Notes and history", noteBox(act), logView(d.log)));
   };
   render(d);
@@ -740,11 +906,19 @@ async function drawPeople(page, { stillMine, openReport, userId }) {
       const fresh = await tryApi("POST", `/api/safety/users/${uid}/actions`, body).catch(() => null);
       if (fresh) { if (done) toast(done); paint(fresh); }
     };
+    const ctx = {
+      reportId: null,
+      post: (body) => tryApi("POST", `/api/safety/users/${uid}/actions`, body),
+      refresh: async () => { const f = await tryApi("GET", `/api/safety/users/${uid}`).catch(() => null); if (f && stillMine()) paint(f); },
+    };
     const paint = (u) => detail.replaceChildren(
       el("h3", {}, u.display_name),
       subjectView(u, act),
       ipSection(u, showPerson),
-      accountActions(u, act),
+      el("section", { class: "sc-attempts-section" }, el("h3", {}, `Attempts from blocked networks (${u.blocked_attempts?.length || 0})`),
+        u.ip_blocks ? el("p", { class: "muted small sc-tight" }, `${scPlural(u.ip_blocks, "network")} blocked because of them (Safety → Blocked networks).`) : null,
+        attemptsView(u.blocked_attempts)),
+      accountActions(u, act, null, ctx),
       u.reports.length ? el("div", { class: "sc-list" }, u.reports.map((r) => el("button", { class: "sc-row", onclick: () => openReport(r.id) },
         el("div", { class: "sc-row-top" }, el("span", { class: `rp-chip cat-${r.category}` }, r.category_label), el("span", { class: "sc-when" }, `${SC_STATUS[r.status] || r.status} · ${scWhen(r.created_at)}`))))) : null,
       noteBox(act),
@@ -770,6 +944,40 @@ async function drawPeople(page, { stillMine, openReport, userId }) {
     search, results, detail);
   await find();
   if (userId) showPerson(userId);
+}
+
+async function drawBlockedNetworks(page, { stillMine, openUser, redraw }) {
+  const data = await tryApi("GET", "/api/safety/ip-blocks").catch(() => null);
+  if (!data || !stillMine()) return;
+  const until = (b) => (b.expires_at ? (b.active ? `until ${scWhen(b.expires_at)}` : `ended ${scWhen(b.expires_at)}`) : "until you remove it");
+  const extend = async (b) => {
+    const f = await formDialog(`Extend the block on ${b.network}`, [{ name: "days", label: "Block it", type: "select", value: "", options: [["", "Until I remove it"], ["365", "For 1 year from now"], ["90", "For 90 days from now"]] }], "Save");
+    if (!f) return;
+    if (await tryApi("POST", `/api/safety/ip-blocks/${b.id}/extend`, { days: f.days ? Number(f.days) : null }).catch(() => null)) { toast("Block updated."); redraw(); }
+  };
+  const remove = async (b) => {
+    if (!(await confirmBox(`Remove the block on ${b.network}?`, "People can sign up and sign in from it again. The record of the block and its attempts is kept.", "Remove block"))) return;
+    if (await tryApi("POST", `/api/safety/ip-blocks/${b.id}/remove`).catch(() => null)) { toast("Block removed."); redraw(); }
+  };
+  page.replaceChildren(
+    el("h2", {}, "Blocked networks"),
+    el("p", { class: "muted small", style: "margin:0" }, "IP addresses you blocked when you suspended someone permanently (IPv4: that address; IPv6: its /64). Nobody can sign up, sign in or use Outhouse from them, except you and people you allow (People → Allow from blocked networks). Every refused attempt is kept and goes in that person's evidence package."),
+    el("p", { class: "muted small", style: "margin:0" }, data.note),
+    data.blocks.length ? el("div", { class: "sc-table-wrap" }, el("table", { class: "sc-table sc-blocks" },
+      el("thead", {}, el("tr", {}, ["Network", "Account", "Reason", "Blocked", "Lasts", "Attempts", ""].map((h) => el("th", {}, h)))),
+      el("tbody", {}, data.blocks.map((b) => el("tr", { class: b.active ? "" : "expired", "data-block": b.id },
+        el("td", {}, el("code", {}, b.network)),
+        el("td", {}, b.account ? el("button", { class: "link", onclick: () => openUser(b.account.id) }, b.account.display_name || `@${b.account.username}`) : "—"),
+        el("td", {}, b.reason || "—"),
+        el("td", {}, scWhen(b.created_at)),
+        el("td", {}, until(b)),
+        el("td", {}, String(b.attempts), b.last_attempt ? el("div", { class: "muted small" }, `last ${scWhen(b.last_attempt)}`) : null),
+        el("td", { class: "sc-block-btns" },
+          el("button", { class: "ghost", onclick: () => extend(b) }, b.active ? "Extend" : "Block again"),
+          el("button", { class: "ghost", onclick: () => remove(b) }, "Remove"))))))) 
+      : el("div", { class: "sp-empty" }, el("p", { class: "muted" }, "No blocked networks. You can block a permanently suspended person's addresses from their report or from People.")),
+    el("h3", {}, `Latest refused attempts (${data.attempts.length})`),
+    attemptsView(data.attempts));
 }
 
 async function drawTeenSettings(page, stillMine) {
@@ -852,9 +1060,12 @@ function drawPoliceGuide(page) {
     el("p", {}, "Don't view, download, copy, screenshot or forward it, not even to show police. Outhouse has already locked the files (nobody can download them) and keeps them unchanged on the server. Report it to the ACCCE or eSafety and tell them you run the server."),
     el("h3", {}, "What to give them"),
     el("p", {}, "Open the report and press “Export evidence package”. It's a JSON file with the report, what the message said (and the messages around it), who sent it and when, which accounts reported it, the account's history, the IP addresses it used (with times in UTC and Sydney time) and each file's name, size and SHA-256 hash. It never contains the files."),
-    el("p", {}, "If police ask for the files themselves, follow their instructions. They're in the server's upload folder, named by the storage key in the package; the SHA-256 proves they haven't changed. deploy/README.md (“Safety & reports”) explains where that is."),
+    el("h3", {}, "The files themselves"),
+    el("p", {}, "Never open them. On the report, “Hand over to police” gives you one command to run on the server (over SSH). It packs the original files, unchanged, with the evidence package, their SHA-256 hashes and a note into one file only you can read, and logs it. Then either let police copy that file from the server under their supervision, or upload it from the server to the portal link they give you."),
+    el("h3", {}, "Suspend straight away"),
+    el("p", {}, "Police advice: suspend the reported account as soon as you see a child-safety report (“Suspend now” on the report). They're only told it's pending review of a report. Lift it if it was a mistake, or make it permanent, and you can block their IP addresses too."),
     el("h3", {}, "After it's dealt with"),
-    el("p", {}, "Suspend the account if you haven't. Once police have what they need (or say they don't need it), close the report and use “Delete evidence files” to remove the files from the server for good."));
+    el("p", {}, "Once police have what they need (or say they don't need it), close the report and use “Delete evidence files” to remove the files from the server for good."));
 }
 
 // ---------- Outhouse settings → Reports (site owner) ----------

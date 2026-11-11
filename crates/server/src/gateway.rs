@@ -96,6 +96,9 @@ async fn run(socket: WebSocket, st: AppState, ip: IpAddr) -> anyhow::Result<()> 
     let Some(user) = user_for_token(&st.db, &token).await? else {
         return reject(&mut sink, "Your session has expired. Sign in again.").await;
     };
+    if crate::ipblock::refuse_session(&st, ip, user.id, &user.username, &token, "gateway").await {
+        return reject(&mut sink, crate::ipblock::USE_REFUSED).await;
+    }
     // The address this session connects from (at most once an hour; ips.rs).
     crate::ips::note_session(&st, &token, user.id, user.bot, ip);
     let open_now = st

@@ -3505,6 +3505,82 @@ tok "$TOKEN_A" call GET /api/safety/summary | jq -e '.open >= 1' >/dev/null
 [ "$(report "$TOKEN_T" user "$ADAM" harassment)" = 201 ]
 tok "$TOKEN_T" call PUT "/api/users/@me/blocks/$ADAM" >/dev/null
 
+step "safety: child-safety alerts nudge to suspend; Suspend now (until reviewed, neutral reason only), then permanent or lifted"
+[ "$(xreg 11 '{"username":"nate","password":"password123","display_name":"Nate","birth_date":"1990-07-07"}')" = 200 ]
+TOKEN_N=$(jq -r .token /tmp/body); NATE=$(jq -r .user.id /tmp/body)
+tok "$TOKEN_N" call POST "/api/invites/$SINV2" >/dev/null
+NM1=$(tok "$TOKEN_N" call POST "/api/channels/$CHAN/messages" '{"content":"an ordinary message from nate"}' | jq -r .id)
+fupload "$TOKEN_N" "$CHAN" "evidence pic"; NM2=$(jq -r .id /tmp/body); KN=$(jq -r '.attachments[0].url | split("/")[2]' /tmp/body); UN=$(jq -r '.attachments[0].url' /tmp/body)
+NTFY0=$(curl -fsS "$PUSH/alerts/safety-ntfy" | jq length)
+[ "$(report "$TOKEN_D" message "$NM2" child_safety "he's grooming my cousin")" = 201 ]; RN=$(report_id message "$NM2")
+for _ in $(seq 1 20); do [ "$(curl -fsS "$PUSH/alerts/safety-ntfy" | jq length)" -gt "$NTFY0" ] && break; sleep 0.5; done
+curl -fsS "$PUSH/alerts/safety-ntfy" | jq -e '.[-1].body | test("Review and suspend the account now if in doubt") and (test("evidence pic|grooming") | not)' >/dev/null
+# The owner's push opens that report and says to suspend if in doubt (no content).
+for _ in $(seq 1 20); do curl -fsS "$PUSH/received/alice" | jq -e --arg r "$RN" 'any(.[]; .payload.report_id == $r)' >/dev/null && break; sleep 0.5; done
+curl -fsS "$PUSH/received/alice" | jq -e --arg r "$RN" 'any(.[]; .payload.kind == "safety" and .payload.report_id == $r
+  and .payload.url == "/app?reports=1&report=\($r)" and (.payload.body | test("suspend the account now if in doubt"))
+  and (.payload.body | test("evidence pic|grooming") | not))' >/dev/null
+# Nothing happens to the account by itself.
+tok "$TOKEN_N" call GET /api/users/@me >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/reports/$RN" | jq -e '(.subject.suspended | not) and .report.child_safety' >/dev/null
+node ci/gateway_probe.mjs "$BASE" "$TOKEN_N" /tmp/gw-nate.jsonl 60 & SPN=$!
+wait_for /tmp/gw-nate.jsonl '.t == "READY"'
+tok "$TOKEN_B" fail_call POST "/api/safety/reports/$RN/actions" '{"action":"suspend_pending"}'
+act "$RN" '{"action":"suspend_pending"}' | jq -e --arg a "$ALICE" '.subject.suspended and .subject.suspension_pending
+  and .subject.suspended_label == "until reviewed" and .subject.suspended_by == $a and .subject.suspended_at != null
+  and (.subject.suspended_permanently | not) and .report.status == "review"' >/dev/null
+wait_for /tmp/gw-nate.jsonl '.t == "INVALID_SESSION"'
+kill $SPN 2>/dev/null || true
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN_N" "$BASE/api/users/@me")" = 401 ]
+psql "$DATABASE_URL" -tAc "SELECT count(*) FROM sessions WHERE user_id = $NATE" | grep -qx 0
+# They see only the neutral reason: never the category, the details or who reported them.
+code=$(curl -sS -o /tmp/body -w '%{http_code}' -H "Content-Type: application/json" -d '{"username":"nate","password":"password123"}' "$BASE/api/auth/login")
+[ "$code" = 403 ] && jq -e '.error == "This account has been suspended pending review of a report."' /tmp/body >/dev/null
+grep -qiE "child|safety|groom|dora|permanent" /tmp/body && { echo "the suspension message says too much"; exit 1; }
+# Nothing else of theirs is hidden (only the reported message is, as before).
+tok "$TOKEN_D" call GET "/api/channels/$CHAN/messages?limit=100" | jq -e --arg a "$NM1" --arg b "$NM2" 'any(.[]; .id == $a) and all(.[]; .id != $b)' >/dev/null
+tok "$TOKEN_A" fail_call POST "/api/safety/reports/$RN/actions" '{"action":"suspend_pending"}'   # already suspended
+tok "$TOKEN_A" call GET "/api/safety/reports/$RN" | jq -e 'any(.log[]; .action == "suspend" and (.details | test("until reviewed")))' >/dev/null
+# Make permanent: no longer "pending review".
+act "$RN" '{"action":"make_permanent"}' | jq -e '.subject.suspended_label == "permanently" and (.subject.suspension_pending | not) and .subject.suspended_permanently' >/dev/null
+code=$(curl -sS -o /tmp/body -w '%{http_code}' -H "Content-Type: application/json" -d '{"username":"nate","password":"password123"}' "$BASE/api/auth/login")
+[ "$code" = 403 ] && jq -e '.error == "This account has been suspended permanently."' /tmp/body >/dev/null
+# Lifted: they can sign in again.
+act "$RN" '{"action":"unsuspend"}' | jq -e '(.subject.suspended | not) and .subject.suspended_at == null' >/dev/null
+TOKEN_N=$(TOKEN="" call POST /api/auth/login '{"username":"nate","password":"password123"}' | jq -r .token)
+tok "$TOKEN_N" call GET /api/users/@me >/dev/null
+
+step "evidence hand-over: deploy/evidence-handover.sh packs the original files byte for byte, the package and hashes, and logs it"
+HO=$(mktemp -d)
+OUTHOUSE_CMD=./target/debug/outhouse-server bash deploy/evidence-handover.sh "$RN" "$HO" > /tmp/handover.out 2>&1 || { cat /tmp/handover.out; exit 1; }
+PKG=$(ls "$HO"/evidence-"$RN"-*.tar.gz)
+[ "$(stat -c %a "$PKG")" = 600 ]
+PKG_SHA=$(sha256sum "$PKG" | cut -d' ' -f1)
+grep -q "$PKG_SHA" /tmp/handover.out
+grep -q "evidence pic\|PNG" /tmp/handover.out && { echo "the hand-over printed file contents"; exit 1; }
+HX=$(mktemp -d); tar -C "$HX" -xzf "$PKG"; HD=$(ls -d "$HX"/evidence-"$RN"-*)
+( cd "$HD" && sha256sum -c --quiet MANIFEST.sha256 )
+cmp "$HD/files/$KN" "$UPLOADS/$KN"
+grep -q "files/$KN" "$HD/MANIFEST.sha256" && grep -q "report-$RN.json" "$HD/MANIFEST.sha256"
+jq -e --arg k "$KN" --arg h "$(sha256sum "$UPLOADS/$KN" | cut -d' ' -f1)" '.format == "outhouse-evidence-package/1"
+  and .files[0].key == $k and .files[0].sha256 == $h and .files[0].quarantined and (.generated_by.operator | length) > 0
+  and .reported_account.username == "nate" and (.blocked_networks.refused_attempts | type) == "array"' "$HD/report-$RN.json" >/dev/null
+grep -q "Do not open these files" "$HD/HANDOVER.txt" && grep -q "Report:        $RN" "$HD/HANDOVER.txt" && grep -q "Australia/Sydney" "$HD/HANDOVER.txt"
+tok "$TOKEN_A" call GET "/api/safety/reports/$RN" | jq -e --arg h "$PKG_SHA" 'any(.log[]; .action == "handover" and (.details | contains($h)))' >/dev/null
+# The quarantined file is still never served over the web.
+[ "$(tok "$TOKEN_A" status GET "/api/safety/reports/$RN/files/$KN")" = 451 ]
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN_A" "$BASE$UN")" = 451 ]
+# Only child-safety reports or ones with quarantined files, unless --any; unknown reports fail.
+c1=0; c2=0; c3=0
+OUTHOUSE_CMD=./target/debug/outhouse-server bash deploy/evidence-handover.sh "$R1" "$HO" >/tmp/handover2.out 2>&1 || c1=$?
+OUTHOUSE_CMD=./target/debug/outhouse-server bash deploy/evidence-handover.sh 12345 "$HO" >/dev/null 2>&1 || c2=$?
+OUTHOUSE_CMD=./target/debug/outhouse-server bash deploy/evidence-handover.sh nope "$HO" >/dev/null 2>&1 || c3=$?
+[ "$c1" = 3 ] && grep -q -- "--any" /tmp/handover2.out && [ "$c2" = 4 ] && [ "$c3" = 2 ]
+OUTHOUSE_CMD=./target/debug/outhouse-server bash deploy/evidence-handover.sh --any "$R1" "$HO" >/dev/null 2>&1
+# The server's evidence-cat only gives files that belong to the report.
+./target/debug/outhouse-server evidence-cat "$R1" "$KN" >/dev/null 2>&1 && { echo "evidence-cat gave another report's file"; exit 1; }
+rm -rf "$HO" "$HX"
+
 # ---------------------------------------------------------------------------
 # IP addresses (feat-ips): kept for safety, site owner only, same-IP hints
 # ---------------------------------------------------------------------------
@@ -3646,6 +3722,106 @@ purge_ips | jq -e '.report_addresses >= 1' >/dev/null
 tok "$TOKEN_A" call DELETE "/api/guilds/$GUILD/bans/$IVY" >/dev/null
 tok "$TOKEN_A" call POST "/api/safety/users/$ZED/actions" '{"action":"unsuspend"}' >/dev/null
 tok "$TOKEN_A" call POST "/api/safety/users/$LANA/actions" '{"action":"unsuspend"}' >/dev/null
+
+step "blocked networks: only for permanent suspensions; v4 /32 and v6 /64; private, own and proxy addresses skipped"
+reload_blocks() { tok "$TOKEN_A" call POST /api/safety/ip-blocks/reload >/dev/null; }
+[ "$(ipreq '203.0.113.150' /api/auth/register '{"username":"pete","password":"password123","display_name":"Pete","birth_date":"1990-08-08"}')" = 200 ]
+TOKEN_PE=$(jq -r .token /tmp/body); PETE=$(jq -r .user.id /tmp/body)
+[ "$(ipreq '2001:db8:abcd:12::5' /api/auth/login '{"username":"pete","password":"password123"}')" = 200 ]
+[ "$(ipreq '10.0.0.9' /api/auth/login '{"username":"pete","password":"password123"}')" = 200 ]
+[ "$(ipreq '100.64.3.3' /api/auth/login '{"username":"pete","password":"password123"}')" = 200 ]
+[ "$(ipreq '203.0.113.151' /api/auth/login '{"username":"pete","password":"password123"}')" = 200 ]
+# The site owner uses 203.0.113.151 too (their household).
+[ "$(ipreq '203.0.113.151' /api/users/@me '' "$TOKEN_A")" = 200 ]
+psql "$DATABASE_URL" -qc "INSERT INTO user_ips (user_id, ip, kind) VALUES ($ALICE, '203.0.113.151', 'login') ON CONFLICT DO NOTHING"
+# Quinn already used Pete's network before the block (a housemate).
+[ "$(ipreq '203.0.113.150' /api/auth/register '{"username":"quinn","password":"password123","display_name":"Quinn","birth_date":"1991-09-09"}')" = 200 ]
+TOKEN_Q=$(jq -r .token /tmp/body); QUINN=$(jq -r .user.id /tmp/body)
+tok "$TOKEN_PE" call POST "/api/invites/$SINV2" >/dev/null
+PM=$(tok "$TOKEN_PE" call POST "/api/channels/$CHAN/messages" '{"content":"pete was here"}' | jq -r .id)
+[ "$(report "$TOKEN_D" message "$PM" child_safety)" = 201 ]; RPE=$(report_id message "$PM")
+# Not permanent yet: no blocks.
+act "$RPE" '{"action":"suspend_pending"}' >/dev/null
+tok "$TOKEN_A" fail_call POST "/api/safety/users/$PETE/ip-blocks" '{}'
+tok "$TOKEN_B" fail_call GET "/api/safety/users/$PETE/ip-block-preview"
+tok "$TOKEN_B" fail_call GET /api/safety/ip-blocks
+act "$RPE" '{"action":"make_permanent","text":"Grooming"}' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/users/$PETE/ip-block-preview" | jq -e '.child_safety and .permanent
+  and any(.networks[]; .network == "203.0.113.150/32" and .skip == null and (.own | not))
+  and any(.networks[]; .network == "2001:db8:abcd:12::/64" and .skip == null)
+  and any(.networks[]; .skip != null and (.skip | test("private")))
+  and any(.networks[]; .network == "100.64.3.3/32" and (.skip | test("carrier-grade")))
+  and any(.networks[]; .network == "203.0.113.151/32" and .own)
+  and (.note | test("locked out"))' >/dev/null
+node ci/gateway_probe.mjs "$BASE" "$TOKEN_Q" /tmp/gw-quinn.jsonl 60 & SPQ=$!
+wait_for /tmp/gw-quinn.jsonl '.t == "READY"'
+tok "$TOKEN_A" call POST "/api/safety/users/$PETE/ip-blocks" '{"reason":"child safety"}' > /tmp/blocks.json
+jq -e '(.blocked | sort) == ["2001:db8:abcd:12::/64","203.0.113.150/32"] and .signed_out >= 1
+  and any(.skipped[]; test("203.0.113.151/32 \\(one of your own")) and any(.skipped[]; test("10.0.0.9"))' /tmp/blocks.json >/dev/null
+psql "$DATABASE_URL" -tAc "SELECT count(*) FROM ip_blocks WHERE source_user_id = $PETE AND report_id = $RPE AND expires_at IS NULL AND removed_at IS NULL" | grep -qx 2
+# Everyone seen on a blocked network is signed out at once (Quinn, the housemate).
+wait_for /tmp/gw-quinn.jsonl '.t == "INVALID_SESSION" and (.d.reason | test("your network"))'
+kill $SPQ 2>/dev/null || true
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN_Q" "$BASE/api/users/@me")" = 401 ]
+
+step "blocked networks: strict: no sign-up, sign-in or use from them (any account), the owner and allowed accounts excepted; attempts kept"
+ATT0=$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM blocked_attempts")
+[ "$(ipreq '203.0.113.150' /api/auth/register '{"username":"pete2","password":"password123","birth_date":"1990-08-08"}')" = 403 ]
+jq -e '.error == "New accounts can'"'"'t be created from your network right now. If you think this is a mistake, contact the server owner."' /tmp/body >/dev/null
+[ "$(ipreq '2001:db8:abcd:12:ffff::1' /api/auth/register '{"username":"pete3","password":"password123","birth_date":"1990-08-08"}')" = 403 ]   # same /64
+[ "$(ipreq '2001:db8:abcd:13::1' /api/auth/register '{"username":"olive","password":"password123","birth_date":"1990-08-08"}')" = 200 ]  # next /64: fine
+[ "$(ipreq '203.0.113.150' /api/auth/login '{"username":"quinn","password":"password123"}')" = 403 ]
+jq -e '.error | test("can'"'"'t be used from your network")' /tmp/body >/dev/null
+[ "$(ipreq '203.0.113.150' /api/auth/login '{"username":"quinn","password":"wrong-password"}')" = 403 ]   # says nothing about the password
+psql "$DATABASE_URL" -tAc "SELECT count(*) FROM users WHERE username IN ('pete2','pete3')" | grep -qx 0
+# Signed in elsewhere, then used from the blocked network: refused and signed out.
+[ "$(ipreq '198.51.100.150' /api/auth/login '{"username":"quinn","password":"password123"}')" = 200 ]
+TOKEN_Q=$(jq -r .token /tmp/body)
+[ "$(ipreq '198.51.100.150' /api/users/@me '' "$TOKEN_Q")" = 200 ]
+[ "$(ipreq '203.0.113.150' /api/users/@me '' "$TOKEN_Q")" = 403 ]
+[ "$(ipreq '198.51.100.150' /api/users/@me '' "$TOKEN_Q")" = 401 ]
+# The site owner always gets through.
+[ "$(ipreq '203.0.113.150' /api/users/@me '' "$TOKEN_A")" = 200 ]
+# "Allow from blocked networks" for someone the owner knows is innocent.
+tok "$TOKEN_A" call POST "/api/safety/users/$QUINN/actions" '{"action":"set_ip_exempt","exempt":true}' | jq -e '.ip_block_exempt' >/dev/null
+[ "$(ipreq '203.0.113.150' /api/auth/login '{"username":"quinn","password":"password123"}')" = 200 ]
+TOKEN_Q=$(jq -r .token /tmp/body)
+[ "$(ipreq '203.0.113.150' /api/users/@me '' "$TOKEN_Q")" = 200 ]
+tok "$TOKEN_A" call POST "/api/safety/users/$QUINN/actions" '{"action":"set_ip_exempt","exempt":false}' | jq -e '(.ip_block_exempt | not) and any(.log[]; .action == "ip_exempt")' >/dev/null
+[ "$(ipreq '203.0.113.150' /api/users/@me '' "$TOKEN_Q")" = 403 ]
+# Every refusal is written down (time, address, account or username tried).
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM blocked_attempts")" -ge $((ATT0 + 5)) ]
+psql "$DATABASE_URL" -tAc "SELECT count(*) FROM blocked_attempts WHERE kind = 'register' AND username = 'pete2' AND ip = '203.0.113.150'" | grep -qx 1
+psql "$DATABASE_URL" -tAc "SELECT count(*) FROM blocked_attempts WHERE kind = 'login' AND user_id = $QUINN" | grep -qxE '[2-9]'
+psql "$DATABASE_URL" -tAc "SELECT count(*) FROM blocked_attempts WHERE kind = 'request' AND user_id = $QUINN" | grep -qxE '[1-9]'
+tok "$TOKEN_A" call GET "/api/safety/users/$PETE" | jq -e '.ip_blocks == 2 and any(.blocked_attempts[]; .username == "pete2" and .kind == "register")' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/users/$QUINN" | jq -e 'any(.blocked_attempts[]; .kind == "login")' >/dev/null
+tok "$TOKEN_A" call GET /api/safety/ip-blocks | jq -e '[.blocks[] | select(.network == "203.0.113.150/32")][0] | .attempts >= 4 and .account.username == "pete" and .active and .expires_at == null' >/dev/null
+# ...and goes in the report's evidence package.
+tok "$TOKEN_A" call GET "/api/safety/reports/$RPE/export" | jq -e '(.blocked_networks.blocks | length) == 2
+  and any(.blocked_networks.refused_attempts[]; .username_tried == "pete2" and .attempt == "register" and .ip_address == "203.0.113.150"
+          and (.time_australia_sydney | test("AE[SD]T")) and (.time_utc | endswith("Z")))' >/dev/null
+
+step "blocked networks: expiry, extend, remove (the record stays), safety log"
+B4=$(tok "$TOKEN_A" call GET /api/safety/ip-blocks | jq -r '.blocks[] | select(.network == "203.0.113.150/32") | .id')
+B6=$(tok "$TOKEN_A" call GET /api/safety/ip-blocks | jq -r '.blocks[] | select(.network == "2001:db8:abcd:12::/64") | .id')
+tok "$TOKEN_A" call POST "/api/safety/ip-blocks/$B4/extend" '{"days":365}' >/dev/null
+psql "$DATABASE_URL" -tAc "SELECT (expires_at > now() + interval '364 days')::TEXT FROM ip_blocks WHERE id = $B4" | grep -qx true
+psql "$DATABASE_URL" -qc "UPDATE ip_blocks SET expires_at = now() - interval '1 second' WHERE id = $B4"
+reload_blocks
+[ "$(ipreq '203.0.113.150' /api/auth/register '{"username":"pete4","password":"password123","birth_date":"1990-08-08"}')" = 200 ]
+tok "$TOKEN_A" call GET /api/safety/ip-blocks | jq -e --arg b "$B4" '.blocks[] | select(.id == $b) | .active | not' >/dev/null
+tok "$TOKEN_A" call POST "/api/safety/ip-blocks/$B4/extend" '{}' >/dev/null    # until removed again
+[ "$(ipreq '203.0.113.150' /api/auth/register '{"username":"pete5","password":"password123","birth_date":"1990-08-08"}')" = 403 ]
+tok "$TOKEN_A" call POST "/api/safety/ip-blocks/$B6/remove" >/dev/null
+[ "$(ipreq '2001:db8:abcd:12::77' /api/auth/register '{"username":"pete6","password":"password123","birth_date":"1990-08-08"}')" = 200 ]
+psql "$DATABASE_URL" -tAc "SELECT count(*) FROM ip_blocks WHERE id = $B6 AND removed_at IS NOT NULL" | grep -qx 1
+tok "$TOKEN_A" call GET /api/safety/ip-blocks | jq -e --arg b "$B6" 'all(.blocks[]; .id != $b)' >/dev/null
+tok "$TOKEN_A" call GET /api/safety/log | jq -e '[.entries[].action] | (index("ip_block") and index("ip_block_extend") and index("ip_unblock") and index("ip_exempt"))' >/dev/null
+tok "$TOKEN_B" fail_call POST "/api/safety/ip-blocks/$B4/remove"
+# Tidy up for the sections below.
+tok "$TOKEN_A" call POST "/api/safety/ip-blocks/$B4/remove" >/dev/null
+[ "$(ipreq '203.0.113.150' /api/auth/login '{"username":"quinn","password":"password123"}')" = 200 ]
 
 step "Deleting a channel's newest message moves its newest back, so it can't stay unread"
 UC=$(tok "$TOKEN_A" call POST "/api/guilds/$GUILD/channels" '{"name":"unread-fix"}' | jq -r .id)

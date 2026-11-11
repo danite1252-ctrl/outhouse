@@ -239,7 +239,23 @@ close the report.
 - you get the shield badge on the left rail, a push notification (if you
   turned those on), a desktop notification in the Windows app, and an alert
   to the same ntfy topic / webhook as the uptime alerts (`ALERT_NTFY_URL`,
-  `ALERT_WEBHOOK_URL`). The alert never contains any of the content.
+  `ALERT_WEBHOOK_URL`), all saying *"Review and suspend the account now if
+  in doubt."* The alert never contains any of the content. Tapping the push
+  (or the browser / desktop notification) opens that report.
+
+**Suspend straight away (police advice).** Nothing is suspended
+automatically: suspending is a one-tap step you take yourself, at once.
+Police advised that leaving a reported account active once you know about
+it could be seen as helping, so err on the side of caution. A child-safety
+report opens with **Suspend now** at the top: one confirmation and the
+account is suspended *until you've reviewed it*: signed out everywhere,
+can't sign in, its bots stop, its profile is hidden, it's dropped from
+voice. Nothing else of theirs is hidden (the reported message already is).
+They only ever see *"This account has been suspended pending review of a
+report."*, never the category, the details or who reported them. The report
+then shows **Suspended at <time> by you** with **Lift suspension** (it was a
+mistake) and **Make permanent…** (see **Blocked networks** below for the IP
+block it offers).
 
 The review screen never shows a child-safety report's pictures or video:
 just the file name, type, size and SHA-256. **Don't view, download, copy,
@@ -253,14 +269,37 @@ it.** Report it instead:
 **What to give police.** In the report press **Export evidence package**:
 a JSON file with the report, the snapshot and context, who reported it and
 when, the reported account's history, their IP addresses (first and last
-seen, in UTC and in Sydney time, clearly labelled), the safety log and each
-file's name, size, storage key and SHA-256. It never contains the files. If police ask
-for the files, follow their instructions; they're in the server's upload
-volume (inside the server container at `/data/uploads/<storage key>`).
-They can check a copy hasn't changed against the package's hash:
+seen, in UTC and in Sydney time, clearly labelled), the safety log, each
+file's name, size, storage key and SHA-256, and any attempts from networks
+you blocked because of them. It never contains the files.
+
+**Handing the files to police (without ever opening them).** You must not
+open, view, download to your PC or forward the files. The report's **Hand
+over to police** panel shows the exact command (with a Copy button). On the
+server, over SSH:
 ```bash
-docker compose exec server sha256sum /data/uploads/<storage key>
+cd ~/outhouse && ./deploy/evidence-handover.sh <report id>
 ```
+It copies the report's original files byte for byte from the upload store
+(quarantined ones too; nothing is opened, decoded or thumbnailed, and no web
+address ever serves them) into `~/outhouse-evidence/evidence-<id>-<UTC
+time>/files/<storage key>`, adds the evidence package (`report-<id>.json`),
+`MANIFEST.sha256` (the SHA-256 of every file and the JSON) and
+`HANDOVER.txt` (report id, time in UTC and Sydney time, who ran it, how many
+files, how to check them with `sha256sum -c MANIFEST.sha256`, and "Do not
+open these files"), packs it all into one `.tar.gz` next to the folder
+(readable only by you), prints the package's path and SHA-256, and writes
+*"Evidence packaged for police"* with that SHA-256 to the safety log. It
+never prints anything from the files. It only packs child-safety reports or
+reports with quarantined files unless you add `--any`; `--zip` makes a .zip
+as well (`sudo apt install zip` first; stock Ubuntu has tar but not zip).
+Then, as police direct:
+- **They download it under supervision:** run the command, then let them
+  copy the `.tar.gz` from the server (their drive, or scp from their laptop).
+- **They give you a portal link:** run the command, then upload the
+  `.tar.gz` to the portal from the server. Only copy it to your PC (scp) if
+  there's no other way, and never open it.
+
 Nightly backups (and off-site copies) include the upload folder, so older
 backups keep a copy until they're rotated out; tell police that too.
 
@@ -277,6 +316,8 @@ actions:
 - **Delete message**, **Remove files** (the report keeps its copy);
 - **Warn…** (a DM from *Outhouse Safety*), **Time out…**, **Kick…**, **Ban…**
   in one of their outhouses;
+- **Suspend now** (child-safety reports: until you've reviewed it, neutral
+  reason, see above), then **Make permanent…** or **Lift suspension**;
 - **Suspend account…** for 1–90 days or permanently: they're signed out
   everywhere at once, can't sign in (they see the reason), their bots'
   tokens are revoked (reset them after), their profile is hidden, and their
@@ -320,7 +361,44 @@ see them."
   **Shared addresses are common** (households, mobile networks, VPNs): a
   match is a hint, not proof, and nothing happens to anyone automatically.
 - Outhouse doesn't write addresses into its own logs beyond the existing
-  "failed sign-in" lines.
+  "failed sign-in" and "refused: blocked network" lines.
+
+**Blocked networks.** When you make a suspension permanent (**Make
+permanent…**, or **Block IPs…** on a permanently suspended person in People)
+you can also block their IP addresses: the ones they used in the last 90
+days (their own and their reports' copies). It's ticked by default when they
+have a child-safety report (one not dismissed as a mistake), and offered but
+unticked otherwise. IPv4 blocks that address; IPv6 blocks its /64. It lasts
+**until you remove it** (or 1 year / 90 days if you pick that).
+- **It's strict, on purpose.** While a block is active nobody can sign up,
+  sign in, use the API or connect from that address, whichever account it
+  is: *"Outhouse can't be used from your network right now. If you think
+  this is a mistake, contact the server owner."* (sign-up says *"New
+  accounts can't be created from your network right now..."*). Everyone
+  already signed in who was seen on it is signed out at once. That locks
+  out their whole household, and possibly a mobile network, school or
+  workplace that shares the address; that's your choice under your safety
+  policy, and a new network or a VPN can still get around it. Nobody is
+  ever suspended because of a block.
+- **Safety valves:** your own (site owner) account always works; a network
+  you or your household use is skipped (with a warning in the dialog)
+  unless you tick "block my own address too"; and in People, **Allow from
+  blocked networks** (off by default, logged) lets someone you know is
+  innocent through. Private, home-network (LAN), loopback, link-local,
+  carrier-grade NAT (100.64.0.0/10) and trusted-proxy addresses are never
+  blocked.
+- **Every refused attempt is kept** (time, address, account or username
+  tried, and what it was: sign-up, sign-in, using Outhouse or a live
+  connection, the last two at most once every 10 minutes per account). They
+  show under People → *Attempts from blocked networks*, in **Blocked
+  networks**, and go in that person's evidence package and hand-over
+  package. Attempts are kept a year, or as long as the person's report keeps
+  its evidence.
+- **Blocked networks** (Safety console) lists every block: network, account,
+  reason, when, how long, attempts, with **Extend** and **Remove**. Block
+  rows are a deliberate safety record: they're kept for their own lifetime
+  (removing one marks it removed), whatever the 90-day IP retention. Blocks,
+  removals, extensions and exemptions are in the safety log.
 
 **Age groups and teens.** Sign-up asks for a date of birth: under 13s can't
 make an account, 13–17 are *teens*, 18+ *adults*. Only the age group is

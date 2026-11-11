@@ -196,13 +196,19 @@ impl FromRequestParts<AppState> for AuthUser {
         let user = user_for_token(&state.db, &token)
             .await?
             .ok_or(AppError::Unauthorized)?;
+        let crate::security::ClientIp(ip) =
+            crate::security::ClientIp::from_request_parts(parts, state)
+                .await
+                .unwrap_or_else(|e| match e {});
+        // A blocked network (ipblock.rs): signed out, refused.
+        if crate::ipblock::refuse_session(state, ip, user.id, &user.username, &token, "request")
+            .await
+        {
+            return Err(AppError::Refused(crate::ipblock::USE_REFUSED.into()));
+        }
         // Signed-in activity: the address is noted at most once an hour
         // per session (see ips.rs; bots are skipped).
         if !user.bot {
-            let crate::security::ClientIp(ip) =
-                crate::security::ClientIp::from_request_parts(parts, state)
-                    .await
-                    .unwrap_or_else(|e| match e {});
             crate::ips::note_session(state, &token, user.id, user.bot, ip);
         }
         Ok(AuthUser(user))

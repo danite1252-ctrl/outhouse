@@ -106,7 +106,7 @@ impl Cidr {
 }
 
 /// `::ffff:1.2.3.4` → `1.2.3.4`, so IPv4 rules work on dual-stack sockets.
-fn canonical(ip: IpAddr) -> IpAddr {
+pub fn canonical(ip: IpAddr) -> IpAddr {
     match ip {
         IpAddr::V6(v6) => v6
             .to_ipv4_mapped()

@@ -137,7 +137,7 @@ jobs:
           command -v shellcheck >/dev/null || sudo -n apt-get install -y -qq shellcheck >/dev/null \
             || { echo "::error::shellcheck isn't installed (deploy/ci-runner/setup-linux-runner.sh installs it)"; exit 1; }
           for f in deploy/*.sh deploy/ci-runner/*.sh ci/smoke.sh ci/runner-cleanup.sh; do bash -n "$f"; done
-          shellcheck -S warning deploy/backup.sh deploy/healthcheck.sh deploy/setup.sh deploy/restore.sh deploy/security-scan.sh ci/zap.sh \
+          shellcheck -S warning deploy/backup.sh deploy/evidence-handover.sh deploy/healthcheck.sh deploy/setup.sh deploy/restore.sh deploy/security-scan.sh ci/zap.sh \
             ci/runner-cleanup.sh deploy/ci-runner/*.sh
       - name: Workflow check (actionlint)
         run: |

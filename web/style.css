@@ -2393,7 +2393,7 @@ dialog.report-dialog select { width: 100%; }
 .rp-count { font-size: 11px; font-weight: 400; justify-self: end; }
 .rp-check { display: flex; gap: 8px; align-items: center; font-size: 14px; cursor: pointer; }
 .rp-check input { width: 16px; height: 16px; accent-color: var(--ember); }
-.rp-urgent, .sc-child-warning { margin: 0; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--occupied); background: color-mix(in srgb, var(--occupied) 10%, var(--panel)); font-size: 13px; line-height: 1.5; }
+.rp-urgent, .sc-child-warning, .sc-urgent-banner { margin: 0; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--occupied); background: color-mix(in srgb, var(--occupied) 10%, var(--panel)); font-size: 13px; line-height: 1.5; }
 .danger-fill { background: var(--occupied) !important; }
 .report-btn { font-size: 14px; }
 .pc-cant { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
@@ -2516,6 +2516,33 @@ button.sc-row:hover { border-color: var(--muted); }
 .sc-table th, .sc-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .sc-table th { color: var(--muted); font-weight: 600; }
 .sc-table code { font-family: "JetBrains Mono", monospace; }
+/* Suspend now, hand-over and blocked networks (safety console) */
+.sc-suspend-now, .sc-suspended-panel { padding: 12px; border: 1px solid var(--occupied); border-radius: 10px; background: color-mix(in srgb, var(--occupied) 8%, var(--panel)); }
+.sc-suspend-now h3 { color: var(--occupied); }
+.sc-suspended-panel { border-color: var(--line); background: var(--night); }
+.sc-suspend-now-btn { height: 42px; padding: 0 22px; font-weight: 700; }
+.sc-nudge strong { display: inline; font-size: 13px; }
+.sc-urgent-banner strong { color: var(--occupied); }
+.sc-cmd { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--night); min-width: 0; }
+.sc-cmd-text { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; font-family: "JetBrains Mono", monospace; font-size: 13px; color: var(--glow); }
+.sc-nets { display: grid; gap: 4px; max-height: 220px; overflow-y: auto; padding: 6px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--night); }
+.sc-net { display: flex !important; flex-direction: row !important; align-items: flex-start; gap: 8px; font-size: 13px; cursor: pointer; }
+.sc-net input { flex: none; width: 16px !important; height: 16px; margin: 2px 0 0; accent-color: var(--ember); }
+.sc-block-part .rp-check { align-items: flex-start; }
+.sc-block-part .rp-check input { flex: none; margin-top: 2px; }
+.sc-net code { font-family: "JetBrains Mono", monospace; }
+.sc-net.skipped { opacity: .6; }
+.sc-net.own code, .sc-own-warning { color: var(--glow); }
+.sc-block-part { display: grid; gap: 8px; }
+.sc-permanent-dialog { max-width: 620px; }
+.sc-blocks tr.expired td { opacity: .6; }
+.sc-blocks td, .sc-attempts td { white-space: normal; }
+.sc-blocks td code, .sc-attempts td code { white-space: nowrap; }
+.sc-blocks .sc-block-btns { flex-direction: column; align-items: stretch; }
+.sc-block-btns { display: flex; gap: 6px; }
+.sc-block-btns .ghost { height: 30px !important; padding: 0 10px !important; }
+.sc-attempts-section { display: grid; gap: 6px; }
+.sc-attempts-section h3 { margin: 0; }
 .sc-same-ip { gap: 2px; }
 .sc-same-ip.flagged { border-color: var(--ember); background: color-mix(in srgb, var(--ember) 10%, var(--night)); }
 .sc-same-ip .link, .sc-ipm-card .link { justify-self: start; padding: 0; font-weight: 700; }

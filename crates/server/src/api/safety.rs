@@ -57,6 +57,8 @@ const DEFAULT_REPORTS_PER_HOUR: i64 = 20;
 /// "Permanently" is stored as this far-off date.
 const FOREVER: &str = "9999-12-31T00:00:00Z";
 pub const CANT_MESSAGE: &str = "This person can't receive messages from you.";
+/// What someone suspended with "Suspend now" is told (and nothing more).
+pub const PENDING_REASON: &str = "Suspended pending review of a report";
 
 /// Quiet ban-evasion hints (see `ips.rs`): not something people can report.
 pub const IP_MATCH: &str = "ip_match";
@@ -344,14 +346,19 @@ fn until_label(until: DateTime<Utc>) -> String {
 
 /// Why this account can't sign in (None = not suspended).
 pub async fn suspension_message(db: &PgPool, user_id: i64) -> AppResult<Option<String>> {
-    let row: Option<(DateTime<Utc>, Option<String>)> = sqlx::query_as(
-        "SELECT suspended_until, suspended_reason FROM users
+    let row: Option<(DateTime<Utc>, Option<String>, bool)> = sqlx::query_as(
+        "SELECT suspended_until, suspended_reason, suspension_pending FROM users
          WHERE id = $1 AND suspended_until > now()",
     )
     .bind(user_id)
     .fetch_optional(db)
     .await?;
-    Ok(row.map(|(until, reason)| {
+    Ok(row.map(|(until, reason, pending)| {
+        // "Suspend now" (child-safety reports): only the neutral line, never
+        // the category or who reported them.
+        if pending {
+            return format!("This account has been {}.", PENDING_REASON.to_lowercase());
+        }
         let reason = reason
             .filter(|r| !r.trim().is_empty())
             .map(|r| format!(" Reason: {r}"))
@@ -468,7 +475,7 @@ pub async fn site_owner_ids(db: &PgPool) -> AppResult<Vec<i64>> {
     )
 }
 
-async fn require_owner(st: &AppState, user: &User) -> AppResult<()> {
+pub(crate) async fn require_owner(st: &AppState, user: &User) -> AppResult<()> {
     if user.bot || !is_site_owner(&st.db, user.id).await? {
         return Err(AppError::Forbidden);
     }
@@ -500,10 +507,11 @@ async fn counts(db: &PgPool) -> AppResult<Counts> {
     .await?)
 }
 
-/// Updates the owners' badge, and for child-safety reports sends a push
-/// notification and the server's ntfy / webhook alert (no details: just
-/// that there's something to review).
-fn notify_owners(st: &AppState, urgent_alert: bool) {
+/// Updates the owners' badge, and for a child-safety report (`alert` = its
+/// id) sends a push notification and the server's ntfy / webhook alert (no
+/// details: just that there's something to review, and a nudge to suspend
+/// the account at once if in doubt). The push opens that report.
+fn notify_owners(st: &AppState, alert: Option<i64>) {
     let st = st.clone();
     tokio::spawn(async move {
         let (Ok(c), Ok(owners)) = (counts(&st.db).await, site_owner_ids(&st.db).await) else {
@@ -515,21 +523,23 @@ fn notify_owners(st: &AppState, urgent_alert: bool) {
                 ServerEvent::ReportsChanged {
                     open: c.open,
                     urgent: c.urgent,
-                    alert: urgent_alert,
+                    alert: alert.is_some(),
+                    report_id: alert,
                 },
             );
         }
-        if !urgent_alert {
+        let Some(report_id) = alert else {
             return;
-        }
+        };
         let payload = json!({
             "title": "Urgent safety report",
-            "body": "A child-safety report needs your review. Open Outhouse → Reports.",
+            "body": format!("A child-safety report needs your review. {SUSPEND_NUDGE}"),
             "kind": "safety",
             "guild_id": "0",
             "channel_id": "reports",
+            "report_id": report_id.to_string(),
             "tag": "safety-report",
-            "url": "/app?reports=1",
+            "url": format!("/app?reports=1&report={report_id}"),
         });
         for &owner in &owners {
             if let Err(e) = crate::push::send_to_user(&st, owner, &payload).await {
@@ -539,11 +549,14 @@ fn notify_owners(st: &AppState, urgent_alert: bool) {
         external_alert(
             &st,
             "Outhouse: urgent safety report",
-            "A child-safety report was made and needs review. Open Outhouse → Outhouse settings → Reports. (No details are sent in this alert.)",
+            &format!("A child-safety report was made and needs review. {SUSPEND_NUDGE} Open Outhouse → Outhouse settings → Reports. (No details are sent in this alert.)"),
         )
         .await;
     });
 }
+
+/// The nudge in child-safety alerts (police advice: suspend straight away).
+pub const SUSPEND_NUDGE: &str = "Review and suspend the account now if in doubt.";
 
 /// The deploy kit's alert settings (`ALERT_NTFY_URL`, `ALERT_WEBHOOK_URL`),
 /// if the server was given them.
@@ -1164,7 +1177,7 @@ pub async fn create(
     if urgent {
         quarantine(&st, id).await?;
     }
-    notify_owners(&st, urgent);
+    notify_owners(&st, urgent.then_some(id));
     Ok((
         StatusCode::CREATED,
         Json(ReportReceipt {
@@ -1214,7 +1227,7 @@ async fn add_reporter(
     if escalated {
         quarantine(st, report_id).await?;
     }
-    notify_owners(st, escalated);
+    notify_owners(st, escalated.then_some(report_id));
     Ok(())
 }
 
@@ -1395,7 +1408,7 @@ pub(crate) async fn detector_report(st: &AppState, t: DetectorTarget) -> AppResu
             .to_string(),
     )
     .await;
-    notify_owners(st, false);
+    notify_owners(st, None);
     Ok(())
 }
 
@@ -1486,7 +1499,7 @@ pub(crate) async fn ip_match_report(
         ),
     )
     .await;
-    notify_owners(st, false);
+    notify_owners(st, None);
     Ok(id)
 }
 
@@ -1804,14 +1817,22 @@ struct SubjectRow {
     suspended_until: Option<DateTime<Utc>>,
     suspended_reason: Option<String>,
     suspended: bool,
+    suspension_pending: bool,
+    suspended_at: Option<DateTime<Utc>>,
+    suspended_by: Option<i64>,
+    suspended_by_name: Option<String>,
+    ip_block_exempt: bool,
 }
 
 /// Someone's history for the console.
 async fn subject_json(st: &AppState, user_id: i64) -> AppResult<Value> {
     let u = sqlx::query_as::<_, SubjectRow>(
-        "SELECT id, username, display_name, created_at, is_bot, age_bracket, suspended_until,
-                suspended_reason, COALESCE(suspended_until > now(), false) AS suspended
-         FROM users WHERE id = $1",
+        "SELECT u.id, u.username, u.display_name, u.created_at, u.is_bot, u.age_bracket,
+                u.suspended_until, u.suspended_reason,
+                COALESCE(u.suspended_until > now(), false) AS suspended,
+                u.suspension_pending, u.suspended_at, u.suspended_by,
+                b.display_name AS suspended_by_name, u.ip_block_exempt
+         FROM users u LEFT JOIN users b ON b.id = u.suspended_by WHERE u.id = $1",
     )
     .bind(user_id)
     .fetch_optional(&st.db)
@@ -1858,6 +1879,13 @@ async fn subject_json(st: &AppState, user_id: i64) -> AppResult<Value> {
     // Every name they've gone by (the console sees all of it).
     let names = super::profiles::name_history(&st.db, user_id, None, 200).await?;
     let message_requests = super::requests::stats_for(&st.db, user_id).await?;
+    let ip_blocks: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM ip_blocks WHERE source_user_id = $1 AND removed_at IS NULL
+           AND (expires_at IS NULL OR expires_at > now())",
+    )
+    .bind(user_id)
+    .fetch_one(&st.db)
+    .await?;
     Ok(json!({
         "id": u.id.to_string(),
         "username": u.username,
@@ -1869,8 +1897,23 @@ async fn subject_json(st: &AppState, user_id: i64) -> AppResult<Value> {
         "site_owner": is_site_owner(&st.db, u.id).await?,
         "suspended": u.suspended,
         "suspended_until": if u.suspended { u.suspended_until } else { None },
-        "suspended_label": if u.suspended { u.suspended_until.map(until_label) } else { None },
+        "suspended_label": if !u.suspended { None } else if u.suspension_pending {
+            Some("until reviewed".to_string())
+        } else {
+            u.suspended_until.map(until_label)
+        },
         "suspended_reason": if u.suspended { u.suspended_reason } else { None },
+        // "Suspend now": until the owner has reviewed it.
+        "suspension_pending": u.suspended && u.suspension_pending,
+        "suspended_at": if u.suspended { u.suspended_at } else { None },
+        "suspended_by": if u.suspended { u.suspended_by.map(|b| b.to_string()) } else { None },
+        "suspended_by_name": if u.suspended { u.suspended_by_name } else { None },
+        "suspended_permanently": u.suspended && !u.suspension_pending
+            && u.suspended_until.is_some_and(|t| t.year() >= 9999),
+        // Blocked networks (ipblocks.rs).
+        "ip_block_exempt": u.ip_block_exempt,
+        "ip_blocks": ip_blocks,
+        "blocked_attempts": super::ipblocks::attempts_for_user(&st.db, user_id).await?,
         "outhouses": outhouses.iter().map(|(id, name, owner, family, timeout)| json!({
             "id": id.to_string(), "name": name, "owner": owner, "family": family, "timeout_until": timeout,
         })).collect::<Vec<_>>(),
@@ -2026,6 +2069,9 @@ pub struct ActionRequest {
     attachment_id: Option<i64>,
     #[serde(default)]
     bracket: Option<String>,
+    /// "Allow from blocked networks"
+    #[serde(default)]
+    exempt: Option<bool>,
 }
 
 fn clean_text(text: &Option<String>, max: usize) -> String {
@@ -2233,7 +2279,7 @@ pub async fn report_action(
             .execute(&st.db)
             .await?;
     }
-    notify_owners(&st, false);
+    notify_owners(&st, None);
     Ok(Json(detail_json(&st, id).await?))
 }
 
@@ -2410,7 +2456,7 @@ async fn user_action(
             }
             let days = req.days.filter(|d| *d > 0).map(|d| d.min(3650) as i32);
             let reason = clean_text(&req.text, 500);
-            suspend(st, target, days, &reason, req.hide_messages).await?;
+            suspend(st, me, target, days, &reason, req.hide_messages, false).await?;
             let how = match days {
                 Some(d) => format!("for {d} day{}", if d == 1 { "" } else { "s" }),
                 None => "permanently".into(),
@@ -2437,9 +2483,71 @@ async fn user_action(
             )
             .await;
         }
+        // "Suspend now" (child-safety reports): until the owner has
+        // reviewed it, nothing extra hidden, and they're only told it's
+        // pending review of a report.
+        "suspend_pending" => {
+            protect("suspend")?;
+            if is_site_owner(&st.db, target).await? {
+                return Err(AppError::BadRequest(
+                    "You can't suspend a site owner.".into(),
+                ));
+            }
+            let already: bool = sqlx::query_scalar(
+                "SELECT COALESCE(suspended_until > now(), false) FROM users WHERE id = $1",
+            )
+            .bind(target)
+            .fetch_one(&st.db)
+            .await?;
+            if already {
+                return Err(AppError::BadRequest("They're already suspended.".into()));
+            }
+            suspend(st, me, target, None, PENDING_REASON, false, true).await?;
+            log(
+                st,
+                Some(me),
+                "suspend",
+                report,
+                Some(target),
+                format!("Suspended now, until reviewed. They only see: \"{PENDING_REASON}\"."),
+            )
+            .await;
+        }
+        "make_permanent" => {
+            let reason = clean_text(&req.text, 500);
+            let changed = sqlx::query(
+                "UPDATE users SET suspended_until = $2::TIMESTAMPTZ, suspension_pending = false,
+                        suspended_reason = NULLIF($3, '')
+                 WHERE id = $1 AND suspended_until > now()",
+            )
+            .bind(target)
+            .bind(FOREVER)
+            .bind(&reason)
+            .execute(&st.db)
+            .await?
+            .rows_affected();
+            if changed == 0 {
+                return Err(AppError::BadRequest("They aren't suspended.".into()));
+            }
+            log(
+                st,
+                Some(me),
+                "suspend",
+                report,
+                Some(target),
+                if reason.is_empty() {
+                    "Suspension made permanent".to_string()
+                } else {
+                    format!("Suspension made permanent. Reason: {reason}")
+                },
+            )
+            .await;
+        }
         "unsuspend" => {
             sqlx::query(
-                "UPDATE users SET suspended_until = NULL, suspended_reason = NULL WHERE id = $1",
+                "UPDATE users SET suspended_until = NULL, suspended_reason = NULL,
+                        suspended_at = NULL, suspended_by = NULL, suspension_pending = false
+                 WHERE id = $1",
             )
             .bind(target)
             .execute(&st.db)
@@ -2478,6 +2586,29 @@ async fn user_action(
             )
             .await;
         }
+        "set_ip_exempt" => {
+            let exempt = req
+                .exempt
+                .ok_or_else(|| AppError::BadRequest("Say whether to allow them.".into()))?;
+            sqlx::query("UPDATE users SET ip_block_exempt = $2 WHERE id = $1")
+                .bind(target)
+                .bind(exempt)
+                .execute(&st.db)
+                .await?;
+            log(
+                st,
+                Some(me),
+                "ip_exempt",
+                report,
+                Some(target),
+                if exempt {
+                    "Allowed from blocked networks (they can sign in from a blocked address)"
+                } else {
+                    "No longer allowed from blocked networks"
+                },
+            )
+            .await;
+        }
         "set_age" => {
             let bracket = match req.bracket.as_deref() {
                 Some(b @ ("teen" | "adult")) => b,
@@ -2512,23 +2643,29 @@ async fn user_action(
 
 /// Suspends an account site-wide: no sign-in, every session and bot token
 /// they own stops working, open connections close, they leave voice.
+#[allow(clippy::too_many_arguments)]
 async fn suspend(
     st: &AppState,
+    by: i64,
     target: i64,
     days: Option<i32>,
     reason: &str,
     hide: bool,
+    pending: bool,
 ) -> AppResult<()> {
     sqlx::query(
         "UPDATE users SET suspended_until = CASE WHEN $2::INT IS NULL THEN $4::TIMESTAMPTZ
                                                  ELSE now() + make_interval(days => $2::INT) END,
-                suspended_reason = NULLIF($3, '')
+                suspended_reason = NULLIF($3, ''),
+                suspended_at = now(), suspended_by = $5, suspension_pending = $6
          WHERE id = $1",
     )
     .bind(target)
     .bind(days)
     .bind(reason)
     .bind(FOREVER)
+    .bind(by)
+    .bind(pending)
     .execute(&st.db)
     .await?;
     sqlx::query("DELETE FROM sessions WHERE user_id = $1")
@@ -2760,12 +2897,12 @@ pub async fn export(
     Path(id): Path<i64>,
 ) -> AppResult<Response> {
     require_owner(&st, &user).await?;
-    let detail = detail_json(&st, id).await?;
-    // Bring the report's copy of the person's addresses up to date first.
-    if let Some(subject) = load_report(&st, id).await?.reported_user_id {
-        crate::ips::snapshot_for_report(&st.db, id, subject).await?;
-    }
-    let ips = crate::ips::report_ips_for_export(&st.db, id).await?;
+    let package = evidence_package(
+        &st,
+        id,
+        json!({ "id": user.id.to_string(), "username": user.username }),
+    )
+    .await?;
     log(
         &st,
         Some(user.id),
@@ -2775,10 +2912,34 @@ pub async fn export(
         "Exported the evidence package (no files)",
     )
     .await;
-    let package = json!({
+    let body = serde_json::to_vec_pretty(&package).map_err(|e| AppError::Other(e.into()))?;
+    Response::builder()
+        .header(CONTENT_TYPE, "application/json")
+        .header(
+            CONTENT_DISPOSITION,
+            format!("attachment; filename=\"outhouse-report-{id}.json\""),
+        )
+        .body(axum::body::Body::from(body))
+        .map_err(|e| AppError::Other(e.into()))
+}
+
+/// The evidence package (the console's "Export evidence package", and
+/// `outhouse-server export-evidence` for deploy/evidence-handover.sh).
+pub(crate) async fn evidence_package(
+    st: &AppState,
+    id: i64,
+    generated_by: Value,
+) -> AppResult<Value> {
+    let detail = detail_json(st, id).await?;
+    // Bring the report's copy of the person's addresses up to date first.
+    if let Some(subject) = load_report(st, id).await?.reported_user_id {
+        crate::ips::snapshot_for_report(&st.db, id, subject).await?;
+    }
+    let ips = crate::ips::report_ips_for_export(&st.db, id).await?;
+    Ok(json!({
         "format": "outhouse-evidence-package/1",
         "generated_at": Utc::now(),
-        "generated_by": { "id": user.id.to_string(), "username": user.username },
+        "generated_by": generated_by,
         "server": std::env::var("PUBLIC_URL").ok(),
         "software": format!("Outhouse {}", super::audit::version()),
         "time_zone": "All times are UTC (ISO 8601), except ip_addresses, which also gives Sydney time.",
@@ -2796,16 +2957,13 @@ pub async fn export(
             "addresses": ips,
         },
         "safety_log": detail["log"],
-    });
-    let body = serde_json::to_vec_pretty(&package).map_err(|e| AppError::Other(e.into()))?;
-    Response::builder()
-        .header(CONTENT_TYPE, "application/json")
-        .header(
-            CONTENT_DISPOSITION,
-            format!("attachment; filename=\"outhouse-report-{id}.json\""),
+        "blocked_networks": super::ipblocks::evidence(
+            &st.db,
+            id,
+            load_report(st, id).await?.reported_user_id,
         )
-        .body(axum::body::Body::from(body))
-        .map_err(|e| AppError::Other(e.into()))
+        .await?,
+    }))
 }
 
 // ---- People, settings, log, digest ---------------------------------------------------------

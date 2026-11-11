@@ -332,11 +332,13 @@ pub enum ServerEvent {
     },
     /// Safety reports changed (sent to the site owner only): how many are
     /// waiting, how many are child-safety reports, and whether this is a new
-    /// urgent one (show an alert).
+    /// urgent one (show an alert; `report_id` is the report to open).
     ReportsChanged {
         open: i64,
         urgent: i64,
         alert: bool,
+        #[serde(default, with = "option_as_string")]
+        report_id: Option<i64>,
     },
     /// Identify failed, the session expired or the account was suspended;
     /// sign in again.

@@ -250,6 +250,8 @@ pub struct Purged {
     pub kept_for_reports: u64,
     pub addresses: u64,
     pub report_addresses: u64,
+    /// Refused attempts from blocked networks past their keeping time.
+    pub blocked_attempts: u64,
 }
 
 /// Deletes addresses not seen for `days`. Ones belonging to the subject of
@@ -301,7 +303,9 @@ pub async fn purge(db: &PgPool, days: i64) -> AppResult<Purged> {
     .await?
     .rows_affected();
     tx.commit().await?;
+    let blocked_attempts = crate::ipblock::purge_attempts(db).await?;
     Ok(Purged {
+        blocked_attempts,
         kept_for_reports: kept,
         addresses,
         report_addresses,
