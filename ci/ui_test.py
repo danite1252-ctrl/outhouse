@@ -80,6 +80,23 @@ import struct
 import zlib
 
 
+def hover_click(pg, msg, button, tries=6):
+    """Hovers a message and clicks one of its hover buttons. The list can
+    still be settling (pictures loading, scrolling to the newest), which
+    moves the message out from under the pointer, so hover again until the
+    button shows."""
+    for i in range(tries):
+        pg.hover(msg)
+        try:
+            pg.wait_for_selector(f"{msg} {button}", state="visible", timeout=2000)
+            pg.click(f"{msg} {button}", timeout=3000)
+            return
+        except Exception:
+            if i == tries - 1:
+                raise
+            pg.wait_for_timeout(300)
+
+
 def make_png(size=32):
     """A little orange smiley, so custom emoji look like something in screenshots."""
     c = (size - 1) / 2
@@ -404,8 +421,7 @@ with sync_playwright() as p:
 
     # ---- Pins ----
     last = "#messages article.msg >> nth=-1"
-    page.hover(last)
-    page.click(f"{last} >> .msg-actions button[title='Pin']")
+    hover_click(page, last, ">> .msg-actions button[title='Pin']")
     page.wait_for_selector("#messages article.msg.pinned", timeout=10000)
     page.click("#pins-btn")
     page.wait_for_selector(".pins-panel .sp-card:has-text('raid at 8')", timeout=10000)
@@ -473,8 +489,7 @@ with sync_playwright() as p:
     page.click(".channel:has-text('raids')")
     fire = "#messages article.msg:has-text('fire resist')"
     page.wait_for_selector(fire, timeout=10000)
-    page.hover(fire)
-    page.click(f"{fire} .msg-actions .thread-btn")
+    hover_click(page, fire, ".msg-actions .thread-btn")
     page.wait_for_selector("dialog[open] input")
     page.fill("dialog[open] input", "Fire resist gear")
     page.click("dialog[open] button.primary")
@@ -531,8 +546,7 @@ with sync_playwright() as p:
     # ---- Custom emoji ----
     page.wait_for_selector("#messages .msg-text img.custom-emoji[alt=':pog:']", timeout=10000)
     pog = "#messages article.msg:has(img.custom-emoji)"
-    page.hover(pog)
-    page.click(f"{pog} .msg-actions button[title='Add reaction']")
+    hover_click(page, pog, ".msg-actions button[title='Add reaction']")
     page.click(".emoji-tabs .custom-tab")
     page.wait_for_selector(".custom-pane button[title=':pog:']")
     page.screenshot(path=f"{SHOTS}/24-emoji-picker.png")

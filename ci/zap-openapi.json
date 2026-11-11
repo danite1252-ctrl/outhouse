@@ -609,6 +609,39 @@
      }
     }
    }
+  },
+  "/api/safety/ip-blocks": {
+   "get": {
+    "summary": "blocked networks (site owner only)",
+    "parameters": [],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/safety/users/{user}/ip-block-preview": {
+   "get": {
+    "summary": "networks a block would cover (site owner only)",
+    "parameters": [
+     {
+      "name": "user",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "__USER__"
+      },
+      "example": "__USER__"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
   }
  }
 }
