@@ -587,6 +587,28 @@
      }
     }
    }
+  },
+  "/api/safety/users/{user}/ips": {
+   "get": {
+    "summary": "IP addresses (site owner only)",
+    "parameters": [
+     {
+      "name": "user",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "default": "__USER__"
+      },
+      "example": "__USER__"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
   }
  }
 }
