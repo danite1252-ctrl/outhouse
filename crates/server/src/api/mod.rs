@@ -477,6 +477,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/safety/users", get(safety::find_users))
         .route("/api/safety/users/{id}", get(safety::get_user))
+        .route("/api/safety/users/{id}/ips", get(safety::user_ips))
+        .route("/api/safety/ips/purge", post(safety::purge_ips_now))
         .route(
             "/api/safety/users/{id}/actions",
             post(safety::user_action_route),

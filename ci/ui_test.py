@@ -3919,6 +3919,39 @@ with sync_playwright() as p:
         errors.append("suspended account still signed in")
     except urllib.error.HTTPError as e:
         assert e.code == 401, e.code
+    # Same-IP hint: a new account from suspended Gary's address. A quiet notice
+    # (dashed, at the bottom, its own small count; no badge); the address
+    # itself is only in People → Show IP addresses (each look is logged).
+    gareth = reg_from("198.18.9.2", f"gareth{suffix}", "Gareth")
+    op.evaluate("openSafetyConsole()")
+    op.wait_for_selector("dialog.safety-console .sc-row.ipm:has-text('Gareth')", timeout=10000)
+    op.wait_for_selector("dialog.safety-console .sc-ipm-count:has-text('same-IP hint')")
+    op.evaluate("document.querySelector('dialog.safety-console .sc-row.ipm').scrollIntoView({block: 'center'})")
+    op.wait_for_timeout(300)
+    op.screenshot(path=f"{SHOTS}/3520-ip-match-in-inbox.png")
+    op.click("dialog.safety-console .sc-row.ipm:has-text('Gareth')")
+    op.wait_for_selector("dialog.safety-console .sc-ipm-card:has-text('Gary') .rp-chip.ip-flag:has-text('Suspended')", timeout=10000)
+    assert "198.18.9.2" not in op.inner_text("dialog.safety-console"), "the notice shows the address"
+    op.wait_for_timeout(300)
+    op.screenshot(path=f"{SHOTS}/3521-ip-match-notice.png")
+    op.click("dialog.safety-console .sc-ipm-card:has-text('Gareth') button:has-text('Open in People')")
+    op.wait_for_selector("dialog.safety-console .sc-ips button[data-show-ips]", timeout=10000)
+    assert "hint, not proof" in op.inner_text("dialog.safety-console .sc-ips")
+    op.click("dialog.safety-console .sc-ips button[data-show-ips]")
+    op.wait_for_selector("dialog.safety-console .sc-ip-table td:has-text('198.18.9.2')", timeout=10000)
+    op.wait_for_selector("dialog.safety-console .sc-same-ip.flagged:has-text('Gary')")
+    op.evaluate("document.querySelector('dialog.safety-console .sc-ips').scrollIntoView({block: 'start'})")
+    op.wait_for_timeout(300)
+    op.screenshot(path=f"{SHOTS}/3522-people-ip-addresses.png")
+    looked = api("GET", "/api/safety/log", None, TOKEN)["entries"][0]
+    assert looked["action"] == "view_ips" and looked["target_user_id"] == gareth["user"]["id"], looked
+    # Not for anyone else, not even about themselves.
+    for who in (hal, gareth):
+        try:
+            api("GET", f"/api/safety/users/{gareth['user']['id']}/ips", None, who["token"])
+            errors.append("someone other than the owner saw IP addresses")
+        except urllib.error.HTTPError as e:
+            assert e.code == 403, e.code
     op.keyboard.press("Escape")
     # Outhouse settings → Reports (site owner only).
     op.evaluate("openSettings('reports')")
@@ -3935,6 +3968,22 @@ with sync_playwright() as p:
     opp.close()
     # Not the owner: no shield, and the console's API says no.
     assert api("GET", "/api/users/@me/site-owner", None, dave["token"])["site_owner"] is False
+    # Sign-up and Settings → Privacy say how long sign-in IP addresses are kept.
+    sp = browser.new_page(viewport={"width": 1280, "height": 800})
+    watch(sp, "ip-hint-signup")
+    sp.goto(BASE + "/login")
+    sp.click("#auth-toggle")
+    sp.wait_for_selector("#ip-hint:visible:has-text('kept for 90 days and only the site owner can see them')", timeout=10000)
+    sp.wait_for_timeout(200)
+    sp.screenshot(path=f"{SHOTS}/3523-signup-ip-line.png")
+    sp.close()
+    pv = safety_page(dave["token"])
+    pv.evaluate("openUserSettings('privacy')")
+    pv.wait_for_selector("#privacy-ips:has-text('To keep Outhouse safe, sign-in IP addresses are kept for 90 days')", timeout=10000)
+    pv.evaluate("document.querySelector('#privacy-ips').scrollIntoView({block: 'center'})")
+    pv.wait_for_timeout(200)
+    pv.screenshot(path=f"{SHOTS}/3524-privacy-ip-line.png")
+    pv.close()
 
     # A teen: adults who aren't their friend see "This person can't receive messages from you".
     tp = safety_page(hal["token"])

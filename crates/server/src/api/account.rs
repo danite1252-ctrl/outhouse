@@ -33,7 +33,11 @@ fn check_new_password(password: &str) -> AppResult<()> {
 /// `GET /api/auth/registration`: how sign-ups work here (`open`, `invite`
 /// or `closed`), so the sign-in page can say so.
 pub async fn registration_mode() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "mode": security::get().registration.as_str() }))
+    Json(serde_json::json!({
+        "mode": security::get().registration.as_str(),
+        // For the "sign-in IP addresses are kept for N days" line.
+        "ip_retention_days": crate::ips::retention_days(),
+    }))
 }
 
 /// Refuses a sign-up when `REGISTRATION` says so. The first account on a
@@ -144,6 +148,7 @@ pub async fn register(
         Err(e) => return Err(e.into()),
     };
     let token = auth::create_session(&st.db, user.id).await?;
+    crate::ips::signed_in(&st, user.id, &token, ip, crate::ips::Kind::Register).await;
     Ok(Json(AuthResponse { token, user }))
 }
 
@@ -225,6 +230,7 @@ pub async fn login(
     }
     let user = auth::fetch_user(&st.db, row.id).await?;
     let token = auth::create_session(&st.db, user.id).await?;
+    crate::ips::signed_in(&st, user.id, &token, ip, crate::ips::Kind::Login).await;
     Ok(Json(AuthResponse { token, user }))
 }
 

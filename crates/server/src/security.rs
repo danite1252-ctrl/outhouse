@@ -438,6 +438,32 @@ pub fn client_ip(peer: Option<IpAddr>, headers: &HeaderMap, trusted: &[Cidr]) ->
     forwarded.first().copied().unwrap_or(peer)
 }
 
+/// Addresses that say nothing about who someone is: this machine, private
+/// and link-local networks (everyone at home on the LAN), and any trusted
+/// proxy (`TRUSTED_PROXIES`). Same-address hints skip these.
+pub fn is_local_or_proxy(ip: IpAddr, trusted: &[Cidr]) -> bool {
+    let ip = canonical(ip);
+    if trusted.iter().any(|c| c.contains(ip)) {
+        return true;
+    }
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+        }
+        IpAddr::V6(v6) => {
+            let first = v6.segments()[0];
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || first & 0xfe00 == 0xfc00 // unique local, fc00::/7
+                || first & 0xffc0 == 0xfe80 // link local, fe80::/10
+        }
+    }
+}
+
 /// Extractor: the client's address (see [`client_ip`]).
 pub struct ClientIp(pub IpAddr);
 
@@ -675,6 +701,111 @@ mod tests {
             client_ip(Some("127.0.0.1".parse().unwrap()), &empty, &t),
             "127.0.0.1".parse::<IpAddr>().unwrap()
         );
+    }
+
+    /// The production chain: visitor → Apache on 192.168.1.32 (drops any
+    /// X-Forwarded-For the visitor sent, then mod_proxy adds the visitor's
+    /// address) → Caddy in Docker (`trusted_proxies static private_ranges`:
+    /// it trusts Apache, keeps that header and appends Apache's address) →
+    /// the server, whose peer is the Caddy container.
+    #[test]
+    fn client_address_through_apache_and_caddy() {
+        let t = trusted();
+        let caddy: Option<IpAddr> = Some("172.18.0.5".parse().unwrap());
+        let mut h = HeaderMap::new();
+        // What Caddy sends on: "<visitor>, <Apache>".
+        h.insert(
+            "x-forwarded-for",
+            "203.0.113.77, 192.168.1.32".parse().unwrap(),
+        );
+        assert_eq!(
+            client_ip(caddy, &h, &t),
+            "203.0.113.77".parse::<IpAddr>().unwrap()
+        );
+        // Docker's userland proxy in front of Caddy adds its gateway too.
+        h.insert(
+            "x-forwarded-for",
+            "203.0.113.77, 172.18.0.1".parse().unwrap(),
+        );
+        assert_eq!(
+            client_ip(caddy, &h, &t),
+            "203.0.113.77".parse::<IpAddr>().unwrap()
+        );
+        // IPv6 visitors come through the same way.
+        h.insert(
+            "x-forwarded-for",
+            "2001:db8::42, 192.168.1.32".parse().unwrap(),
+        );
+        assert_eq!(
+            client_ip(caddy, &h, &t),
+            "2001:db8::42".parse::<IpAddr>().unwrap()
+        );
+        // A visitor's fake header: Apache drops it ("unset ... early"), but
+        // even if it got through, the address Apache adds is the one used.
+        h.insert(
+            "x-forwarded-for",
+            "8.8.8.8, 203.0.113.77, 192.168.1.32".parse().unwrap(),
+        );
+        assert_eq!(
+            client_ip(caddy, &h, &t),
+            "203.0.113.77".parse::<IpAddr>().unwrap()
+        );
+        // Two separate headers (some proxies add a second line).
+        let mut two = HeaderMap::new();
+        two.append("x-forwarded-for", "203.0.113.77".parse().unwrap());
+        two.append("x-forwarded-for", "192.168.1.32".parse().unwrap());
+        assert_eq!(
+            client_ip(caddy, &two, &t),
+            "203.0.113.77".parse::<IpAddr>().unwrap()
+        );
+        // At home on the LAN: the device's own LAN address.
+        h.insert(
+            "x-forwarded-for",
+            "192.168.1.60, 192.168.1.32".parse().unwrap(),
+        );
+        assert_eq!(
+            client_ip(caddy, &h, &t),
+            "192.168.1.60".parse::<IpAddr>().unwrap()
+        );
+        // Someone reaching the server port directly from the internet
+        // can't pretend to be anyone.
+        h.insert("x-forwarded-for", "203.0.113.77".parse().unwrap());
+        assert_eq!(
+            client_ip(Some("198.51.100.9".parse().unwrap()), &h, &t),
+            "198.51.100.9".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn local_and_proxy_addresses() {
+        let t = trusted();
+        for local in [
+            "127.0.0.1",
+            "192.168.1.32",
+            "10.1.2.3",
+            "172.18.0.5",
+            "169.254.1.1",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+            "::ffff:192.168.1.5",
+            "0.0.0.0",
+        ] {
+            assert!(
+                is_local_or_proxy(local.parse().unwrap(), &t),
+                "{local} should count as local"
+            );
+        }
+        for public in ["203.0.113.7", "8.8.8.8", "100.64.0.1", "2001:db8::1"] {
+            assert!(
+                !is_local_or_proxy(public.parse().unwrap(), &t),
+                "{public} should count as public"
+            );
+        }
+        // A trusted proxy with a public address (e.g. a cloud load balancer).
+        let mut with_lb = t.clone();
+        with_lb.push(Cidr::parse("198.51.100.0/24").unwrap());
+        assert!(is_local_or_proxy("198.51.100.4".parse().unwrap(), &with_lb));
     }
 
     #[test]

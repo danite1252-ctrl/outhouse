@@ -58,7 +58,15 @@ const DEFAULT_REPORTS_PER_HOUR: i64 = 20;
 const FOREVER: &str = "9999-12-31T00:00:00Z";
 pub const CANT_MESSAGE: &str = "This person can't receive messages from you.";
 
+/// Quiet ban-evasion hints (see `ips.rs`): not something people can report.
+pub const IP_MATCH: &str = "ip_match";
+/// Reports with this source are ban-evasion hints from `ips.rs`.
+pub const IP_MATCH_SOURCE: &str = "ip-match";
+
 fn category_label(key: &str) -> &'static str {
+    if key == IP_MATCH {
+        return "Same IP as a suspended or banned account";
+    }
     CATEGORIES
         .iter()
         .find(|(k, _)| *k == key)
@@ -66,11 +74,12 @@ fn category_label(key: &str) -> &'static str {
         .unwrap_or("Other")
 }
 
-/// 0 = child safety, 1 = serious, 2 = everything else.
+/// 0 = child safety, 1 = serious, 2 = everything else, 3 = IP-match hints.
 pub fn priority(category: &str) -> i16 {
     match category {
         CHILD_SAFETY => 0,
         "sexual" | "hate" | "self_harm" | "illegal" => 1,
+        IP_MATCH => 3,
         _ => 2,
     }
 }
@@ -474,13 +483,17 @@ pub struct Counts {
     pub in_review: i64,
     /// Child-safety reports not closed yet.
     pub urgent: i64,
+    /// Ban-evasion hints (same IP as a suspended or banned account) not
+    /// closed yet. Quiet: not in `open`, so they don't light up the badge.
+    pub ip_matches: i64,
 }
 
 async fn counts(db: &PgPool) -> AppResult<Counts> {
     Ok(sqlx::query_as::<_, Counts>(
-        "SELECT count(*) FILTER (WHERE status = 'open') AS open,
-                count(*) FILTER (WHERE status = 'review') AS in_review,
-                count(*) FILTER (WHERE status <> 'closed' AND priority = 0) AS urgent
+        "SELECT count(*) FILTER (WHERE status = 'open' AND source <> 'ip-match') AS open,
+                count(*) FILTER (WHERE status = 'review' AND source <> 'ip-match') AS in_review,
+                count(*) FILTER (WHERE status <> 'closed' AND priority = 0) AS urgent,
+                count(*) FILTER (WHERE status <> 'closed' AND source = 'ip-match') AS ip_matches
          FROM reports",
     )
     .fetch_one(db)
@@ -1142,6 +1155,11 @@ pub async fn create(
         .execute(&st.db)
         .await?;
     }
+    // The reported person's IP addresses stay with the report while it's
+    // open, whatever the retention (see ips.rs).
+    if let Some(subject) = target.reported_user_id {
+        crate::ips::snapshot_for_report(&st.db, id, subject).await?;
+    }
     let urgent = category == CHILD_SAFETY;
     if urgent {
         quarantine(&st, id).await?;
@@ -1346,6 +1364,9 @@ pub(crate) async fn detector_report(st: &AppState, t: DetectorTarget) -> AppResu
     if inserted.is_none() {
         return Ok(()); // already reported
     }
+    if let Some(subject) = target.reported_user_id.or(t.uploader_id) {
+        crate::ips::snapshot_for_report(&st.db, id, subject).await?;
+    }
     // Only the flagged file (the report keeps it on disk while it's open).
     if let Some(f) = target.files.iter().find(|f| f.key == t.storage_key) {
         let hash = sha256_of(st, &f.key).await;
@@ -1376,6 +1397,97 @@ pub(crate) async fn detector_report(st: &AppState, t: DetectorTarget) -> AppResu
     .await;
     notify_owners(st, false);
     Ok(())
+}
+
+/// A ban-evasion hint (see `ips.rs`): `user_id` signed up or signed in from
+/// an address that `m` (suspended, or banned from an outhouse) used within
+/// the retention period. A quiet, low-priority notice in the console: no
+/// push, no alert, nothing done to anyone. The address itself isn't in the
+/// snapshot; the report's copy of both accounts' rows for it is in
+/// `report_ips` (for the evidence package), under the normal retention.
+pub(crate) async fn ip_match_report(
+    st: &AppState,
+    user_id: i64,
+    m: &crate::ips::MatchRow,
+    ip: std::net::IpAddr,
+    trigger: crate::ips::Kind,
+) -> AppResult<i64> {
+    let who = |id: i64| async move {
+        sqlx::query_as::<_, (String, String, DateTime<Utc>, String)>(
+            "SELECT username, display_name, created_at, age_bracket FROM users WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_one(&st.db)
+        .await
+    };
+    let (username, display_name, created_at, bracket) = who(user_id).await?;
+    let (m_username, m_display_name, m_created_at, m_bracket) = who(m.id).await?;
+    let snapshot = json!({
+        "kind": "ip-match",
+        "trigger": trigger.as_str(),
+        "account": {
+            "id": user_id.to_string(), "username": username, "display_name": display_name,
+            "created_at": created_at, "age_bracket": bracket,
+        },
+        "matched": {
+            "id": m.id.to_string(), "username": m_username, "display_name": m_display_name,
+            "created_at": m_created_at, "age_bracket": m_bracket,
+            "suspended": m.suspended, "suspended_until": m.suspended_until,
+            "suspended_label": m.suspended_until.map(until_label),
+            "banned_in": m.banned_in, "last_seen_on_ip": m.last_seen,
+        },
+        "seen_at": Utc::now(),
+        "note": "Shared IP addresses are common (households, mobile networks and VPNs), so this is a hint, not proof.",
+    });
+    let id = st.ids.next_id();
+    sqlx::query(
+        "INSERT INTO reports (id, target_kind, target_id, category, priority, reported_user_id,
+                              snapshot, source, report_count)
+         VALUES ($1, 'ip-match', $1, $2, $3, $4, $5, $6, 0)",
+    )
+    .bind(id)
+    .bind(IP_MATCH)
+    .bind(priority(IP_MATCH))
+    .bind(user_id)
+    .bind(SqlJson(snapshot))
+    .bind(IP_MATCH_SOURCE)
+    .execute(&st.db)
+    .await?;
+    sqlx::query(
+        "INSERT INTO report_ips (report_id, user_id, ip, kind, first_seen, last_seen, count)
+         SELECT $1, user_id, ip, kind, first_seen, last_seen, count FROM user_ips
+         WHERE ip = $2::INET AND user_id IN ($3, $4)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(id)
+    .bind(ip.to_string())
+    .bind(user_id)
+    .bind(m.id)
+    .execute(&st.db)
+    .await?;
+    let why = match (m.suspended, m.banned_in.is_empty()) {
+        (true, true) => "suspended".to_string(),
+        (true, false) => format!("suspended; banned in {}", m.banned_in.join(", ")),
+        (false, _) => format!("banned in {}", m.banned_in.join(", ")),
+    };
+    log(
+        st,
+        None,
+        "ip_match",
+        Some(id),
+        Some(user_id),
+        format!(
+            "{} from the same IP address as @{m_username} ({why}). A hint, not proof.",
+            if trigger == crate::ips::Kind::Register {
+                "Signed up"
+            } else {
+                "Signed in"
+            }
+        ),
+    )
+    .await;
+    notify_owners(st, false);
+    Ok(id)
 }
 
 /// A reported message was edited: keep what it said before and after.
@@ -1494,6 +1606,28 @@ fn preview(snap: &Value) -> String {
         Some("sticker") => format!("Sticker :{}:", snap["art"]["name"].as_str().unwrap_or("")),
         Some("emoji") => format!("Emoji :{}:", snap["art"]["name"].as_str().unwrap_or("")),
         Some("guild") => format!("Outhouse {}", snap["guild"]["name"].as_str().unwrap_or("")),
+        Some("ip-match") => {
+            let m = &snap["matched"];
+            let mut why = Vec::new();
+            if m["suspended"].as_bool() == Some(true) {
+                why.push("suspended".to_string());
+            }
+            if let Some(b) = m["banned_in"].as_array().filter(|b| !b.is_empty()) {
+                let names: Vec<&str> = b.iter().filter_map(|n| n.as_str()).collect();
+                why.push(format!("banned in {}", names.join(", ")));
+            }
+            format!(
+                "{} from the same IP address as {} (@{}, {}). A hint, not proof.",
+                if snap["trigger"] == "register" {
+                    "Signed up"
+                } else {
+                    "Signed in"
+                },
+                m["display_name"].as_str().unwrap_or("someone"),
+                m["username"].as_str().unwrap_or(""),
+                why.join("; ")
+            )
+        }
         _ => String::new(),
     }
 }
@@ -1702,7 +1836,7 @@ async fn subject_json(st: &AppState, user_id: i64) -> AppResult<Value> {
     .await?;
     let reports: Vec<(i64, String, String, DateTime<Utc>, i32)> = sqlx::query_as(
         "SELECT id, category, status, created_at, report_count FROM reports
-         WHERE reported_user_id = $1 ORDER BY created_at DESC LIMIT 50",
+         WHERE reported_user_id = $1 AND source <> 'ip-match' ORDER BY created_at DESC LIMIT 50",
     )
     .bind(user_id)
     .fetch_all(&st.db)
@@ -1748,11 +1882,19 @@ async fn subject_json(st: &AppState, user_id: i64) -> AppResult<Value> {
             "status": status, "created_at": at, "report_count": count,
         })).collect::<Vec<_>>(),
         "reports_made": reports_made,
-        "ip_note": "Outhouse doesn't record IP addresses, so there are none to show here. The web server's own access logs (Apache) may have them for recent weeks.",
+        "ip_note": ip_note(),
         "log": log.iter().map(log_json).collect::<Vec<_>>(),
         "names": names,
         "message_requests": message_requests,
     }))
+}
+
+/// The line shown with IP addresses in the console.
+fn ip_note() -> String {
+    format!(
+        "IPs are kept {} days (configurable). Shared IPs are common — households, mobile networks and VPNs — so a match is a hint, not proof.",
+        crate::ips::retention_days()
+    )
 }
 
 async fn detail_json(st: &AppState, id: i64) -> AppResult<Value> {
@@ -2619,6 +2761,11 @@ pub async fn export(
 ) -> AppResult<Response> {
     require_owner(&st, &user).await?;
     let detail = detail_json(&st, id).await?;
+    // Bring the report's copy of the person's addresses up to date first.
+    if let Some(subject) = load_report(&st, id).await?.reported_user_id {
+        crate::ips::snapshot_for_report(&st.db, id, subject).await?;
+    }
+    let ips = crate::ips::report_ips_for_export(&st.db, id).await?;
     log(
         &st,
         Some(user.id),
@@ -2634,13 +2781,20 @@ pub async fn export(
         "generated_by": { "id": user.id.to_string(), "username": user.username },
         "server": std::env::var("PUBLIC_URL").ok(),
         "software": format!("Outhouse {}", super::audit::version()),
-        "time_zone": "All times are UTC (ISO 8601).",
+        "time_zone": "All times are UTC (ISO 8601), except ip_addresses, which also gives Sydney time.",
         "files_note": "The files themselves are not in this package. They are kept unchanged on the Outhouse server (in its upload folder, named by storage_key) and can be handed over on request; check each copy against its SHA-256 here (e.g. `sha256sum <storage_key>`).",
         "report": detail["report"],
         "snapshot": detail["snapshot"],
         "files": detail["files"],
         "reporters": detail["reporters"],
         "reported_account": detail["subject"],
+        "ip_addresses": {
+            "note": format!(
+                "IP addresses this account (account_id) was seen using: when first and last seen, how it was first seen (register = account created, login = signed in, session = signed-in activity, noted at most once an hour) and how many times. Every time is given twice: in UTC, and in Sydney time (Australia/Sydney, AEST UTC+10 or AEDT UTC+11 in daylight saving). Addresses are the visitor's address as Outhouse's web server (Apache, then Caddy) saw it. Outhouse keeps addresses {} days after last use; a report keeps its copy while it's open. Shared addresses are common (households, mobile networks, VPNs).",
+                crate::ips::retention_days()
+            ),
+            "addresses": ips,
+        },
         "safety_log": detail["log"],
     });
     let body = serde_json::to_vec_pretty(&package).map_err(|e| AppError::Other(e.into()))?;
@@ -2701,6 +2855,128 @@ pub async fn get_user(
 ) -> AppResult<Json<Value>> {
     require_owner(&st, &user).await?;
     Ok(Json(subject_json(&st, id).await?))
+}
+
+#[derive(sqlx::FromRow)]
+struct IpRow {
+    ip: String,
+    kind: String,
+    first_seen: DateTime<Utc>,
+    last_seen: DateTime<Utc>,
+    count: i32,
+}
+
+#[derive(sqlx::FromRow)]
+struct SameIpRow {
+    id: i64,
+    username: String,
+    display_name: String,
+    age_bracket: String,
+    suspended: bool,
+    suspended_until: Option<DateTime<Utc>>,
+    banned_in: Vec<String>,
+    last_seen: DateTime<Utc>,
+    shared_ips: Vec<String>,
+}
+
+/// `GET /api/safety/users/{id}/ips`: someone's recent IP addresses and the
+/// other accounts seen on them (site owner only; every look is written to
+/// the safety log).
+pub async fn user_ips(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<i64>,
+) -> AppResult<Json<Value>> {
+    require_owner(&st, &user).await?;
+    let (username, is_bot): (String, bool) =
+        sqlx::query_as("SELECT username, is_bot FROM users WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&st.db)
+            .await?
+            .ok_or(AppError::NotFound)?;
+    let ips = sqlx::query_as::<_, IpRow>(
+        "SELECT host(ip) AS ip, kind, first_seen, last_seen, count FROM user_ips
+         WHERE user_id = $1 ORDER BY last_seen DESC LIMIT 100",
+    )
+    .bind(id)
+    .fetch_all(&st.db)
+    .await?;
+    let same = sqlx::query_as::<_, SameIpRow>(
+        "SELECT u.id, u.username, u.display_name, u.age_bracket,
+                COALESCE(u.suspended_until > now(), false) AS suspended,
+                CASE WHEN u.suspended_until > now() THEN u.suspended_until END AS suspended_until,
+                ARRAY(SELECT g.name FROM bans b JOIN guilds g ON g.id = b.guild_id
+                      WHERE b.user_id = u.id ORDER BY lower(g.name)) AS banned_in,
+                max(o.last_seen) AS last_seen,
+                array_agg(DISTINCT host(o.ip)) AS shared_ips
+         FROM user_ips mine
+         JOIN user_ips o ON o.ip = mine.ip AND o.user_id <> mine.user_id
+         JOIN users u ON u.id = o.user_id
+         WHERE mine.user_id = $1 AND NOT u.is_bot
+         GROUP BY u.id
+         ORDER BY (COALESCE(u.suspended_until > now(), false)
+                   OR EXISTS(SELECT 1 FROM bans b WHERE b.user_id = u.id)) DESC,
+                  max(o.last_seen) DESC
+         LIMIT 100",
+    )
+    .bind(id)
+    .fetch_all(&st.db)
+    .await?;
+    let trusted = &crate::security::get().trusted_proxies;
+    let local = |ip: &str| {
+        ip.parse::<std::net::IpAddr>()
+            .map(|a| crate::security::is_local_or_proxy(a, trusted))
+            .unwrap_or(false)
+    };
+    log(
+        &st,
+        Some(user.id),
+        "view_ips",
+        None,
+        Some(id),
+        format!("Looked at @{username}'s IP addresses"),
+    )
+    .await;
+    Ok(Json(json!({
+        "user_id": id.to_string(),
+        "bot": is_bot,
+        "retention_days": crate::ips::retention_days(),
+        "note": ip_note(),
+        "ips": ips.iter().map(|r| json!({
+            "ip": r.ip, "kind": r.kind, "first_seen": r.first_seen, "last_seen": r.last_seen,
+            "count": r.count, "local": local(&r.ip),
+        })).collect::<Vec<_>>(),
+        "same_ip_accounts": same.iter().map(|a| json!({
+            "id": a.id.to_string(),
+            "username": a.username,
+            "display_name": a.display_name,
+            "age_bracket": a.age_bracket,
+            "suspended": a.suspended,
+            "suspended_label": a.suspended_until.map(until_label),
+            "banned_in": a.banned_in,
+            "flagged": a.suspended || !a.banned_in.is_empty(),
+            "last_seen": a.last_seen,
+            "shared_ips": a.shared_ips,
+            // Only LAN / proxy addresses in common: even weaker as a hint.
+            "local_only": a.shared_ips.iter().all(|ip| local(ip)),
+        })).collect::<Vec<_>>(),
+    })))
+}
+
+/// `POST /api/safety/ips/purge`: runs the IP retention now. Only exists
+/// when the server runs with `OUTHOUSE_TEST_HOOKS=1` (the smoke test);
+/// otherwise it's a 404 like any unknown path.
+pub async fn purge_ips_now(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<crate::ips::Purged>> {
+    if std::env::var("OUTHOUSE_TEST_HOOKS").ok().as_deref() != Some("1") {
+        return Err(AppError::NotFound);
+    }
+    require_owner(&st, &user).await?;
+    Ok(Json(
+        crate::ips::purge(&st.db, crate::ips::retention_days()).await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -2846,9 +3122,15 @@ async fn digest_json(db: &PgPool) -> AppResult<Value> {
     .await?;
     let by_category: Vec<(String, i64)> = sqlx::query_as(
         "SELECT category, count(*) FROM reports WHERE created_at > now() - interval '7 days'
+           AND source <> 'ip-match'
          GROUP BY category ORDER BY min(priority), category",
     )
     .fetch_all(db)
+    .await?;
+    let ip_matches: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM reports WHERE source = 'ip-match' AND created_at > now() - interval '7 days'",
+    )
+    .fetch_one(db)
     .await?;
     let c = counts(db).await?;
     Ok(json!({
@@ -2863,6 +3145,8 @@ async fn digest_json(db: &PgPool) -> AppResult<Value> {
         "reports_total": by_category.iter().map(|(_, n)| n).sum::<i64>(),
         "waiting": c.open + c.in_review,
         "urgent": c.urgent,
+        "ip_matches": ip_matches,
+        "ip_matches_open": c.ip_matches,
     }))
 }
 
@@ -2943,13 +3227,14 @@ async fn send_digest_if_due(st: &AppState) -> AppResult<()> {
         })
         .collect();
     let content = format!(
-        "📋 **Weekly safety digest** (last 7 days)\n• New accounts: {}{}\n• Reports: {}{}\n• Waiting for review: {}{}\nOpen Outhouse settings → Reports to review them.",
+        "📋 **Weekly safety digest** (last 7 days)\n• New accounts: {}{}\n• Reports: {}{}\n• Waiting for review: {}{}\n• Same-IP hints (suspended or banned accounts): {}\nOpen Outhouse settings → Reports to review them.",
         accounts.len(),
         if names.is_empty() { String::new() } else { format!(" — {}", names.join(", ")) },
         d["reports_total"],
         if reports.is_empty() { String::new() } else { format!(" ({})", reports.join(", ")) },
         d["waiting"],
         if d["urgent"].as_i64().unwrap_or(0) > 0 { format!(" (⚠️ {} child safety)", d["urgent"]) } else { String::new() },
+        d["ip_matches"],
     );
     for owner in site_owner_ids(&st.db).await? {
         if let Err(e) = safety_dm(st, owner, content.clone()).await {

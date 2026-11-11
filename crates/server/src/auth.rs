@@ -190,10 +190,21 @@ impl FromRequestParts<AppState> for AuthUser {
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, AppError> {
-        let token = bearer_token(&parts.headers).ok_or(AppError::Unauthorized)?;
-        let user = user_for_token(&state.db, token)
+        let token = bearer_token(&parts.headers)
+            .ok_or(AppError::Unauthorized)?
+            .to_string();
+        let user = user_for_token(&state.db, &token)
             .await?
             .ok_or(AppError::Unauthorized)?;
+        // Signed-in activity: the address is noted at most once an hour
+        // per session (see ips.rs; bots are skipped).
+        if !user.bot {
+            let crate::security::ClientIp(ip) =
+                crate::security::ClientIp::from_request_parts(parts, state)
+                    .await
+                    .unwrap_or_else(|e| match e {});
+            crate::ips::note_session(state, &token, user.id, user.bot, ip);
+        }
         Ok(AuthUser(user))
     }
 }

@@ -11,6 +11,7 @@ mod error;
 mod feeds;
 mod files;
 mod gateway;
+mod ips;
 mod livekit;
 mod perms;
 mod push;
@@ -83,6 +84,7 @@ async fn main() -> anyhow::Result<()> {
     armory::spawn_refresher(state.clone());
     api::safety::spawn_digest(state.clone());
     api::detector::spawn_worker(state.clone());
+    ips::spawn_pruner(state.clone());
     // `/` is the welcome page (it sends signed-in people and the apps on to
     // `/app`); `/app` and `/login` are the web client. Everything else is a
     // plain file from the web folder.

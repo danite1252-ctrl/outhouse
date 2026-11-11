@@ -405,6 +405,20 @@ function showAuth() {
   $("auth").hidden = false;
 }
 
+// How many days sign-in IP addresses are kept (the server's IP_RETENTION_DAYS).
+let ipRetentionDaysCache = null;
+function ipRetentionDays() {
+  ipRetentionDaysCache ??= fetch("/api/auth/registration")
+    .then((r) => r.json())
+    .then((d) => Number(d.ip_retention_days) || 90)
+    .catch(() => 90);
+  return ipRetentionDaysCache;
+}
+
+function ipRetentionLine(days) {
+  return `To keep Outhouse safe, sign-in IP addresses are kept for ${days} days and only the site owner can see them.`;
+}
+
 function setAuthMode(isRegister) {
   registering = isRegister;
   $("display-name-field").hidden = !isRegister;
@@ -412,6 +426,9 @@ function setAuthMode(isRegister) {
   $("birth-date-field").hidden = !isRegister;
   $("birth-date-hint").hidden = !isRegister;
   $("birth-date-field").querySelector("input").required = isRegister;
+  // Sign-in IP addresses are kept for a while (only the site owner sees them).
+  $("ip-hint").hidden = !isRegister;
+  if (isRegister) ipRetentionDays().then((days) => { $("ip-days").textContent = String(days); });
   $("auth-submit").textContent = isRegister ? "Create account" : "Sign in";
   $("auth-toggle").textContent = isRegister ? "Already have an account? Sign in" : "New here? Create an account";
   $("auth-subtitle").textContent = isRegister ? "Grab a spot out the back." : "Welcome back. Pull up a seat.";

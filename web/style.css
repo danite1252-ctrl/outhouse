@@ -2501,6 +2501,32 @@ button.sc-row:hover { border-color: var(--muted); }
 .dt-card-chip svg { width: 14px; height: 14px; color: var(--ember); }
 .rp-chip.dt-chip { background: color-mix(in srgb, var(--ember) 28%, var(--raised)); }
 .rp-chip.dt-chip svg { width: 13px; height: 13px; }
+
+/* IP addresses (Safety → People) and same-IP hints (site owner only) */
+.sc-tight { margin: 0; }
+.sc-ips { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); min-width: 0; }
+.sc-ips h3 { margin: 0; }
+.sc-ips h4 { margin: 8px 0 2px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.sc-ips > button.ghost { justify-self: start; }
+.sc-ips > *, .sc-ips-body { min-width: 0; }
+.sc-ips-body { display: grid; gap: 6px; }
+.sc-same-ip .rp-chip, .sc-ipm-card .rp-chip { white-space: normal; }
+.sc-table-wrap { overflow-x: auto; }
+.sc-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.sc-table th, .sc-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.sc-table th { color: var(--muted); font-weight: 600; }
+.sc-table code { font-family: "JetBrains Mono", monospace; }
+.sc-same-ip { gap: 2px; }
+.sc-same-ip.flagged { border-color: var(--ember); background: color-mix(in srgb, var(--ember) 10%, var(--night)); }
+.sc-same-ip .link, .sc-ipm-card .link { justify-self: start; padding: 0; font-weight: 700; }
+.rp-chip.ip-flag { background: color-mix(in srgb, var(--ember) 45%, var(--raised)); }
+.sc-row.ipm { border-style: dashed; }
+.sc-ipm-count, .sc-ipm-count strong { color: var(--glow) !important; }
+.sc-ipm { display: grid; gap: 10px; }
+.sc-ipm-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+.sc-ipm-card { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--night); min-width: 0; }
+.auth-hint.ip-hint { margin-top: -4px; }
+.privacy-ip-note { margin: 0; }
 .dt-score { display: grid; gap: 4px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); font-size: 13px; }
 .dt-score.low { border-color: color-mix(in srgb, var(--vacant) 45%, var(--line)); }
 .dt-score.high { border-color: color-mix(in srgb, var(--ember) 60%, var(--line)); }

@@ -3,6 +3,9 @@
 {
 	auto_https off
 	servers {
+		# Trust Apache (on the LAN): Caddy keeps its X-Forwarded-For (the
+		# visitor) and appends Apache's address; Outhouse picks the visitor.
+		# See deploy/README.md "Real client IPs".
 		trusted_proxies static private_ranges
 	}
 }

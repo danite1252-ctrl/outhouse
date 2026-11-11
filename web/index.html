@@ -25,6 +25,7 @@
     <label id="display-name-field" hidden>Display name<input name="display_name" maxlength="32" placeholder="What friends call you"></label>
     <label id="birth-date-field" hidden>Date of birth<input name="birth_date" type="date" autocomplete="bday" min="1900-01-01"></label>
     <p class="muted small auth-hint" id="birth-date-hint" hidden>Only used to work out your age group; the date itself isn't kept. You need to be 13 or older.</p>
+    <p class="muted small auth-hint ip-hint" id="ip-hint" hidden>To keep Outhouse safe, sign-in IP addresses are kept for <span id="ip-days">90</span> days and only the site owner can see them.</p>
     <label>Password<input name="password" type="password" autocomplete="current-password" required minlength="8"></label>
     <p class="error" id="auth-error" role="alert"></p>
     <button type="submit" class="primary" id="auth-submit">Sign in</button>

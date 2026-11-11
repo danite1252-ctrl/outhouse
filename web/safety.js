@@ -377,7 +377,7 @@ async function openSafetyConsole(tab = "open", reportId = null, openPerson = nul
 }
 
 function reportRow(r, onOpen) {
-  return el("button", { class: `sc-row${r.child_safety ? " child" : ""}`, "data-report": r.id, onclick: () => onOpen(r.id) },
+  return el("button", { class: `sc-row${r.child_safety ? " child" : ""}${r.source === "ip-match" ? " ipm" : ""}`, "data-report": r.id, "data-source": r.source || "user", onclick: () => onOpen(r.id) },
     el("div", { class: "sc-row-top" }, catChip(r),
       r.report_count > 1 ? el("span", { class: "sc-count", title: "Reports of this" }, `×${r.report_count}`) : null,
       el("span", { class: "sc-when" }, scWhen(r.created_at))),
@@ -403,7 +403,8 @@ async function drawReportList(page, status, { stillMine, openReport }) {
     status !== "closed" ? el("div", { class: "sc-counts" },
       el("span", {}, el("strong", {}, String(data.counts.open)), " open"),
       el("span", {}, el("strong", {}, String(data.counts.in_review)), " in review"),
-      data.counts.urgent ? el("span", { class: "sc-urgent" }, el("strong", {}, String(data.counts.urgent)), " child safety") : null) : null,
+      data.counts.urgent ? el("span", { class: "sc-urgent" }, el("strong", {}, String(data.counts.urgent)), " child safety") : null,
+      data.counts.ip_matches ? el("span", { class: "sc-ipm-count", title: "Accounts that used the same IP address as a suspended or banned account. Hints, not proof." }, el("strong", {}, String(data.counts.ip_matches)), " same-IP hint", data.counts.ip_matches === 1 ? "" : "s") : null) : null,
     data.reports.length
       ? el("div", { class: "sc-list" }, data.reports.map((r) => reportRow(r, openReport)))
       : el("div", { class: "sp-empty" }, el("div", { class: "sp-empty-icon" }, "🛡"), el("p", { class: "muted" }, empty[status])));
@@ -506,7 +507,7 @@ function contextView(d) {
 function logView(entries) {
   if (!entries?.length) return el("p", { class: "muted small", style: "margin:0" }, "Nothing yet.");
   return el("div", { class: "audit-list" }, entries.map((e) => el("div", { class: `audit-row${e.action === "note" ? " note" : ""}` },
-    el("div", { class: "audit-icon" }, { note: "📝", quarantine: "🔒", suspend: "⛔", warn: "⚠", ban: "🚫", kick: "👢", timeout: "⏳", dismiss: "✖", close: "✓", export: "📦" }[e.action] || "•"),
+    el("div", { class: "audit-icon" }, { note: "📝", quarantine: "🔒", suspend: "⛔", warn: "⚠", ban: "🚫", kick: "👢", timeout: "⏳", dismiss: "✖", close: "✓", export: "📦", view_ips: "👁", ip_match: "🔗" }[e.action] || "•"),
     el("div", { class: "audit-main" },
       el("div", { class: "audit-line" }, el("strong", {}, e.actor_name), el("span", { class: "audit-action" }, ` ${e.action.replace(/_/g, " ")}`), e.target_name ? el("span", { class: "audit-action" }, ` · ${e.target_name}`) : null),
       e.details ? el("div", { class: "audit-details" }, e.details) : null),
@@ -534,8 +535,7 @@ function subjectView(u, act) {
       item("Bots they own", String(u.bots)),
       u.message_requests ? item("Message requests sent",
         `${u.message_requests.sent} (${u.message_requests.ignored} ignored, ${u.message_requests.blocked} blocked, ${u.message_requests.accepted} accepted; ${u.message_requests.last_day} today)`,
-        u.message_requests.ignored + u.message_requests.blocked >= 3 ? "warn" : "") : null,
-      item("IP addresses", u.ip_note, "unknown")),
+        u.message_requests.ignored + u.message_requests.blocked >= 3 ? "warn" : "") : null),
     el("div", { class: "muted small" }, "Outhouses: ", u.outhouses.length ? u.outhouses.map((o) => `${o.name}${o.owner ? " (owner)" : ""}${o.family ? " (family)" : ""}${o.timeout_until ? " (timed out)" : ""}`).join(", ") : "none"),
     others.length ? el("div", { class: "muted small" }, "Reports: ", others.slice(0, 10).map((o) => `${o.category_label} (${SC_STATUS[o.status] || o.status}, ${new Date(o.created_at).toLocaleDateString()})`).join(" · ")) : null,
     u.names ? el("details", { class: "sc-names" }, el("summary", {}, `Names they've gone by (${u.names.length})`),
@@ -590,7 +590,7 @@ function noteBox(act) {
 
 async function exportEvidence(id) {
   const ok = await confirmBox("Export the evidence package?",
-    "This downloads a JSON file with the report, the snapshot, who reported it, the account's history and the files' names and SHA-256 hashes. It never contains the files themselves. Keep it private and only give it to police or the eSafety Commissioner.", "Download");
+    "This downloads a JSON file with the report, the snapshot, who reported it, the account's history and IP addresses, and the files' names and SHA-256 hashes. It never contains the files themselves. Keep it private and only give it to police or the eSafety Commissioner.", "Download");
   if (!ok) return;
   const res = await fetch(`/api/safety/reports/${id}/export`, { headers: { Authorization: `Bearer ${state.token}` } }).catch(() => null);
   if (!res?.ok) return toast("Couldn't export it.");
@@ -618,17 +618,17 @@ async function drawReportDetail(page, id, { back, stillMine, openUser }) {
     const snapMsg = d.snapshot?.message;
     page.replaceChildren(
       el("div", { class: "sc-back" }, el("button", { class: "ghost", onclick: back }, "← All reports")),
-      el("h2", {}, `Report: ${r.category_label}`),
+      el("h2", {}, r.source === "ip-match" ? "Same-IP hint" : `Report: ${r.category_label}`),
       el("div", { class: "sc-head" }, catChip(r), el("span", { class: `rp-chip st-${r.status}` }, SC_STATUS[r.status] || r.status),
-        el("span", { class: "muted small" }, `${r.source === "detector" ? "Flagged by the image detector" : scPlural(r.report_count, "report")} · first ${scWhen(r.created_at)}${closed && r.closed_at ? ` · closed ${scWhen(r.closed_at)}${r.closed_by_name ? ` by ${r.closed_by_name}` : ""}` : ""}`)),
+        el("span", { class: "muted small" }, `${r.source === "detector" ? "Flagged by the image detector" : r.source === "ip-match" ? "Same-IP hint (not a report)" : scPlural(r.report_count, "report")} · first ${scWhen(r.created_at)}${closed && r.closed_at ? ` · closed ${scWhen(r.closed_at)}${r.closed_by_name ? ` by ${r.closed_by_name}` : ""}` : ""}`)),
       closed && r.resolution ? el("div", { class: "sc-row-res" }, `✓ ${r.resolution}`) : null,
       r.child_safety ? childSafetyNotice() : null,
       // Pictures the image detector flagged (detector.js).
       typeof detectorReportPanel === "function" ? detectorReportPanel(d, act) : null,
-      scSection("What was reported", ...snapshotView(d)),
+      r.source === "ip-match" ? scSection("Same IP address", ipMatchView(d, openUser)) : scSection("What was reported", ...snapshotView(d)),
       d.files.length ? scSection("Files", filesView(d, r.id)) : null,
       d.snapshot?.context?.length ? scSection("Around it (10 messages before and after)", contextView(d)) : null,
-      r.source === "detector" && !d.reporters.length ? null : scSection(`Reported by (${d.reporters.length})`,
+      (r.source === "detector" || r.source === "ip-match") && !d.reporters.length ? null : scSection(`Reported by (${d.reporters.length})`,
         el("p", { class: "muted small", style: "margin:0" }, "Never shown to the person reported."),
         el("div", { class: "sc-reporters" }, d.reporters.map((p) => el("div", { class: "sc-reporter" },
           el("strong", {}, p.display_name || "Deleted account"), p.username ? el("span", { class: "muted" }, ` @${p.username}`) : null,
@@ -665,6 +665,70 @@ async function drawReportDetail(page, id, { back, stillMine, openUser }) {
   render(d);
 }
 
+// ---------- IP addresses (site owner only; every look is in the safety log) ----------
+
+const IP_KIND = { register: "Sign-up", login: "Sign-in", session: "Signed-in activity" };
+
+// "Banned in X · Suspended until Y" chips, or "Normal".
+function accountStatusChips(a) {
+  const chips = [];
+  if (a.suspended) chips.push(el("span", { class: "rp-chip ip-flag" }, `Suspended ${a.suspended_label || ""}`.trim()));
+  if (a.banned_in?.length) chips.push(el("span", { class: "rp-chip ip-flag" }, `Banned in ${a.banned_in.join(", ")}`));
+  if (!chips.length) chips.push(el("span", { class: "rp-chip" }, "Normal"));
+  return chips;
+}
+
+function ipSection(u, openPerson) {
+  const body = el("div", { class: "sc-ips-body" });
+  const show = el("button", { class: "ghost", "data-show-ips": u.id, onclick: async () => {
+    show.disabled = true;
+    const d = await tryApi("GET", `/api/safety/users/${u.id}/ips`).catch(() => null);
+    show.disabled = false;
+    if (!d) return;
+    show.remove();
+    body.replaceChildren(
+      el("h4", {}, `Recent IPs (${d.ips.length})`),
+      d.ips.length ? el("div", { class: "sc-table-wrap" }, el("table", { class: "sc-table sc-ip-table" },
+        el("thead", {}, el("tr", {}, ["IP address", "First seen", "Last seen", "First seen at", "Times"].map((h) => el("th", {}, h)))),
+        el("tbody", {}, d.ips.map((r) => el("tr", {},
+          el("td", {}, el("code", {}, r.ip), r.local ? el("span", { class: "muted small", title: "A home-network (LAN) or proxy address: says little about who it is." }, " LAN") : null),
+          el("td", {}, scWhen(r.first_seen)), el("td", {}, scWhen(r.last_seen)),
+          el("td", {}, IP_KIND[r.kind] || r.kind), el("td", {}, String(r.count)))))))
+        : el("p", { class: "muted small sc-tight" }, "None recorded in the retention period."),
+      el("h4", {}, `Other accounts seen on the same IP (${d.same_ip_accounts.length})`),
+      d.same_ip_accounts.length ? el("div", { class: "sc-list" }, d.same_ip_accounts.map((a) => el("div", { class: `sc-row static sc-same-ip${a.flagged ? " flagged" : ""}`, "data-user": a.id },
+        el("div", { class: "sc-row-who" },
+          el("button", { class: "link", onclick: () => openPerson(a.id) }, a.display_name), el("span", { class: "muted" }, ` @${a.username}`),
+          el("span", { class: "rp-chip" }, a.age_bracket === "teen" ? "Teen" : "Adult"),
+          ...accountStatusChips(a),
+          el("span", { class: "sc-when" }, `last seen ${scWhen(a.last_seen)}`)),
+        el("div", { class: "muted small" }, `Shared: ${a.shared_ips.join(", ")}${a.local_only ? " (LAN or proxy addresses only: a very weak hint)" : ""}`))))
+        : el("p", { class: "muted small sc-tight" }, "Nobody else."));
+  } }, "Show IP addresses");
+  return el("section", { class: "sc-ips", "data-ips-for": u.id },
+    el("h3", {}, "IP addresses"),
+    el("p", { class: "muted small sc-tight" }, u.ip_note || ""),
+    el("p", { class: "muted small sc-tight" }, "Only you can see these. Each time you look, it's written to the safety log."),
+    show, body);
+}
+
+// A same-IP hint: the new account and the suspended or banned one.
+function ipMatchView(d, openUser) {
+  const s = d.snapshot || {};
+  const card = (title, a, extra) => el("div", { class: "sc-ipm-card" },
+    el("div", { class: "muted small" }, title),
+    el("div", { class: "sc-row-who" }, el("strong", {}, a?.display_name || "?"), el("span", { class: "muted" }, ` @${a?.username || "?"}`),
+      el("span", { class: "rp-chip" }, a?.age_bracket === "teen" ? "Teen" : "Adult"), ...(extra || [])),
+    el("div", { class: "muted small" }, `Joined ${scWhen(a?.created_at)}`),
+    a?.id ? el("button", { class: "link", onclick: () => openUser(a.id) }, "Open in People") : null);
+  return el("div", { class: "sc-ipm" },
+    el("p", { class: "sc-tight" }, d.report.preview),
+    el("div", { class: "sc-ipm-cards" },
+      card(s.trigger === "register" ? "New account" : "Signed in", s.account),
+      card("Seen on the same IP", s.matched, accountStatusChips(s.matched || {}))),
+    el("p", { class: "muted small sc-tight" }, `${s.note || ""} Nothing has been done to either account. Open them in People to compare their IP addresses (each look is logged).`));
+}
+
 async function drawPeople(page, { stillMine, openReport, userId }) {
   const search = el("input", { type: "text", placeholder: "Find someone by name or username", "aria-label": "Find someone" });
   const results = el("div", { class: "sc-list" });
@@ -679,6 +743,7 @@ async function drawPeople(page, { stillMine, openReport, userId }) {
     const paint = (u) => detail.replaceChildren(
       el("h3", {}, u.display_name),
       subjectView(u, act),
+      ipSection(u, showPerson),
       accountActions(u, act),
       u.reports.length ? el("div", { class: "sc-list" }, u.reports.map((r) => el("button", { class: "sc-row", onclick: () => openReport(r.id) },
         el("div", { class: "sc-row-top" }, el("span", { class: `rp-chip cat-${r.category}` }, r.category_label), el("span", { class: "sc-when" }, `${SC_STATUS[r.status] || r.status} · ${scWhen(r.created_at)}`))))) : null,
@@ -756,7 +821,8 @@ async function drawDigest(page, stillMine) {
       item("New accounts", String(d.new_accounts.length)),
       item("Reports", String(d.reports_total)),
       item("Waiting for review", String(d.waiting), d.waiting ? "warn" : "good"),
-      item("Child safety open", String(d.urgent), d.urgent ? "bad" : "good")),
+      item("Child safety open", String(d.urgent), d.urgent ? "bad" : "good"),
+      item("Same-IP hints", String(d.ip_matches ?? 0), d.ip_matches ? "warn" : "")),
     d.reports.length ? el("div", { class: "muted small" }, d.reports.map((r) => `${r.category_label}: ${r.count}`).join(" · ")) : null,
     el("h3", {}, "New accounts"),
     d.new_accounts.length ? el("div", { class: "sc-list" }, d.new_accounts.map((a) => el("div", { class: "sc-row static" },
@@ -785,7 +851,7 @@ function drawPoliceGuide(page) {
     el("h3", {}, "Suspected child sexual abuse material"),
     el("p", {}, "Don't view, download, copy, screenshot or forward it, not even to show police. Outhouse has already locked the files (nobody can download them) and keeps them unchanged on the server. Report it to the ACCCE or eSafety and tell them you run the server."),
     el("h3", {}, "What to give them"),
-    el("p", {}, "Open the report and press “Export evidence package”. It's a JSON file with the report, what the message said (and the messages around it), who sent it and when, which accounts reported it, the account's history and each file's name, size and SHA-256 hash. It never contains the files."),
+    el("p", {}, "Open the report and press “Export evidence package”. It's a JSON file with the report, what the message said (and the messages around it), who sent it and when, which accounts reported it, the account's history, the IP addresses it used (with times in UTC and Sydney time) and each file's name, size and SHA-256 hash. It never contains the files."),
     el("p", {}, "If police ask for the files themselves, follow their instructions. They're in the server's upload folder, named by the storage key in the package; the SHA-256 proves they haven't changed. deploy/README.md (“Safety & reports”) explains where that is."),
     el("h3", {}, "After it's dealt with"),
     el("p", {}, "Suspend the account if you haven't. Once police have what they need (or say they don't need it), close the report and use “Delete evidence files” to remove the files from the server for good."));
@@ -803,9 +869,26 @@ async function drawReportsTab(page) {
     el("div", { class: "sc-counts" },
       el("span", {}, el("strong", {}, String(c.open)), " open"),
       el("span", {}, el("strong", {}, String(c.in_review)), " in review"),
-      c.urgent ? el("span", { class: "sc-urgent" }, el("strong", {}, String(c.urgent)), " child safety") : null),
+      c.urgent ? el("span", { class: "sc-urgent" }, el("strong", {}, String(c.urgent)), " child safety") : null,
+      c.ip_matches ? el("span", { class: "sc-ipm-count" }, el("strong", {}, String(c.ip_matches)), " same-IP hint", c.ip_matches === 1 ? "" : "s") : null),
     data.reports.length
       ? el("div", { class: "sc-list" }, data.reports.slice(0, 10).map((r) => reportRow(r, (id) => openSafetyConsole("open", id))))
       : el("p", { class: "muted" }, "Nothing waiting. All quiet out the back."),
     el("div", {}, el("button", { class: "primary", onclick: () => openSafetyConsole() }, "Open the safety console")));
+}
+
+// ---------- Settings → Privacy: the IP address line ----------
+
+if (typeof drawPrivacyPage === "function") {
+  const ipBasePrivacy = drawPrivacyPage;
+  drawPrivacyPage = async function (main, ...rest) {
+    const out = await ipBasePrivacy(main, ...rest);
+    const days = await ipRetentionDays();
+    if (main.isConnected) {
+      main.append(el("section", { class: "notify-box", id: "privacy-ips" },
+        el("h3", {}, "IP addresses"),
+        el("p", { class: "muted small privacy-ip-note" }, ipRetentionLine(days))));
+    }
+    return out;
+  };
 }

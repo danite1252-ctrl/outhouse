@@ -59,6 +59,8 @@ detector_stop() {
 if [ -n "${SMOKE_DETECTOR_CMD:-}" ]; then detector_start; fi
 curl -fsS "$DETECTOR_URL/health" | jq -e '.ok and .test_mode' >/dev/null || { echo "the image detector (test mode) isn't running at $DETECTOR_URL"; exit 1; }
 python3 ci/detector_images.py /tmp/dt >/dev/null
+# IP retention runs on demand (POST /api/safety/ips/purge) only with this switch.
+export OUTHOUSE_TEST_HOOKS=1
 # Message requests: a small daily limit so the test can reach it (the default is 10).
 export MESSAGE_REQUESTS_PER_DAY=4 MESSAGE_REQUEST_MAX_MESSAGES=3
 # Gateway probe files from an earlier run would satisfy "wait for READY" before the new probe starts.
@@ -3496,12 +3498,154 @@ act "$RS" '{"action":"unhide_messages"}' >/dev/null
 tok "$TOKEN_D" call GET "/api/channels/$CHAN/messages?limit=100" | jq -e --arg m "$SM1" 'any(.[]; .id == $m)' >/dev/null
 tok "$TOKEN_A" call GET "/api/safety/log" | jq -e '[.entries[].action] | (index("suspend") and index("unsuspend") and index("quarantine") and index("delete_evidence") and index("export"))' >/dev/null
 tok "$TOKEN_A" call GET "/api/safety/users?q=sam" | jq -e --arg s "$SAM" 'any(.[]; .id == $s)' >/dev/null
-tok "$TOKEN_A" call GET "/api/safety/users/$SAM" | jq -e '(.reports | length) == 1 and .bots == 1 and (.ip_note | test("doesn'"'"'t record"))' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/users/$SAM" | jq -e '(.reports | length) == 1 and .bots == 1 and (.ip_note | test("kept 90 days"))' >/dev/null
 tok "$TOKEN_A" call GET /api/safety/digest | jq -e 'any(.new_accounts[]; .username == "tia" and .age_bracket == "teen") and .reports_total >= 10' >/dev/null
 tok "$TOKEN_A" call GET /api/safety/summary | jq -e '.open >= 1' >/dev/null
 # A teen can report and block anyone.
 [ "$(report "$TOKEN_T" user "$ADAM" harassment)" = 201 ]
 tok "$TOKEN_T" call PUT "/api/users/@me/blocks/$ADAM" >/dev/null
+
+# ---------------------------------------------------------------------------
+# IP addresses (feat-ips): kept for safety, site owner only, same-IP hints
+# ---------------------------------------------------------------------------
+# The smoke test talks to the server from 127.0.0.1, a trusted proxy, so the
+# X-Forwarded-For here stands in for Apache/Caddy's.
+ipreq() { # ipreq XFF PATH JSON [TOKEN] -> HTTP status (body in /tmp/body)
+  local args=(-sS -o /tmp/body -w "%{http_code}" -H "Content-Type: application/json" -H "X-Forwarded-For: $1")
+  [ -n "${4:-}" ] && args+=(-H "Authorization: Bearer $4")
+  if [ -n "$3" ]; then curl "${args[@]}" -d "$3" "$BASE$2"; else curl "${args[@]}" "$BASE$2"; fi
+}
+uip() { # uip USER IP -> "kind,count" (empty if not recorded)
+  psql "$DATABASE_URL" -tAc "SELECT kind || ',' || count FROM user_ips WHERE user_id = $1 AND ip = '$2'"
+}
+ipm_count() { psql "$DATABASE_URL" -tAc "SELECT count(*) FROM reports WHERE source = 'ip-match' AND reported_user_id = $1"; }
+purge_ips() { tok "$TOKEN_A" call POST /api/safety/ips/purge; }
+
+step "IPs: sign-up and sign-in record the visitor's address from the proxy chain"
+# Caddy sends "<visitor>, <Apache>": the visitor is recorded, not Apache.
+[ "$(ipreq '203.0.113.20, 192.168.1.32' /api/auth/register '{"username":"ivy","password":"password123","display_name":"Ivy","birth_date":"1990-06-06"}')" = 200 ]
+TOKEN_IVY=$(jq -r .token /tmp/body); IVY=$(jq -r .user.id /tmp/body)
+[ "$(uip "$IVY" 203.0.113.20)" = "register,1" ]
+[ "$(psql "$DATABASE_URL" -tAc "SELECT host(last_ip) FROM users WHERE id = $IVY")" = 203.0.113.20 ]
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM user_ips WHERE user_id = $IVY AND ip = '192.168.1.32'")" = 0 ]
+[ "$(ipreq '198.51.100.20, 192.168.1.32' /api/auth/login '{"username":"ivy","password":"password123"}')" = 200 ]
+[ "$(uip "$IVY" 198.51.100.20)" = "login,1" ]
+# The same address again counts up (one row per account and address).
+[ "$(ipreq '203.0.113.20, 192.168.1.32' /api/auth/login '{"username":"ivy","password":"password123"}')" = 200 ]
+TOKEN_IVY2=$(jq -r .token /tmp/body)
+[ "$(uip "$IVY" 203.0.113.20)" = "register,2" ]
+
+step "IPs: signed-in activity is noted at most once an hour per session (and the gateway too); bots never"
+[ "$(ipreq '203.0.113.20' /api/users/@me '' "$TOKEN_IVY2")" = 200 ]   # sign-in already counted it
+[ "$(ipreq '198.51.100.99' /api/users/@me '' "$TOKEN_IVY2")" = 200 ]
+[ "$(ipreq '198.51.100.99' /api/users/@me '' "$TOKEN_IVY2")" = 200 ]
+for _ in $(seq 1 20); do [ -n "$(uip "$IVY" 198.51.100.99)" ] && break; sleep 0.25; done
+sleep 0.5
+[ "$(uip "$IVY" 198.51.100.99)" = "session,1" ]
+[ "$(uip "$IVY" 203.0.113.20)" = "register,2" ]
+node ci/gateway_probe.mjs "$BASE" "$TOKEN_IVY" /tmp/gw-ivy.jsonl 5 & GWI=$!
+wait_for /tmp/gw-ivy.jsonl '.t == "READY"'
+for _ in $(seq 1 20); do [ -n "$(uip "$IVY" 127.0.0.1)" ] && break; sleep 0.25; done
+[ "$(uip "$IVY" 127.0.0.1)" = "session,1" ]
+wait $GWI 2>/dev/null || true
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM user_ips i JOIN users u ON u.id = i.user_id WHERE u.is_bot")" = 0 ]
+
+step "IPs: nobody but the site owner can see any address, not even their own"
+for t in "$TOKEN_B" "$TOKEN_IVY"; do
+  tok "$t" fail_call GET "/api/safety/users/$IVY/ips"
+  tok "$t" fail_call POST /api/safety/ips/purge
+done
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/api/safety/users/$IVY/ips")" = 401 ]
+for path in /api/users/@me "/api/profiles/$IVY" /api/users/@me/privacy; do
+  tok "$TOKEN_IVY" call GET "$path" | grep -qE '203\.0\.113|198\.51\.100|last_ip' && { echo "an address leaked from $path"; exit 1; }
+done
+tok "$TOKEN_B" call GET "/api/profiles/$IVY" | grep -qE '203\.0\.113|198\.51\.100|last_ip' && { echo "an address leaked to another user"; exit 1; }
+curl -fsS "$BASE/api/auth/registration" | jq -e '.ip_retention_days == 90' >/dev/null
+
+step "IPs: the owner sees someone's addresses and who else used them, and each look is logged"
+tok "$TOKEN_A" call GET "/api/safety/users/$IVY/ips" | jq -e '
+  (.ips | length) == 4 and .retention_days == 90 and (.note | test("kept 90 days") and test("hint, not proof"))
+  and any(.ips[]; .ip == "203.0.113.20" and .kind == "register" and .count == 2 and (.local | not))
+  and any(.ips[]; .ip == "198.51.100.20" and .kind == "login")
+  and any(.ips[]; .ip == "127.0.0.1" and .local)' >/dev/null
+tok "$TOKEN_A" call GET /api/safety/log | jq -e --arg u "$IVY" '.entries[0].action == "view_ips" and .entries[0].target_user_id == $u and (.entries[0].details | test("@ivy"))' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/users/$IVY" | jq -e '.ip_note | test("Shared IPs are common")' >/dev/null
+
+step "IPs: a new account on a suspended or banned account's address gets one quiet hint for the owner"
+OPEN_BEFORE=$(tok "$TOKEN_A" call GET /api/safety/summary | jq .open)
+NTFY_BEFORE=$(curl -fsS "$PUSH/alerts/safety-ntfy" | jq length)
+[ "$(ipreq '198.18.20.1' /api/auth/register '{"username":"zed","password":"password123","display_name":"Zed","birth_date":"1990-07-07"}')" = 200 ]
+ZED=$(jq -r .user.id /tmp/body)
+TOKEN="" call POST /api/auth/login '{"username":"zed","password":"password123"}' >/dev/null   # also from 127.0.0.1
+tok "$TOKEN_A" call POST "/api/safety/users/$ZED/actions" '{"action":"suspend","days":7,"text":"ban evasion test"}' >/dev/null
+[ "$(ipreq '198.18.20.1, 192.168.1.32' /api/auth/register '{"username":"jax","password":"password123","display_name":"Jax","birth_date":"1990-08-08"}')" = 200 ]
+JAX=$(jq -r .user.id /tmp/body)
+[ "$(ipm_count "$JAX")" = 1 ]
+RIPM=$(psql "$DATABASE_URL" -tAc "SELECT id FROM reports WHERE source = 'ip-match' AND reported_user_id = $JAX")
+# Quiet: not in the open count (no badge), no push or alert, but counted on its own.
+tok "$TOKEN_A" call GET /api/safety/summary | jq -e --argjson o "$OPEN_BEFORE" '.open == $o and .ip_matches >= 1' >/dev/null
+[ "$(curl -fsS "$PUSH/alerts/safety-ntfy" | jq length)" = "$NTFY_BEFORE" ]
+tok "$TOKEN_A" call GET "/api/safety/reports?status=open" | jq -e --arg r "$RIPM" --arg j "$JAX" '
+  .counts.ip_matches >= 1 and (.reports[-1].priority == 3)
+  and any(.reports[]; .id == $r and .source == "ip-match" and .reported_user.id == $j and (.preview | test("Signed up") and test("@zed") and test("suspended")))' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/reports/$RIPM" | jq -e --arg z "$ZED" --arg j "$JAX" '
+  .snapshot.kind == "ip-match" and .snapshot.account.id == $j and .snapshot.matched.id == $z and .snapshot.matched.suspended
+  and (.snapshot | tostring | test("198\\.18\\.20\\.1") | not) and .reporters == []' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/users/$JAX/ips" | jq -e --arg z "$ZED" 'any(.same_ip_accounts[]; .id == $z and .suspended and .flagged and (.shared_ips | index("198.18.20.1")))' >/dev/null
+tok "$TOKEN_B" fail_call GET "/api/safety/reports/$RIPM"
+# Never repeated for the same pair (signing in again from there).
+[ "$(ipreq '198.18.20.1' /api/auth/login '{"username":"jax","password":"password123"}')" = 200 ]
+[ "$(ipm_count "$JAX")" = 1 ]
+# Banned from an outhouse counts too (sign-in this time).
+tok "$TOKEN_IVY" call POST "/api/invites/$SINV2" >/dev/null
+tok "$TOKEN_A" call POST "/api/safety/users/$IVY/actions" '{"action":"ban","guild_id":"'"$GUILD"'","text":"ip test"}' >/dev/null
+[ "$(ipreq '198.51.100.20' /api/auth/login '{"username":"jax","password":"password123"}')" = 200 ]
+[ "$(ipm_count "$JAX")" = 2 ]
+tok "$TOKEN_A" call GET "/api/safety/reports?status=open" | jq -e --arg j "$JAX" 'any(.reports[]; .source == "ip-match" and .reported_user.id == $j and (.preview | test("Signed in") and test("@ivy") and test("banned in Smoke Test")))' >/dev/null
+# Home-network (LAN) and trusted-proxy addresses never make a hint, and nobody matches themselves.
+[ "$(ipreq '192.168.1.77' /api/auth/register '{"username":"lana","password":"password123","birth_date":"1990-09-09"}')" = 200 ]
+LANA=$(jq -r .user.id /tmp/body)
+tok "$TOKEN_A" call POST "/api/safety/users/$LANA/actions" '{"action":"suspend","days":1}' >/dev/null
+[ "$(ipreq '192.168.1.77' /api/auth/register '{"username":"lena","password":"password123","birth_date":"1990-09-09"}')" = 200 ]
+LENA=$(jq -r .user.id /tmp/body)
+[ "$(uip "$LENA" 192.168.1.77)" = "register,1" ]
+[ "$(ipm_count "$LENA")" = 0 ]
+TOKEN="" call POST /api/auth/login '{"username":"ivy","password":"password123"}' >/dev/null    # 127.0.0.1, which Zed used too
+[ "$(ipm_count "$IVY")" = 0 ]
+tok "$TOKEN_A" call GET /api/safety/digest | jq -e '.ip_matches >= 2' >/dev/null
+
+step "IPs: the evidence package has the reported person's addresses in UTC and Sydney time"
+[ "$(report "$TOKEN_B" user "$IVY" harassment)" = 201 ]; RIVY=$(report_id user "$IVY")
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM report_ips WHERE report_id = $RIVY AND user_id = $IVY")" = 4 ]
+curl -fsS -H "Authorization: Bearer $TOKEN_A" "$BASE/api/safety/reports/$RIVY/export" -o /tmp/export-ivy.json
+jq -e --arg i "$IVY" '(.ip_addresses.note | test("UTC") and test("Australia/Sydney"))
+  and any(.ip_addresses.addresses[]; .account_id == $i and .ip_address == "203.0.113.20" and .first_seen_as == "register" and .times_seen >= 2
+      and (.first_seen_utc | test("^[0-9-]{10}T[0-9:]{8}Z$"))
+      and (.last_seen_australia_sydney | test("^[0-9-]{10} [0-9:]{8} AE[SD]T \\(UTC\\+1[01]\\)$")))' /tmp/export-ivy.json >/dev/null
+
+step "IPs: retention deletes addresses not seen for 90 days; an open report keeps its copy"
+psql "$DATABASE_URL" -qc "UPDATE user_ips SET first_seen = now() - interval '120 days', last_seen = now() - interval '100 days'
+  WHERE (user_id = $IVY AND ip = '198.51.100.20') OR user_id = $LENA;
+  UPDATE users SET last_ip_at = now() - interval '100 days' WHERE id = $LENA"
+purge_ips | jq -e '.addresses >= 2 and .kept_for_reports >= 1' >/dev/null
+[ -z "$(uip "$IVY" 198.51.100.20)" ] && [ -z "$(uip "$LENA" 192.168.1.77)" ]
+[ -n "$(uip "$IVY" 203.0.113.20)" ]
+[ "$(psql "$DATABASE_URL" -tAc "SELECT last_ip IS NULL FROM users WHERE id = $LENA")" = t ]
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM report_ips WHERE report_id = $RIVY AND ip = '198.51.100.20'")" = 1 ]
+tok "$TOKEN_A" call GET "/api/safety/users/$IVY/ips" | jq -e 'all(.ips[]; .ip != "198.51.100.20")' >/dev/null
+curl -fsS -H "Authorization: Bearer $TOKEN_A" "$BASE/api/safety/reports/$RIVY/export" \
+  | jq -e 'any(.ip_addresses.addresses[]; .ip_address == "198.51.100.20")' >/dev/null
+# Closed: the copy goes once the retention period has passed since closing.
+act "$RIVY" '{"action":"close","text":"ip test"}' >/dev/null
+purge_ips >/dev/null
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM report_ips WHERE report_id = $RIVY")" -ge 1 ]
+psql "$DATABASE_URL" -qc "UPDATE reports SET closed_at = now() - interval '91 days' WHERE id = $RIVY"
+purge_ips | jq -e '.report_addresses >= 1' >/dev/null
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM report_ips WHERE report_id = $RIVY")" = 0 ]
+# Tidy up for the sections below.
+tok "$TOKEN_A" call DELETE "/api/guilds/$GUILD/bans/$IVY" >/dev/null
+tok "$TOKEN_A" call POST "/api/safety/users/$ZED/actions" '{"action":"unsuspend"}' >/dev/null
+tok "$TOKEN_A" call POST "/api/safety/users/$LANA/actions" '{"action":"unsuspend"}' >/dev/null
 
 step "Deleting a channel's newest message moves its newest back, so it can't stay unread"
 UC=$(tok "$TOKEN_A" call POST "/api/guilds/$GUILD/channels" '{"name":"unread-fix"}' | jq -r .id)

@@ -6,6 +6,7 @@
 //!    ~30 s. No heartbeat for 90 s and the connection is closed.
 
 use std::collections::HashSet;
+use std::net::IpAddr;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -21,6 +22,7 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::api::guilds::guilds_for_user;
 use crate::auth::user_for_token;
 use crate::perms;
+use crate::security::ClientIp;
 use crate::state::{AppState, Audience};
 
 const IDENTIFY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -34,11 +36,15 @@ const MAX_CONNECTIONS_PER_USER: usize = 20;
 /// signing out (or changing your password) closes other connections too.
 const SESSION_RECHECK: Duration = Duration::from_secs(60);
 
-pub async fn gateway(ws: WebSocketUpgrade, State(st): State<AppState>) -> Response {
+pub async fn gateway(
+    ws: WebSocketUpgrade,
+    State(st): State<AppState>,
+    ClientIp(ip): ClientIp,
+) -> Response {
     ws.max_message_size(MAX_CLIENT_MESSAGE)
         .max_frame_size(MAX_CLIENT_MESSAGE)
         .on_upgrade(move |socket| async move {
-            if let Err(e) = run(socket, st).await {
+            if let Err(e) = run(socket, st, ip).await {
                 tracing::debug!(error = %e, "gateway connection ended");
             }
         })
@@ -80,7 +86,7 @@ async fn reject(sink: &mut Sink, reason: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run(socket: WebSocket, st: AppState) -> anyhow::Result<()> {
+async fn run(socket: WebSocket, st: AppState, ip: IpAddr) -> anyhow::Result<()> {
     let (mut sink, mut stream) = socket.split();
 
     let token = match tokio::time::timeout(IDENTIFY_TIMEOUT, next_event(&mut stream)).await {
@@ -90,6 +96,8 @@ async fn run(socket: WebSocket, st: AppState) -> anyhow::Result<()> {
     let Some(user) = user_for_token(&st.db, &token).await? else {
         return reject(&mut sink, "Your session has expired. Sign in again.").await;
     };
+    // The address this session connects from (at most once an hour; ips.rs).
+    crate::ips::note_session(&st, &token, user.id, user.bot, ip);
     let open_now = st
         .presence
         .lock()

@@ -252,8 +252,9 @@ it.** Report it instead:
 
 **What to give police.** In the report press **Export evidence package**:
 a JSON file with the report, the snapshot and context, who reported it and
-when, the reported account's history, the safety log and each file's name,
-size, storage key and SHA-256. It never contains the files. If police ask
+when, the reported account's history, their IP addresses (first and last
+seen, in UTC and in Sydney time, clearly labelled), the safety log and each
+file's name, size, storage key and SHA-256. It never contains the files. If police ask
 for the files, follow their instructions; they're in the server's upload
 volume (inside the server container at `/data/uploads/<storage key>`).
 They can check a copy hasn't changed against the package's hash:
@@ -268,8 +269,8 @@ backups keep a copy until they're rotated out; tell police that too.
 most serious, newest first), and each report's snapshot, context, files,
 reporters, the reported person's history (account age, age group, outhouses,
 messages in the last 30 days, other reports about them, reports they've
-made; Outhouse doesn't record IP addresses, though Apache's access logs may
-have them for recent weeks) and actions:
+made; their IP addresses are under People, see **IP addresses** below) and
+actions:
 - **Mark in review**, **Close…** (with a note of what you did), **Dismiss…**
   (a mistake: a dismissed child-safety report unlocks its files and shows the
   message again), **Reopen**;
@@ -289,7 +290,37 @@ have them for recent weeks) and actions:
 
 Everything done is in the **Safety log** (kept for good). **People** finds
 any account to set their age group or act without a report. **This week**
-shows new accounts and reports; Outhouse Safety also DMs it to you weekly.
+shows new accounts, reports and same-IP hints; Outhouse Safety also DMs it
+to you weekly.
+
+**IP addresses.** For police (child-safety cases) and as a hint about ban
+evasion, Outhouse keeps the IP addresses people use: when an account is
+made, at every sign-in, and at most once an hour per session while they're
+signed in (bots aren't recorded). One row per account and address (first
+seen, last seen, how it was first seen, how many times). They're deleted
+**90 days** after they were last seen (`IP_RETENTION_DAYS` in `.env`), checked
+every hour. Sign-up and Privacy settings tell people: "To keep Outhouse
+safe, sign-in IP addresses are kept for 90 days and only the site owner can
+see them."
+- **Only the site owner** sees them: Safety console → **People** → someone
+  → **Show IP addresses** lists their recent addresses and the other
+  accounts seen on the same ones (age group, suspended or banned where,
+  last seen), with suspended or banned accounts highlighted. Every look is
+  written to the safety log. Nobody else can see any address, not even
+  their own.
+- **Reports keep them.** A report copies the reported person's addresses
+  when it's made, when you export it and before retention would delete
+  them, so they're kept while the report is open (and for the retention
+  period after you close it; child-safety evidence until you delete it).
+- **Same-IP hints.** If someone signs up or signs in from an address that a
+  suspended account, or one banned from any outhouse, used in the last 90
+  days, a quiet notice appears in the console (dashed, at the bottom of
+  Open, with a small "same-IP hint" count; no badge, push or alert), once per
+  pair of accounts. Home-network (LAN) and proxy addresses never count.
+  **Shared addresses are common** (households, mobile networks, VPNs): a
+  match is a hint, not proof, and nothing happens to anyone automatically.
+- Outhouse doesn't write addresses into its own logs beyond the existing
+  "failed sign-in" lines.
 
 **Age groups and teens.** Sign-up asks for a date of birth: under 13s can't
 make an account, 13–17 are *teens*, 18+ *adults*. Only the age group is
@@ -506,6 +537,60 @@ in `.env` if Blizzard moves things (defaults are what players found in November 
 If the Armory doesn't know a character (Blizzard's EU Forever data started
 late, and brand-new characters can take a while), people see a friendly note
 and can still save the character by hand.
+
+## Real client IPs
+Outhouse needs the visitor's real address for sign-in limits and the IP
+addresses above. The chain at home:
+
+1. The internet → **Apache on 192.168.1.32** (HTTPS). `oh.hartspace.cc.conf`
+   has `RequestHeader unset X-Forwarded-For early`, so whatever a visitor
+   sends is thrown away, then mod_proxy adds `X-Forwarded-For: <visitor>`.
+2. → **Caddy** (the `caddy-proxied` container, `Caddyfile.behind-proxy`).
+   `trusted_proxies static private_ranges` makes Caddy trust Apache, keep its
+   header and add Apache's address: `X-Forwarded-For: <visitor>, 192.168.1.32`.
+3. → **Outhouse**. Its peer is the Caddy container (a Docker address), which
+   is in `TRUSTED_PROXIES` (default: this machine, home and Docker networks),
+   so it reads `X-Forwarded-For` from the right and takes the first address
+   that isn't a trusted proxy: the visitor. If every address is private
+   (someone at home), it takes the first one: their LAN address.
+
+Nothing needs changing for this set-up. **To check:** Safety console →
+People → yourself → Show IP addresses. Connect from outside your home (phone
+on mobile data, say) and your public address shows up; at home on the LAN
+you'll see a `192.168.1.x` address (marked LAN). If everyone shows as
+`192.168.1.32` or a `172.x` Docker address, something in the chain above has
+changed.
+
+Anyone on the home network can reach port 8080 directly and could send a
+made-up `X-Forwarded-For`; the `DOCKER-USER` rule under "Security checks"
+(allow 8080 only from Apache) stops that.
+
+**If Cloudflare proxying (the orange cloud) is ever turned on** for the
+domain, Apache sees Cloudflare's addresses instead of visitors'. Tell Apache
+to believe Cloudflare's `CF-Connecting-IP`, from Cloudflare only:
+```bash
+sudo a2enmod remoteip
+```
+then add to the `<VirtualHost *:443>` in `oh.hartspace.cc.conf` (one
+`RemoteIPTrustedProxy` line per range; take the current list from
+https://www.cloudflare.com/ips/ and keep it up to date):
+```apache
+RemoteIPHeader CF-Connecting-IP
+RemoteIPTrustedProxy 173.245.48.0/20
+RemoteIPTrustedProxy 103.21.244.0/22
+# ...every IPv4 and IPv6 range on https://www.cloudflare.com/ips/
+```
+and `sudo systemctl reload apache2`. Keep `RequestHeader unset
+X-Forwarded-For early`: mod_proxy builds the new `X-Forwarded-For` from the
+client address mod_remoteip sets, so Outhouse still gets the visitor's
+address and nothing a visitor typed.
+
+**Moving to the cloud later** (`COMPOSE_PROFILES=https`): Caddy faces the
+internet and handles HTTPS itself (`Caddyfile`), so there's no Apache step.
+Caddy doesn't trust a visitor's `X-Forwarded-For` (they aren't a trusted
+proxy), sets it to the address it sees, and Outhouse reads it from the
+Caddy container as above. Behind a cloud load balancer, add its addresses to
+Caddy's `trusted_proxies` and to `TRUSTED_PROXIES`.
 
 ## Security checks
 Outhouse sends its own security headers (a strict Content-Security-Policy,
