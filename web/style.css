@@ -2524,7 +2524,7 @@ button.sc-row:hover { border-color: var(--muted); }
 .sc-nudge strong { display: inline; font-size: 13px; }
 .sc-urgent-banner strong { color: var(--occupied); }
 .sc-cmd { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--night); min-width: 0; }
-.sc-cmd-text { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; font-family: "JetBrains Mono", monospace; font-size: 13px; color: var(--glow); }
+.sc-cmd-text { flex: 1; min-width: 0; overflow-wrap: anywhere; font-family: "JetBrains Mono", monospace; font-size: 13px; color: var(--glow); }
 .sc-nets { display: grid; gap: 4px; max-height: 220px; overflow-y: auto; padding: 6px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--night); }
 .sc-net { display: flex !important; flex-direction: row !important; align-items: flex-start; gap: 8px; font-size: 13px; cursor: pointer; }
 .sc-net input { flex: none; width: 16px !important; height: 16px; margin: 2px 0 0; accent-color: var(--ember); }
@@ -2539,6 +2539,10 @@ button.sc-row:hover { border-color: var(--muted); }
 .sc-blocks td, .sc-attempts td { white-space: normal; }
 .sc-blocks td code, .sc-attempts td code { white-space: nowrap; }
 .sc-blocks .sc-block-btns { flex-direction: column; align-items: stretch; }
+/* A table straight in the console page keeps its height (the page scrolls). */
+.settings-page > .sc-table-wrap { flex-shrink: 0; }
+.sc-attempts td:first-child { white-space: nowrap; }
+.sc-blocks td:last-child { width: 1%; }
 .sc-block-btns { display: flex; gap: 6px; }
 .sc-block-btns .ghost { height: 30px !important; padding: 0 10px !important; }
 .sc-attempts-section { display: grid; gap: 6px; }

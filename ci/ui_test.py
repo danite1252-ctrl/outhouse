@@ -3920,12 +3920,12 @@ with sync_playwright() as p:
     assert "suspend the account now if in doubt" in op.inner_text("dialog.safety-console .sc-child-warning").lower()
     op.evaluate("document.querySelector('dialog.safety-console .sc-suspend-now').scrollIntoView({block: 'start'})")
     op.wait_for_timeout(200)
-    op.screenshot(path=f"{SHOTS}/3530-suspend-now.png")
+    op.screenshot(path=f"{SHOTS}/3570-suspend-now.png")
     ho = op.inner_text("dialog.safety-console .sc-handover")
     assert f"./deploy/evidence-handover.sh {reps[0]['id']}" in ho and "never open it" in ho, ho
     op.evaluate("document.querySelector('dialog.safety-console .sc-handover').scrollIntoView({block: 'start'})")
     op.wait_for_timeout(200)
-    op.screenshot(path=f"{SHOTS}/3531-hand-over-to-police.png")
+    op.screenshot(path=f"{SHOTS}/3571-hand-over-to-police.png")
     # Suspension: from Gary's spam report.
     op.click("dialog.safety-console .sc-back button")
     op.click("dialog.safety-console .sc-row:has-text('Spam or scams'):has-text('Gary')")
@@ -3995,7 +3995,7 @@ with sync_playwright() as p:
     op.wait_for_selector("dialog.safety-console .sc-suspended-panel:has-text('by you')", timeout=10000)
     op.evaluate("document.querySelector('dialog.safety-console .sc-suspended-panel').scrollIntoView({block: 'start'})")
     op.wait_for_timeout(300)
-    op.screenshot(path=f"{SHOTS}/3532-suspended-pending-review.png")
+    op.screenshot(path=f"{SHOTS}/3572-suspended-pending-review.png")
     try:
         api("POST", "/api/auth/login", {"username": f"pete{suffix}", "password": "password123"})
         errors.append("an account suspended pending review signed in")
@@ -4008,7 +4008,7 @@ with sync_playwright() as p:
     assert op.is_checked("dialog.sc-permanent-dialog .sc-block-box"), "blocking isn't ticked for a child-safety report"
     assert "locked out" in op.inner_text("dialog.sc-permanent-dialog")
     op.wait_for_timeout(200)
-    op.screenshot(path=f"{SHOTS}/3533-make-permanent-block-ips.png")
+    op.screenshot(path=f"{SHOTS}/3573-make-permanent-block-ips.png")
     op.click("dialog.sc-permanent-dialog button[type=submit]")
     op.wait_for_selector("dialog.safety-console .sc-suspended-panel h3:has-text('permanently')", timeout=10000)
     try:
@@ -4020,7 +4020,7 @@ with sync_playwright() as p:
     op.wait_for_selector("dialog.safety-console .sc-blocks td:has-text('203.0.113.77/32')", timeout=10000)
     op.wait_for_selector("dialog.safety-console .sc-attempts td:has-text('Sign-up')")
     op.wait_for_timeout(300)
-    op.screenshot(path=f"{SHOTS}/3534-blocked-networks.png")
+    op.screenshot(path=f"{SHOTS}/3574-blocked-networks.png")
     for b in api("GET", "/api/safety/ip-blocks", None, TOKEN)["blocks"]:
         api("POST", f"/api/safety/ip-blocks/{b['id']}/remove", None, TOKEN)
     op.keyboard.press("Escape")
