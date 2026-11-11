@@ -266,39 +266,66 @@ it.** Report it instead:
 - **A child in immediate danger: call 000.**
 - Outside Australia: the NCMEC CyberTipline (US) https://report.cybertip.org, or local police.
 
-**What to give police.** In the report press **Export evidence package**:
-a JSON file with the report, the snapshot and context, who reported it and
-when, the reported account's history, their IP addresses (first and last
-seen, in UTC and in Sydney time, clearly labelled), the safety log, each
-file's name, size, storage key and SHA-256, and any attempts from networks
-you blocked because of them. It never contains the files.
+**Handing evidence to police (without ever opening it).** You must not
+open, view, download to your PC or forward the files. Do it in the app,
+ideally with police there (or when they've asked): the report's **Hand over
+to police** panel. Outhouse builds one sealed `.tar.gz` on the server:
+```text
+evidence-<id>-<UTC time>/
+  files/<storage key>   each original file, byte for byte (quarantined ones
+                        too; never opened, decoded or thumbnailed)
+  report-<id>.json      everything known: the report, snapshot and context,
+                        who reported it, the reported account's history and
+                        suspension state, each file's name/type/size/SHA-256
+                        and image-detector result, IP addresses (UTC and
+                        Sydney time), attempts from blocked networks, and the
+                        report's whole safety log
+  HANDOVER.txt          report id, time (UTC and Sydney), who made it, the
+                        officer / reference, file count, how to check it,
+                        "Do not open these files"
+  MANIFEST.sha256       SHA-256 of every file above (`sha256sum -c`)
+```
+Two ways to give it to them (both ask for your password again, a tick that
+police are with you or asked for it, and an optional officer / reference):
+- **Create a download link for police** (recommended). You get a one-time
+  link, the package's SHA-256 and the expiry, each with a Copy button. Police
+  open the link on *their* device (or you paste it into their portal); the
+  page shows the file's name, size, SHA-256 and expiry with a **Download**
+  button (opening the page doesn't use it up, so chat and mail link previews
+  can't burn it; only the download does). It works once by default (up to
+  3), for 24 hours by default (1 hour or 7 days). After the last download,
+  when it expires or if you **Revoke** it, it answers *410 Gone* and the
+  package is deleted from the server. The link is shown once (only its hash
+  is stored); the report lists every link with its status and downloads.
+- **Download here** (only if police ask): the same package straight to the
+  browser you're using. Don't open or extract it; hand it straight over and
+  delete it.
 
-**Handing the files to police (without ever opening them).** You must not
-open, view, download to your PC or forward the files. The report's **Hand
-over to police** panel shows the exact command (with a Copy button). On the
-server, over SSH:
+The safety log records *"Evidence packaged for police"* with the package's
+SHA-256, the route and the reference, and every download separately with the
+time, the downloader's IP address and browser. Wrong passwords are limited
+(10 per 15 minutes) and so is guessing at links (30 tries per address per 15
+minutes). Packages wait in `/data/uploads/.evidence-packages` (in the uploads
+volume; never served except through a live link, and left out of backups).
+Server logs only ever show a link's first 8 characters; the Apache configs
+here keep `/evidence/…` out of the access log too.
+
+**Export details only (JSON, no files)** downloads just `report-<id>.json`
+(the same details, without the files).
+
+**Fallback: from the server over SSH.** If the app can't be used, the
+report's **Advanced: from the server over SSH** shows the command:
 ```bash
 cd ~/outhouse && ./deploy/evidence-handover.sh <report id>
 ```
-It copies the report's original files byte for byte from the upload store
-(quarantined ones too; nothing is opened, decoded or thumbnailed, and no web
-address ever serves them) into `~/outhouse-evidence/evidence-<id>-<UTC
-time>/files/<storage key>`, adds the evidence package (`report-<id>.json`),
-`MANIFEST.sha256` (the SHA-256 of every file and the JSON) and
-`HANDOVER.txt` (report id, time in UTC and Sydney time, who ran it, how many
-files, how to check them with `sha256sum -c MANIFEST.sha256`, and "Do not
-open these files"), packs it all into one `.tar.gz` next to the folder
-(readable only by you), prints the package's path and SHA-256, and writes
-*"Evidence packaged for police"* with that SHA-256 to the safety log. It
-never prints anything from the files. It only packs child-safety reports or
-reports with quarantined files unless you add `--any`; `--zip` makes a .zip
-as well (`sudo apt install zip` first; stock Ubuntu has tar but not zip).
-Then, as police direct:
-- **They download it under supervision:** run the command, then let them
-  copy the `.tar.gz` from the server (their drive, or scp from their laptop).
-- **They give you a portal link:** run the command, then upload the
-  `.tar.gz` to the portal from the server. Only copy it to your PC (scp) if
-  there's no other way, and never open it.
+The server builds the very same package (`outhouse-server evidence-package`),
+the script saves it as `~/outhouse-evidence/evidence-<id>-<UTC time>.tar.gz`
+(readable only by you), prints its SHA-256 and the server logs it. It never
+prints anything from the files. Over SSH it only packs child-safety reports
+or reports with quarantined files unless you add `--any`; `--ref "Det.
+Smith, 1234/26"` adds the officer / reference; `--zip` makes a .zip as well
+(`sudo apt install zip` first). Then let police copy the `.tar.gz` from the
+server under supervision, or upload it to their portal from the server.
 
 Nightly backups (and off-site copies) include the upload folder, so older
 backups keep a copy until they're rotated out; tell police that too.
@@ -325,7 +352,8 @@ actions:
   **Lift suspension** undoes it;
 - **Hide all their messages** / **Show their messages again** (child-safety
   evidence stays hidden);
-- **Add note** (private), **Export evidence package**, and for a closed
+- **Add note** (private), **Hand over to police** (above), **Export details
+  only (JSON, no files)**, and for a closed
   child-safety report **Delete evidence files** once police have what they
   need (the names and hashes stay).
 

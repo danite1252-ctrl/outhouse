@@ -12,6 +12,7 @@ mod error;
 mod feeds;
 mod files;
 mod gateway;
+mod handover;
 mod ipblock;
 mod ips;
 mod livekit;
@@ -94,6 +95,7 @@ async fn main() -> anyhow::Result<()> {
     api::safety::spawn_digest(state.clone());
     api::detector::spawn_worker(state.clone());
     ips::spawn_pruner(state.clone());
+    api::police::spawn_cleaner(state.clone());
     if let Err(e) = ipblock::reload(&state.db).await {
         tracing::warn!(error = %e, "couldn't load the blocked networks");
     }
@@ -111,7 +113,16 @@ async fn main() -> anyhow::Result<()> {
         .layer(axum::middleware::map_response(no_stale_files))
         .layer(axum::middleware::from_fn(security::reject_nul))
         .layer(axum::middleware::from_fn(security::headers))
-        .layer(TraceLayer::new_for_http());
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|req: &axum::http::Request<_>| {
+                // Police download links carry a secret token: never log it.
+                tracing::debug_span!(
+                    "request",
+                    method = %req.method(),
+                    uri = %redact_uri(req.uri()),
+                )
+            }),
+        );
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("Outhouse is open for business on http://{bind}");
@@ -147,6 +158,14 @@ async fn run_command(command: &str, args: &[String]) -> anyhow::Result<i32> {
     // (safety log entries) can never clash with its.
     state.ids = std::sync::Arc::new(outhouse_common::id::SnowflakeGen::new(31));
     cli::run(state, command, args).await
+}
+
+/// A request path for the log, without secrets (`/evidence/<token>`).
+fn redact_uri(uri: &axum::http::Uri) -> String {
+    match uri.path().strip_prefix("/evidence/") {
+        Some(token) => format!("/evidence/{}…", token.chars().take(8).collect::<String>()),
+        None => uri.to_string(),
+    }
 }
 
 /// Makes browsers check for a newer app.js / style.css on every load instead

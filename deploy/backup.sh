@@ -77,7 +77,8 @@ $DOCKER compose exec -T db pg_dump -U outhouse --format=custom outhouse > "$WORK
 
 STEP="copying uploaded files"
 echo "Backing up uploaded files..."
-$DOCKER compose exec -T server tar -C /data -cf - uploads > "$WORK/uploads.tar"
+# Police hand-over packages (one-time links) are left out: they are deleted once used.
+$DOCKER compose exec -T server tar -C /data --exclude=uploads/.evidence-packages -cf - uploads > "$WORK/uploads.tar"
 
 STEP="packing the backup"
 cp .env "$WORK/env" 2>/dev/null || true

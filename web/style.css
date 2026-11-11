@@ -2697,3 +2697,61 @@ dialog.profile-page .settings-page > h3 { margin: 4px 0 0; }
 .pc-status.on { color: var(--vacant); }
 .fp-names-top { text-shadow: 0 1px 3px #000c; }
 .fp-names-top .pc-badges { text-shadow: none; }
+
+/* ---- Hand over to police (safety.js handoverPanel) ---- */
+.ho-routes { display: grid; gap: 10px; }
+.ho-route { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--night); min-width: 0; }
+.ho-route-link { border-color: var(--ember); background: color-mix(in srgb, var(--ember) 7%, var(--night)); }
+.ho-route p { margin: 0; flex: 1; line-height: 1.45; }
+.ho-route-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.ho-route button { align-self: flex-start; height: auto; min-height: 38px; padding: 8px 16px; line-height: 1.25; text-align: center; }
+.rp-chip.ho-recommended { background: color-mix(in srgb, var(--ember) 40%, var(--raised)); color: var(--text); }
+.ho-links { display: grid; gap: 6px; min-width: 0; }
+.ho-links h4 { margin: 0; font-size: 13px; color: var(--muted); }
+.ho-links-table td { white-space: normal; vertical-align: top; }
+.ho-links-table td:first-child, .ho-links-table td:nth-child(3) { min-width: 132px; }
+.ho-links-table td:last-child { width: 1%; }
+.ho-links-table .ho-revoke { height: 30px; padding: 0 10px; }
+.ho-links-table tr:not(.ho-active) td { color: var(--muted); }
+.rp-chip.ho-chip-active { background: color-mix(in srgb, var(--vacant) 30%, var(--raised)); color: var(--text); }
+.rp-chip.ho-chip-used { background: var(--raised); }
+.rp-chip.ho-chip-revoked, .rp-chip.ho-chip-expired { background: color-mix(in srgb, var(--occupied) 22%, var(--raised)); }
+.ho-advanced { font-size: 13px; }
+.ho-advanced summary { cursor: pointer; color: var(--muted); width: max-content; max-width: 100%; }
+.ho-advanced summary:hover { color: var(--text); }
+.ho-advanced[open] { display: grid; gap: 6px; }
+.ho-advanced[open] summary { margin-bottom: 2px; }
+dialog.ho-dialog form, dialog.ho-result form { display: flex; flex-direction: column; gap: 12px; }
+.ho-intro { margin: 0; line-height: 1.45; }
+.ho-warning { display: grid; gap: 4px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--occupied); background: color-mix(in srgb, var(--occupied) 12%, var(--panel)); font-size: 13px; line-height: 1.45; }
+.ho-warning strong { color: var(--occupied); font-size: 14px; }
+.ho-warning-sub { color: var(--muted); font-size: 12px; }
+.ho-check { align-items: flex-start !important; font-weight: 600; }
+.ho-check input { flex: none; margin-top: 2px; }
+.ho-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+dialog.ho-dialog .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
+dialog.ho-dialog .field .muted.small { font-weight: 400; font-size: 12px; }
+dialog.ho-dialog select { height: 40px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--night); color: var(--text); font: inherit; }
+dialog.ho-dialog .row, dialog.ho-result .row { display: flex; justify-content: flex-end; gap: 8px; }
+dialog.ho-dialog .row button, dialog.ho-result .row button { min-width: 110px; padding: 0 16px; }
+.ho-once { margin: 0; font-size: 14px; line-height: 1.45; }
+.ho-result-row { display: grid; grid-template-columns: 70px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--night); }
+.ho-result-label { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.ho-result-value { min-width: 0; overflow-wrap: anywhere; font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--glow); user-select: all; }
+.ho-result-row .sc-copy { height: 30px; padding: 0 12px; }
+.ho-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: 13px; }
+.ho-facts dt { color: var(--muted); }
+.ho-facts dd { margin: 0; overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .ho-options { grid-template-columns: 1fr; }
+  /* The links list as small cards on phones. */
+  .ho-links-table thead { display: none; }
+  .ho-links-table, .ho-links-table tbody, .ho-links-table tr, .ho-links-table td { display: block; width: auto !important; }
+  .ho-links-table tr { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .ho-links-table td { padding: 0; border: 0; white-space: normal !important; }
+  .ho-links-table td[data-label]::before { content: attr(data-label); display: block; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .ho-links-table td.ho-act:empty { display: none; }
+  .ho-links-table td.ho-act { grid-column: 1 / -1; }
+  .ho-result-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .ho-result-label { grid-column: 1 / -1; }
+}

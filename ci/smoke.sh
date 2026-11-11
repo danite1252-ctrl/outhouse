@@ -3581,6 +3581,103 @@ OUTHOUSE_CMD=./target/debug/outhouse-server bash deploy/evidence-handover.sh --a
 ./target/debug/outhouse-server evidence-cat "$R1" "$KN" >/dev/null 2>&1 && { echo "evidence-cat gave another report's file"; exit 1; }
 rm -rf "$HO" "$HX"
 
+step "police hand-over in the app: password + police present, one-time link (byte-identical files, 410 after), revoke, expiry, download here"
+PKGDIR="$UPLOADS/.evidence-packages"
+HOK='{"password":"password123","police_present":true,"reference":"Det. Sgt Smith, ref 1234/26","hours":24,"max_downloads":1}'
+[ "$(tok "$TOKEN_A" status POST "/api/safety/reports/$RN/police-links" '{"password":"wrong-password","police_present":true}')" = 400 ] && grep -q "password" /tmp/body
+[ "$(tok "$TOKEN_A" status POST "/api/safety/reports/$RN/police-links" '{"password":"password123","police_present":false}')" = 400 ] && grep -qi "police" /tmp/body
+[ "$(tok "$TOKEN_A" status POST "/api/safety/reports/$RN/police-links" '{"password":"password123","police_present":true,"hours":5}')" = 400 ]
+[ "$(tok "$TOKEN_A" status POST "/api/safety/reports/$RN/police-links" '{"password":"password123","police_present":true,"max_downloads":4}')" = 400 ]
+[ "$(tok "$TOKEN_B" status POST "/api/safety/reports/$RN/police-links" '{"password":"password123","police_present":true}')" = 403 ]
+[ "$(tok "$TOKEN_B" status POST "/api/safety/reports/$RN/handover-download" '{"password":"password123","police_present":true}')" = 403 ]
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d "$HOK" "$BASE/api/safety/reports/$RN/police-links")" = 401 ]
+[ "$(tok "$TOKEN_A" status POST "/api/safety/reports/99999/police-links" "$HOK")" = 404 ]
+LINK=$(tok "$TOKEN_A" call POST "/api/safety/reports/$RN/police-links" "$HOK")
+URL=$(jq -r .url <<<"$LINK"); PTOK=${URL##*/}; LID=$(jq -r .link.id <<<"$LINK"); LSHA=$(jq -r .link.package_sha256 <<<"$LINK")
+[[ "$URL" == "$BASE/evidence/"* ]] && [ "${#PTOK}" = 64 ] && [ "${#LSHA}" = 64 ]
+jq -e --arg p "${PTOK:0:8}" '.link.status == "active" and .link.max_downloads == 1 and .link.downloads == 0 and .link.token_prefix == $p
+  and .link.reference == "Det. Sgt Smith, ref 1234/26" and .link.file_count == 1 and (tostring | contains("token_sha256") | not)' <<<"$LINK" >/dev/null
+# Only the token's hash is kept, and it never reaches the server log.
+psql "$DATABASE_URL" -tAc "SELECT count(*) FROM police_links WHERE token_sha256 = '$PTOK' OR token_prefix = '$PTOK'" | grep -qx 0
+grep -q "$PTOK" "$LOG" && { echo "the police token is in the server log"; exit 1; }
+PF=$(psql "$DATABASE_URL" -tAc "SELECT package_file FROM police_links WHERE id = $LID")
+[ -f "$PKGDIR/$PF" ] && [ "$(stat -c %a "$PKGDIR/$PF")" = 600 ] && [ "$(sha256sum "$PKGDIR/$PF" | cut -d' ' -f1)" = "$LSHA" ]
+tok "$TOKEN_A" call GET "/api/safety/reports/$RN" | jq -e --arg l "$LID" --arg h "$LSHA" 'any(.police_links[]; .id == $l and .status == "active" and .package_sha256 == $h)
+  and any(.log[]; .action == "handover" and (.details | contains($h)) and (.details | contains("one-time download link")) and (.details | contains("Det. Sgt Smith, ref 1234/26")))' >/dev/null
+# The page police open shows the package and doesn't use the link up (nor does HEAD).
+code=$(curl -sS -D /tmp/headers -o /tmp/evpage.html -w '%{http_code}' "$URL")
+[ "$code" = 200 ] && grep -q "$LSHA" /tmp/evpage.html && grep -q 'method="post"' /tmp/evpage.html && grep -qi 'cache-control: no-store' /tmp/headers && grep -qi 'referrer-policy: no-referrer' /tmp/headers
+grep -qi '<script' /tmp/evpage.html && { echo "the evidence page has a script"; exit 1; }
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "$URL")" = 200 ] && [ "$(curl -sS -I -o /dev/null -w '%{http_code}' "$URL")" = 200 ]
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/evidence/$(printf 'f%.0s' $(seq 64))")" = 404 ]
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/evidence/not-a-token")" = 404 ]
+# The download: no sign-in, a sealed tar.gz whose hash matches, files byte for byte (quarantined one too).
+code=$(curl -sS -X POST -A "PoliceBrowser/1.0" -H "X-Forwarded-For: 203.0.113.77" -D /tmp/headers -o /tmp/police.tar.gz -w '%{http_code}' "$URL")
+[ "$code" = 200 ] || { echo "police download -> $code"; cat /tmp/police.tar.gz; exit 1; }
+grep -qi '^content-type: application/octet-stream' /tmp/headers && grep -qi '^cache-control: no-store' /tmp/headers
+grep -qiE "^content-disposition: attachment; filename=\"evidence-$RN-[0-9]{8}T[0-9]{6}Z\.tar\.gz\"" /tmp/headers
+[ "$(sha256sum /tmp/police.tar.gz | cut -d' ' -f1)" = "$LSHA" ]
+PX=$(mktemp -d); tar -C "$PX" -xzf /tmp/police.tar.gz; PD=$(ls -d "$PX"/evidence-"$RN"-*)
+( cd "$PD" && sha256sum -c --quiet MANIFEST.sha256 )
+cmp "$PD/files/$KN" "$UPLOADS/$KN"
+psql "$DATABASE_URL" -tAc "SELECT count(*) FROM quarantined_files WHERE storage_key = '$KN'" | grep -qx 1
+grep -q "Officer / ref: Det. Sgt Smith, ref 1234/26" "$PD/HANDOVER.txt" && grep -q "Do not open these files" "$PD/HANDOVER.txt"
+grep -q "Australia/Sydney" "$PD/HANDOVER.txt" && grep -q "one-time police download link" "$PD/HANDOVER.txt" && grep -q "Report:        $RN" "$PD/HANDOVER.txt"
+grep -q "files/$KN" "$PD/MANIFEST.sha256" && grep -q "report-$RN.json" "$PD/MANIFEST.sha256" && grep -q "HANDOVER.txt" "$PD/MANIFEST.sha256"
+jq -e --arg k "$KN" '.files[0].key == $k and .files[0].quarantined and (.files[0].detector | type) == "object"
+  and .generated_by.route == "link" and .generated_by.reference == "Det. Sgt Smith, ref 1234/26"
+  and (.files_note | test("in this hand-over package")) and .reported_account.username == "nate" and (.reported_account | has("suspended"))
+  and (.ip_addresses.addresses | type) == "array" and (.blocked_networks.refused_attempts | type) == "array"
+  and any(.safety_log[]; .action == "quarantine") and (.reporters | length) >= 1' "$PD/report-$RN.json" >/dev/null
+# Used up: 410 (page and download), and the package is gone from the server.
+[ "$(curl -sS -X POST -o /tmp/body -w '%{http_code}' "$URL")" = 410 ]
+[ "$(curl -sS -o /tmp/body -w '%{http_code}' "$URL")" = 410 ] && grep -q "already" /tmp/body
+[ ! -e "$PKGDIR/$PF" ]
+tok "$TOKEN_A" call GET "/api/safety/reports/$RN" | jq -e --arg l "$LID" --arg h "$LSHA" 'any(.police_links[]; .id == $l and .status == "used" and .downloads == 1 and .package_deleted)
+  and any(.log[]; .action == "handover_download" and (.details | contains("203.0.113.77")) and (.details | contains("PoliceBrowser/1.0"))
+    and (.details | contains($h)) and (.details | contains("1 of 1")))' >/dev/null
+# Two downloads allowed, then it expires: 410 and the package is deleted.
+L2=$(tok "$TOKEN_A" call POST "/api/safety/reports/$RN/police-links" '{"password":"password123","police_present":true,"hours":1,"max_downloads":2}')
+U2=$(jq -r .url <<<"$L2"); L2ID=$(jq -r .link.id <<<"$L2"); PF2=$(psql "$DATABASE_URL" -tAc "SELECT package_file FROM police_links WHERE id = $L2ID")
+[ "$(curl -sS -X POST -o /tmp/p2.tar.gz -w '%{http_code}' "$U2")" = 200 ] && [ "$(sha256sum /tmp/p2.tar.gz | cut -d' ' -f1)" = "$(jq -r .link.package_sha256 <<<"$L2")" ]
+[ -f "$PKGDIR/$PF2" ] && grep -q "1 of 2" <(curl -sS "$U2")
+psql "$DATABASE_URL" -qc "UPDATE police_links SET expires_at = now() - interval '1 minute' WHERE id = $L2ID"
+[ "$(curl -sS -X POST -o /tmp/body -w '%{http_code}' "$U2")" = 410 ] && grep -q "expired" /tmp/body
+[ ! -e "$PKGDIR/$PF2" ]
+tok "$TOKEN_A" call GET "/api/safety/reports/$RN" | jq -e --arg l "$L2ID" 'any(.police_links[]; .id == $l and .status == "expired" and .downloads == 1 and .package_deleted)' >/dev/null
+# Revoke: stops at once and deletes the package (owner only).
+L3=$(tok "$TOKEN_A" call POST "/api/safety/reports/$RN/police-links" '{"password":"password123","police_present":true,"hours":168,"max_downloads":3}')
+U3=$(jq -r .url <<<"$L3"); L3ID=$(jq -r .link.id <<<"$L3"); PF3=$(psql "$DATABASE_URL" -tAc "SELECT package_file FROM police_links WHERE id = $L3ID")
+[ -f "$PKGDIR/$PF3" ]
+tok "$TOKEN_B" fail_call POST "/api/safety/reports/$RN/police-links/$L3ID/revoke"
+tok "$TOKEN_A" call POST "/api/safety/reports/$RN/police-links/$L3ID/revoke" | jq -e --arg l "$L3ID" 'any(.links[]; .id == $l and .status == "revoked" and .package_deleted)' >/dev/null
+[ ! -e "$PKGDIR/$PF3" ] && [ "$(curl -sS -X POST -o /tmp/body -w '%{http_code}' "$U3")" = 410 ] && grep -q "withdrawn" /tmp/body
+[ "$(tok "$TOKEN_A" status POST "/api/safety/reports/$RN/police-links/$L3ID/revoke")" = 409 ]
+tok "$TOKEN_A" call GET "/api/safety/reports/$RN" | jq -e 'any(.log[]; .action == "handover_revoke")' >/dev/null
+# Download here (only if police ask): the same package straight to the browser, logged, nothing left on the server.
+[ "$(tok "$TOKEN_A" status POST "/api/safety/reports/$RN/handover-download" '{"password":"nope","police_present":true}')" = 400 ]
+code=$(curl -sS -X POST -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' -d '{"password":"password123","police_present":true,"reference":"Const. Jones"}' \
+  -D /tmp/headers -o /tmp/here.tar.gz -w '%{http_code}' "$BASE/api/safety/reports/$RN/handover-download")
+[ "$code" = 200 ] && grep -qi '^content-type: application/octet-stream' /tmp/headers && grep -qi '^cache-control: no-store' /tmp/headers
+HSHA=$(grep -i '^x-package-sha256:' /tmp/headers | tr -d '\r' | awk '{print $2}')
+[ "$(sha256sum /tmp/here.tar.gz | cut -d' ' -f1)" = "$HSHA" ]
+HX2=$(mktemp -d); tar -C "$HX2" -xzf /tmp/here.tar.gz; HD2=$(ls -d "$HX2"/evidence-"$RN"-*)
+( cd "$HD2" && sha256sum -c --quiet MANIFEST.sha256 ) && cmp "$HD2/files/$KN" "$UPLOADS/$KN" && grep -q "Const. Jones" "$HD2/HANDOVER.txt"
+tok "$TOKEN_A" call GET "/api/safety/reports/$RN" | jq -e --arg h "$HSHA" 'any(.log[]; .action == "handover" and (.details | contains($h)) and (.details | contains("downloaded here")) and (.details | contains("Const. Jones")))' >/dev/null
+[ -z "$(find "$PKGDIR" -type f -newer /tmp/here.tar.gz 2>/dev/null)" ]
+[ "$(find "$PKGDIR" -type f | wc -l)" = 0 ] || { echo "packages left on the server:"; ls -la "$PKGDIR"; exit 1; }
+# A report without files: the JSON, HANDOVER.txt and the manifest still.
+code=$(curl -sS -X POST -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' -d '{"password":"password123","police_present":true}' \
+  -o /tmp/nofiles.tar.gz -w '%{http_code}' "$BASE/api/safety/reports/$R5/handover-download")
+[ "$code" = 200 ]
+NX=$(mktemp -d); tar -C "$NX" -xzf /tmp/nofiles.tar.gz; ND=$(ls -d "$NX"/evidence-"$R5"-*)
+( cd "$ND" && sha256sum -c --quiet MANIFEST.sha256 ) && [ -f "$ND/report-$R5.json" ] && [ -z "$(ls -A "$ND/files")" ] && grep -q "Files:         0" "$ND/HANDOVER.txt"
+# Guessing at links is rate limited (per address).
+for _ in $(seq 1 30); do curl -sS -o /dev/null -H "X-Forwarded-For: 198.51.100.9" "$BASE/evidence/$(printf '0%.0s' $(seq 64))"; done
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -H "X-Forwarded-For: 198.51.100.9" "$BASE/evidence/$(printf '0%.0s' $(seq 64))")" = 429 ]
+grep -q "$PTOK" "$LOG" && { echo "the police token is in the server log"; exit 1; }
+rm -rf "$PX" "$HX2" "$NX" /tmp/police.tar.gz /tmp/here.tar.gz /tmp/p2.tar.gz /tmp/nofiles.tar.gz
+
 # ---------------------------------------------------------------------------
 # IP addresses (feat-ips): kept for safety, site owner only, same-IP hints
 # ---------------------------------------------------------------------------

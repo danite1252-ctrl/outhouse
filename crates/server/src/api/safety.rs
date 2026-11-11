@@ -2009,6 +2009,8 @@ async fn detail_json(st: &AppState, id: i64) -> AppResult<Value> {
         })).collect::<Vec<_>>(),
         "subject": subject,
         "log": log.iter().map(log_json).collect::<Vec<_>>(),
+        // One-time police download links (police.rs); never the tokens.
+        "police_links": super::police::links_json(st, id).await?,
     }))
 }
 
@@ -2901,6 +2903,7 @@ pub async fn export(
         &st,
         id,
         json!({ "id": user.id.to_string(), "username": user.username }),
+        false,
     )
     .await?;
     log(
@@ -2925,12 +2928,27 @@ pub async fn export(
 
 /// The evidence package (the console's "Export evidence package", and
 /// `outhouse-server export-evidence` for deploy/evidence-handover.sh).
+///
+/// `with_files`: the police hand-over package (handover.rs), which has the
+/// files themselves next to this JSON.
 pub(crate) async fn evidence_package(
     st: &AppState,
     id: i64,
     generated_by: Value,
+    with_files: bool,
 ) -> AppResult<Value> {
     let detail = detail_json(st, id).await?;
+    // The whole log for this report, oldest first (the console shows the latest 100).
+    let sql = format!("{LOG_SELECT} WHERE l.report_id = $1 ORDER BY l.id LIMIT 5000");
+    let full_log = sqlx::query_as::<_, LogRow>(&sql)
+        .bind(id)
+        .fetch_all(&st.db)
+        .await?;
+    let files_note = if with_files {
+        "The files are in this hand-over package, in files/, each named by its storage key (\"key\" here), copied byte for byte from the Outhouse server: never opened, viewed, decoded or converted. Check each one against its SHA-256 here, and the whole folder with `sha256sum -c MANIFEST.sha256`. \"detector\" is the result of Outhouse's automatic image check (metadata only)."
+    } else {
+        "The files themselves are not in this package. They are kept unchanged on the Outhouse server (in its upload folder, named by storage_key) and can be handed over on request; check each copy against its SHA-256 here (e.g. `sha256sum <storage_key>`)."
+    };
     // Bring the report's copy of the person's addresses up to date first.
     if let Some(subject) = load_report(st, id).await?.reported_user_id {
         crate::ips::snapshot_for_report(&st.db, id, subject).await?;
@@ -2943,7 +2961,7 @@ pub(crate) async fn evidence_package(
         "server": std::env::var("PUBLIC_URL").ok(),
         "software": format!("Outhouse {}", super::audit::version()),
         "time_zone": "All times are UTC (ISO 8601), except ip_addresses, which also gives Sydney time.",
-        "files_note": "The files themselves are not in this package. They are kept unchanged on the Outhouse server (in its upload folder, named by storage_key) and can be handed over on request; check each copy against its SHA-256 here (e.g. `sha256sum <storage_key>`).",
+        "files_note": files_note,
         "report": detail["report"],
         "snapshot": detail["snapshot"],
         "files": detail["files"],
@@ -2956,7 +2974,7 @@ pub(crate) async fn evidence_package(
             ),
             "addresses": ips,
         },
-        "safety_log": detail["log"],
+        "safety_log": full_log.iter().map(log_json).collect::<Vec<_>>(),
         "blocked_networks": super::ipblocks::evidence(
             &st.db,
             id,

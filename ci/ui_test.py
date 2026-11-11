@@ -3921,11 +3921,64 @@ with sync_playwright() as p:
     op.evaluate("document.querySelector('dialog.safety-console .sc-suspend-now').scrollIntoView({block: 'start'})")
     op.wait_for_timeout(200)
     op.screenshot(path=f"{SHOTS}/3570-suspend-now.png")
+    # Hand over to police: the app's one-time link first, "Download here" second,
+    # the SSH command folded away under "Advanced".
     ho = op.inner_text("dialog.safety-console .sc-handover")
-    assert f"./deploy/evidence-handover.sh {reps[0]['id']}" in ho and "never open it" in ho, ho
+    assert "Create a download link for police" in ho and "Recommended" in ho and "Download here" in ho, ho
+    assert ho.index("Create a download link") < ho.index("Download here"), ho
+    assert "evidence-handover.sh" not in ho, "the SSH command isn't folded away"
+    op.click("dialog.safety-console .sc-handover details.ho-advanced summary")
+    ho = op.inner_text("dialog.safety-console .sc-handover")
+    assert f"./deploy/evidence-handover.sh {reps[0]['id']}" in ho, ho
     op.evaluate("document.querySelector('dialog.safety-console .sc-handover').scrollIntoView({block: 'start'})")
     op.wait_for_timeout(200)
     op.screenshot(path=f"{SHOTS}/3571-hand-over-to-police.png")
+    # The confirm dialog: police present + password (a wrong one is refused in place).
+    op.click("dialog.safety-console .sc-handover button.ho-create")
+    op.wait_for_selector("dialog.ho-dialog[open]")
+    assert op.is_disabled("dialog.ho-dialog button[type=submit]"), "create is enabled before the tick and password"
+    op.check("dialog.ho-dialog input.ho-present")
+    op.fill("dialog.ho-dialog input.ho-reference", "Det. Sgt Smith, ref 1234/26")
+    op.fill("dialog.ho-dialog input.ho-password", "not-my-password")
+    op.wait_for_timeout(150)
+    op.screenshot(path=f"{SHOTS}/3575-police-link-confirm.png")
+    op.click("dialog.ho-dialog button[type=submit]")
+    op.wait_for_function("document.querySelector('dialog.ho-dialog .ho-error')?.textContent.includes('password')", timeout=15000)
+    op.fill("dialog.ho-dialog input.ho-password", "password123")
+    op.click("dialog.ho-dialog button[type=submit]")
+    op.wait_for_selector("dialog.ho-result[open]", timeout=30000)
+    link_url = op.inner_text("dialog.ho-result .ho-result-row >> nth=0 >> .ho-result-value").strip()
+    assert link_url.startswith(BASE + "/evidence/") and len(link_url.rsplit("/", 1)[1]) == 64, link_url
+    res_text = op.inner_text("dialog.ho-result")
+    assert "only time the link is shown" in res_text and "Det. Sgt Smith" in res_text, res_text
+    op.wait_for_timeout(150)
+    op.screenshot(path=f"{SHOTS}/3576-police-link-created.png")
+    op.click("dialog.ho-result button[type=submit]")
+    op.wait_for_selector("dialog.safety-console .ho-links-table tr.ho-active", timeout=10000)
+    op.evaluate("document.querySelector('dialog.safety-console .ho-links').scrollIntoView({block: 'center'})")
+    op.wait_for_timeout(200)
+    op.screenshot(path=f"{SHOTS}/3577-police-links-list.png")
+    # "Download here" warns first (cancelled here: nothing lands on this device).
+    op.click("dialog.safety-console .sc-handover button.ho-here")
+    op.wait_for_selector("dialog.ho-dialog[open] .ho-warning")
+    assert "saves the files onto this device" in op.inner_text("dialog.ho-dialog .ho-warning").lower()
+    op.wait_for_timeout(150)
+    op.screenshot(path=f"{SHOTS}/3578-download-here-confirm.png")
+    op.click("dialog.ho-dialog button:has-text('Cancel')")
+    op.wait_for_selector("dialog.ho-dialog", state="detached")
+    # What police see when they open the link (opening it doesn't use it up).
+    pol = browser.new_page(viewport={"width": 1280, "height": 800})
+    watch(pol, "police-page")
+    pol.goto(link_url)
+    pol.wait_for_selector(".ev-card .ev-btn")
+    assert "Downloads left" in pol.inner_text(".ev-card") and "1 of 1" in pol.inner_text(".ev-card")
+    pol.screenshot(path=f"{SHOTS}/3579-police-evidence-page.png")
+    pol.close()
+    # Revoke it from the list.
+    op.click("dialog.safety-console .ho-links-table button.ho-revoke")
+    op.click("dialog[open] button:has-text('Revoke link')")
+    op.wait_for_selector("dialog.safety-console .ho-links-table tr.ho-revoked", timeout=10000)
+    assert op.query_selector("dialog.safety-console .ho-links-table tr.ho-active") is None
     # Suspension: from Gary's spam report.
     op.click("dialog.safety-console .sc-back button")
     op.click("dialog.safety-console .sc-row:has-text('Spam or scams'):has-text('Gary')")

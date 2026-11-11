@@ -24,6 +24,7 @@ mod loot;
 pub mod members;
 pub mod messages;
 mod notifications;
+pub mod police;
 pub mod polls;
 mod profiles;
 pub mod raid_settings;
@@ -475,6 +476,23 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/safety/reports/{id}/files/{key}",
             get(safety::report_file),
+        )
+        // Handing evidence to police (site owner only; police open /evidence/{token})
+        .route(
+            "/api/safety/reports/{id}/police-links",
+            post(police::create_link),
+        )
+        .route(
+            "/api/safety/reports/{id}/police-links/{link}/revoke",
+            post(police::revoke_link),
+        )
+        .route(
+            "/api/safety/reports/{id}/handover-download",
+            post(police::download_here),
+        )
+        .route(
+            "/evidence/{token}",
+            get(police::police_page).post(police::police_download),
         )
         .route("/api/safety/users", get(safety::find_users))
         .route("/api/safety/users/{id}", get(safety::get_user))

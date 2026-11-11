@@ -444,7 +444,7 @@ function childSafetyNotice() {
       AUTHORITY_LINKS.slice(0, 2).map(([label, href]) => el("li", {}, label, " — ", el("a", { href, target: "_blank", rel: "noopener noreferrer" }, href))),
       el("li", {}, el("strong", {}, "If a child is in immediate danger, call 000.")),
       el("li", {}, AUTHORITY_LINKS[2][0], " — ", el("a", { href: AUTHORITY_LINKS[2][1], target: "_blank", rel: "noopener noreferrer" }, AUTHORITY_LINKS[2][1]), ", or your local police.")),
-    el("p", {}, "“Export evidence package” gives police the details and SHA-256 hashes without the files. “Hand over to police” below explains how they get the files."));
+    el("p", {}, "When police ask for the evidence, use “Hand over to police” below: it gives them a one-time download link for the sealed package (the files, unchanged, and all the details), so the files never touch your device."));
 }
 
 function snapshotView(d) {
@@ -532,7 +532,7 @@ function contextView(d) {
 function logView(entries) {
   if (!entries?.length) return el("p", { class: "muted small", style: "margin:0" }, "Nothing yet.");
   return el("div", { class: "audit-list" }, entries.map((e) => el("div", { class: `audit-row${e.action === "note" ? " note" : ""}` },
-    el("div", { class: "audit-icon" }, { note: "📝", quarantine: "🔒", suspend: "⛔", warn: "⚠", ban: "🚫", kick: "👢", timeout: "⏳", dismiss: "✖", close: "✓", export: "📦", view_ips: "👁", ip_match: "🔗", handover: "📦", ip_block: "⛔", ip_unblock: "↩", ip_block_extend: "⏳", ip_exempt: "✓" }[e.action] || "•"),
+    el("div", { class: "audit-icon" }, { note: "📝", quarantine: "🔒", suspend: "⛔", warn: "⚠", ban: "🚫", kick: "👢", timeout: "⏳", dismiss: "✖", close: "✓", export: "📦", view_ips: "👁", ip_match: "🔗", handover: "📦", handover_download: "⬇", handover_revoke: "✖", handover_expired: "⌛", ip_block: "⛔", ip_unblock: "↩", ip_block_extend: "⏳", ip_exempt: "✓" }[e.action] || "•"),
     el("div", { class: "audit-main" },
       el("div", { class: "audit-line" }, el("strong", {}, e.actor_name), el("span", { class: "audit-action" }, ` ${e.action.replace(/_/g, " ")}`), e.target_name ? el("span", { class: "audit-action" }, ` · ${e.target_name}`) : null),
       e.details ? el("div", { class: "audit-details" }, e.details) : null),
@@ -732,8 +732,8 @@ function noteBox(act) {
 }
 
 async function exportEvidence(id) {
-  const ok = await confirmBox("Export the evidence package?",
-    "This downloads a JSON file with the report, the snapshot, who reported it, the account's history and IP addresses, and the files' names and SHA-256 hashes. It never contains the files themselves. Keep it private and only give it to police or the eSafety Commissioner.", "Download");
+  const ok = await confirmBox("Export the details only?",
+    "This downloads a JSON file with the report, the snapshot, who reported it, the account's history and IP addresses, and the files' names and SHA-256 hashes. It never contains the files themselves (for those, use Hand over to police). Keep it private and only give it to police or the eSafety Commissioner.", "Download");
   if (!ok) return;
   const res = await fetch(`/api/safety/reports/${id}/export`, { headers: { Authorization: `Bearer ${state.token}` } }).catch(() => null);
   if (!res?.ok) return toast("Couldn't export it.");
@@ -746,20 +746,182 @@ async function exportEvidence(id) {
   toast("Evidence package downloaded.");
 }
 
-// How police get the files: packed on the server, never opened by the owner.
-function handoverPanel(d) {
+// ---------- Hand over to police ----------
+// The sealed package (original files byte for byte, the evidence package,
+// HANDOVER.txt, MANIFEST.sha256) is built on the server. Police get it from a
+// one-time link on their own device; "Download here" only if they ask.
+
+const PL_STATUS = { active: "Active", used: "Used", expired: "Expired", revoked: "Revoked" };
+const scBytes = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} bytes`);
+
+// The confirm dialog: police present, officer / reference, (link options), password.
+// submit(values) runs while the dialog is open; it throws to show an error.
+function handoverDialog(mode, d, submit) {
+  const link = mode === "link";
+  const files = d.files.length;
+  const present = el("input", { type: "checkbox", class: "ho-present" });
+  const reference = el("input", { type: "text", class: "ho-reference", maxlength: 200, placeholder: "e.g. Det. Sgt Smith, ref 1234/26", autocomplete: "off" });
+  const hours = el("select", { class: "ho-hours" }, [["1", "1 hour"], ["24", "24 hours"], ["168", "7 days"]].map(([v, l]) => el("option", { value: v, selected: v === "24" }, l)));
+  const downloads = el("select", { class: "ho-downloads" }, [["1", "Once (recommended)"], ["2", "Twice"], ["3", "3 times"]].map(([v, l]) => el("option", { value: v }, l)));
+  const password = el("input", { type: "password", class: "ho-password", autocomplete: "current-password", required: true });
+  const error = el("p", { class: "error ho-error", role: "alert" });
+  const go = el("button", { type: "submit", class: "primary", disabled: true }, link ? "Create the link" : "Download the package");
+  const sync = () => { go.disabled = !(present.checked && password.value); };
+  present.addEventListener("change", sync);
+  password.addEventListener("input", sync);
+  const what = `${scPlural(files, "original file")}${files ? " (byte for byte, never opened)" : ""}, everything Outhouse knows about this report (JSON, with IP addresses and blocked-network attempts), HANDOVER.txt and MANIFEST.sha256`;
+  const dialog = el("dialog", { class: "report-dialog sc-form ho-dialog" },
+    el("form", { method: "dialog" },
+      el("h2", {}, link ? "Create a download link for police" : "Download the package here"),
+      link
+        ? el("p", { class: "muted small ho-intro" }, `Outhouse packs ${what} into one sealed file on the server, and gives you a link for police to open on their own device. You never see the files.`)
+        : el("div", { class: "ho-warning", role: "note" }, el("strong", {}, "This saves the files onto this device."), " Don't open or extract it; hand it straight to police and delete it after.",
+            el("span", { class: "ho-warning-sub" }, `It has ${what}.`)),
+      el("label", { class: "rp-check ho-check" }, present, link ? "Police are with me, or police have asked me for this" : "Police are with me and have asked for it on this device"),
+      el("label", { class: "field" }, "Officer / reference (optional)", reference,
+        el("span", { class: "muted small" }, "Goes in HANDOVER.txt and the safety log.")),
+      link ? el("div", { class: "ho-options" },
+        el("label", { class: "field" }, "Link works for", hours),
+        el("label", { class: "field" }, "Can be downloaded", downloads)) : null,
+      el("label", { class: "field" }, "Your password (to confirm it's you)", password),
+      error,
+      el("div", { class: "row" },
+        el("button", { type: "button", class: "ghost", onclick: () => dialog.close() }, "Cancel"),
+        go)));
+  dialog.querySelector("form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (go.disabled) return;
+    go.disabled = true;
+    error.textContent = "";
+    const label = go.textContent;
+    go.textContent = "Packing…";
+    try {
+      await submit({
+        password: password.value,
+        police_present: present.checked,
+        reference: reference.value.trim() || null,
+        hours: Number(hours.value),
+        max_downloads: Number(downloads.value),
+      });
+      dialog.close();
+    } catch (err) {
+      error.textContent = err.message;
+      go.textContent = label;
+      password.value = "";
+      sync();
+      password.focus();
+    }
+  });
+  dialog.addEventListener("close", () => dialog.remove());
+  document.body.append(dialog);
+  dialog.showModal();
+}
+
+// After a link is made (shown once) or the package was downloaded here.
+function handoverResultDialog({ url = null, link }) {
+  const row = (label, value, what) => el("div", { class: "ho-result-row" },
+    el("span", { class: "ho-result-label" }, label),
+    el("code", { class: "ho-result-value" }, value),
+    el("button", { type: "button", class: "ghost sc-copy", onclick: () => copy(value, what) }, "Copy"));
+  const dialog = el("dialog", { class: "report-dialog sc-form ho-result" },
+    el("form", { method: "dialog" },
+      el("h2", {}, url ? "Link for police" : "Package downloaded"),
+      url
+        ? el("p", { class: "ho-once" }, el("strong", {}, "This is the only time the link is shown."), " Give it to police to open on their device, or paste it into their portal. Opening it doesn't use it up; downloading does.")
+        : el("p", { class: "ho-once" }, el("strong", {}, "Don't open or extract it."), " Hand it straight to police, then delete it from this device."),
+      url ? row("Link", url, "Link copied") : null,
+      row("SHA-256", link.package_sha256, "SHA-256 copied"),
+      el("dl", { class: "ho-facts" },
+        el("dt", {}, "File"), el("dd", {}, `${link.package_name} (${scBytes(link.package_size)}, ${scPlural(link.file_count, "file")})`),
+        url ? [el("dt", {}, "Works until"), el("dd", {}, scWhen(link.expires_at))] : null,
+        url ? [el("dt", {}, "Downloads"), el("dd", {}, link.max_downloads === 1 ? "Once, then it's deleted from the server" : `${link.max_downloads} times, then it's deleted from the server`)] : null,
+        link.reference ? [el("dt", {}, "Reference"), el("dd", {}, link.reference)] : null),
+      el("p", { class: "muted small" }, "Police can check the file with sha256sum (it should match the SHA-256 above, which is also in the safety log)."),
+      el("div", { class: "row" }, el("button", { type: "submit", class: "primary" }, "Done"))));
+  dialog.addEventListener("close", () => dialog.remove());
+  document.body.append(dialog);
+  dialog.showModal();
+}
+
+async function downloadHere(reportId, values) {
+  const res = await fetch(`/api/safety/reports/${reportId}/handover-download`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.token}` },
+    body: JSON.stringify(values),
+  }).catch(() => null);
+  if (!res) throw new Error("Couldn't reach the server.");
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.error || `Couldn't make the package (${res.status}).`);
+  }
+  const name = (res.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/)?.[1] || `evidence-${reportId}.tar.gz`;
+  const sha = res.headers.get("X-Package-SHA256") || "";
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = el("a", { href: url, download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  return { package_name: name, package_sha256: sha, package_size: blob.size, file_count: Number(res.headers.get("X-Package-Files") || 0), reference: values.reference || "" };
+}
+
+function policeLinksView(d, ctx) {
+  const links = d.police_links || [];
+  if (!links.length) return null;
+  const revoke = async (l) => {
+    if (!await confirmBox("Revoke this link?", "It stops working at once and the package is deleted from the server.", "Revoke link")) return;
+    const r = await tryApi("POST", `/api/safety/reports/${d.report.id}/police-links/${l.id}/revoke`).catch(() => null);
+    if (r) { toast("Link revoked; the package was deleted."); ctx.refresh(); }
+  };
+  const rowFor = (l) => el("tr", { class: `ho-${l.status}` },
+    el("td", { "data-label": "Made" }, scWhen(l.created_at), el("div", { class: "muted small" }, el("code", {}, `${l.token_prefix}…`))),
+    el("td", { "data-label": "Reference" }, l.reference || "—"),
+    el("td", { "data-label": "Works until" }, scWhen(l.expires_at)),
+    el("td", { "data-label": "Downloads" }, `${l.downloads} of ${l.max_downloads}`, l.last_download_at ? el("div", { class: "muted small" }, `last ${scWhen(l.last_download_at)}`) : null),
+    el("td", { "data-label": "Status" }, el("span", { class: `rp-chip ho-chip ho-chip-${l.status}` }, PL_STATUS[l.status] || l.status),
+      l.package_deleted && l.status !== "active" ? el("div", { class: "muted small" }, "package deleted") : null),
+    el("td", { class: "ho-act" }, l.status === "active" ? el("button", { class: "ghost ho-revoke", onclick: () => revoke(l) }, "Revoke") : null));
+  const table = el("table", { class: "sc-table ho-links-table" },
+    el("thead", {}, el("tr", {}, ["Made", "Reference", "Works until", "Downloads", "Status", ""].map((h) => el("th", {}, h)))),
+    el("tbody", {}, links.map(rowFor)));
+  return el("div", { class: "ho-links" },
+    el("h4", {}, "Links made for this report"),
+    el("div", { class: "sc-table-wrap" }, table),
+    el("p", { class: "muted small sc-tight" }, "Each download is written to the safety log with the downloader's IP address and browser."));
+}
+
+function handoverPanel(d, ctx) {
   const r = d.report;
   const any = !r.child_safety && !d.files.some((f) => f.quarantined);
   const cmd = `cd ~/outhouse && ./deploy/evidence-handover.sh ${any ? "--any " : ""}${r.id}`;
+  const files = d.files.length;
   return el("section", { class: "sc-section sc-handover" },
     el("h3", {}, "Hand over to police"),
-    el("p", { class: "sc-tight" }, "Police get the original files straight from the server. You never need to open, view or download them, and you shouldn't. One command on the server packs them, unchanged, with the evidence package, a list of SHA-256 hashes and a note, into a single file only you can read, and writes it to the safety log."),
-    el("div", { class: "sc-cmd" }, el("code", { class: "sc-cmd-text" }, cmd),
-      el("button", { class: "ghost sc-copy", onclick: () => copy(cmd, "Command copied") }, "Copy")),
-    el("ol", { class: "sc-guide" },
-      el("li", {}, el("strong", {}, "Police download it under supervision: "), "connect to the server over SSH, run the command above, then let them copy the package file it prints (the .tar.gz in ~/outhouse-evidence) the way they ask, e.g. onto their own drive."),
-      el("li", {}, el("strong", {}, "Police give you a portal link: "), "run the same command, then upload the package file to their portal from the server. Only copy it to your PC (with scp) if you have to, and never open it.")),
-    el("p", { class: "muted small sc-tight" }, "It works for quarantined files too (nobody can download those over the web). Check the package against the SHA-256 the command prints. Do not open the files."));
+    el("p", { class: "sc-tight" }, `Police get ${files ? `the ${scPlural(files, "original file")}, unchanged, ` : ""}in one sealed package with everything Outhouse knows about this report. You never need to open, view or download the files, and you shouldn't.`),
+    el("div", { class: "ho-routes" },
+      el("div", { class: "ho-route ho-route-link" },
+        el("div", { class: "ho-route-head" }, el("strong", {}, "One-time download link for police"), el("span", { class: "rp-chip ho-recommended" }, "Recommended")),
+        el("p", { class: "muted small" }, "Packed on the server; police open the link on their own device (or you paste it into their portal). It works once and expires, then the package is deleted. The files never touch your device."),
+        el("button", { class: "primary ho-create", onclick: () => handoverDialog("link", d, async (values) => {
+          const res = await api("POST", `/api/safety/reports/${r.id}/police-links`, values);
+          handoverResultDialog({ url: res.url, link: res.link });
+          ctx.refresh();
+        }) }, "Create a download link for police")),
+      el("div", { class: "ho-route ho-route-here" },
+        el("div", { class: "ho-route-head" }, el("strong", {}, "Download here"), el("span", { class: "muted small" }, "only if police ask")),
+        el("p", { class: "muted small" }, "Saves the same package onto this device, for police to copy under supervision."),
+        el("button", { class: "ghost ho-here", onclick: () => handoverDialog("here", d, async (values) => {
+          const done = await downloadHere(r.id, values);
+          handoverResultDialog({ link: done });
+          ctx.refresh();
+        }) }, "Download here…"))),
+    policeLinksView(d, ctx),
+    el("details", { class: "ho-advanced" },
+      el("summary", {}, "Advanced: from the server over SSH"),
+      el("p", { class: "muted small sc-tight" }, "The same package, made on the server if the app can't be used. It's saved in ~/outhouse-evidence on the server and logged."),
+      el("div", { class: "sc-cmd" }, el("code", { class: "sc-cmd-text" }, cmd),
+        el("button", { class: "ghost sc-copy", onclick: () => copy(cmd, "Command copied") }, "Copy"))));
 }
 
 async function drawReportDetail(page, id, { back, stillMine, openUser }) {
@@ -792,7 +954,7 @@ async function drawReportDetail(page, id, { back, stillMine, openUser }) {
       typeof detectorReportPanel === "function" ? detectorReportPanel(d, act) : null,
       r.source === "ip-match" ? scSection("Same IP address", ipMatchView(d, openUser)) : scSection("What was reported", ...snapshotView(d)),
       d.files.length ? scSection("Files", filesView(d, r.id)) : null,
-      d.files.length ? handoverPanel(d) : null,
+      r.source === "ip-match" ? null : handoverPanel(d, ctx),
       d.snapshot?.context?.length ? scSection("Around it (10 messages before and after)", contextView(d)) : null,
       (r.source === "detector" || r.source === "ip-match") && !d.reporters.length ? null : scSection(`Reported by (${d.reporters.length})`,
         el("p", { class: "muted small", style: "margin:0" }, "Never shown to the person reported."),
@@ -821,7 +983,7 @@ async function drawReportDetail(page, id, { back, stillMine, openUser }) {
           d.message_live && snapMsg?.attachments?.length ? el("button", { class: "ghost", onclick: async () => {
             if (await confirmBox("Remove the files from the message?", "The text stays; the files disappear from chat but are kept with this report.", "Remove files")) act({ action: "remove_attachment" }, "Files removed.");
           } }, "Remove files") : null,
-          el("button", { class: "ghost", onclick: () => exportEvidence(r.id) }, "Export evidence package"),
+          el("button", { class: "ghost", onclick: () => exportEvidence(r.id) }, "Export details only (JSON, no files)"),
           closed && r.child_safety && !r.evidence_released ? el("button", { class: "danger-btn", onclick: async () => {
             if (await confirmBox("Delete the evidence files?", "Only do this once police (or the eSafety Commissioner) have what they need or have told you it's not needed. The files are deleted from the server for good; their names and SHA-256 hashes stay in the report.", "Delete files for good")) act({ action: "delete_evidence" }, "Evidence files deleted.");
           } }, "Delete evidence files…") : null),
@@ -1059,9 +1221,9 @@ function drawPoliceGuide(page) {
     el("h3", {}, "Suspected child sexual abuse material"),
     el("p", {}, "Don't view, download, copy, screenshot or forward it, not even to show police. Outhouse has already locked the files (nobody can download them) and keeps them unchanged on the server. Report it to the ACCCE or eSafety and tell them you run the server."),
     el("h3", {}, "What to give them"),
-    el("p", {}, "Open the report and press “Export evidence package”. It's a JSON file with the report, what the message said (and the messages around it), who sent it and when, which accounts reported it, the account's history, the IP addresses it used (with times in UTC and Sydney time) and each file's name, size and SHA-256 hash. It never contains the files."),
+    el("p", {}, "Open the report and use “Hand over to police”. Best with police there (or when they've asked): press “Create a download link for police”, enter your password, and give them the link to open on their own device (or paste it into their portal). Outhouse packs everything into one sealed file on the server: the original files, unchanged and never opened; a JSON file with the report, what the message said (and the messages around it), who sent it and when, who reported it, the account's history and suspension, the IP addresses it used (UTC and Sydney time) and attempts from blocked networks; the safety log; HANDOVER.txt; and SHA-256 hashes of it all. The link works once and expires; then the package is deleted from the server. Every step, and every download (with its IP address), goes in the safety log."),
     el("h3", {}, "The files themselves"),
-    el("p", {}, "Never open them. On the report, “Hand over to police” gives you one command to run on the server (over SSH). It packs the original files, unchanged, with the evidence package, their SHA-256 hashes and a note into one file only you can read, and logs it. Then either let police copy that file from the server under their supervision, or upload it from the server to the portal link they give you."),
+    el("p", {}, "Never open them, and don't download them yourself. Only use “Download here” if police ask you to, and then hand the file straight over and delete it. If the app can't be used, “Advanced: from the server over SSH” on the report makes the same package on the server. “Export details only” is the JSON alone, without files."),
     el("h3", {}, "Suspend straight away"),
     el("p", {}, "Police advice: suspend the reported account as soon as you see a child-safety report (“Suspend now” on the report). They're only told it's pending review of a report. Lift it if it was a mistake, or make it permanent, and you can block their IP addresses too."),
     el("h3", {}, "After it's dealt with"),
