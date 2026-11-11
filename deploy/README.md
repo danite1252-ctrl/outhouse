@@ -650,8 +650,11 @@ sends, so the sign-in limits see the real address.
 - Docker's published port 8080 (the behind-Apache set-up) skips ufw, so
   anyone on your home network can reach it directly. That's fine for a home
   LAN; to allow only Apache, add a `DOCKER-USER` rule:
-  `sudo iptables -I DOCKER-USER -p tcp --dport 8080 ! -s 192.168.1.32 -j DROP`
-  (and save it with `iptables-persistent`).
+  `sudo iptables -I DOCKER-USER -i eth0 -p tcp --dport 8080 ! -s 192.168.1.32 -j DROP`
+  (and save it with `iptables-persistent`). Replace `eth0` with your LAN
+  interface (`ip route get 192.168.1.32` shows it after `dev`). The `-i` part
+  matters: without it the rule can also drop Caddy's traffic to the server
+  container inside Docker, which takes the site down.
 - Backups contain `.env` (every password). They're readable only by you;
   the off-site copies are as safe as the share they're on.
 - `RATE_LIMITS=off` turns the limits off (for testing only).
