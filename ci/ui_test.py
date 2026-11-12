@@ -320,10 +320,22 @@ def check_settings_tabs(pg, opener, label):
     pg.wait_for_selector("dialog.settings", state="detached")
 
 
+# LiveKit's client logs these as errors when the server ends a session on
+# purpose (someone is disconnected or moved, the page leaves a call): its data
+# channels are torn down with "User-Initiated Abort". Whether they show up
+# depends on timing, so they aren't failures.
+LIVEKIT_TEARDOWN = ("User-Initiated Abort", "closed unexpectedly")
+
+
+def benign(text):
+    return "favicon" in text or "Failed to load resource" in text or (
+        ("DataChannel error" in text or "data channel" in text) and any(t in text for t in LIVEKIT_TEARDOWN))
+
+
 def watch(page, label):
     page.on("pageerror", lambda e: errors.append(f"[{label}] page error: {e}"))
-    page.on("console", lambda m: m.type == "error" and "favicon" not in m.text
-            and "Failed to load resource" not in m.text and errors.append(f"[{label}] console: {m.text}"))
+    page.on("console", lambda m: m.type == "error" and not benign(m.text)
+            and errors.append(f"[{label}] console: {m.text}"))
 
 
 with sync_playwright() as p:
