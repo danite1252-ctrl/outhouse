@@ -1178,6 +1178,9 @@ pub async fn create(
         quarantine(&st, id).await?;
     }
     notify_owners(&st, urgent.then_some(id));
+    // The image detector's age estimates: explicit with a face estimated
+    // clearly young makes it a child-safety report, whatever was picked.
+    super::detector::check_report(&st, id).await;
     Ok((
         StatusCode::CREATED,
         Json(ReportReceipt {
@@ -1304,10 +1307,15 @@ pub(crate) struct DetectorTarget {
     pub category: &'static str,
     /// Score, labels and the one-line summary, kept in the snapshot.
     pub detector: Value,
+    /// The age rule matched (category is child safety): why, for the
+    /// snapshot (see `api::detector::AgeRule`).
+    pub auto_escalation: Option<Value>,
 }
 
 /// The image detector flagged a picture: a report in the owner's console
-/// (source "detector", never child safety), with the usual snapshot.
+/// (source "detector"), with the usual snapshot. Child safety only when the
+/// age rule matched (explicit, with a face estimated clearly young): then
+/// it's quarantined and the owner alerted like any child-safety report.
 pub(crate) async fn detector_report(st: &AppState, t: DetectorTarget) -> AppResult<()> {
     let target = match t.kind.as_str() {
         super::detector::KIND_ATTACHMENT => {
@@ -1355,6 +1363,9 @@ pub(crate) async fn detector_report(st: &AppState, t: DetectorTarget) -> AppResu
     let mut snapshot = target.snapshot;
     snapshot["detector"] = t.detector.clone();
     snapshot["detector"]["kind"] = json!(t.kind);
+    if let Some(info) = &t.auto_escalation {
+        snapshot["auto_escalation"] = info.clone();
+    }
     let id = st.ids.next_id();
     let inserted: Option<i64> = sqlx::query_scalar(
         "INSERT INTO reports (id, target_kind, target_id, category, priority, reported_user_id,
@@ -1396,6 +1407,24 @@ pub(crate) async fn detector_report(st: &AppState, t: DetectorTarget) -> AppResu
         .execute(&st.db)
         .await?;
     }
+    if t.category == CHILD_SAFETY {
+        log(
+            st,
+            None,
+            "auto_child_safety",
+            Some(id),
+            target.reported_user_id.or(t.uploader_id),
+            format!(
+                "{} (the age is a {}). Child-safety report made automatically.",
+                t.detector["summary"].as_str().unwrap_or("Automatic"),
+                super::detector::AGE_NOTE
+            ),
+        )
+        .await;
+        quarantine(st, id).await?;
+        notify_owners(st, Some(id));
+        return Ok(());
+    }
     log(
         st,
         None,
@@ -1409,6 +1438,53 @@ pub(crate) async fn detector_report(st: &AppState, t: DetectorTarget) -> AppResu
     )
     .await;
     notify_owners(st, None);
+    Ok(())
+}
+
+/// The image detector's age rule matched a file in this open report
+/// (explicit, with a face estimated clearly young): it becomes a
+/// child-safety report whatever category was picked (quarantine, hidden
+/// messages, urgent alert), and the safety log says it was automatic.
+/// Nothing happens to a report that's already about child safety.
+pub(crate) async fn auto_child_safety(
+    st: &AppState,
+    report_id: i64,
+    info: &Value,
+) -> AppResult<()> {
+    let row: Option<(String, Option<i64>)> = sqlx::query_as(
+        "UPDATE reports r SET category = $2, priority = $3, updated_at = now(),
+                snapshot = jsonb_set(r.snapshot, '{auto_escalation}', $4)
+         FROM (SELECT id, category FROM reports WHERE id = $1) old
+         WHERE r.id = old.id AND r.category <> $2 AND r.status <> 'closed'
+         RETURNING old.category, r.reported_user_id",
+    )
+    .bind(report_id)
+    .bind(CHILD_SAFETY)
+    .bind(priority(CHILD_SAFETY))
+    .bind(SqlJson(info))
+    .fetch_optional(&st.db)
+    .await?;
+    let Some((before, subject)) = row else {
+        return Ok(());
+    };
+    log(
+        st,
+        None,
+        "auto_child_safety",
+        Some(report_id),
+        subject,
+        format!(
+            "Automatically re-classified from “{}” to child safety: {} (the age is a {}).",
+            category_label(&before),
+            info["line"]
+                .as_str()
+                .unwrap_or("explicit content with a young-looking face"),
+            super::detector::AGE_NOTE
+        ),
+    )
+    .await;
+    quarantine(st, report_id).await?;
+    notify_owners(st, Some(report_id));
     Ok(())
 }
 
@@ -1670,13 +1746,17 @@ fn report_json(r: &ReportRow) -> Value {
             "display_name": r.reported_name,
         })),
         "place": place_label(&r.snapshot.0),
-        "preview": if r.source == "detector" {
+        "preview": if let Some(line) = r.snapshot.0["auto_escalation"]["line"].as_str() {
+            // Automatic child-safety escalation: no content in the preview.
+            line.to_string()
+        } else if r.source == "detector" {
             let line = r.snapshot.0["detector"]["summary"].as_str().unwrap_or("Flagged by the image detector");
             format!("{line} · {}", preview(&r.snapshot.0))
         } else {
             preview(&r.snapshot.0)
         },
         "source": r.source,
+        "auto_escalation": r.snapshot.0["auto_escalation"].is_object(),
     })
 }
 
@@ -2021,6 +2101,15 @@ pub async fn get(
     Path(id): Path<i64>,
 ) -> AppResult<Json<Value>> {
     require_owner(&st, &user).await?;
+    // Opening it: the files' age estimates (and the age rule) are checked.
+    let open: Option<bool> =
+        sqlx::query_scalar("SELECT status <> 'closed' FROM reports WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&st.db)
+            .await?;
+    if open == Some(true) {
+        super::detector::check_report(&st, id).await;
+    }
     Ok(Json(detail_json(&st, id).await?))
 }
 
@@ -2169,7 +2258,7 @@ pub async fn report_action(
                     .bind(id)
                     .fetch_all(&st.db)
                     .await?;
-            super::messages::remove_unused_files(&st, keys).await;
+            super::messages::remove_unused_files(&st, keys.clone()).await;
             log(
                 &st,
                 Some(me),
@@ -2179,6 +2268,22 @@ pub async fn report_action(
                 resolution,
             )
             .await;
+            if dismiss && r.category == CHILD_SAFETY {
+                if r.snapshot.0["auto_escalation"].is_object() {
+                    log(
+                        &st,
+                        Some(me),
+                        "auto_child_safety_dismissed",
+                        Some(id),
+                        r.reported_user_id,
+                        "Automatic age escalation dismissed as a mistake: the file isn't quarantined any more and won't be escalated automatically again",
+                    )
+                    .await;
+                }
+                // Back to the detector's normal handling (a held picture
+                // gets its normal detector report again).
+                super::detector::escalation_dismissed(&st, &keys).await;
+            }
         }
         "delete_message" => {
             let m = r
@@ -2962,6 +3067,7 @@ pub(crate) async fn evidence_package(
         "software": format!("Outhouse {}", super::audit::version()),
         "time_zone": "All times are UTC (ISO 8601), except ip_addresses, which also gives Sydney time.",
         "files_note": files_note,
+        "age_estimates_note": "Where a file's \"detector\" has \"faces\", \"min_age\" and \"ages\" (and a report has \"auto_escalation\"), those are Outhouse's preliminary automated age estimates: a small local model's guess of each face's age group from the face alone (no face pictures are kept). They're often wrong by years, can mistake drawings for faces and are NOT evidence of anyone's age. Outhouse uses them only to escalate explicit pictures to a child-safety review.",
         "report": detail["report"],
         "snapshot": detail["snapshot"],
         "files": detail["files"],

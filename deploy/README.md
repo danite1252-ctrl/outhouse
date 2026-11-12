@@ -451,8 +451,11 @@ A small nudity detector checks uploaded pictures: message attachments,
 avatars, banners, custom emoji and stickers (PNG, JPEG, WebP and GIF; for
 an animation the first frame and a couple from the middle). It runs
 **entirely on your server**: no picture is ever sent anywhere else, and
-Outhouse stores only the score, the labels and what was decided, never a
-copy or thumbnail. Link previews of pictures on other websites aren't checked.
+Outhouse stores only the score, the labels, the faces' age estimates (numbers)
+and what was decided, never a copy, thumbnail, face crop or face "fingerprint".
+Link previews of pictures on other websites aren't checked. It also estimates
+the age of faces in every picture it checks, to escalate explicit pictures of
+young-looking people to child safety (see **Age check** below).
 
 **How it runs.** A separate container, `detector` (built from
 `deploy/detector`), on an internal Docker network with no way out to the
@@ -460,10 +463,13 @@ internet and no port opened on the server. It's capped at **1 CPU and
 1 GB of memory** (`cpus: "1.0"`, `mem_limit: 1g`), runs at low priority with
 one thread, and checks **one picture at a time**. Checking happens in the
 background *after* the upload is saved, so chat never waits for it. On a
-small VM it uses about 85–100 MB (150 MB or so while reading a 12-megapixel
-photo) and takes roughly 0.05–0.3 s of one CPU per
-picture (big photos are shrunk before the model sees them, and every scan
-has a hard 20-second limit). If it's down (restarting, out of memory, being
+small VM it uses about 170 MB idle and 260–360 MB once it has checked a few
+pictures with faces (the age model is the big part), well inside the 1 GB
+cap, and takes roughly 0.05–0.3 s of one CPU per picture for nudity, plus
+about 0.02 s per frame to look for faces and about 0.25 s per face found
+for its age (at most 10 faces: a group photo can take 2–3 s). Big photos
+are shrunk before the models see them, and every scan has a hard 20-second
+limit. If it's down (restarting, out of memory, being
 rebuilt) uploads still work: pictures wait in the queue, Outhouse retries
 with growing gaps (up to 5 minutes), carries on where it left off after a
 restart, and **Server status** shows *Detector offline* and the queue length.
@@ -473,13 +479,29 @@ restart, and **Server status** shows *Detector offline* and the queue length.
 12 MB ONNX, CPU only via onnxruntime). The score is the highest confidence
 for an *exposed* breast, genitals, buttocks or anus. It's downloaded while
 the image builds (from PyPI, checked against a pinned SHA-256; it isn't in
-git), and the image is about 430 MB. **Licence:** NudeNet's code and
+git), and the image is about 590 MB with the face and age models (430 MB
+without them). **Licence:** NudeNet's code and
 weights are under the **GNU AGPL-3.0** (the copy in the package says so,
 even though PyPI's summary says MIT; the YOLOv8 base is AGPL-3.0 too).
 Using it unmodified on your own server is fine; if you ever change the
 detector and let people outside use it, or hand the image to someone else,
 the AGPL asks you to offer them the source. The licence text is in the
 image at `/models/LICENSE-nudenet.txt`.
+
+**The face and age models.** Faces are found with OpenCV Zoo's
+[YuNet](https://huggingface.co/opencv/face_detection_yunet) (2023mar, 230 KB,
+**MIT** licence, `/models/LICENSE-yunet.txt`); each face's age group is
+estimated with [dima806/fairface_age_image_detection](https://huggingface.co/dima806/fairface_age_image_detection),
+a ViT-B/16 fine-tuned on the FairFace dataset, as onnx-community's int8 ONNX
+(87 MB, **Apache-2.0**, `/models/LICENSE-age.txt`). Both are downloaded
+from Hugging Face at a pinned commit while the image builds and checked
+against pinned SHA-256s; both are fine for any use. The age model sorts a
+face into 0–2, 3–9, 10–19, 20–29 … 70+; Outhouse turns those probabilities
+into one number of years (each group's middle age, weighted). Its makers
+measured about 75–80 % right for 0–2 and 3–9 year olds, but only about half
+right for 10–19, and it's worse for faces that are small, turned away,
+blurred, made up or partly covered. Set `DETECTOR_AGE=0` in the detector's
+environment to switch faces and ages off entirely.
 
 **What happens to a flagged picture** (score at or above your threshold):
 - **In an 18+ channel where everyone who can see it is an adult:** posted as normal.
@@ -505,12 +527,62 @@ picture that was only allowed because it's in an adult-only 18+ channel can
 only be forwarded to another one.
 
 **Child-safety reports** show the detector's result for each file as a
-line of text, e.g. *Detector: 0.02 — nothing explicit found*. If a file was
-never checked it's checked then (the quarantined copy is read on the
-server; it's still never shown or served, `/files/…` still answers 451).
+line of text, e.g. *Detector: 0.02 — nothing explicit found*, and, under it,
+*Detector: nudity 0.82 · faces 2 · youngest estimated ~9 (preliminary
+automated estimate, not evidence)*. Every report with files shows these
+lines when you open it. If a file was never checked (or was checked before
+the age check existed) it's checked then (the quarantined copy is read on
+the server; it's still never shown or served, `/files/…` still answers 451).
 A score near zero suggests a false report: you can dismiss it without
-viewing anything. The detector looks for nudity only and can't tell anyone's
-age, so a high score isn't proof of anything either; follow the steps above.
+viewing anything. Neither score is proof of anything; follow the steps above.
+
+#### Age check (explicit + a young-looking face → child safety)
+
+Faces in **every** checked picture (attachments, avatars, banners, emoji,
+stickers, the frames sampled from a GIF) get an age estimate: up to the 10
+largest faces, ignoring faces smaller than 32 pixels. Only numbers are kept
+(the face count, the youngest estimate and each face's estimate and
+confidence); no face picture or face fingerprint is stored anywhere.
+
+If a picture's nudity score is at or above the **escalation score** (default
+**0.40**, lower than the normal sensitivity on purpose: it's the combination
+that matters) **and** the youngest face is estimated at or under the **age
+threshold** (default **13**), it's escalated **automatically**, in every
+context including adult-only 18+ channels:
+- a **child-safety report** appears (from the detector; preview *Automatic:
+  explicit content with a face estimated 13 or under*, no content), or any
+  open report about that file (whatever category the reporter picked) is
+  re-classified to child safety and the safety log says it was automatic;
+- the file is **quarantined**: 451 for everyone, you included; the message
+  (and any forward of the same file) is hidden live;
+- you get the **urgent alert** (push, ntfy / webhook: *Review and suspend the
+  account now if in doubt*), and the report has the **Suspend now** panel,
+  exactly like a child-safety report someone made.
+
+A young face **without** nudity does nothing (family photos of kids are
+fine), and teen protections are unchanged. When someone reports a file, or
+you open a report, the file's estimate is shown and the same rule is applied
+(re-classifying the report if it matches). The evidence package and police
+hand-over carry the estimates, labelled as preliminary automated estimates.
+
+**It errs on the side of caution.** A wrong escalation is a locked file you
+judge by the numbers (you can never view a child-safety file) and
+**Dismiss**: the file and message come back, the picture goes back to the
+detector's normal handling (a held picture gets its normal detector report
+again), and that file isn't escalated automatically again.
+
+**Limits.** The age is a *preliminary automated estimate*, not evidence: a
+guess from a face alone, often wrong by years (it struggles most around
+16–20, which is why the threshold is well below that). No face found (turned
+away, cropped, covered, too small) means no escalation. Drawn, cartoon and
+anime faces may or may not be detected as faces, and their "age" is
+meaningless; YuNet sometimes sees faces in patterns. Nothing about this
+replaces people reporting things.
+
+**Settings** (site owner only, Reports → Image detector → **Age check**):
+on/off (default on), **Counts as young** 10 / **13** / 16 or under, and
+**Counts as explicit** 0.25 / **0.40** / 0.60. Server status lists the
+three models.
 
 **Settings** (site owner only): Reports → **Image detector** for the whole
 site, and Outhouse settings → **Image detector** for each outhouse.
@@ -528,6 +600,20 @@ small or cropped pictures) and flags harmless ones (swimwear, babies in the
 bath, skin-coloured objects, art). People can still report anything it
 misses, and a false alarm costs one click to approve.
 
+**Checking the age check in production** (harmless pictures only, never
+anything explicit and never a picture of a child): add
+`DETECTOR_ESCALATION_AGE=99` and `DETECTOR_ESCALATION_SCORE=0.001` to
+`deploy/.env` and run `docker compose up -d server`. Now any picture with an
+adult's face counts as "explicit with a young face": post a photo of your own
+face (or any adult volunteer's) with a test account in a test channel. Within
+a few seconds it should vanish from the chat, `/files/…` should answer 451 for
+you too, an urgent alert should arrive and Reports should show *Automatic:
+explicit content with a face estimated 99 or under* with the face count and
+estimate. A photo with no face (a cup of tea) should do nothing. Dismiss the
+report (the photo comes back), then delete both lines from `.env` and run
+`docker compose up -d server` again (Server status shows red *Test age rule*
+lines while they're set).
+
 **Checking it works in production** (with harmless pictures only): add
 `DETECTOR_THRESHOLD=0.001` to `deploy/.env` and run
 `docker compose up -d server`. That flags nearly every picture, so post any
@@ -538,7 +624,8 @@ score, and **Approve** should bring it back. (Server status shows a red
 `docker compose up -d server` again and approve or remove the test picture.
 **Server status** also shows whether the detector is online, its model and
 how many pictures are waiting. The first deploy after this update builds the
-detector image too (a few extra minutes; it downloads about 80 MB from PyPI).
+detector image too (a few extra minutes; it downloads about 80 MB from PyPI
+and 90 MB from Hugging Face).
 
 **Workflow, in short:** check the shield when it lights up (red = child
 safety) → read the snapshot and context → act (warn, delete, time out,

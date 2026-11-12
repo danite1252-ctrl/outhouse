@@ -1,9 +1,12 @@
 """Harmless test pictures for the image detector's tests (no real explicit
 pictures are ever needed). The detector's test mode (DETECTOR_TEST_MODE=1)
 scores a PNG with the tEXt chunk "OuthouseDetectorTest" = "flag" at 0.97,
-"slow" waits a few seconds first, and caps everything else at 0.05.
+"slow" waits a few seconds first, and caps everything else at 0.05. Faces
+and ages are simulated the same way: "young-flag" (0.97 + a face estimated
+~8), "young" (a face ~8, nothing explicit), "adult-flag" (0.97 + a face ~34).
+They're plain coloured squares: no people, nothing explicit.
 
-  python3 ci/detector_images.py /tmp/dt   -> plain.png flag.png slow.png avatar-flag.png
+  python3 ci/detector_images.py /tmp/dt   -> plain.png flag.png slow.png avatar-flag.png young-*.png …
 """
 
 import os
@@ -33,6 +36,12 @@ def main():
         "slow.png": png(96, 64, (90, 90, 90), "slow"),         # grey + marker: slow, then low
         "avatar-flag.png": png(64, 64, (255, 0, 255), "flag"),
         "plain2.png": png(80, 80, (40, 160, 90)),
+        # The age check (solid colours + markers).
+        "young-flag.png": png(96, 64, (250, 120, 30), "young-flag"),
+        "young-flag2.png": png(90, 60, (240, 110, 40), "young-flag"),
+        "young-flag3.png": png(84, 56, (230, 100, 50), "young-flag"),
+        "young.png": png(96, 64, (120, 200, 255), "young"),
+        "adult-flag.png": png(96, 64, (150, 60, 200), "adult-flag"),
     }
     for name, data in files.items():
         with open(os.path.join(out, name), "wb") as f:

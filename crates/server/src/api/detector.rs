@@ -23,6 +23,15 @@
 //! Child-safety rules always win: quarantined files are never served, and a
 //! picture held in a teen context is never shown to anyone, the site owner
 //! included.
+//!
+//! The sidecar also finds faces and estimates each one's age (a preliminary
+//! automated estimate, not evidence; only the numbers are kept). A picture
+//! that's explicit (nudity score at or above the escalation score, default
+//! 0.40) with a face estimated clearly young (the youngest at or under the
+//! age threshold, default 13) is escalated to a child-safety report, in
+//! every context (18+ channels too): the file is quarantined, the message
+//! hidden and the owner alerted, exactly like a child-safety report someone
+//! made. A young face without nudity does nothing. See [`AgeRule`].
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -95,6 +104,137 @@ pub fn service_url() -> Option<String> {
         .ok()
         .map(|v| v.trim().trim_end_matches('/').to_string())
         .filter(|v| v.starts_with("http://") || v.starts_with("https://"))
+}
+
+// ---- Age estimates and the escalation rule -----------------------------------------
+
+/// How every age estimate is described, wherever it's shown or exported.
+pub const AGE_NOTE: &str = "preliminary automated estimate, not evidence";
+/// The age thresholds the owner can pick.
+pub const AGE_THRESHOLDS: &[i32] = &[10, 13, 16];
+/// Escalation scores offered in the settings (any 0.05–0.95 is accepted).
+pub const ESCALATION_SCORES: &[f32] = &[0.25, 0.40, 0.60];
+
+fn env_f32(name: &str, lo: f32, hi: f32) -> Option<f32> {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|t| t.is_finite() && (lo..=hi).contains(t))
+}
+
+/// For checking the age rule in production with harmless pictures (no
+/// explicit or child imagery): `DETECTOR_ESCALATION_AGE=99` counts any face
+/// as young, `DETECTOR_ESCALATION_SCORE=0.001` counts nearly any picture as
+/// explicit. Leave both unset normally.
+pub fn escalation_age_override() -> Option<f32> {
+    env_f32("DETECTOR_ESCALATION_AGE", 1.0, 120.0)
+}
+
+pub fn escalation_score_override() -> Option<f32> {
+    env_f32("DETECTOR_ESCALATION_SCORE", 0.0, 1.0)
+}
+
+/// The rule that escalates a picture to child safety: explicit (nudity
+/// score ≥ `score`) and a face estimated young (youngest ≤ `age`). Site-wide
+/// (the site owner's setting); it applies in every context.
+#[derive(Debug, Clone)]
+pub struct AgeRule {
+    pub enabled: bool,
+    /// What's in effect (an override from the environment, or the setting).
+    pub age: f32,
+    pub score: f32,
+    /// The owner's settings.
+    pub age_setting: i32,
+    pub score_setting: f32,
+}
+
+impl AgeRule {
+    pub fn from_settings(enabled: bool, age: i32, score: f32) -> Self {
+        Self {
+            enabled,
+            age: escalation_age_override().unwrap_or(age as f32),
+            score: escalation_score_override().unwrap_or(score),
+            age_setting: age,
+            score_setting: score,
+        }
+    }
+
+    pub fn matches(&self, score: Option<f32>, min_age: Option<f32>) -> bool {
+        self.enabled
+            && score.is_some_and(|s| s.is_finite() && s >= self.score)
+            && min_age.is_some_and(|a| a.is_finite() && a <= self.age)
+    }
+
+    /// The report's preview line (no content).
+    pub fn line(&self) -> String {
+        format!(
+            "Automatic: explicit content with a face estimated {} or under",
+            fmt_age(self.age)
+        )
+    }
+}
+
+pub async fn age_rule(db: &PgPool) -> AgeRule {
+    let row: Option<(bool, i32, f32)> = sqlx::query_as(
+        "SELECT detector_age_check, detector_age_threshold, detector_escalation_score
+         FROM site_settings WHERE id = 1",
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    let (enabled, age, score) = row.unwrap_or((true, 13, 0.40));
+    AgeRule::from_settings(enabled, age, score)
+}
+
+fn fmt_age(age: f32) -> String {
+    format!("{}", age.round() as i64)
+}
+
+/// The sidecar's per-face estimates, kept as numbers only (age, confidence),
+/// youngest first, at most 10.
+fn clean_ages(ages: &[Value]) -> Vec<Value> {
+    let mut out: Vec<(f64, f64)> = ages
+        .iter()
+        .filter_map(|a| {
+            let age = a["age"]
+                .as_f64()
+                .filter(|x| x.is_finite() && *x >= 0.0 && *x <= 150.0)?;
+            let conf = a["confidence"]
+                .as_f64()
+                .filter(|x| x.is_finite())
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0);
+            Some((age, conf))
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    out.truncate(10);
+    out.into_iter()
+        .map(|(age, conf)| {
+            json!({
+                "age": (age * 10.0).round() / 10.0,
+                "confidence": (conf * 1000.0).round() / 1000.0,
+            })
+        })
+        .collect()
+}
+
+/// "Detector: nudity 0.82 · faces 2 · youngest estimated ~9 (preliminary
+/// automated estimate, not evidence)", or None if faces weren't checked.
+pub fn age_line(score: Option<f32>, faces: Option<i32>, min_age: Option<f32>) -> Option<String> {
+    let faces = faces?;
+    let nudity = score
+        .map(|s| format!("nudity {}", fmt_score(s)))
+        .unwrap_or_else(|| "nudity not scored".into());
+    Some(match (faces, min_age) {
+        (0, _) | (_, None) => format!("Detector: {nudity} · no faces found"),
+        (n, Some(age)) => format!(
+            "Detector: {nudity} · face{} {n} · youngest estimated ~{} ({AGE_NOTE})",
+            if n == 1 { "" } else { "s" },
+            fmt_age(age)
+        ),
+    })
 }
 
 // ---- Health and the queue's wake-up ----------------------------------------------
@@ -651,10 +791,11 @@ struct ScanRow {
     apply_hold: bool,
     hold: String,
     attempts: i32,
+    age_cleared_at: Option<DateTime<Utc>>,
 }
 
 const SCAN_COLUMNS: &str = "id, storage_key, kind, uploader_id, guild_id, message_id, teen,
-    adult_only, review, apply_hold, hold, attempts";
+    adult_only, review, apply_hold, hold, attempts, age_cleared_at";
 
 #[derive(Deserialize)]
 struct ScanReply {
@@ -665,6 +806,13 @@ struct ScanReply {
     model: Option<String>,
     #[serde(default)]
     ms: Option<i64>,
+    /// Faces found (None: the sidecar doesn't check faces).
+    #[serde(default)]
+    faces: Option<i32>,
+    #[serde(default)]
+    ages: Vec<Value>,
+    #[serde(default)]
+    age_model: Option<String>,
 }
 
 enum Outcome {
@@ -876,9 +1024,18 @@ async fn finish(
         row.hold.as_str()
     };
     let new_hold = new_hold.to_string();
+    let ages = reply.map(|r| clean_ages(&r.ages)).unwrap_or_default();
+    let faces = reply
+        .and_then(|r| r.faces)
+        .map(|n| n.max(ages.len() as i32));
+    let min_age = ages
+        .first()
+        .and_then(|a| a["age"].as_f64())
+        .map(|a| a as f32);
     let updated = sqlx::query(
         "UPDATE file_scans SET status = $2, hold = $3, score = $4, labels = $5, model = $6,
-                threshold = $7, error = $8, scanned_at = now(), attempts = attempts + 1
+                threshold = $7, error = $8, scanned_at = now(), attempts = attempts + 1,
+                face_count = $9, min_est_age = $10, ages = $11, age_model = $12
          WHERE id = $1",
     )
     .bind(row.id)
@@ -891,6 +1048,10 @@ async fn finish(
     .bind(reply.and_then(|r| r.model.clone()))
     .bind(threshold(&settings.sensitivity))
     .bind(&error)
+    .bind(faces)
+    .bind(min_age)
+    .bind(SqlJson(json!(ages)))
+    .bind(reply.and_then(|r| r.age_model.clone()))
     .execute(&st.db)
     .await;
     if let Err(e) = updated {
@@ -899,6 +1060,17 @@ async fn finish(
     }
     if new_hold != row.hold {
         announce(st, &row.storage_key, &row.kind, row.guild_id).await;
+    }
+    // Explicit with a face estimated clearly young: child safety, whatever
+    // else would happen (18+ channels and report-only scans too).
+    if row.age_cleared_at.is_none() && reply.is_some() {
+        let rule = age_rule(&st.db).await;
+        if rule.matches(reply.map(|r| r.score), min_age) {
+            if let Err(e) = escalate(st, row.id, &rule).await {
+                tracing::warn!(error = %e, "image detector: couldn't escalate to child safety");
+            }
+            return;
+        }
     }
     // Held, hidden or blurred: the site owner gets a detector report.
     let needs_report = row.apply_hold
@@ -927,7 +1099,227 @@ async fn finish(
                 "summary": summary,
                 "hold": new_hold,
                 "teen": row.teen,
+                "faces": faces,
+                "min_age": min_age.map(round1),
+                "age_note": AGE_NOTE,
             }),
+            auto_escalation: None,
+        };
+        if let Err(e) = super::safety::detector_report(st, target).await {
+            tracing::warn!(error = %e, "image detector: couldn't make a report");
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct EscalateRow {
+    storage_key: String,
+    kind: String,
+    message_id: Option<i64>,
+    uploader_id: Option<i64>,
+    guild_id: Option<i64>,
+    teen: bool,
+    hold: String,
+    score: Option<f32>,
+    labels: SqlJson<Vec<Value>>,
+    face_count: Option<i32>,
+    min_est_age: Option<f32>,
+}
+
+/// The age rule matched this file: every open report about it becomes a
+/// child-safety report (quarantine, hidden messages, urgent alert), or, with
+/// none open, a child-safety report from the detector is made.
+async fn escalate(st: &AppState, scan_id: i64, rule: &AgeRule) -> AppResult<()> {
+    let r = sqlx::query_as::<_, EscalateRow>(
+        "UPDATE file_scans SET age_escalated_at = COALESCE(age_escalated_at, now()) WHERE id = $1
+         RETURNING storage_key, kind, message_id, uploader_id, guild_id, teen, hold, score, labels,
+                   face_count, min_est_age",
+    )
+    .bind(scan_id)
+    .fetch_one(&st.db)
+    .await?;
+    let line = rule.line();
+    let info = json!({
+        "line": line,
+        "at": Utc::now(),
+        "score": r.score.map(round2),
+        "faces": r.face_count,
+        "min_age": r.min_est_age.map(round1),
+        "age_threshold": rule.age,
+        "escalation_score": round2(rule.score),
+        "note": format!("The age is a {AGE_NOTE}: a small model's guess from the face alone, often wrong by years, and it can mistake drawings for faces. It's why this was escalated, not proof of anything."),
+    });
+    let open: Vec<i64> = sqlx::query_scalar(
+        "SELECT r.id FROM reports r
+         WHERE r.status <> 'closed'
+           AND ((r.target_kind = 'file' AND r.target_id = $1)
+                OR r.id IN (SELECT report_id FROM report_files WHERE storage_key = $2))
+         ORDER BY r.id",
+    )
+    .bind(scan_id)
+    .bind(&r.storage_key)
+    .fetch_all(&st.db)
+    .await?;
+    if !open.is_empty() {
+        for id in open {
+            super::safety::auto_child_safety(st, id, &info).await?;
+        }
+        return Ok(());
+    }
+    if r.kind == KIND_REPORT {
+        return Ok(()); // its report was closed meanwhile
+    }
+    let target = super::safety::DetectorTarget {
+        scan_id,
+        storage_key: r.storage_key.clone(),
+        kind: r.kind.clone(),
+        message_id: r.message_id,
+        uploader_id: r.uploader_id,
+        guild_id: r.guild_id,
+        category: super::safety::CHILD_SAFETY,
+        detector: json!({
+            "score": r.score.map(round2),
+            "labels": r.labels.0,
+            "summary": line,
+            "hold": r.hold,
+            "teen": r.teen,
+            "faces": r.face_count,
+            "min_age": r.min_est_age.map(round1),
+            "age_note": AGE_NOTE,
+        }),
+        auto_escalation: Some(info),
+    };
+    super::safety::detector_report(st, target).await
+}
+
+/// A report about files was made or opened: show (and act on) their age
+/// estimates. Files never scanned, or scanned before faces were checked,
+/// are scanned now (the scan escalates when it's done); files already
+/// scanned that match the age rule escalate the report straight away.
+pub async fn check_report(st: &AppState, report_id: i64) {
+    let rule = age_rule(&st.db).await;
+    if !rule.enabled {
+        return;
+    }
+    let files: Vec<(String, String)> =
+        sqlx::query_as("SELECT storage_key, content_type FROM report_files WHERE report_id = $1")
+            .bind(report_id)
+            .fetch_all(&st.db)
+            .await
+            .unwrap_or_default();
+    for (key, content_type) in files {
+        if !scannable(&content_type) {
+            continue;
+        }
+        let scan: Option<(
+            i64,
+            String,
+            Option<f32>,
+            Option<i32>,
+            Option<f32>,
+            Option<DateTime<Utc>>,
+            Option<i64>,
+        )> = sqlx::query_as(
+            "SELECT id, status, score, face_count, min_est_age, age_cleared_at, guild_id
+                 FROM file_scans WHERE storage_key = $1",
+        )
+        .bind(&key)
+        .fetch_optional(&st.db)
+        .await
+        .ok()
+        .flatten();
+        match scan {
+            None => ensure_scanned_for_report(st, &key, &content_type).await,
+            Some((_, status, score, _, _, _, _)) if status == "skipped" && score.is_none() => {
+                ensure_scanned_for_report(st, &key, &content_type).await
+            }
+            Some((id, status, _, None, _, None, guild))
+                if matches!(status.as_str(), "clean" | "flagged") =>
+            {
+                rescan_for_ages(st, id, guild).await
+            }
+            Some((id, _, score, Some(_), min_age, None, _)) if rule.matches(score, min_age) => {
+                if let Err(e) = escalate(st, id, &rule).await {
+                    tracing::warn!(error = %e, "image detector: couldn't escalate a report");
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Scanned before faces were checked: scan it again (nothing changes for
+/// anyone meanwhile; the same score gives the same hold).
+async fn rescan_for_ages(st: &AppState, scan_id: i64, guild_id: Option<i64>) {
+    if service_url().is_none() || !settings_for(&st.db, guild_id).await.enabled {
+        return;
+    }
+    let requeued = sqlx::query(
+        "UPDATE file_scans SET status = 'pending', attempts = 0, next_attempt_at = now()
+         WHERE id = $1 AND face_count IS NULL AND status IN ('clean', 'flagged')",
+    )
+    .bind(scan_id)
+    .execute(&st.db)
+    .await;
+    if matches!(requeued, Ok(r) if r.rows_affected() > 0) {
+        wake();
+    }
+}
+
+/// The owner dismissed an automatic child-safety escalation as a mistake:
+/// no more automatic escalations for these files, and a picture the
+/// detector still holds gets its normal detector report back (so it can be
+/// approved or removed as usual).
+pub(crate) async fn escalation_dismissed(st: &AppState, keys: &[String]) {
+    let cleared: Vec<i64> = sqlx::query_scalar(
+        "UPDATE file_scans SET age_cleared_at = COALESCE(age_cleared_at, now())
+         WHERE storage_key = ANY($1) AND age_escalated_at IS NOT NULL
+         RETURNING id",
+    )
+    .bind(keys)
+    .fetch_all(&st.db)
+    .await
+    .unwrap_or_default();
+    for scan_id in cleared {
+        let row = sqlx::query_as::<_, ScanRow>(&format!(
+            "SELECT {SCAN_COLUMNS} FROM file_scans
+             WHERE id = $1 AND apply_hold AND review IS NULL AND hold IN ('held', 'hidden', 'blur')
+               AND status IN ('flagged', 'error')"
+        ))
+        .bind(scan_id)
+        .fetch_optional(&st.db)
+        .await
+        .ok()
+        .flatten();
+        let Some(row) = row else { continue };
+        let r = sqlx::query_as::<_, EscalateRow>(
+            "SELECT storage_key, kind, message_id, uploader_id, guild_id, teen, hold, score, labels,
+                    face_count, min_est_age
+             FROM file_scans WHERE id = $1",
+        )
+        .bind(scan_id)
+        .fetch_one(&st.db)
+        .await;
+        let Ok(r) = r else { continue };
+        let target = super::safety::DetectorTarget {
+            scan_id,
+            storage_key: row.storage_key.clone(),
+            kind: row.kind.clone(),
+            message_id: row.message_id,
+            uploader_id: row.uploader_id,
+            guild_id: row.guild_id,
+            category: "sexual",
+            detector: json!({
+                "score": r.score.map(round2),
+                "labels": r.labels.0,
+                "summary": summary_line("flagged", r.score, &r.labels.0, None),
+                "hold": r.hold,
+                "teen": r.teen,
+                "faces": r.face_count,
+                "min_age": r.min_est_age.map(round1),
+                "age_note": AGE_NOTE,
+            }),
+            auto_escalation: None,
         };
         if let Err(e) = super::safety::detector_report(st, target).await {
             tracing::warn!(error = %e, "image detector: couldn't make a report");
@@ -986,6 +1378,11 @@ async fn announce(st: &AppState, key: &str, kind: &str, guild_id: Option<i64>) {
 /// 0.6000000238 → 0.6 (for JSON).
 fn round2(x: f32) -> f64 {
     (x as f64 * 1000.0).round() / 1000.0
+}
+
+/// 8.4000001 → 8.4 (ages, for JSON).
+fn round1(x: f32) -> f64 {
+    (x as f64 * 10.0).round() / 10.0
 }
 
 fn fmt_score(score: f32) -> String {
@@ -1056,10 +1453,17 @@ struct SummaryRow {
     teen_author: bool,
     adult_only: bool,
     scanned_at: Option<DateTime<Utc>>,
+    face_count: Option<i32>,
+    min_est_age: Option<f32>,
+    ages: SqlJson<Vec<Value>>,
+    age_model: Option<String>,
+    age_escalated_at: Option<DateTime<Utc>>,
+    age_cleared_at: Option<DateTime<Utc>>,
 }
 
 const SUMMARY_COLUMNS: &str = "id, kind, status, hold, review, score, labels, model, threshold,
-    error, teen, teen_author, adult_only, scanned_at";
+    error, teen, teen_author, adult_only, scanned_at, face_count, min_est_age, ages, age_model,
+    age_escalated_at, age_cleared_at";
 
 fn summary_json(r: &SummaryRow) -> Value {
     let summary = summary_line(&r.status, r.score, &r.labels.0, r.error.as_deref());
@@ -1077,6 +1481,16 @@ fn summary_json(r: &SummaryRow) -> Value {
         "review": r.review,
         "kind": r.kind,
         "teen": r.teen,
+        // Faces and ages: a preliminary automated estimate, not evidence.
+        "faces": r.face_count,
+        "min_age": r.min_est_age.map(round1),
+        "ages": r.ages.0,
+        "age_model": r.age_model,
+        "age_line": if r.status == "pending" { None } else { age_line(r.score, r.face_count, r.min_est_age) },
+        "age_note": AGE_NOTE,
+        "age_escalated": r.age_escalated_at.is_some(),
+        "age_escalated_at": r.age_escalated_at,
+        "age_cleared": r.age_cleared_at.is_some(),
     })
 }
 
@@ -1284,6 +1698,9 @@ pub async fn health(st: &AppState) -> Value {
         "online": live.is_some(),
         "model": live.as_ref().and_then(|v| v["model"].as_str().map(String::from)).or(h.model),
         "test_mode": live.as_ref().and_then(|v| v["test_mode"].as_bool()).unwrap_or(false),
+        // Every model the sidecar runs (nudity, faces, age).
+        "models": live.as_ref().map(|v| v["models"].clone()).filter(|m| m.is_object()),
+        "age_check": live.as_ref().and_then(|v| v["age"].as_bool()),
         "queue": queue,
         "held": held,
         "scans_since_start": h.scans,
@@ -1292,6 +1709,21 @@ pub async fn health(st: &AppState) -> Value {
         "last_error": if h.offline || live.is_none() { h.last_error } else { None },
         "last_error_at": h.last_error_at,
         "threshold_override": threshold_override(),
+        "escalation_age_override": escalation_age_override(),
+        "escalation_score_override": escalation_score_override(),
+    })
+}
+
+fn age_json(rule: &AgeRule) -> Value {
+    json!({
+        "enabled": rule.enabled,
+        "threshold": rule.age_setting,
+        "escalation_score": round2(rule.score_setting),
+        "effective_age": rule.age,
+        "effective_score": round2(rule.score),
+        "thresholds": AGE_THRESHOLDS,
+        "scores": ESCALATION_SCORES.iter().map(|s| round2(*s)).collect::<Vec<_>>(),
+        "note": AGE_NOTE,
     })
 }
 
@@ -1327,6 +1759,7 @@ pub async fn get_settings(
     .await?;
     Ok(Json(json!({
         "settings": settings_json(&site),
+        "age": age_json(&age_rule(&st.db).await),
         "thresholds": { "low": round2(preset_threshold("low")), "medium": round2(preset_threshold("medium")), "high": round2(preset_threshold("high")) },
         "threshold_override": threshold_override(),
         "health": health(&st).await,
@@ -1343,6 +1776,10 @@ pub struct SettingsUpdate {
     sensitivity: Option<String>,
     action: Option<String>,
     hold_teens: Option<bool>,
+    /// Site-wide only (ignored for an outhouse): the age rule.
+    age_check: Option<bool>,
+    age_threshold: Option<i32>,
+    escalation_score: Option<f32>,
 }
 
 fn check_choice(value: &Option<String>, allowed: &[&str], what: &str) -> AppResult<()> {
@@ -1370,21 +1807,64 @@ pub async fn set_settings(
         .sensitivity
         .filter(|s| SENSITIVITIES.contains(&s.as_str()));
     let action = req.action.filter(|s| ACTIONS.contains(&s.as_str()));
+    if req
+        .age_threshold
+        .is_some_and(|a| !AGE_THRESHOLDS.contains(&a))
+    {
+        return Err(AppError::BadRequest(
+            "The age threshold can be 10, 13 or 16.".into(),
+        ));
+    }
+    if req
+        .escalation_score
+        .is_some_and(|x| !(x.is_finite() && (0.05..=0.95).contains(&x)))
+    {
+        return Err(AppError::BadRequest(
+            "The escalation score can be from 0.05 to 0.95.".into(),
+        ));
+    }
+    let age_before = age_rule(&st.db).await;
     sqlx::query(
         "UPDATE site_settings SET
              detector_enabled = COALESCE($1, detector_enabled),
              detector_sensitivity = COALESCE($2, detector_sensitivity),
              detector_action = COALESCE($3, detector_action),
-             detector_hold_teens = COALESCE($4, detector_hold_teens)
+             detector_hold_teens = COALESCE($4, detector_hold_teens),
+             detector_age_check = COALESCE($5, detector_age_check),
+             detector_age_threshold = COALESCE($6, detector_age_threshold),
+             detector_escalation_score = COALESCE($7, detector_escalation_score)
          WHERE id = 1",
     )
     .bind(req.enabled)
     .bind(&sens)
     .bind(&action)
     .bind(req.hold_teens)
+    .bind(req.age_check)
+    .bind(req.age_threshold)
+    .bind(req.escalation_score)
     .execute(&st.db)
     .await?;
     let s = site_settings(&st.db).await;
+    let age = age_rule(&st.db).await;
+    if age.enabled != age_before.enabled
+        || age.age_setting != age_before.age_setting
+        || (age.score_setting - age_before.score_setting).abs() > 0.0001
+    {
+        super::safety::log_action(
+            &st,
+            Some(user.id),
+            "settings",
+            None,
+            None,
+            format!(
+                "Age check {}: explicit pictures (nudity {} or more) with a face estimated {} or under are escalated to child safety",
+                if age.enabled { "on" } else { "off" },
+                fmt_score(age.score_setting),
+                age.age_setting,
+            ),
+        )
+        .await;
+    }
     super::safety::log_action(
         &st,
         Some(user.id),
@@ -1407,7 +1887,9 @@ pub async fn set_settings(
     if s.enabled {
         wake();
     }
-    Ok(Json(settings_json(&s)))
+    let mut out = settings_json(&s);
+    out["age"] = age_json(&age);
+    Ok(Json(out))
 }
 
 /// `GET /api/safety/guilds/{id}/detector`
@@ -1633,6 +2115,49 @@ mod tests {
     }
 
     #[test]
+    fn age_rule_matches() {
+        let rule = AgeRule {
+            enabled: true,
+            age: 13.0,
+            score: 0.40,
+            age_setting: 13,
+            score_setting: 0.40,
+        };
+        // Explicit and young: escalated.
+        assert!(rule.matches(Some(0.97), Some(8.0)));
+        assert!(rule.matches(Some(0.40), Some(13.0)));
+        // Young without nudity, explicit with an adult, no face: nothing.
+        assert!(!rule.matches(Some(0.05), Some(8.0)));
+        assert!(!rule.matches(Some(0.97), Some(34.0)));
+        assert!(!rule.matches(Some(0.97), None));
+        assert!(!rule.matches(None, Some(8.0)));
+        assert!(!rule.matches(Some(0.39), Some(5.0)));
+        // Switched off: nothing.
+        assert!(!AgeRule {
+            enabled: false,
+            ..rule.clone()
+        }
+        .matches(Some(0.97), Some(8.0)));
+        assert_eq!(
+            rule.line(),
+            "Automatic: explicit content with a face estimated 13 or under"
+        );
+        let ages = clean_ages(&[
+            json!({"age": 34.21, "confidence": 0.5, "range": "30-39"}),
+            json!({"age": 8.04, "confidence": 1.7}),
+            json!({"age": "x"}),
+            json!({"age": f64::NAN}),
+        ]);
+        assert_eq!(
+            ages,
+            vec![
+                json!({"age": 8.0, "confidence": 1.0}),
+                json!({"age": 34.2, "confidence": 0.5})
+            ]
+        );
+    }
+
+    #[test]
     fn thresholds_and_summaries() {
         assert!(threshold("low") > threshold("medium") && threshold("medium") > threshold("high"));
         assert_eq!(threshold("nonsense"), threshold("medium"));
@@ -1650,6 +2175,15 @@ mod tests {
             "Detector: checking…"
         );
         assert!(summary_line("error", None, &[], Some("not a picture")).contains("not a picture"));
+        assert_eq!(
+            age_line(Some(0.82), Some(2), Some(8.6)).as_deref(),
+            Some("Detector: nudity 0.82 · faces 2 · youngest estimated ~9 (preliminary automated estimate, not evidence)")
+        );
+        assert_eq!(
+            age_line(Some(0.02), Some(0), None).as_deref(),
+            Some("Detector: nudity 0.02 · no faces found")
+        );
+        assert_eq!(age_line(Some(0.5), None, None), None);
         assert!(scannable("image/webp") && !scannable("image/svg+xml") && !scannable("video/mp4"));
     }
 }

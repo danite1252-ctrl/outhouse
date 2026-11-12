@@ -4332,4 +4332,124 @@ tok "$TOKEN_A" call GET "/api/guilds/$DG/server-status" | jq -e '.detector.onlin
 # Leave it as the UI test expects: on, medium, hold for approval.
 tok "$TOKEN_A" call PUT /api/safety/detector '{"enabled":true,"sensitivity":"medium","action":"hold","hold_teens":true}' >/dev/null
 
+# ---------------------------------------------------------------------------
+# The age check (feat-age): faces and age estimates from the same sidecar.
+# Test-mode markers simulate them: young-flag (0.97 + a face ~8), young (a
+# face ~8, nothing explicit), adult-flag (0.97 + a face ~34). Plain coloured
+# squares: no people, nothing explicit.
+# ---------------------------------------------------------------------------
+agereport() { # agereport KEY -> the open child-safety report about this file (any source)
+  psql "$DATABASE_URL" -tAc "SELECT r.id FROM reports r WHERE r.status <> 'closed' AND r.category = 'child_safety'
+    AND ((r.target_kind = 'file' AND r.target_id = (SELECT id FROM file_scans WHERE storage_key = '$1'))
+         OR r.id IN (SELECT report_id FROM report_files WHERE storage_key = '$1')) ORDER BY r.id LIMIT 1"
+}
+agewait() { # agewait KEY -> waits for the automatic child-safety report
+  for _ in $(seq 1 120); do [ -n "$(agereport "$1")" ] && return 0; sleep 0.25; done
+  echo "no automatic child-safety report for $1 ($(dtscan "$1"))"; tail -20 "$LOG"; return 1
+}
+
+step "age check: owner-only settings, defaults, models in Server status"
+tok "$TOKEN_B" fail_call PUT /api/safety/detector '{"age_check":false}'
+tok "$TOKEN_A" fail_call PUT /api/safety/detector '{"age_threshold":12}'
+tok "$TOKEN_A" fail_call PUT /api/safety/detector '{"escalation_score":1.5}'
+tok "$TOKEN_A" call GET /api/safety/detector | jq -e '.age.enabled and .age.threshold == 13 and .age.escalation_score == 0.4
+  and .age.thresholds == [10,13,16] and (.health.models.nudity | startswith("nudenet")) and (.health.models.faces | startswith("yunet"))
+  and (.health.models.age | startswith("fairface")) and .health.escalation_age_override == null' >/dev/null
+tok "$TOKEN_A" call GET "/api/guilds/$DG/server-status" | jq -e '.detector.models.age != null and .detector.models.faces != null' >/dev/null
+
+step "age check: explicit + a face estimated ~8 -> automatic child-safety report, quarantined (451, owner included), hidden, alert"
+NTFY_AGE=$(curl -fsS "$PUSH/alerts/safety-ntfy" | jq length)
+rm -f /tmp/gw-age-dora.jsonl; node ci/gateway_probe.mjs "$BASE" "$TOKEN_D" /tmp/gw-age-dora.jsonl 90 & AGP=$!
+wait_for /tmp/gw-age-dora.jsonl '.t == "READY"'
+[ "$(dtupload "$TOKEN_B" "$DCH" "$DT/young-flag.png" "look")" = 200 ]
+AM1=$(jq -r .id /tmp/body); AK1=$(dtkey "$AM1"); AA1=$(jq -r '.attachments[0].id' /tmp/body)
+agewait "$AK1"; AR1=$(agereport "$AK1")
+psql "$DATABASE_URL" -tAc "SELECT face_count = 1 AND min_est_age = 8 AND jsonb_array_length(ages) = 1 AND ages->0 ? 'confidence'
+  AND NOT ages->0 ? 'range' AND age_escalated_at IS NOT NULL AND age_model LIKE 'yunet%' FROM file_scans WHERE storage_key = '$AK1'" | grep -qx t
+psql "$DATABASE_URL" -tAc "SELECT EXISTS(SELECT 1 FROM quarantined_files WHERE storage_key = '$AK1')" | grep -qx t
+for who in "" "$TOKEN_A" "$TOKEN_B" "$TOKEN_D"; do [ "$(dtfile "/files/$AK1/young-flag.png" "$who")" = 451 ]; done
+for who in "$TOKEN_A" "$TOKEN_B"; do [ "$(dtfile "/api/attachments/$AA1/reveal" "$who")" = 451 ]; done
+[ "$(tok "$TOKEN_A" status GET "/api/safety/reports/$AR1/files/$AK1")" = 451 ]
+wait_for /tmp/gw-age-dora.jsonl '.t == "MESSAGE_DELETE" and .d.id == $m' --arg m "$AM1"
+kill $AGP 2>/dev/null || true
+tok "$TOKEN_D" call GET "/api/channels/$DCH/messages?limit=50" | jq -e --arg m "$AM1" 'all(.[]; .id != $m)' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/reports?status=open" | jq -e --arg r "$AR1" '.reports[] | select(.id == $r) | .child_safety and .source == "detector" and .priority == 0
+  and .preview == "Automatic: explicit content with a face estimated 13 or under" and .auto_escalation' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/reports/$AR1" > /tmp/age1.json
+jq -e --arg k "$AK1" '.report.child_safety and .message_hidden and .files[0].key == $k and .files[0].quarantined and (.files[0].viewable | not)
+  and .files[0].detector.faces == 1 and .files[0].detector.min_age == 8 and .files[0].detector.age_escalated
+  and (.files[0].detector.age_line == "Detector: nudity 0.97 · face 1 · youngest estimated ~8 (preliminary automated estimate, not evidence)")
+  and .snapshot.auto_escalation.min_age == 8 and .snapshot.auto_escalation.age_threshold == 13 and (.snapshot.auto_escalation.note | test("not proof"))
+  and any(.log[]; .action == "auto_child_safety" and (.details | test("preliminary automated estimate"))) and any(.log[]; .action == "quarantine")' /tmp/age1.json >/dev/null
+for _ in $(seq 1 20); do [ "$(curl -fsS "$PUSH/alerts/safety-ntfy" | jq length)" -gt "$NTFY_AGE" ] && break; sleep 0.5; done
+curl -fsS "$PUSH/alerts/safety-ntfy" | jq -e '.[-1].title == "Outhouse: urgent safety report" and (.[-1].body | test("Review and suspend the account now if in doubt"))' >/dev/null
+
+step "age check: the evidence package carries the estimates, labelled as preliminary automated estimates"
+tok "$TOKEN_A" call GET "/api/safety/reports/$AR1/export" | jq -e '(.age_estimates_note | test("preliminary automated age estimates") and test("NOT evidence"))
+  and .files[0].detector.min_age == 8 and .files[0].detector.ages[0].age == 8 and .files[0].detector.age_note == "preliminary automated estimate, not evidence"
+  and .snapshot.auto_escalation.line != null' >/dev/null
+
+step "age check: dismissing it as a mistake restores the file (back to the detector's normal hold and report)"
+act "$AR1" '{"action":"dismiss","text":"Scores look wrong"}' | jq -e '.report.status == "closed" and (.files[0].quarantined | not) and (.message_hidden | not)
+  and .files[0].detector.age_cleared and any(.log[]; .action == "auto_child_safety_dismissed")' >/dev/null
+psql "$DATABASE_URL" -tAc "SELECT age_cleared_at IS NOT NULL AND hold = 'held' FROM file_scans WHERE storage_key = '$AK1'" | grep -qx t
+tok "$TOKEN_D" call GET "/api/channels/$DCH/messages?limit=50" | jq -e --arg m "$AM1" '.[] | select(.id == $m) | .attachments[0].hold.state == "held"' >/dev/null
+[ "$(dtfile "/api/attachments/$AA1/reveal" "$TOKEN_A")" = 200 ] && cmp -s /tmp/dtfile "$DT/young-flag.png"
+AR1B=$(dtreport "$AK1"); [ -n "$AR1B" ]
+tok "$TOKEN_A" call GET "/api/safety/reports/$AR1B" | jq -e '.report.category == "sexual" and (.report.child_safety | not) and (.report.auto_escalation | not)' >/dev/null
+# Opening it again doesn't escalate it again (the owner's judgement stands).
+tok "$TOKEN_A" call GET "/api/safety/reports/$AR1B" | jq -e '.report.category == "sexual"' >/dev/null
+act "$AR1B" '{"action":"remove_file"}' >/dev/null
+
+step "age check: an adult-only 18+ channel escalates too"
+[ "$(dtupload "$TOKEN_B" "$DNS" "$DT/young-flag2.png" "in 18+")" = 200 ]
+AM2=$(jq -r .id /tmp/body); AK2=$(dtkey "$AM2")
+agewait "$AK2"; AR2=$(agereport "$AK2")
+psql "$DATABASE_URL" -tAc "SELECT adult_only AND hold = 'none' FROM file_scans WHERE storage_key = '$AK2'" | grep -qx t
+for who in "" "$TOKEN_A" "$TOKEN_B"; do [ "$(dtfile "/files/$AK2/young-flag2.png" "$who")" = 451 ]; done
+tok "$TOKEN_B" call GET "/api/channels/$DNS/messages" | jq -e --arg m "$AM2" 'all(.[]; .id != $m)' >/dev/null
+act "$AR2" '{"action":"dismiss"}' >/dev/null
+[ "$(dtfile "/files/$AK2/young-flag2.png")" = 200 ]
+tok "$TOKEN_B" call GET "/api/channels/$DNS/messages" | jq -e --arg m "$AM2" 'any(.[]; .id == $m)' >/dev/null
+
+step "age check: a young face without nudity does nothing; explicit with an adult face is the normal detector path"
+[ "$(dtupload "$TOKEN_B" "$DCH" "$DT/young.png" "family photo")" = 200 ]
+AK3=$(dtkey "$(jq -r .id /tmp/body)"); dtwait "$AK3" "clean,none"
+psql "$DATABASE_URL" -tAc "SELECT face_count = 1 AND min_est_age = 8 AND age_escalated_at IS NULL FROM file_scans WHERE storage_key = '$AK3'" | grep -qx t
+[ "$(dtfile "/files/$AK3/young.png")" = 200 ]
+[ -z "$(dtreport "$AK3")" ] && [ -z "$(agereport "$AK3")" ]
+[ "$(dtupload "$TOKEN_B" "$DCH" "$DT/adult-flag.png" "adult")" = 200 ]
+AK4=$(dtkey "$(jq -r .id /tmp/body)"); dtwait "$AK4" "flagged,held"
+psql "$DATABASE_URL" -tAc "SELECT min_est_age = 34 AND age_escalated_at IS NULL FROM file_scans WHERE storage_key = '$AK4'" | grep -qx t
+AR4=$(dtreport "$AK4"); [ -n "$AR4" ] && [ -z "$(agereport "$AK4")" ]
+tok "$TOKEN_A" call GET "/api/safety/reports/$AR4" | jq -e '.report.category == "sexual" and (.report.child_safety | not) and .detector.min_age == 34
+  and (.detector.age_line | test("youngest estimated ~34"))' >/dev/null
+act "$AR4" '{"action":"remove_file"}' >/dev/null
+
+step "age check: switched off -> nothing escalated; switched on -> a harassment report on that file is re-classified"
+tok "$TOKEN_A" call PUT /api/safety/detector '{"age_check":false}' | jq -e '(.age.enabled | not)' >/dev/null
+[ "$(dtupload "$TOKEN_B" "$DCH" "$DT/young-flag3.png" "sneaky")" = 200 ]
+AM5=$(jq -r .id /tmp/body); AK5=$(dtkey "$AM5")
+dtwait "$AK5" "flagged,held"; sleep 1
+[ -z "$(agereport "$AK5")" ] || { echo "escalated with the age check off"; exit 1; }
+psql "$DATABASE_URL" -tAc "SELECT min_est_age = 8 AND age_escalated_at IS NULL FROM file_scans WHERE storage_key = '$AK5'" | grep -qx t
+tok "$TOKEN_A" call PUT /api/safety/detector '{"age_check":true,"age_threshold":13,"escalation_score":0.4}' | jq -e '.age.enabled' >/dev/null
+tok "$TOKEN_A" call GET /api/safety/log | jq -e 'any(.entries[]; .action == "settings" and (.details | test("Age check on")))' >/dev/null
+[ "$(report "$TOKEN_D" message "$AM5" harassment "rude")" = 201 ]; AR5=$(report_id message "$AM5")
+tok "$TOKEN_A" call GET "/api/safety/reports/$AR5" | jq -e '.report.child_safety and .report.auto_escalation and .reporters[0].category == "harassment"
+  and .files[0].quarantined and (.files[0].viewable | not) and (.report.preview | startswith("Automatic:"))
+  and any(.log[]; .action == "auto_child_safety" and (.details | test("re-classified from “Harassment or bullying” to child safety")))' >/dev/null
+[ "$(dtfile "/files/$AK5/young-flag3.png" "$TOKEN_A")" = 451 ]
+act "$AR5" '{"action":"dismiss"}' >/dev/null
+for r in $(psql "$DATABASE_URL" -tAc "SELECT id FROM reports WHERE status <> 'closed' AND category = 'child_safety' AND id IN (SELECT report_id FROM report_files WHERE storage_key = '$AK5')"); do act "$r" '{"action":"dismiss"}' >/dev/null; done
+
+step "age check: a file scanned before faces were checked is scanned again when it's reported"
+[ "$(dtupload "$TOKEN_B" "$DCH" "$DT/young.png" "older upload")" = 200 ]
+AM6=$(jq -r .id /tmp/body); AK6=$(dtkey "$AM6"); dtwait "$AK6" "clean,none"
+psql "$DATABASE_URL" -qc "UPDATE file_scans SET face_count = NULL, min_est_age = NULL, ages = '[]' WHERE storage_key = '$AK6'"
+[ "$(report "$TOKEN_D" message "$AM6" spam "old")" = 201 ]; AR6=$(report_id message "$AM6")
+for _ in $(seq 1 60); do [ "$(psql "$DATABASE_URL" -tAc "SELECT face_count FROM file_scans WHERE storage_key = '$AK6'")" = 1 ] && break; sleep 0.25; done
+tok "$TOKEN_A" call GET "/api/safety/reports/$AR6" | jq -e '(.report.child_safety | not) and .files[0].detector.min_age == 8 and (.files[0].detector.age_line | test("~8"))' >/dev/null
+act "$AR6" '{"action":"dismiss"}' >/dev/null
+
 echo "Smoke test passed."

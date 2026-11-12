@@ -4254,6 +4254,45 @@ with sync_playwright() as p:
     op.wait_for_timeout(300)
     op.screenshot(path=f"{SHOTS}/3612-child-safety-detector-score.png")
     assert not any("cat.png" in u for u in seen_files), seen_files
+
+    # The age check: explicit + a face estimated ~8 (test-mode marker on a plain
+    # orange square: no people, nothing explicit) -> an automatic child-safety
+    # report; the review line shows the estimates; the file is never shown.
+    young_png = dt_png(240, 160, (250, 120, 30), "young-flag")
+    young_msg = upload(f"/api/channels/{dchan['id']}/messages/upload", {"content": "party pics"},
+                       {"files": ("party.png", young_png, "image/png")}, erin["token"])
+    op.keyboard.press("Escape")
+    for _ in range(80):
+        if any(r.get("auto_escalation") for r in api("GET", "/api/safety/reports?status=open", None, TOKEN)["reports"]):
+            break
+        time.sleep(0.25)
+    op.evaluate("openSafetyConsole()")
+    op.wait_for_selector("dialog.safety-console .sc-row.child:has-text('Automatic: explicit content')", timeout=15000)
+    op.wait_for_timeout(300)
+    op.screenshot(path=f"{SHOTS}/3613-age-escalation-in-inbox.png")
+    op.click("dialog.safety-console .sc-row.child:has-text('Automatic: explicit content') >> nth=0")
+    op.wait_for_selector("dialog.safety-console .dt-auto", timeout=10000)
+    op.wait_for_selector("dialog.safety-console .dt-age-line:has-text('youngest estimated ~8')", timeout=15000)
+    text = op.inner_text("dialog.safety-console")
+    for needle in ("Automatic escalation", "Automatic: explicit content with a face estimated 13 or under",
+                   "preliminary automated estimate, not evidence", "Suspend now"):
+        assert needle in text, needle
+    assert op.query_selector("dialog.safety-console .sc-files img, dialog.safety-console .sc-files video") is None, "escalated media shown"
+    assert op.query_selector("dialog.safety-console .dt-approve") is None, "approve offered on a child-safety escalation"
+    op.evaluate("document.querySelector('dialog.safety-console .dt-auto').scrollIntoView({block: 'center'})")
+    op.wait_for_timeout(300)
+    op.screenshot(path=f"{SHOTS}/3614-age-escalation-report.png")
+    op.evaluate("document.querySelector('dialog.safety-console .sc-files .dt-age-line').scrollIntoView({block: 'center'})")
+    op.wait_for_timeout(300)
+    op.screenshot(path=f"{SHOTS}/3615-age-review-line.png")
+    assert not any("party.png" in u for u in seen_files), seen_files
+    op.keyboard.press("Escape")
+    # Settings: the age check (Reports → Image detector).
+    op.evaluate("openSafetyConsole('detector')")
+    op.wait_for_selector("dialog.safety-console .dt-age-settings select", timeout=10000)
+    op.evaluate("document.querySelector('dialog.safety-console .dt-age-settings').scrollIntoView({block: 'start'})")
+    op.wait_for_timeout(300)
+    op.screenshot(path=f"{SHOTS}/3616-age-settings.png")
     op.close()
 
     # Sign-up asks for a date of birth; under 13s are turned away.

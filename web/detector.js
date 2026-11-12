@@ -10,7 +10,14 @@
 //   blur      blurred; anyone can click through
 // Avatars, banners, emoji and stickers it holds are swapped for a
 // placeholder by the server, so nothing is needed here for those.
+//
+// It also finds faces and estimates their ages (a preliminary automated
+// estimate, not evidence). Explicit pictures with a face estimated clearly
+// young are escalated to child safety by the server; the console shows the
+// estimates as metadata only.
 "use strict";
+
+const DT_AGE_NOTE = "preliminary automated estimate, not evidence";
 
 const dtHeld = (a) => !!a?.hold;
 const dtRevealed = new Map(); // attachment ID → blob: URL (only for this page)
@@ -155,13 +162,16 @@ function dtScoreLine(f, child) {
   const d = f.detector;
   if (!d) return null;
   const box = el("div", { class: `dt-score${d.near_zero ? " low" : ""}${d.status === "flagged" ? " high" : ""}`, "data-key": f.key },
-    el("div", { class: "dt-score-line" }, dtShield(), el("span", { class: "dt-score-text" }, d.summary)));
+    el("div", { class: "dt-score-line" }, dtShield(), el("span", { class: "dt-score-text" }, d.summary)),
+    d.age_line ? el("div", { class: "dt-age-line" }, d.age_line) : null,
+    d.age_escalated && !d.age_cleared ? el("div", { class: "dt-age-flag" }, "Escalated to child safety automatically: explicit content with a face estimated young") : null,
+    d.age_cleared ? el("div", { class: "muted small" }, "An automatic age escalation for this file was dismissed as a mistake.") : null);
   if (d.near_zero) {
     box.append(el("div", { class: "dt-guide" }, child
-      ? "A score this close to zero suggests a false report: you can dismiss it without viewing the file. (The detector looks for nudity only. It can't tell anyone's age, so it's an aid, not proof either way.)"
+      ? `A score this close to zero suggests a false report: you can dismiss it without viewing the file. (Any age shown is a ${DT_AGE_NOTE}, so it's an aid, not proof either way.)`
       : "A score this close to zero suggests nothing explicit: you can decide without viewing the file."));
   } else if (child && d.score != null) {
-    box.append(el("div", { class: "dt-guide" }, "The detector looks for nudity only and can't tell anyone's age: treat this as an aid, not proof. Don't open the file; report it to the authorities if you think it's real."));
+    box.append(el("div", { class: "dt-guide" }, `The scores are an aid, not proof. Any age shown is a guess from the face alone (a ${DT_AGE_NOTE}): often wrong by years, and drawings can look like faces. Don't open the file; report it to the authorities if you think it's real.`));
   }
   if (f.teen_hold) box.append(el("div", { class: "dt-guide" }, "🔒 Sent to or from a teen: held, and not shown to anyone (you included)."));
   return box;
@@ -202,10 +212,27 @@ const DT_WHERE = {
   sticker: "a sticker",
 };
 
+// An automatic child-safety escalation (the age rule): why, in numbers.
+function dtAutoPanel(d) {
+  const a = d.snapshot?.auto_escalation;
+  if (!a || !d.report.child_safety) return null;
+  const facts = [
+    a.score != null ? `nudity ${Number(a.score).toFixed(2)}` : null,
+    a.faces != null ? `${a.faces === 1 ? "face" : "faces"} ${a.faces}` : null,
+    a.min_age != null ? `youngest estimated ~${Math.round(a.min_age)}` : null,
+  ].filter(Boolean).join(" · ");
+  return scSection("Automatic escalation",
+    el("div", { class: "dt-score high dt-auto" }, el("div", { class: "dt-score-line" }, dtShield(), el("span", { class: "dt-score-text" }, a.line))),
+    el("div", { class: "muted small" }, `${facts} (${DT_AGE_NOTE}) · rule: nudity ${Number(a.escalation_score).toFixed(2)} or more with a face estimated ${Math.round(a.age_threshold)} or under · ${scWhen(a.at)}`),
+    el("div", { class: "dt-guide" }, "The image detector made this a child-safety report on its own, whatever category anyone picked. The age is a guess from the face alone: it's often wrong by years and drawings can look like faces. Judge it by the scores (you can't view the file). If you're sure it's a mistake, dismiss it: the file and message come back and the detector handles the picture as usual."));
+}
+
 // The panel on a detector report: what it found and the decisions.
 function detectorReportPanel(d, act) {
+  const auto = dtAutoPanel(d);
   const x = d.detector;
-  if (!x || d.report.source !== "detector") return null;
+  if (!x || d.report.source !== "detector") return auto;
+  if (d.report.child_safety) return auto;
   const profile = ["avatar", "banner", "emoji", "sticker"].includes(x.kind);
   const decided = x.review === "approved" ? "Approved: shown as normal."
     : x.review === "blurred" ? (profile ? "Kept hidden." : x.teen ? "Kept held." : "Kept blurred: people can click through.")
@@ -222,6 +249,7 @@ function detectorReportPanel(d, act) {
       x.model ? ` · model ${x.model}` : "",
       x.scanned_at ? ` · ${scWhen(x.scanned_at)}` : ""),
     labels ? el("div", { class: "muted small" }, `Labels: ${labels}`) : null,
+    x.age_line ? el("div", { class: "dt-age-line" }, x.age_line) : null,
     x.teen ? el("div", { class: "dt-guide" }, "🔒 This was sent to or from a teen, so it stays held and isn't shown to anyone, you included. You can still approve it if you're sure it's harmless, or remove it.") : null,
     el("div", { class: "dt-guide" }, "The detector is an aid, not a guarantee: it misses things and sometimes flags harmless pictures (swimwear, art, skin-coloured objects)."),
     decided ? el("div", { class: "sc-row-res" }, `✓ ${decided}`) : null,
@@ -265,11 +293,13 @@ function dtHealthGrid(h) {
       : h.online ? ["Online", "good"] : ["Detector offline: uploads still work; pictures wait in the queue", "bad"];
   return el("div", { class: "status-grid dt-health" },
     item("Image detector", now[0], now[1]),
-    item("Model", h.model || "unknown"),
+    item("Models", h.models ? [h.models.nudity, h.models.faces, h.models.age].filter(Boolean).join(" · ") : (h.model || "unknown")),
     item("Waiting to be checked", String(h.queue ?? 0), h.queue > 20 ? "warn" : ""),
     item("Held now", String(h.held ?? 0)),
     h.last_scan_ms != null ? item("Last scan took", `${h.last_scan_ms} ms`) : null,
     h.threshold_override != null ? item("Test threshold", `DETECTOR_THRESHOLD=${h.threshold_override} is set: remove it from .env when you're done`, "bad") : null,
+    h.escalation_age_override != null ? item("Test age rule", `DETECTOR_ESCALATION_AGE=${h.escalation_age_override} is set: remove it from .env when you're done`, "bad") : null,
+    h.escalation_score_override != null ? item("Test age rule", `DETECTOR_ESCALATION_SCORE=${h.escalation_score_override} is set: remove it from .env when you're done`, "bad") : null,
     h.last_error ? item("Last problem", `${h.last_error}${h.last_error_at ? ` (${relTime(h.last_error_at)})` : ""}`, "bad") : null);
 }
 
@@ -284,12 +314,13 @@ async function drawDetectorSettings(page, stillMine = () => true) {
   };
   page.replaceChildren(
     el("h2", {}, "Image detector"),
-    el("p", { class: "muted small dt-intro" }, "Uploaded pictures (attachments, avatars, banners, emoji, stickers) are checked for nudity by a small model running on this server. No picture ever leaves the server, and only the score is kept. Checking happens in the background, so chat never waits for it. It's an aid, not a guarantee: it misses some things and flags some harmless pictures."),
+    el("p", { class: "muted small dt-intro" }, "Uploaded pictures (attachments, avatars, banners, emoji, stickers) are checked for nudity, and faces in them for age, by small models running on this server. No picture ever leaves the server, and only the scores are kept. Checking happens in the background, so chat never waits for it. It's an aid, not a guarantee: it misses some things and flags some harmless pictures."),
     dtHealthGrid(data.health),
     dtToggle(s.enabled, "Check uploaded pictures", "Off: nothing new is checked and nothing is held (reported files are still checked for the review screen).", (v) => save({ enabled: v })),
     dtSelect(s.sensitivity, DT_SENS, "Sensitivity", `How sure the detector must be to flag a picture (scores: low ${data.thresholds.low}, medium ${data.thresholds.medium}, high ${data.thresholds.high}).`, (v) => save({ sensitivity: v })),
     dtSelect(s.action, DT_ACTION, "Outside 18+ channels", "What happens to a flagged picture in an ordinary channel. In an 18+ channel only adults can see it's posted as normal.", (v) => save({ action: v })),
     dtToggle(s.hold_teens, "Hold DM pictures to and from teens until checked", "Shows “Checking…” for a moment instead of the picture. Teen rules always apply: a flagged picture to or from a teen is always held, and teens never receive it.", (v) => save({ hold_teens: v })),
+    dtAgeSettings(data.age, save),
     el("h3", {}, "Outhouses"),
     el("p", { class: "muted small dt-intro" }, "Each outhouse can switch the detector off or use its own settings (Outhouse settings → Image detector)."),
     el("div", { class: "sc-list" }, data.outhouses.map((o) => el("div", { class: "sc-toggle-row" },
@@ -298,6 +329,18 @@ async function drawDetectorSettings(page, stillMine = () => true) {
           ? `On · ${o.sensitivity ? `sensitivity ${o.sensitivity}` : "site sensitivity"} · ${o.action ? (o.action === "blur" ? "blur only" : "hold for approval") : "site action"} · ${o.hold_teens ? "holds pictures for teens until checked" : "doesn't hold pictures for teens while checking"}`
           : "Off in this outhouse")),
       el("span", { class: `rp-chip ${o.enabled ? "st-closed" : "st-open"}` }, o.enabled ? "On" : "Off")))));
+}
+
+// The age check: explicit + a face estimated clearly young → child safety.
+function dtAgeSettings(age, save) {
+  if (!age) return null;
+  const scores = [...new Set([...age.scores, age.escalation_score])].sort((a, b) => a - b);
+  return el("div", { class: "dt-age-settings" },
+    el("h3", {}, "Age check"),
+    el("p", { class: "muted small dt-intro" }, `Faces in every checked picture get an age estimate (a ${DT_AGE_NOTE}: a small model's guess from the face alone; only the numbers are kept, never the faces). If a picture looks explicit and a face in it is estimated clearly young, it's escalated to child safety straight away, everywhere (18+ channels too): the file is locked for everyone, you included, the message is hidden and you get an urgent alert. A young face without nudity does nothing, so family photos are fine. The age model struggles around 16–20 and with drawings; a wrong escalation is just a locked file you dismiss.`),
+    dtToggle(age.enabled, "Escalate explicit pictures with a young-looking face", "Off: ages are still estimated and shown on reports, but nothing is escalated automatically.", (v) => save({ age_check: v })),
+    dtSelect(String(age.threshold), age.thresholds.map((t) => [String(t), `${t} or under${t === 13 ? " (recommended)" : ""}`]), "Counts as young", "The youngest face's estimate at or below this, with explicit content, escalates the picture.", (v) => save({ age_threshold: Number(v) })),
+    dtSelect(String(age.escalation_score), scores.map((v) => [String(v), `${Number(v).toFixed(2)}${v === 0.4 ? " (recommended)" : ""}`]), "Counts as explicit (for this check)", "The nudity score that counts here. Lower than the normal sensitivity on purpose: it's the combination that matters.", (v) => save({ escalation_score: Number(v) })));
 }
 
 // Outhouse settings → Image detector (site owner only).

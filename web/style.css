@@ -2565,6 +2565,10 @@ button.sc-row:hover { border-color: var(--muted); }
 .dt-score-line svg { color: var(--ember); flex: 0 0 auto; }
 .dt-score.low .dt-score-line svg { color: var(--vacant); }
 .dt-guide { font-size: 12px; color: var(--muted); }
+.dt-age-line { font-size: 12px; color: var(--text); padding-left: 24px; overflow-wrap: anywhere; }
+.dt-age-flag { font-size: 12px; font-weight: 700; color: var(--glow); padding-left: 24px; }
+.dt-age-settings { display: grid; gap: 10px; }
+.dt-age-settings h3 { margin: 8px 0 0; }
 .dt-actions .primary { padding: 0 14px; height: 34px; }
 .dt-intro { margin: 0; }
 .dt-select { height: 34px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--night); color: var(--text); max-width: 260px; }
