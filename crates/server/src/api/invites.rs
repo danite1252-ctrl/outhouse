@@ -110,7 +110,7 @@ struct InviteRow {
 const INVITE_SELECT: &str = "
     SELECT i.code, i.guild_id, g.name AS guild_name, i.creator_id,
            COALESCE(NULLIF(m.nickname, ''), u.display_name) AS creator_name,
-           CASE WHEN u.avatar_key IS NULL THEN NULL ELSE '/files/' || u.avatar_key || '/avatar' END AS creator_avatar,
+           oh_file_url(u.avatar_key, 'avatar') AS creator_avatar,
            i.uses, i.max_uses, i.expires_at, i.created_at,
            (i.expires_at IS NULL OR i.expires_at > now())
              AND (i.max_uses IS NULL OR i.uses < i.max_uses) AS usable

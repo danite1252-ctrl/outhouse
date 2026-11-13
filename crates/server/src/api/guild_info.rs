@@ -9,6 +9,7 @@ use outhouse_common::gateway::ServerEvent;
 use outhouse_common::permissions as p;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sqlx::PgPool;
 
 use super::guilds::fetch_guild;
 use crate::auth::{self, AuthUser};
@@ -125,8 +126,17 @@ pub fn clean_links(links: &[GuildLink]) -> AppResult<Vec<GuildLink>> {
     Ok(out)
 }
 
-fn file_url(key: &Option<String>, name: &str) -> Option<String> {
-    key.as_ref().map(|k| format!("/files/{k}/{name}"))
+/// The picture's link, versioned by its scan state (see oh_file_url).
+async fn file_url(db: &PgPool, key: &Option<String>, name: &str) -> Option<String> {
+    let k = key.as_ref()?;
+    sqlx::query_scalar::<_, Option<String>>("SELECT oh_file_url($1, $2)")
+        .bind(k)
+        .bind(name)
+        .fetch_one(db)
+        .await
+        .ok()
+        .flatten()
+        .or_else(|| Some(format!("/files/{k}/{name}")))
 }
 
 /// Everything the info panel shows (members only).
@@ -170,11 +180,13 @@ async fn info_json(st: &AppState, guild_id: i64, user_id: i64) -> AppResult<Valu
     .bind(NAMES_SHOWN)
     .fetch_all(&st.db)
     .await?;
+    let icon_url = file_url(&st.db, &g.icon_key, "icon").await;
+    let banner_url = file_url(&st.db, &g.banner_key, "banner").await;
     Ok(json!({
         "id": guild_id.to_string(),
         "name": g.name,
-        "icon_url": file_url(&g.icon_key, "icon"),
-        "banner_url": file_url(&g.banner_key, "banner"),
+        "icon_url": icon_url,
+        "banner_url": banner_url,
         "tagline": g.tagline,
         "description": g.description,
         "rules": g.rules,

@@ -299,6 +299,7 @@ function dtHealthGrid(h) {
     item("Waiting to be checked", String(h.queue ?? 0), h.queue > 20 ? "warn" : ""),
     item("Held now", String(h.held ?? 0)),
     h.last_scan_ms != null ? item("Last scan took", `${h.last_scan_ms} ms`) : null,
+    h.timeouts ? item("Ran out of time", `${h.timeouts} since the server started (each is tried 3 times)`) : null,
     h.threshold_override != null ? item("Test threshold", `DETECTOR_THRESHOLD=${h.threshold_override} is set: remove it from .env when you're done`, "bad") : null,
     h.escalation_age_override != null ? item("Test age rule", `DETECTOR_ESCALATION_AGE=${h.escalation_age_override} is set: remove it from .env when you're done`, "bad") : null,
     h.escalation_score_override != null ? item("Test age rule", `DETECTOR_ESCALATION_SCORE=${h.escalation_score_override} is set: remove it from .env when you're done`, "bad") : null,

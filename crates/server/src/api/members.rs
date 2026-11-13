@@ -22,7 +22,7 @@ const MEMBER_SELECT: &str = "
            COALESCE(m.nickname, u.display_name) AS display_name,
            COALESCE(array_agg(mr.role_id) FILTER (WHERE mr.role_id IS NOT NULL), '{}') AS role_ids,
            m.joined_at, m.timeout_until, false AS online,
-           CASE WHEN u.avatar_key IS NULL THEN NULL ELSE '/files/' || u.avatar_key || '/avatar' END AS avatar_url,
+           oh_file_url(u.avatar_key, 'avatar') AS avatar_url,
            u.is_bot AS bot
     FROM guild_members m
     JOIN users u ON u.id = m.user_id

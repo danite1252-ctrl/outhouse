@@ -19,12 +19,11 @@ const SESSION_DAYS: i32 = 30;
 
 /// Columns for a `User`, from `users u`.
 pub const USER_COLUMNS: &str = "u.id, u.username, u.display_name,
-    CASE WHEN u.avatar_key IS NULL THEN NULL ELSE '/files/' || u.avatar_key || '/avatar' END AS avatar_url,
+    oh_file_url(u.avatar_key, 'avatar') AS avatar_url,
     u.is_bot AS bot";
 
 /// SQL for a user's avatar URL from `users u` (NULL if none).
-pub const AVATAR_URL_SQL: &str =
-    "CASE WHEN u.avatar_key IS NULL THEN NULL ELSE '/files/' || u.avatar_key || '/avatar' END";
+pub const AVATAR_URL_SQL: &str = "oh_file_url(u.avatar_key, 'avatar')";
 
 pub async fn fetch_user(db: &PgPool, user_id: i64) -> AppResult<User> {
     let sql = format!("SELECT {USER_COLUMNS} FROM users u WHERE u.id = $1");

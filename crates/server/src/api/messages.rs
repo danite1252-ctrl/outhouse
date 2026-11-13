@@ -57,7 +57,7 @@ pub(crate) const MESSAGE_SELECT: &str = "
            u.username AS author_username,
            COALESCE(m.override_name, gm.nickname, u.display_name) AS author_display_name,
            COALESCE(m.override_avatar,
-               CASE WHEN u.avatar_key IS NULL THEN NULL ELSE '/files/' || u.avatar_key || '/avatar' END)
+               oh_file_url(u.avatar_key, 'avatar'))
                AS author_avatar_url,
            u.is_bot AS author_bot,
            m.content, m.created_at, m.edited_at, m.reply_to_id, m.interaction, m.pinned_at,

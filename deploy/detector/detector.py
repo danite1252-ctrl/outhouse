@@ -59,7 +59,7 @@ PORT = int(os.environ.get("DETECTOR_PORT", "8095"))
 BIND = os.environ.get("DETECTOR_BIND", "0.0.0.0")
 TEST_MODE = os.environ.get("DETECTOR_TEST_MODE", "") == "1"
 MAX_BYTES = int(os.environ.get("DETECTOR_MAX_BYTES", str(32 * 1024 * 1024)))
-SCAN_TIMEOUT = float(os.environ.get("DETECTOR_SCAN_TIMEOUT", "20"))
+SCAN_TIMEOUT = float(os.environ.get("DETECTOR_SCAN_TIMEOUT", "60"))
 MAX_PIXELS = 50_000_000
 SIZE = 320
 
@@ -271,8 +271,9 @@ def _sessions():
     return session, load(FACE_MODEL_PATH), load(AGE_MODEL_PATH)
 
 
-def _face_ages(face_session, age_session, frames, min_score=None):
-    """Faces in the frames (the biggest MAX_FACES of them) and their ages."""
+def _face_ages(face_session, age_session, frames, min_score=None, with_ages=True):
+    """Faces in the frames (the biggest MAX_FACES of them) and their ages.
+    Without ages (the slow part), only the faces are counted."""
     min_score = FACE_SCORE if min_score is None else min_score
     faces, most = [], 0
     for frame in frames:
@@ -281,6 +282,8 @@ def _face_ages(face_session, age_session, frames, min_score=None):
         faces += [(f[2] * f[3], frame, f) for f in found]
     faces.sort(key=lambda t: -t[0])
     faces = faces[:MAX_FACES]
+    if not with_ages:
+        return {"faces": most, "min_age": None, "ages": [], "age_skipped": bool(faces)}
     ages = _ages(age_session, [_face_crop(frame, f) for _, frame, f in faces]) if faces else []
     ages.sort(key=lambda a: a["age"])
     return {"faces": most, "min_age": ages[0]["age"] if ages else None, "ages": ages}
@@ -296,7 +299,7 @@ def _worker(conn):
     conn.send({"ready": True})
     while True:
         try:
-            data = conn.recv()
+            data, age_min = conn.recv()
         except EOFError:
             return
         try:
@@ -316,7 +319,9 @@ def _worker(conn):
             result = {"score": round(float(score), 4), "labels": labels, "frames": len(frames)}
             if face_session is not None:
                 started = time.monotonic()
-                result.update(_face_ages(face_session, age_session, frames))
+                # Ages only matter for pictures explicit enough for the age
+                # rule (the server sends its score); below it they're skipped.
+                result.update(_face_ages(face_session, age_session, frames, with_ages=score >= age_min))
                 result["age_ms"] = int((time.monotonic() - started) * 1000)
             conn.send(result)
         except Exception as e:  # a picture Pillow can't read, a bomb, …
@@ -350,11 +355,11 @@ class Scanner:
             pass
         self._start()
 
-    def scan(self, data):
+    def scan(self, data, age_min=0.0):
         with self.lock:
             if not self.proc.is_alive():
                 self._restart()
-            self.conn.send(data)
+            self.conn.send((data, age_min))
             if not self.conn.poll(SCAN_TIMEOUT):
                 self._restart()
                 return {"timeout": True}
@@ -413,7 +418,11 @@ class Handler(BaseHTTPRequestHandler):
         marker = test_marker(data) if TEST_MODE else None
         if marker == "slow":
             time.sleep(float(os.environ.get("DETECTOR_TEST_SLOW_SECS", "5")))
-        result = SCANNER.scan(data)
+        try:
+            age_min = float(self.headers.get("X-Age-Min-Score") or "0")
+        except ValueError:
+            age_min = 0.0
+        result = SCANNER.scan(data, age_min)
         ms = int((time.monotonic() - started) * 1000)
         if result.get("timeout"):
             return self._json(504, {"error": "took too long"})

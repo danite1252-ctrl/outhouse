@@ -230,7 +230,11 @@ pub fn age_line(score: Option<f32>, faces: Option<i32>, min_age: Option<f32>) ->
         .map(|s| format!("nudity {}", fmt_score(s)))
         .unwrap_or_else(|| "nudity not scored".into());
     Some(match (faces, min_age) {
-        (0, _) | (_, None) => format!("Detector: {nudity} · no faces found"),
+        (0, _) => format!("Detector: {nudity} · no faces found"),
+        (n, None) => format!(
+            "Detector: {nudity} · face{} {n} · ages not checked (not explicit enough for the age rule)",
+            if n == 1 { "" } else { "s" }
+        ),
         (n, Some(age)) => format!(
             "Detector: {nudity} · face{} {n} · youngest estimated ~{} ({AGE_NOTE})",
             if n == 1 { "" } else { "s" },
@@ -251,6 +255,8 @@ struct Health {
     model: Option<String>,
     scans: u64,
     last_ms: Option<i64>,
+    /// Scans that ran out of time since the server started.
+    timeouts: u64,
 }
 
 static HEALTH: Mutex<Option<Health>> = Mutex::new(None);
@@ -826,7 +832,14 @@ enum Outcome {
     Unreadable(String),
     /// The sidecar didn't answer properly: try again later.
     Offline(String),
+    /// The scan ran out of time (a busy or slow server): try again a few
+    /// times before giving up on this picture.
+    Slow,
 }
+
+/// How many times a picture that runs out of time is tried before it's
+/// marked as couldn't-be-checked.
+const SLOW_TRIES: i32 = 3;
 
 /// Starts the background scanner (one picture at a time). Pictures still
 /// waiting from before a restart are picked up again.
@@ -839,7 +852,7 @@ pub fn spawn_worker(st: AppState) {
             return;
         }
         let client = match reqwest::Client::builder()
-            .timeout(Duration::from_secs(45))
+            .timeout(Duration::from_secs(150))
             .connect_timeout(Duration::from_secs(5))
             .build()
         {
@@ -849,6 +862,13 @@ pub fn spawn_worker(st: AppState) {
                 return;
             }
         };
+        // Pictures that ran out of time before retries existed: try them again.
+        let _ = sqlx::query(
+            "UPDATE file_scans SET status = 'pending', attempts = 0, next_attempt_at = now()
+             WHERE status = 'error' AND review IS NULL AND error LIKE '%took too long%'",
+        )
+        .execute(&st.db)
+        .await;
         loop {
             let next = sqlx::query_as::<_, ScanRow>(&format!(
                 "SELECT {SCAN_COLUMNS} FROM file_scans
@@ -891,10 +911,11 @@ async fn release_all_pending(st: &AppState) {
     }
 }
 
-async fn call_sidecar(client: &reqwest::Client, url: &str, data: Vec<u8>) -> Outcome {
+async fn call_sidecar(client: &reqwest::Client, url: &str, data: Vec<u8>, age_min: f32) -> Outcome {
     let sent = client
         .post(format!("{url}/scan"))
         .header("Content-Type", "application/octet-stream")
+        .header("X-Age-Min-Score", format!("{age_min:.4}"))
         .body(data)
         .send()
         .await;
@@ -918,7 +939,7 @@ async fn call_sidecar(client: &reqwest::Client, url: &str, data: Vec<u8>) -> Out
                 .unwrap_or_else(|| format!("HTTP {code}"));
             Outcome::Unreadable(why)
         }
-        504 => Outcome::Unreadable("the scan took too long".into()),
+        504 => Outcome::Slow,
         _ => Outcome::Offline(format!("HTTP {code}")),
     }
 }
@@ -956,7 +977,17 @@ async fn process(st: &AppState, client: &reqwest::Client, row: ScanRow) -> bool 
         }
         return false;
     };
-    match call_sidecar(client, &url, data).await {
+    // The age model is the slow part (about a second a face on a small
+    // server), and it only matters for pictures explicit enough for the
+    // age rule, so the sidecar skips it below that score (faces are still
+    // counted). Rule off: never needed.
+    let rule = age_rule(&st.db).await;
+    let age_min = if rule.enabled {
+        rule.score.max(0.0)
+    } else {
+        2.0
+    };
+    match call_sidecar(client, &url, data, age_min).await {
         Outcome::Scanned(reply) => {
             health_update(|h| {
                 h.offline = false;
@@ -1002,6 +1033,39 @@ async fn process(st: &AppState, client: &reqwest::Client, row: ScanRow) -> bool 
             .execute(&st.db)
             .await;
             true
+        }
+        Outcome::Slow if row.attempts + 1 < SLOW_TRIES => {
+            tracing::info!("image detector: a scan ran out of time; trying again shortly");
+            health_update(|h| {
+                h.offline = false;
+                h.timeouts += 1;
+            });
+            let _ = sqlx::query(
+                "UPDATE file_scans SET attempts = attempts + 1,
+                        error = 'The scan ran out of time; trying again.',
+                        next_attempt_at = now() + make_interval(secs => 30)
+                 WHERE id = $1",
+            )
+            .bind(row.id)
+            .execute(&st.db)
+            .await;
+            false
+        }
+        Outcome::Slow => {
+            health_update(|h| {
+                h.offline = false;
+                h.timeouts += 1;
+            });
+            finish(
+                st,
+                &row,
+                "error",
+                None,
+                Some("the scan took too long (tried 3 times)".into()),
+                &settings,
+            )
+            .await;
+            false
         }
     }
 }
@@ -1243,6 +1307,16 @@ pub async fn check_report(st: &AppState, report_id: i64) {
             {
                 rescan_for_ages(st, id, guild).await
             }
+            // Faces found but their ages were skipped (the picture scored
+            // below the age rule then); the rule now covers its score.
+            Some((id, status, score, Some(n), None, None, guild))
+                if n > 0
+                    && matches!(status.as_str(), "clean" | "flagged")
+                    && rule.enabled
+                    && score.is_some_and(|s| s >= rule.score) =>
+            {
+                rescan_for_ages(st, id, guild).await
+            }
             Some((id, _, score, Some(_), min_age, None, _)) if rule.matches(score, min_age) => {
                 if let Err(e) = escalate(st, id, &rule).await {
                     tracing::warn!(error = %e, "image detector: couldn't escalate a report");
@@ -1261,7 +1335,8 @@ async fn rescan_for_ages(st: &AppState, scan_id: i64, guild_id: Option<i64>) {
     }
     let requeued = sqlx::query(
         "UPDATE file_scans SET status = 'pending', attempts = 0, next_attempt_at = now()
-         WHERE id = $1 AND face_count IS NULL AND status IN ('clean', 'flagged')",
+         WHERE id = $1 AND status IN ('clean', 'flagged')
+           AND (face_count IS NULL OR (face_count > 0 AND min_est_age IS NULL))",
     )
     .bind(scan_id)
     .execute(&st.db)
@@ -1736,6 +1811,7 @@ pub async fn health(st: &AppState) -> Value {
         "held": held,
         "scans_since_start": h.scans,
         "last_scan_ms": h.last_ms,
+        "timeouts": h.timeouts,
         "last_ok_at": h.last_ok_at,
         "last_error": if h.offline || live.is_none() { h.last_error } else { None },
         "last_error_at": h.last_error_at,
