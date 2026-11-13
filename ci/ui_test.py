@@ -4278,6 +4278,9 @@ with sync_playwright() as p:
         if any(r.get("auto_escalation") for r in api("GET", "/api/safety/reports?status=open", None, TOKEN)["reports"]):
             break
         time.sleep(0.25)
+    # The owner's chat view may have loaded it in the moment before it was checked
+    # (adults see pictures while they're checked); from now on nothing may fetch it.
+    seen_files.clear()
     op.evaluate("openSafetyConsole()")
     op.wait_for_selector("dialog.safety-console .sc-row.child:has-text('Automatic: explicit content')", timeout=15000)
     op.wait_for_timeout(300)
