@@ -2965,3 +2965,24 @@ dialog.settings .settings-nav button.so-tab.active { box-shadow: inset 3px 0 0 v
 .guild .closed-badge { position: absolute; right: -4px; bottom: -4px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; background: var(--raised); border: 3px solid var(--panel); filter: none; }
 .tombstone-date { font-size: 14px; }
 .tombstone-leave { margin-top: 10px; padding: 0 20px; }
+
+/* The open outhouse's banner at the top of its channel list. */
+.sidebar-head.has-banner {
+  height: 136px;
+  align-items: flex-start;
+  padding-top: 12px;
+  background-size: cover;
+  background-position: center;
+  position: relative;
+  border-bottom-color: transparent;
+}
+.sidebar-head.has-banner::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.65) 0%, rgba(0, 0, 0, 0.15) 45%, rgba(0, 0, 0, 0) 70%, rgba(17, 17, 19, 0.55) 100%);
+  pointer-events: none;
+}
+.sidebar-head.has-banner > * { position: relative; }
+.sidebar-head.has-banner #guild-name { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9); color: #fff; }
+.sidebar-head.has-banner .icon-btn { color: #fff; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.8)); }

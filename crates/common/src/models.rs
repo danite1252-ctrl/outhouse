@@ -42,6 +42,10 @@ pub struct Guild {
     #[serde(default)]
     #[cfg_attr(feature = "sqlx", sqlx(default))]
     pub closed_until: Option<DateTime<Utc>>,
+    /// The outhouse's banner (shown at the top of its channel list).
+    #[serde(default)]
+    #[cfg_attr(feature = "sqlx", sqlx(default))]
+    pub banner_url: Option<String>,
 }
 
 /// A member of a server: the user plus their server-specific details.

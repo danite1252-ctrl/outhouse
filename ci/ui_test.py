@@ -4628,6 +4628,12 @@ with sync_playwright() as p:
     fp.wait_for_selector("#guild-name:has-text('UI Test Guild 2')")
     api("PATCH", f"/api/guilds/{G}", {"name": "UI Test Guild"}, TOKEN)
     fp.wait_for_selector(".guild[title='UI Test Guild']", timeout=10000)
+    # A banner shows behind the name at the top of the channel list (live).
+    upload(f"/api/guilds/{G}/banner", {}, {"file": ("banner.png", make_png(400), "image/png")}, TOKEN)
+    fp.wait_for_selector(".sidebar-head.has-banner", timeout=10000)
+    assert "/banner" in fp.eval_on_selector(".sidebar-head", "e => e.style.backgroundImage")
+    fp.wait_for_timeout(300)
+    fp.screenshot(path=f"{SHOTS}/3816-desktop-sidebar-banner.png")
 
     # Settings → Roles: one tab, a role picker.
     pv_role = api("POST", f"/api/guilds/{G}/roles", {"name": "Previewer", "color": 0x60a5fa}, TOKEN)

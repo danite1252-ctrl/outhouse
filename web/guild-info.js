@@ -205,3 +205,19 @@ async function drawGuildOverview(page) {
       save),
   );
 }
+
+
+// ---------- the banner at the top of the channel list ----------
+
+// Shows the open outhouse's banner behind its name (like the info panel's),
+// whenever the name at the top of the channel list is set.
+function paintSidebarBanner() {
+  const head = document.querySelector(".sidebar-head");
+  if (!head) return;
+  const g = typeof currentGuild === "function" && state.guildId ? currentGuild() : null;
+  const url = g && !g.closed_until ? g.banner_url : null;
+  head.classList.toggle("has-banner", !!url);
+  head.style.backgroundImage = url ? `url("${url}")` : "";
+}
+new MutationObserver(paintSidebarBanner).observe($("guild-name"), { childList: true, characterData: true, subtree: true });
+paintSidebarBanner();
