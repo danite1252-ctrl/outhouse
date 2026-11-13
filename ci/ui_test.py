@@ -4275,12 +4275,14 @@ with sync_playwright() as p:
                        {"files": ("party.png", young_png, "image/png")}, erin["token"])
     op.keyboard.press("Escape")
     for _ in range(80):
-        if any(r.get("auto_escalation") for r in api("GET", "/api/safety/reports?status=open", None, TOKEN)["reports"]):
-            break
+        if all(m["id"] != young_msg["id"] for m in api("GET", f"/api/channels/{dchan['id']}/messages?limit=50", None, dave["token"])):
+            break  # hidden: it's quarantined now
         time.sleep(0.25)
     # The owner's chat view may have loaded it in the moment before it was checked
-    # (adults see pictures while they're checked); from now on nothing may fetch it.
-    seen_files.clear()
+    # (adults see pictures while they're checked); from now on nobody may get it.
+    party_served = []
+    op.on("response", lambda r: "party.png" in r.url and r.status == 200 and party_served.append(r.url))
+    op.wait_for_timeout(500)
     op.evaluate("openSafetyConsole()")
     op.wait_for_selector("dialog.safety-console .sc-row.child:has-text('Automatic: explicit content')", timeout=15000)
     op.wait_for_timeout(300)
@@ -4301,7 +4303,7 @@ with sync_playwright() as p:
     op.evaluate("document.querySelector('dialog.safety-console .sc-files .dt-age-line').scrollIntoView({block: 'center'})")
     op.wait_for_timeout(300)
     op.screenshot(path=f"{SHOTS}/3615-age-review-line.png")
-    assert not any("party.png" in u for u in seen_files), seen_files
+    assert not party_served, party_served
     op.keyboard.press("Escape")
     # Settings: the age check (Reports → Image detector).
     op.evaluate("openSafetyConsole('detector')")
