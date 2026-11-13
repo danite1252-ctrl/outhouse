@@ -352,6 +352,7 @@ pub async fn preview(
         .await?
         .filter(|r| r.usable)
         .ok_or(AppError::NotFound)?;
+    crate::perms::refuse_if_shut_down(&st.db, row.guild_id).await?;
     Ok(Json(
         preview_for(&st, &row, &public_base(&st, &headers)).await?,
     ))
@@ -367,6 +368,7 @@ pub async fn join(
 ) -> AppResult<Json<Guild>> {
     check_lookup_rate(ip)?;
     let row = find_invite(&st, &code).await?.ok_or(AppError::NotFound)?;
+    crate::perms::refuse_if_shut_down(&st.db, row.guild_id).await?;
     let already: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM guild_members WHERE guild_id = $1 AND user_id = $2)",
     )
@@ -588,6 +590,17 @@ pub async fn page(
     let row = match find_invite(&st, &code).await {
         Ok(row) => row.filter(|r| r.usable),
         Err(e) => return e.into_response(),
+    };
+    // A shut-down outhouse's invites look like dead ones.
+    let row = match row {
+        Some(r)
+            if crate::perms::refuse_if_shut_down(&st.db, r.guild_id)
+                .await
+                .is_err() =>
+        {
+            None
+        }
+        other => other,
     };
     let preview = match &row {
         Some(r) => match preview_for(&st, r, &base).await {

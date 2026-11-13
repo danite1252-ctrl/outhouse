@@ -4301,7 +4301,7 @@ code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $TOKEN_
 dtwait "$GIK" "flagged,hidden"
 psql "$DATABASE_URL" -tAc "SELECT kind = 'guild_icon' AND guild_id = $DG FROM file_scans WHERE storage_key = '$GIK'" | grep -qx t
 code=$(curl -sS -D /tmp/headers -o /tmp/dtfile -w "%{http_code}" "$BASE/files/$GIK/icon")
-[ "$code" = 200 ] && grep -qi "content-type: image/svg+xml" /tmp/headers && grep -q "<svg" /tmp/dtfile
+[ "$code" = 200 ]; grep -qi "content-type: image/svg+xml" /tmp/headers && grep -q "<svg" /tmp/dtfile
 DRG=$(dtreport "$GIK"); [ -n "$DRG" ]
 tok "$TOKEN_A" call GET "/api/safety/reports/$DRG" | jq -e --arg g "$DG" '.detector.kind == "guild_icon" and .snapshot.kind == "guild" and .snapshot.guild.id == $g' >/dev/null
 [ "$(psql "$DATABASE_URL" -tAc "SELECT reported_user_id = $ALICE AND guild_id = $DG FROM reports WHERE id = $DRG")" = t ]
@@ -4312,7 +4312,7 @@ tok "$TOKEN_B" call GET "/api/guilds/$DG/info" | jq -e '.icon_url == null' >/dev
 code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $TOKEN_A" -F "file=@$DT/plain.png;type=image/png" "$BASE/api/guilds/$DG/banner")
 [ "$code" = 200 ]; GBK=$(jq -r '.banner_url' /tmp/body | cut -d/ -f3)
 dtwait "$GBK" "clean,none"
-[ "$(dtfile "/files/$GBK/banner")" = 200 ] && cmp -s /tmp/dtfile "$DT/plain.png"
+[ "$(dtfile "/files/$GBK/banner")" = 200 ]; cmp -s /tmp/dtfile "$DT/plain.png"
 tok "$TOKEN_A" call DELETE "/api/guilds/$DG/banner" | jq -e '.banner_url == null' >/dev/null
 tok "$TOKEN_A" call GET "/api/guilds/$DG/audit-log?action=guild_update" | jq -e '[.entries[] | select(.details | test("banner"))] | length >= 2' >/dev/null
 
@@ -4621,5 +4621,120 @@ PMR=$(tok "$TOKEN_A" call POST "/api/guilds/$PVG/roles" '{"name":"Role manager",
 tok "$TOKEN_A" call PUT "/api/guilds/$PVG/members/$BOB/roles/$PMR" >/dev/null
 tok "$TOKEN_B" call GET "/api/guilds/$PVG/preview-permissions?roles=$PR2" | jq -e --arg s "$PSEC" --arg h "$PHID" '(.channels | has($s) | not) and (.channels | has($h) | not)' >/dev/null
 tok "$TOKEN_A" call GET "/api/guilds/$PVG/preview-permissions?roles=$PR2" | jq -e --arg s "$PSEC" '.channels | has($s)' >/dev/null
+
+# ---------------------------------------------------------------------------
+# The site owner's Outhouses directory: search, numbers, a read-only look,
+# shutting an outhouse down, restoring and deleting it.
+# ---------------------------------------------------------------------------
+step "outhouses directory: site owner only; counts, search (name, old name, id, owner), sort, pages"
+[ "$(tok "$TOKEN_B" status GET /api/safety/outhouses)" = 403 ]
+[ "$(tok "$TOKEN_B" status GET /api/safety/server-status)" = 403 ]
+tok "$TOKEN_A" call GET /api/safety/server-status | jq -e '.db_ok and (.version | length > 0)' >/dev/null
+DXA=$(tok "$TOKEN_A" call POST /api/guilds '{"name":"Dir Alpha"}' | jq -r .id)
+tok "$TOKEN_A" call PATCH "/api/guilds/$DXA" '{"name":"Dir Gamma"}' >/dev/null
+DXB=$(tok "$TOKEN_B" call POST /api/guilds '{"name":"Dir Bobs Shed"}' | jq -r .id)
+DXBC=$(tok "$TOKEN_B" call GET "/api/guilds/$DXB/channels" | jq -r '[.[] | select(.kind == 0)][0].id')
+DXBV=$(tok "$TOKEN_B" call GET "/api/guilds/$DXB/channels" | jq -r '[.[] | select(.kind == 2)][0].id')
+DXINV=$(tok "$TOKEN_B" call POST "/api/guilds/$DXB/invites" | jq -r .code)
+tok "$TOKEN_C" call POST "/api/invites/$DXINV" >/dev/null
+DXM=$(tok "$TOKEN_B" call POST "/api/channels/$DXBC/messages" '{"content":"welcome to the shed"}' | jq -r .id)
+tok "$TOKEN_C" call POST "/api/channels/$DXBC/messages" '{"content":"nice shed"}' >/dev/null
+tok "$TOKEN_A" call GET /api/safety/outhouses > /tmp/dir.json
+jq -e --argjson n "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM guilds WHERE id <> 0")" \
+  --argjson p "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM users WHERE NOT is_bot")" \
+  '.total_outhouses == $n and .total_people == $p and .matching == $n and .page == 1 and (.outhouses | length) == ([$n, 25] | min)' /tmp/dir.json >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/outhouses?q=alpha" | jq -e --arg g "$DXA" '.matching == 1 and .outhouses[0].id == $g and .outhouses[0].name == "Dir Gamma" and .outhouses[0].previous_names == ["Dir Alpha"]' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/outhouses?q=$DXB" | jq -e --arg g "$DXB" '.matching == 1 and .outhouses[0].id == $g' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/outhouses?q=bob" | jq -e --arg g "$DXB" 'any(.outhouses[]; .id == $g and .owner.username == "bob")' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/outhouses?q=$(enc '%')" | jq -e '.matching == 0' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/outhouses?q=Dir&sort=members" | jq -e --arg g "$DXB" '.outhouses[0].id == $g and .outhouses[0].members == 2
+  and .outhouses[0].messages_7d == 2 and .outhouses[0].messages_30d == 2 and .outhouses[0].channels >= 2 and (.outhouses[0].shut_down | not)' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/outhouses?q=Dir&sort=created" | jq -e --arg g "$DXB" '.outhouses[0].id == $g' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/outhouses?q=Dir&sort=name" | jq -e '[.outhouses[].name] == ["Dir Bobs Shed", "Dir Gamma"]' >/dev/null
+for i in $(seq -w 1 26); do tok "$TOKEN_A" call POST /api/guilds '{"name":"Paged '"$i"'"}' >/dev/null; done
+tok "$TOKEN_A" call GET "/api/safety/outhouses?q=paged&page=1" | jq -e '.matching == 26 and .pages == 2 and (.outhouses | length) == 25 and .outhouses[0].name == "Paged 01"' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/outhouses?q=paged&page=2" | jq -e '.page == 2 and (.outhouses | length) == 1 and .outhouses[0].name == "Paged 26"' >/dev/null
+
+step "outhouses directory: details and a read-only look (logged, without joining)"
+[ "$(tok "$TOKEN_B" status GET "/api/safety/outhouses/$DXB")" = 403 ]
+tok "$TOKEN_A" call GET "/api/safety/outhouses/$DXB" | jq -e --arg b "$BOB" '.name == "Dir Bobs Shed" and (.members_list | length) == 2
+  and any(.members_list[]; .id == $b and .owner and .age_bracket == "adult") and any(.channels_list[]; .messages == 2) and (.reports | length) == 0' >/dev/null
+[ "$(tok "$TOKEN_B" status GET "/api/safety/outhouses/$DXB/channels/$DXBC/messages")" = 403 ]
+tok "$TOKEN_A" call GET "/api/safety/outhouses/$DXB/channels/$DXBC/messages" | jq -e '(.messages | length) == 2 and .messages[0].content == "welcome to the shed" and (.has_more | not)' >/dev/null
+[ "$(tok "$TOKEN_A" status GET "/api/safety/outhouses/$DXA/channels/$DXBC/messages")" = 404 ]   # channel from another outhouse
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM guild_members WHERE guild_id = $DXB AND user_id = $ALICE")" = 0 ]
+tok "$TOKEN_A" call GET "/api/safety/outhouses/$DXB" | jq -e 'any(.log[]; .action == "outhouse_view" and (.details | test("Looked at #")))' >/dev/null
+tok "$TOKEN_A" call POST "/api/safety/outhouses/$DXB/actions" '{"action":"family","family":true}' | jq -e '.family and any(.log[]; .action == "family")' >/dev/null
+tok "$TOKEN_A" call POST "/api/safety/outhouses/$DXB/actions" '{"action":"family","family":false}' | jq -e '(.family | not)' >/dev/null
+[ "$(tok "$TOKEN_B" status POST "/api/safety/outhouses/$DXB/actions" '{"action":"family","family":true}')" = 403 ]
+
+step "outhouses directory: shutting one down freezes it; members keep it (closed) for the grace period and can leave"
+[ "$(report "$TOKEN_C" message "$DXM" spam "shed spam")" = 201 ]; DXR=$(report_id message "$DXM")
+tok "$TOKEN_D" call POST "/api/invites/$DXINV" >/dev/null
+tok "$TOKEN_C" call PUT /api/users/@me/guild-layout '{"items":[{"type":"folder","name":"Sheds","guild_ids":["'"$DXB"'"]}]}' >/dev/null
+[ "$(tok "$TOKEN_A" status POST "/api/safety/outhouses/$DXB/actions" '{"action":"shut_down","reason":"  "}')" = 400 ]
+[ "$(tok "$TOKEN_A" status POST "/api/safety/outhouses/$DXB/actions" '{"action":"delete","confirm_name":"Dir Bobs Shed"}')" = 400 ]   # shut it down first
+rm -f /tmp/gw-shut.jsonl; node ci/gateway_probe.mjs "$BASE" "$TOKEN_C" /tmp/gw-shut.jsonl 20 & GWS=$!
+wait_for /tmp/gw-shut.jsonl '.t == "READY"'
+tok "$TOKEN_A" call POST "/api/safety/outhouses/$DXB/actions" '{"action":"shut_down","reason":"Spam shed (test)"}' | jq -e '.shut_down and .shut_down_reason == "Spam shed (test)" and .members_remove_at != null and .members_removed_at == null' >/dev/null
+wait_for /tmp/gw-shut.jsonl '.t == "GUILD_SHUT_DOWN" and .d.guild_id == $g and .d.name == "Dir Bobs Shed" and .d.remove_at != null' --arg g "$DXB"
+kill $GWS 2>/dev/null || true
+# Still on their rail, closed until the removal date (about 7 days away).
+tok "$TOKEN_C" call GET /api/guilds | jq -e --arg g "$DXB" '.[] | select(.id == $g) | .closed_until != null
+  and ((.closed_until | sub("\\.[0-9]+"; "") | fromdateiso8601) - now) > 6.9 * 86400' >/dev/null
+tok "$TOKEN_C" call GET /api/users/@me/guild-layout | jq -e --arg g "$DXB" '.items[0].guild_ids == [$g]' >/dev/null
+tok "$TOKEN_C" call GET /api/users/@me/unread >/dev/null   # a closed outhouse doesn't break unread counts
+for t in "$TOKEN_B" "$TOKEN_C"; do
+  [ "$(tok "$t" status GET "/api/guilds/$DXB/info")" = 410 ]; grep -q "shut down by the server owner" /tmp/body
+  [ "$(tok "$t" status POST "/api/channels/$DXBC/messages" '{"content":"still here?"}')" = 410 ]
+  [ "$(tok "$t" status GET "/api/guilds/$DXB/channels")" = 410 ]
+done
+[ "$(tok "$TOKEN_B" status POST "/api/guilds/$DXB/invites")" = 410 ]
+[ "$(tok "$TOKEN_B" status POST "/api/channels/$DXBV/voice/join")" = 410 ]
+[ "$(tok "$TOKEN_B" status DELETE "/api/guilds/$DXB")" = 410 ]   # the owner can't delete the evidence
+[ "$(TOKEN="" status GET "/api/invites/$DXINV")" = 410 ]
+tok "$TOKEN_A" call GET "/api/safety/outhouses?q=shed" | jq -e '.outhouses[0].shut_down and .total_shut_down >= 1' >/dev/null
+tok "$TOKEN_A" call GET /api/safety/digest | jq -e 'any(.outhouses_shut_down[]; test("Dir Bobs Shed"))' >/dev/null
+# Members heard about it from Outhouse Safety, with the removal date.
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM messages m JOIN dm_participants r ON r.channel_id = m.channel_id WHERE r.user_id = (SELECT id FROM users WHERE username = 'carl') AND m.content LIKE '%Dir Bobs Shed%has been shut down by the server owner%removed from your list on%'")" -ge 1 ]
+# The owner can still look (evidence).
+tok "$TOKEN_A" call GET "/api/safety/outhouses/$DXB/channels/$DXBC/messages" | jq -e '(.messages | length) == 2' >/dev/null
+# Leave now: Dora goes early.
+tok "$TOKEN_D" call POST "/api/guilds/$DXB/leave" >/dev/null
+tok "$TOKEN_D" call GET /api/guilds | jq -e --arg g "$DXB" 'all(.[]; .id != $g)' >/dev/null
+
+step "outhouses directory: deleting needs the exact name and is blocked by open reports; restore within the grace period"
+[ "$(tok "$TOKEN_A" status POST "/api/safety/outhouses/$DXB/actions" '{"action":"delete","confirm_name":"Dir Bobs"}')" = 400 ]
+[ "$(tok "$TOKEN_A" status POST "/api/safety/outhouses/$DXB/actions" '{"action":"delete","confirm_name":"Dir Bobs Shed"}')" = 409 ]; grep -q "open report" /tmp/body
+tok "$TOKEN_A" call POST "/api/safety/outhouses/$DXB/actions" '{"action":"restore"}' | jq -e '(.shut_down | not) and .members == 2' >/dev/null
+tok "$TOKEN_C" call GET /api/guilds | jq -e --arg g "$DXB" '.[] | select(.id == $g) | .closed_until == null' >/dev/null
+tok "$TOKEN_C" call POST "/api/channels/$DXBC/messages" '{"content":"we are back"}' >/dev/null
+
+step "outhouses directory: after the grace period members are removed (snapshot kept); restore re-adds them, not suspended ones"
+PAINTER=$(tok "$TOKEN_B" call POST "/api/guilds/$DXB/roles" '{"name":"Painter"}' | jq -r .id)
+tok "$TOKEN_B" call PUT "/api/guilds/$DXB/members/$CARL/roles/$PAINTER" >/dev/null
+tok "$TOKEN_A" call POST "/api/safety/outhouses/$DXB/actions" '{"action":"shut_down","reason":"Again","suspend_owner":true}' >/dev/null
+[ "$(psql "$DATABASE_URL" -tAc "SELECT suspended_until > now() AND suspension_pending FROM users WHERE id = $BOB")" = t ]
+[ "$(TOKEN="" status POST "/api/safety/outhouses/$DXB/remove-members-now")" = 401 ]
+tok "$TOKEN_A" call POST "/api/safety/outhouses/$DXB/remove-members-now" | jq -e '.removed == 2' >/dev/null
+tok "$TOKEN_C" call GET /api/guilds | jq -e --arg g "$DXB" 'all(.[]; .id != $g)' >/dev/null
+tok "$TOKEN_C" call GET /api/users/@me/guild-layout | jq -e '.items[0].name == "Sheds" and .items[0].guild_ids == []' >/dev/null
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM guild_rail_positions WHERE guild_id = $DXB")" = 0 ]
+tok "$TOKEN_A" call GET "/api/safety/outhouses/$DXB" | jq -e --arg c "$CARL" '.members == 0 and .members_removed_at != null and .removed_members == 2
+  and any(.member_snapshot[]; .user_id == $c and .roles == ["Painter"] and .age_bracket == "adult" and .joined_at != null)
+  and any(.log[]; .action == "outhouse_members_removed")' >/dev/null
+[ "$(tok "$TOKEN_A" status POST "/api/safety/outhouses/$DXB/remove-members-now")" = 400 ]
+tok "$TOKEN_A" call POST "/api/safety/outhouses/$DXB/actions" '{"action":"restore"}' | jq -e --arg c "$CARL" '(.shut_down | not) and .members == 1
+  and .members_list[0].id == $c and .members_list[0].roles == ["Painter"] and any(.log[]; .action == "outhouse_restore" and (.details | test("1 previous member added back, 1 skipped")))' >/dev/null
+tok "$TOKEN_C" call GET /api/guilds | jq -e --arg g "$DXB" 'any(.[]; .id == $g)' >/dev/null
+tok "$TOKEN_A" call POST "/api/safety/users/$BOB/actions" '{"action":"unsuspend"}' >/dev/null
+TOKEN_B=$(TOKEN="" call POST /api/auth/login '{"username":"bob","password":"password123"}' | jq -r .token)
+
+step "outhouses directory: delete for good once its reports are closed"
+act "$DXR" '{"action":"dismiss","text":"not spam"}' >/dev/null
+tok "$TOKEN_A" call POST "/api/safety/outhouses/$DXB/actions" '{"action":"shut_down","reason":"Closing for good"}' >/dev/null
+tok "$TOKEN_A" call POST "/api/safety/outhouses/$DXB/actions" '{"action":"delete","confirm_name":"Dir Bobs Shed"}' | jq -e '.deleted' >/dev/null
+[ "$(tok "$TOKEN_A" status GET "/api/safety/outhouses/$DXB")" = 404 ]
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM safety_log WHERE guild_id = $DXB AND action IN ('outhouse_shut_down','outhouse_restore','outhouse_delete','outhouse_view','outhouse_members_removed')")" -ge 8 ]
 
 echo "Smoke test passed."

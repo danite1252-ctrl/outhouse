@@ -2312,9 +2312,12 @@ if (desktop) {
 
 // ---------- user settings ----------
 
-async function openUserSettings(tab = "account") {
+// User settings. The site owner also gets a SITE OWNER section here (Server
+// status, Reports, the Outhouses directory, …; drawn by safety.js).
+async function openUserSettings(tab = "account", opts = {}) {
   stopMicTest();
   const { dialog, nav, main } = settingsShell("User settings");
+  dialog.classList.add("user-settings");
   dialog.addEventListener("close", stopMicTest);
   const pages = [
     ["account", "My account"],
@@ -2325,15 +2328,27 @@ async function openUserSettings(tab = "account") {
     typeof drawPrivacyPage === "function" ? ["privacy", "Privacy & friends"] : null,
     typeof drawFoldersPage === "function" ? ["folders", "Folders"] : null,
   ].filter(Boolean);
-  const draw = (active) => {
+  const owner = typeof siteOwnerTabs === "function" && (state.siteOwner || state.safety?.owner);
+  const ownerTabs = owner ? siteOwnerTabs() : [];
+  if (owner) dialog.classList.add("safety-console");
+  let drawing = 0;
+  const draw = (active, extra = {}) => {
+    const mine = ++drawing;
     stopMicTest();
+    const ownerKey = ownerTabs.some(([id]) => id === active) || (typeof isSiteOwnerTab === "function" && isSiteOwnerTab(active));
+    const navActive = ownerKey && typeof siteOwnerNavKey === "function" ? siteOwnerNavKey(active) : active;
     nav.replaceChildren(
       el("h3", {}, "USER SETTINGS"),
-      ...pages.map(([id, label]) => el("button", { class: active === id ? "active" : "", onclick: () => draw(id) }, label)),
+      ...pages.map(([id, label]) => el("button", { class: navActive === id ? "active" : "", "data-tab": id, onclick: () => draw(id) }, label)),
+      ownerTabs.length ? el("h3", { class: "so-head" }, "SITE OWNER") : null,
+      ...ownerTabs.map(([id, label]) => el("button", { class: `so-tab${navActive === id ? " active" : ""}`, "data-tab": id, onclick: () => draw(id) }, label)),
       el("div", { style: "flex:1" }),
       el("button", { onclick: () => { dialog.close(); signOut(); } }, "Sign out"),
     );
     const page = settingsPage(main);
+    dialog.dataset.tab = active;
+    dialog.dataset.view = ownerKey ? (extra.reportId ? "detail" : ["open", "review", "closed"].includes(active) ? "list" : active) : active;
+    if (ownerKey && owner) return drawSiteOwnerTab(page, active, { ...extra, stillMine: () => mine === drawing, draw, dialog });
     if (active === "look") return drawProfileLook(page);
     if (active === "profile") return drawProfiles(page);
     if (active === "voice") return drawVoicePage(page);
@@ -2342,7 +2357,10 @@ async function openUserSettings(tab = "account") {
     if (active === "folders") return drawFoldersPage(page);
     return drawAccount(page);
   };
-  draw(tab);
+  dialog._draw = draw;
+  dialog.addEventListener("safety-refresh", () => { if (dialog.dataset.view === "list") draw(dialog.dataset.tab || "open"); });
+  draw(tab, opts);
+  return dialog;
 }
 
 function drawAccount(main) {
@@ -2867,6 +2885,8 @@ function settingsShell(title, navItems, renderMain) {
 }
 
 async function openSettings(tab = "roles", selectedRoleId = null) {
+  // Whole-server things live in User settings → SITE OWNER now.
+  if ((tab === "status" || tab === "reports") && typeof openSafetyConsole === "function") return openSafetyConsole(tab === "status" ? "status" : "open");
   const shell = settingsShell("Outhouse settings");
   const { nav, main } = shell;
   let drawing = 0;
@@ -2916,12 +2936,9 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
     if (canAudit) {
       nav.append(el("button", { class: activeTab === "audit" ? "active" : "", onclick: () => draw("audit") }, "Audit log"));
     }
-    if (state.siteOwner && typeof drawServerStatus === "function") {
-      nav.append(el("h3", {}, "SERVER"), el("button", { class: activeTab === "status" ? "active" : "", onclick: () => draw("status") }, "Server status"));
-      // Safety reports from the whole server (safety.js).
-      if (typeof drawReportsTab === "function") nav.append(el("button", { class: activeTab === "reports" ? "active" : "", onclick: () => draw("reports") }, "Reports"));
-      // This outhouse's image detector settings (detector.js).
-      if (typeof drawDetectorGuildSettings === "function") nav.append(el("button", { class: activeTab === "detector" ? "active" : "", onclick: () => draw("detector") }, "Image detector"));
+    // The site owner's settings for this outhouse only (the rest is in User settings → SITE OWNER).
+    if (state.siteOwner && typeof drawDetectorGuildSettings === "function") {
+      nav.append(el("h3", {}, "SITE OWNER · THIS OUTHOUSE"), el("button", { class: activeTab === "detector" ? "active" : "", "data-tab": "detector", onclick: () => draw("detector") }, "Image detector"));
     }
     const page = settingsPage(main);
     if (activeTab === "bans") return drawBans(page);
@@ -2930,8 +2947,6 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
     if (activeTab === "invites") return drawInviteSettings(page);
     if (activeTab === "badges") return drawBadgeSettings(page);
     if (activeTab === "raids") return drawRaidSettings(page);
-    if (activeTab === "status") return drawServerStatus(page);
-    if (activeTab === "reports") return drawReportsTab(page);
     if (activeTab === "detector") return drawDetectorGuildSettings(page);
     if (activeTab === "integrations") return drawIntegrations(page);
     if (activeTab === "bots") return drawBots(page);

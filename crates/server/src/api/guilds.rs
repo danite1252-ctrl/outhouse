@@ -17,7 +17,8 @@ use crate::state::{AppState, Audience};
 
 /// The columns of a `Guild` (from `guilds g`).
 pub const GUILD_COLUMNS: &str = "g.id, g.name, g.owner_id, g.created_at,
-    CASE WHEN g.icon_key IS NULL THEN NULL ELSE '/files/' || g.icon_key || '/icon' END AS icon_url";
+    CASE WHEN g.icon_key IS NULL THEN NULL ELSE '/files/' || g.icon_key || '/icon' END AS icon_url,
+    CASE WHEN g.shut_down_at IS NULL THEN NULL ELSE g.members_remove_at END AS closed_until";
 
 pub async fn guilds_for_user(db: &PgPool, user_id: i64) -> AppResult<Vec<Guild>> {
     let guilds = sqlx::query_as::<_, Guild>(&format!(
@@ -149,6 +150,19 @@ pub async fn leave(
     AuthUser(user): AuthUser,
     Path(guild_id): Path<i64>,
 ) -> AppResult<StatusCode> {
+    // A shut-down outhouse: anyone in it (its owner too) can leave early.
+    let closed: Option<bool> = sqlx::query_scalar(
+        "SELECT g.shut_down_at IS NOT NULL FROM guilds g
+         JOIN guild_members m ON m.guild_id = g.id AND m.user_id = $2 WHERE g.id = $1",
+    )
+    .bind(guild_id)
+    .bind(user.id)
+    .fetch_optional(&st.db)
+    .await?;
+    if closed == Some(true) {
+        remove_member(&st, guild_id, user.id).await?;
+        return Ok(StatusCode::NO_CONTENT);
+    }
     let ctx = member_ctx(&st.db, guild_id, user.id).await?;
     if ctx.is_owner() {
         return Err(AppError::BadRequest(

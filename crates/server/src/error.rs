@@ -31,6 +31,9 @@ pub enum AppError {
     /// Not allowed, with a reason to show (e.g. sign-ups are closed).
     #[error("{0}")]
     Refused(String),
+    /// Gone for good, with a reason to show (an outhouse that was shut down).
+    #[error("{0}")]
+    Gone(String),
     /// Too many tries (sign-in, sign-up, invite look-ups): slow down.
     #[error("{0}")]
     TooManyRequests(String),
@@ -52,6 +55,7 @@ impl IntoResponse for AppError {
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::Removed | AppError::Held => StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS,
             AppError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+            AppError::Gone(_) => StatusCode::GONE,
             AppError::Db(_) | AppError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let message = if status == StatusCode::INTERNAL_SERVER_ERROR {

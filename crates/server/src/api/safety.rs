@@ -65,7 +65,7 @@ pub const IP_MATCH: &str = "ip_match";
 /// Reports with this source are ban-evasion hints from `ips.rs`.
 pub const IP_MATCH_SOURCE: &str = "ip-match";
 
-fn category_label(key: &str) -> &'static str {
+pub(crate) fn category_label(key: &str) -> &'static str {
     if key == IP_MATCH {
         return "Same IP as a suspended or banned account";
     }
@@ -448,6 +448,71 @@ pub(crate) async fn log_action(
     log(st, actor, action, report_id, target_user, details).await
 }
 
+/// A safety log entry about an outhouse (shown on it in the Outhouses directory).
+pub(crate) async fn log_for_guild(
+    st: &AppState,
+    actor: Option<i64>,
+    action: &str,
+    guild_id: i64,
+    target_user: Option<i64>,
+    details: impl Into<String>,
+) {
+    let details: String = details.into().chars().take(MAX_NOTE).collect();
+    let result = sqlx::query(
+        "INSERT INTO safety_log (id, actor_id, action, target_user_id, details, guild_id)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(st.ids.next_id())
+    .bind(actor)
+    .bind(action)
+    .bind(target_user)
+    .bind(&details)
+    .bind(guild_id)
+    .execute(&st.db)
+    .await;
+    if let Err(e) = result {
+        tracing::warn!(error = %e, action, "couldn't write the safety log");
+    }
+}
+
+/// The safety log entries about one outhouse, newest first.
+pub(crate) async fn guild_log(st: &AppState, guild_id: i64, limit: i64) -> AppResult<Vec<Value>> {
+    let rows = sqlx::query_as::<_, LogRow>(&format!(
+        "{LOG_SELECT} WHERE l.guild_id = $1 ORDER BY l.created_at DESC, l.id DESC LIMIT $2"
+    ))
+    .bind(guild_id)
+    .bind(limit)
+    .fetch_all(&st.db)
+    .await?;
+    Ok(rows.iter().map(log_json).collect())
+}
+
+/// "Also suspend the owner" when shutting an outhouse down: the same as
+/// "Suspend now" on a report (until reviewed).
+pub(crate) async fn suspend_pending_from_outhouses(
+    st: &AppState,
+    me: i64,
+    target: i64,
+) -> AppResult<()> {
+    let req = ActionRequest {
+        action: "suspend_pending".into(),
+        text: None,
+        guild_id: None,
+        minutes: None,
+        days: None,
+        hide_messages: false,
+        attachment_id: None,
+        bracket: None,
+        exempt: None,
+    };
+    user_action(st, me, target, None, None, &req).await
+}
+
+/// A neutral note from Outhouse Safety (shutting an outhouse down).
+pub(crate) async fn safety_note(st: &AppState, user_id: i64, content: String) -> AppResult<()> {
+    safety_dm(st, user_id, content).await
+}
+
 // ---- Owners and alerts ----------------------------------------------------------
 
 /// Everyone who counts as the site owner (see `is_site_owner`).
@@ -549,7 +614,7 @@ fn notify_owners(st: &AppState, alert: Option<i64>) {
         external_alert(
             &st,
             "Outhouse: urgent safety report",
-            &format!("A child-safety report was made and needs review. {SUSPEND_NUDGE} Open Outhouse → Outhouse settings → Reports. (No details are sent in this alert.)"),
+            &format!("A child-safety report was made and needs review. {SUSPEND_NUDGE} Open Outhouse → User settings → Reports. (No details are sent in this alert.)"),
         )
         .await;
     });
@@ -3431,8 +3496,16 @@ async fn digest_json(db: &PgPool) -> AppResult<Value> {
     .fetch_one(db)
     .await?;
     let c = counts(db).await?;
+    let shut: Vec<String> = sqlx::query_scalar(
+        "SELECT details FROM safety_log
+         WHERE action = 'outhouse_shut_down' AND created_at > now() - interval '7 days'
+         ORDER BY created_at DESC LIMIT 20",
+    )
+    .fetch_all(db)
+    .await?;
     Ok(json!({
         "days": 7,
+        "outhouses_shut_down": shut,
         "new_accounts": accounts.iter().map(|(id, username, name, bracket, at)| json!({
             "id": id.to_string(), "username": username, "display_name": name,
             "age_bracket": bracket, "created_at": at,
@@ -3525,7 +3598,7 @@ async fn send_digest_if_due(st: &AppState) -> AppResult<()> {
         })
         .collect();
     let content = format!(
-        "📋 **Weekly safety digest** (last 7 days)\n• New accounts: {}{}\n• Reports: {}{}\n• Waiting for review: {}{}\n• Same-IP hints (suspended or banned accounts): {}\nOpen Outhouse settings → Reports to review them.",
+        "📋 **Weekly safety digest** (last 7 days)\n• New accounts: {}{}\n• Reports: {}{}\n• Waiting for review: {}{}\n• Same-IP hints (suspended or banned accounts): {}{}\nOpen User settings → Reports to review them.",
         accounts.len(),
         if names.is_empty() { String::new() } else { format!(" — {}", names.join(", ")) },
         d["reports_total"],
@@ -3533,6 +3606,10 @@ async fn send_digest_if_due(st: &AppState) -> AppResult<()> {
         d["waiting"],
         if d["urgent"].as_i64().unwrap_or(0) > 0 { format!(" (⚠️ {} child safety)", d["urgent"]) } else { String::new() },
         d["ip_matches"],
+        match d["outhouses_shut_down"].as_array().map(|a| a.len()).unwrap_or(0) {
+            0 => String::new(),
+            n => format!("\n• Outhouses shut down: {n}"),
+        },
     );
     for owner in site_owner_ids(&st.db).await? {
         if let Err(e) = safety_dm(st, owner, content.clone()).await {

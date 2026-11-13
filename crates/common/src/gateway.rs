@@ -49,6 +49,14 @@ pub enum ServerEvent {
     },
     /// An outhouse's name or picture changed (sent to its members).
     GuildUpdate(Guild),
+    /// The site owner shut this outhouse down (sent to its members): show
+    /// it closed until `remove_at`, when members are removed.
+    GuildShutDown {
+        #[serde(with = "as_string")]
+        guild_id: i64,
+        name: String,
+        remove_at: chrono::DateTime<chrono::Utc>,
+    },
     /// Your rail folders or outhouse order changed on another device:
     /// re-fetch them (sent to you only).
     GuildLayoutChanged,

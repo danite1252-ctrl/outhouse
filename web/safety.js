@@ -358,45 +358,62 @@ function formDialog(title, fields, confirm, { intro = null, danger = false } = {
 
 // ---------- the console ----------
 
-async function openSafetyConsole(tab = "open", reportId = null, openPerson = null) {
+// The site owner's tabs, in User settings → SITE OWNER (app.js draws the nav).
+const SITE_OWNER_TABS = [
+  ["status", "Server status"],
+  ["open", "Reports"],
+  ["people", "People"],
+  ["outhouses", "Outhouses"],
+  ["blocks", "Blocked networks"],
+  ["teens", "Teen protections"],
+  ["detector", "Image detector"],
+  ["digest", "This week"],
+  ["log", "Safety log"],
+  ["police", "Reporting to police"],
+];
+function siteOwnerTabs() {
+  return SITE_OWNER_TABS.filter(([id]) => id !== "detector" || typeof drawDetectorSettings === "function")
+    .filter(([id]) => id !== "status" || typeof drawServerStatus === "function")
+    .filter(([id]) => id !== "outhouses" || typeof drawOuthousesDirectory === "function");
+}
+const isSiteOwnerTab = (key) => ["review", "closed"].includes(key) || SITE_OWNER_TABS.some(([id]) => id === key);
+const siteOwnerNavKey = (key) => (["review", "closed"].includes(key) ? "open" : key);
+
+// Open / In review / Closed, at the top of Reports.
+function reportStatusTabs(current, draw) {
+  return el("div", { class: "sc-seg", role: "tablist" }, [["open", "Open"], ["review", "In review"], ["closed", "Closed"]].map(([key, label]) =>
+    el("button", { type: "button", class: `sc-seg-btn${current === key ? " active" : ""}`, role: "tab", "aria-selected": String(current === key), "data-status": key, onclick: () => draw(key) }, label)));
+}
+
+// One SITE OWNER page. `ctx.draw(key, extra)` redraws User settings.
+function drawSiteOwnerTab(page, key, { reportId = null, openPerson = null, outhouseId = null, stillMine, draw }) {
+  const openUser = (uid) => draw("people", { openPerson: uid });
+  if (reportId) return drawReportDetail(page, reportId, { back: () => draw(key), stillMine, openUser });
+  if (key === "people") return drawPeople(page, { stillMine, openReport: (rid) => draw("open", { reportId: rid }), userId: openPerson });
+  if (key === "status") return drawServerStatus(page);
+  if (key === "outhouses") return drawOuthousesDirectory(page, { stillMine, openReport: (rid) => draw("open", { reportId: rid }), openUser, outhouseId, draw });
+  if (key === "teens") return drawTeenSettings(page, stillMine);
+  if (key === "blocks") return drawBlockedNetworks(page, { stillMine, openUser, redraw: () => draw("blocks") });
+  if (key === "detector" && typeof drawDetectorSettings === "function") return drawDetectorSettings(page, stillMine);
+  if (key === "digest") return drawDigest(page, stillMine);
+  if (key === "log") return drawSafetyLog(page, stillMine);
+  if (key === "police") return drawPoliceGuide(page);
+  const status = ["open", "review", "closed"].includes(key) ? key : "open";
+  const list = el("div", { class: "sc-report-list" });
+  page.append(reportStatusTabs(status, (k) => draw(k)), list);
+  return drawReportList(list, status, { stillMine, openReport: (rid) => draw(status, { reportId: rid }) });
+}
+
+// The console is User settings → SITE OWNER now; this keeps every old way in
+// (the rail shield, alerts, notifications, "Open in Safety console").
+async function openSafetyConsole(tab = "open", reportId = null, openPerson = null, extra = {}) {
   closeMenus();
   closePopover();
+  const key = isSiteOwnerTab(tab) ? tab : "open";
+  const open = document.querySelector("dialog.user-settings.safety-console[open]");
+  if (open && open._draw) { open._draw(key, { reportId, openPerson, ...extra }); return open; }
   document.querySelectorAll("dialog.settings").forEach((d) => d.close());
-  const { dialog, nav, main } = settingsShell("Safety");
-  dialog.classList.add("safety-console");
-  let drawing = 0;
-  let personId = openPerson; // People opens on this person
-  const navBtn = (key, label, current) => el("button", { class: current === key ? "active" : "", "data-tab": key, onclick: () => draw(key) }, label);
-  const draw = async (key, id = null) => {
-    const mine = ++drawing;
-    dialog.dataset.view = id ? "detail" : ["open", "review", "closed"].includes(key) ? "list" : key;
-    nav.replaceChildren(
-      el("h3", {}, "REPORTS"),
-      navBtn("open", "Open", id ? null : key), navBtn("review", "In review", id ? null : key), navBtn("closed", "Closed", id ? null : key),
-      el("h3", {}, "SAFETY"),
-      navBtn("people", "People", key), navBtn("blocks", "Blocked networks", key), navBtn("teens", "Teen protections", key),
-      typeof drawDetectorSettings === "function" ? navBtn("detector", "Image detector", key) : null,
-      navBtn("digest", "This week", key),
-      navBtn("log", "Safety log", key), navBtn("police", "Reporting to police", key));
-    const page = settingsPage(main);
-    const stillMine = () => mine === drawing;
-    if (id) return drawReportDetail(page, id, { back: () => draw(key), stillMine, openUser: (uid) => { personId = uid; draw("people"); } });
-    if (key === "people") {
-      const userId = personId;
-      personId = null;
-      return drawPeople(page, { stillMine, openReport: (rid) => draw("open", rid), userId });
-    }
-    if (key === "teens") return drawTeenSettings(page, stillMine);
-    if (key === "blocks") return drawBlockedNetworks(page, { stillMine, openUser: (uid) => { personId = uid; draw("people"); }, redraw: () => draw("blocks") });
-    if (key === "detector" && typeof drawDetectorSettings === "function") return drawDetectorSettings(page, stillMine);
-    if (key === "digest") return drawDigest(page, stillMine);
-    if (key === "log") return drawSafetyLog(page, stillMine);
-    if (key === "police") return drawPoliceGuide(page);
-    return drawReportList(page, key, { stillMine, openReport: (rid) => draw(key, rid) });
-  };
-  dialog.addEventListener("safety-refresh", () => { if (dialog.dataset.view === "list") draw(nav.querySelector("button.active")?.dataset.tab || "open"); });
-  draw(tab, reportId);
-  return dialog;
+  return openUserSettings(key, { reportId, openPerson, ...extra });
 }
 
 function reportRow(r, onOpen) {
@@ -1170,15 +1187,10 @@ async function drawTeenSettings(page, stillMine) {
       "Switch off only if every new account is someone you know is an adult."),
     el("h3", {}, "Family outhouses"),
     el("p", { class: "muted small", style: "margin:0" }, "People in a family outhouse with a teen can send them friend requests (once they're friends they can DM)."),
-    el("div", { class: "sc-list" }, data.outhouses.map((o) => {
-      const btn = el("button", { type: "button", class: `toggle${o.family ? " on" : ""}`, "aria-label": `${o.name} is a family outhouse`, onclick: async () => {
-        const ok = await tryApi("PUT", `/api/safety/guilds/${o.id}/family`, { family: !o.family }).then(() => true, () => false);
-        if (!ok) return;
-        o.family = !o.family;
-        btn.classList.toggle("on", o.family);
-      } });
-      return el("div", { class: "sc-toggle-row" }, el("div", {}, el("div", { class: "sc-toggle-title" }, o.name), el("div", { class: "muted small" }, scPlural(o.members, "member"))), btn);
-    })));
+    el("div", { class: "sc-list" }, data.outhouses.filter((o) => o.family).map((o) => el("div", { class: "sc-row static" },
+      el("div", { class: "sc-row-who" }, el("strong", {}, o.name), el("span", { class: "muted" }, ` · ${scPlural(o.members, "member")}`))))),
+    data.outhouses.some((o) => o.family) ? null : el("p", { class: "muted small", style: "margin:0" }, "None yet."),
+    el("div", {}, el("button", { type: "button", class: "ghost", onclick: () => openSafetyConsole("outhouses") }, "Mark family outhouses in Outhouses")));
 }
 
 async function drawDigest(page, stillMine) {
@@ -1193,7 +1205,9 @@ async function drawDigest(page, stillMine) {
       item("Reports", String(d.reports_total)),
       item("Waiting for review", String(d.waiting), d.waiting ? "warn" : "good"),
       item("Child safety open", String(d.urgent), d.urgent ? "bad" : "good"),
-      item("Same-IP hints", String(d.ip_matches ?? 0), d.ip_matches ? "warn" : "")),
+      item("Same-IP hints", String(d.ip_matches ?? 0), d.ip_matches ? "warn" : ""),
+      item("Outhouses shut down", String(d.outhouses_shut_down?.length ?? 0), d.outhouses_shut_down?.length ? "warn" : "")),
+    d.outhouses_shut_down?.length ? el("div", { class: "muted small" }, d.outhouses_shut_down.join(" · ")) : null,
     d.reports.length ? el("div", { class: "muted small" }, d.reports.map((r) => `${r.category_label}: ${r.count}`).join(" · ")) : null,
     el("h3", {}, "New accounts"),
     d.new_accounts.length ? el("div", { class: "sc-list" }, d.new_accounts.map((a) => el("div", { class: "sc-row static" },
@@ -1229,26 +1243,6 @@ function drawPoliceGuide(page) {
     el("p", {}, "Police advice: suspend the reported account as soon as you see a child-safety report (“Suspend now” on the report). They're only told it's pending review of a report. Lift it if it was a mistake, or make it permanent, and you can block their IP addresses too."),
     el("h3", {}, "After it's dealt with"),
     el("p", {}, "Once police have what they need (or say they don't need it), close the report and use “Delete evidence files” to remove the files from the server for good."));
-}
-
-// ---------- Outhouse settings → Reports (site owner) ----------
-
-async function drawReportsTab(page) {
-  const data = await tryApi("GET", "/api/safety/reports?status=open").catch(() => null);
-  if (!data || !page.isConnected) return;
-  const c = data.counts;
-  page.replaceChildren(
-    el("h2", {}, "Reports"),
-    el("p", { class: "muted small", style: "margin:0" }, "Reports from everyone on this server (every outhouse) come to you, the site owner. Nobody else sees them."),
-    el("div", { class: "sc-counts" },
-      el("span", {}, el("strong", {}, String(c.open)), " open"),
-      el("span", {}, el("strong", {}, String(c.in_review)), " in review"),
-      c.urgent ? el("span", { class: "sc-urgent" }, el("strong", {}, String(c.urgent)), " child safety") : null,
-      c.ip_matches ? el("span", { class: "sc-ipm-count" }, el("strong", {}, String(c.ip_matches)), " same-IP hint", c.ip_matches === 1 ? "" : "s") : null),
-    data.reports.length
-      ? el("div", { class: "sc-list" }, data.reports.slice(0, 10).map((r) => reportRow(r, (id) => openSafetyConsole("open", id))))
-      : el("p", { class: "muted" }, "Nothing waiting. All quiet out the back."),
-    el("div", {}, el("button", { class: "primary", onclick: () => openSafetyConsole() }, "Open the safety console")));
 }
 
 // ---------- Settings → Privacy: the IP address line ----------

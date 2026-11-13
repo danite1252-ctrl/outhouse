@@ -37,6 +37,11 @@ pub struct Guild {
     #[serde(default)]
     #[cfg_attr(feature = "sqlx", sqlx(default))]
     pub icon_url: Option<String>,
+    /// Shut down by the site owner: closed (everything refused) and taken
+    /// off members' rails at this time.
+    #[serde(default)]
+    #[cfg_attr(feature = "sqlx", sqlx(default))]
+    pub closed_until: Option<DateTime<Utc>>,
 }
 
 /// A member of a server: the user plus their server-specific details.

@@ -2901,3 +2901,67 @@ dialog.settings textarea:focus { border-color: var(--ember); }
   /* Room for the preview note: the (switched off) tools step aside. */
   .composer-wrap.pv-off .composer .tool, .composer-wrap.pv-off .composer #attach-btn { display: none; }
 }
+
+/* ---------- User settings → SITE OWNER, the Outhouses directory (outhouses.js) ---------- */
+dialog.settings .settings-nav h3.so-head { color: var(--glow); margin-top: 14px; }
+dialog.settings .settings-nav button.so-tab.active { box-shadow: inset 3px 0 0 var(--ember); }
+.sc-seg { display: inline-flex; gap: 4px; padding: 3px; border-radius: 10px; background: var(--night); border: 1px solid var(--line); align-self: start; justify-self: start; }
+.sc-seg-btn { height: 30px; padding: 0 12px; border: 0; border-radius: 8px; background: none; color: var(--muted); font-weight: 600; font-size: 13px; }
+.sc-seg-btn.active { background: var(--raised); color: var(--text); }
+.sc-report-list { display: grid; gap: 12px; }
+.dir-summary { margin: 0; font-size: 15px; }
+.dir-summary strong { font-family: Montserrat, Inter, sans-serif; font-weight: 800; }
+.dir-shut-count { color: var(--occupied); font-weight: 600; }
+.dir-tools { display: flex; gap: 8px; flex-wrap: wrap; }
+.dir-search { flex: 1 1 240px; min-width: 0; height: 38px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--night); color: var(--text); outline: none; }
+.dir-search:focus { border-color: var(--ember); }
+.dir-row-main { display: flex; gap: 12px; align-items: center; min-width: 0; }
+.dir-row-text { display: grid; gap: 2px; min-width: 0; }
+.dir-row-name { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 0; min-width: 0; }
+.dir-row-name strong { overflow-wrap: anywhere; }
+.dir-row.shut { border-color: color-mix(in srgb, var(--occupied) 55%, var(--line)); background: color-mix(in srgb, var(--occupied) 6%, var(--night)); }
+.dir-icon { border-radius: 12px; background: var(--raised); display: grid; place-items: center; overflow: hidden; font-weight: 700; font-size: 14px; flex: 0 0 auto; }
+.dir-icon img { width: 100%; height: 100%; object-fit: cover; }
+.dir-prev { font-style: italic; }
+.rp-chip.dir-shut { background: color-mix(in srgb, var(--occupied) 25%, var(--raised)); color: #ffd4d4; }
+.rp-chip.dir-family { background: color-mix(in srgb, var(--vacant) 22%, var(--raised)); }
+.rp-chip.dir-reports { background: color-mix(in srgb, var(--glow) 25%, var(--raised)); }
+.rp-chip.dir-susp { background: color-mix(in srgb, var(--occupied) 20%, var(--raised)); }
+.rp-chip.dir-teen { background: color-mix(in srgb, #60a5fa 25%, var(--raised)); }
+.dir-pager { display: flex; align-items: center; justify-content: center; gap: 12px; }
+.dir-head { display: flex; gap: 14px; align-items: center; min-width: 0; }
+.dir-head h2 { margin: 0; font: 800 22px/1.2 Montserrat, Inter, sans-serif; overflow-wrap: anywhere; }
+.dir-head-text { display: grid; gap: 4px; min-width: 0; }
+.dir-actions .danger-btn { height: 38px; }
+.dir-owner { padding: 0; text-align: left; overflow-wrap: anywhere; }
+.dir-ch { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.dir-msgs { display: grid; gap: 2px; }
+.dir-msg { padding: 8px 10px; border-radius: 8px; background: var(--night); }
+.dir-msg.held { border: 1px dashed var(--line); }
+.dir-msg-text { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 2px; }
+.dir-msg-files { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; font-size: 13px; }
+.dir-msg-files a { color: var(--glow); }
+.dir-ro-note { padding: 8px 10px; border-radius: 8px; border-left: 3px solid var(--glow); background: var(--night); }
+.empty.tombstone { display: grid; justify-items: center; gap: 6px; text-align: center; padding: 48px 16px; }
+.tombstone-icon { font-size: 44px; }
+.empty.tombstone h2 { margin: 0; font: 800 22px/1.2 Montserrat, Inter, sans-serif; }
+.empty.tombstone p { margin: 0; }
+@media (max-width: 760px) {
+  .dir-head { align-items: flex-start; }
+  .sc-seg { width: 100%; }
+  .sc-seg-btn { flex: 1; }
+}
+.app.tombstone-mode #composer-wrap, .app.tombstone-mode .sidebar .section-label, .app.tombstone-mode #invite-btn,
+.app.tombstone-mode .chat-head .divider, .app.tombstone-mode .chat-head .hash, .app.tombstone-mode #members-toggle { display: none !important; }
+.app.tombstone-mode .chat-head > *:not(#nav-toggle):not(#channel-name):not(.conn) { display: none !important; }
+@media (max-width: 760px) {
+  dialog.safety-console .status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .dir-ch { flex-wrap: wrap; }
+}
+/* A shut-down outhouse during its grace period: greyed, with a lock. */
+.guild.closed { filter: grayscale(1); opacity: .55; }
+.guild.closed:hover { opacity: .8; }
+.guild.closed.active { opacity: .9; background: var(--raised); color: var(--text); }
+.guild .closed-badge { position: absolute; right: -4px; bottom: -4px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; background: var(--raised); border: 3px solid var(--panel); filter: none; }
+.tombstone-date { font-size: 14px; }
+.tombstone-leave { margin-top: 10px; padding: 0 20px; }

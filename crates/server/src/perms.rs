@@ -61,6 +61,24 @@ impl MemberCtx {
 struct MembershipRow {
     owner_id: i64,
     timed_out: bool,
+    shut_down: bool,
+}
+
+/// What members are told about an outhouse the site owner shut down.
+pub const SHUT_DOWN_MESSAGE: &str = "This outhouse has been shut down by the server owner.";
+
+/// Refuses anything to do with an outhouse that was shut down (joining,
+/// posting from bots and webhooks; members are refused in `member_ctx`).
+pub async fn refuse_if_shut_down(db: &PgPool, guild_id: i64) -> AppResult<()> {
+    let shut: Option<bool> =
+        sqlx::query_scalar("SELECT shut_down_at IS NOT NULL FROM guilds WHERE id = $1")
+            .bind(guild_id)
+            .fetch_optional(db)
+            .await?;
+    if shut == Some(true) {
+        return Err(AppError::Gone(SHUT_DOWN_MESSAGE.into()));
+    }
+    Ok(())
 }
 
 #[derive(sqlx::FromRow)]
@@ -75,7 +93,8 @@ struct RoleRow {
 pub async fn member_ctx(db: &PgPool, guild_id: i64, user_id: i64) -> AppResult<MemberCtx> {
     let membership = sqlx::query_as::<_, MembershipRow>(
         "SELECT g.owner_id,
-                (m.timeout_until IS NOT NULL AND m.timeout_until > now()) AS timed_out
+                (m.timeout_until IS NOT NULL AND m.timeout_until > now()) AS timed_out,
+                g.shut_down_at IS NOT NULL AS shut_down
          FROM guilds g
          JOIN guild_members m ON m.guild_id = g.id AND m.user_id = $2
          WHERE g.id = $1",
@@ -85,6 +104,10 @@ pub async fn member_ctx(db: &PgPool, guild_id: i64, user_id: i64) -> AppResult<M
     .fetch_optional(db)
     .await?
     .ok_or(AppError::NotFound)?;
+    // Shut down by the site owner: frozen for everyone in it.
+    if membership.shut_down {
+        return Err(AppError::Gone(SHUT_DOWN_MESSAGE.into()));
+    }
 
     let roles = sqlx::query_as::<_, RoleRow>(
         "SELECT id, permissions, deny_permissions, position FROM roles

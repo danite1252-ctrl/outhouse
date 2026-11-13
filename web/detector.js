@@ -372,7 +372,7 @@ if (typeof drawServerStatus === "function") {
   const dtBaseDrawServerStatus = drawServerStatus;
   drawServerStatus = async function (main) {
     await dtBaseDrawServerStatus(main);
-    const s = await api("GET", `/api/guilds/${state.guildId}/server-status`).catch(() => null);
+    const s = await api("GET", "/api/safety/server-status").catch(() => null);
     if (!s?.detector || !main.isConnected) return;
     const block = el("div", { class: "dt-status" }, el("h3", {}, "Image detector"), dtHealthGrid(s.detector));
     const refresh = main.querySelector("button.ghost:last-of-type")?.parentElement;

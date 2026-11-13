@@ -1646,8 +1646,12 @@ with sync_playwright() as p:
     b6.select_option(".badge-item:has-text('Bard') select.give-select", ERIN)
     b6.wait_for_selector(".badge-item:has-text('Bard') .holder-chip:has-text('Erin')", timeout=10000)
     b6.screenshot(path=f"{SHOTS}/93-badge-settings.png")
-    b6.click(".settings-nav button:has-text('Server status')")
-    b6.wait_for_selector(".status-grid .status-item", timeout=10000)
+    # Server status moved to User settings → SITE OWNER.
+    assert b6.locator("dialog.settings .settings-nav button:text-is('Server status')").count() == 0
+    b6.keyboard.press("Escape")
+    b6.wait_for_selector("dialog.settings", state="detached")
+    b6.evaluate("openUserSettings('status')")
+    b6.wait_for_selector("dialog.user-settings .status-grid .status-item", timeout=10000)
     b6.screenshot(path=f"{SHOTS}/94-server-status.png")
     b6.keyboard.press("Escape")
     b6.wait_for_selector("dialog.settings", state="detached")
@@ -4089,7 +4093,7 @@ with sync_playwright() as p:
     for b in api("GET", "/api/safety/ip-blocks", None, TOKEN)["blocks"]:
         api("POST", f"/api/safety/ip-blocks/{b['id']}/remove", None, TOKEN)
     op.keyboard.press("Escape")
-    # Outhouse settings → Reports (site owner only).
+    # Old links to Outhouse settings → Reports land in User settings → Reports.
     op.evaluate("openSettings('reports')")
     op.wait_for_selector("dialog.settings .settings-main h2:text-is('Reports')", timeout=10000)
     op.wait_for_selector("dialog.settings .settings-main .sc-row")
@@ -4720,6 +4724,92 @@ with sync_playwright() as p:
             assert php.locator("#text-channels .channel:has-text('previewers-only')").count() == 0
             php.screenshot(path=f"{SHOTS}/3830-phone-view-as-everyone-drawer.png")
         php.close()
+
+    # ---- Site owner: User settings → SITE OWNER, the Outhouses directory, shutting one down ----
+    den = api("POST", "/api/guilds", {"name": "Dave's Den"}, dave["token"])
+    den_chan = [c for c in api("GET", f"/api/guilds/{den['id']}/channels", None, dave["token"]) if c["kind"] == 0][0]
+    api("POST", f"/api/channels/{den_chan['id']}/messages", {"content": "Den rules: no gnomes"}, dave["token"])
+    api("PATCH", f"/api/guilds/{den['id']}", {"name": "Dave's Den of Gnomes"}, dave["token"])
+    api("PATCH", f"/api/guilds/{den['id']}", {"name": "Dave's Den"}, dave["token"])
+    den_code = api("POST", f"/api/guilds/{den['id']}/invites", None, dave["token"])["code"]
+    api("POST", f"/api/invites/{den_code}", None, erin["token"])
+    for label, kw in (("desktop", {}), ("phone", {"mobile": True})):
+        so = rail_page(f"site-owner-{label}", **kw)
+        so.evaluate("openSafetyConsole('status')")
+        so.wait_for_selector("dialog.user-settings.safety-console .settings-nav h3.so-head", state="attached", timeout=10000)
+        so.wait_for_selector("dialog.user-settings .status-grid .status-item", timeout=10000)
+        tabs = so.eval_on_selector_all("dialog.user-settings .settings-nav button.so-tab", "bs => bs.map((b) => b.textContent)")
+        for t in ("Server status", "Reports", "Outhouses", "Blocked networks", "Teen protections", "Image detector"):
+            assert t in tabs, tabs
+        so.wait_for_timeout(300)
+        so.screenshot(path=f"{SHOTS}/{3901 if label == 'desktop' else 3911}-{label}-user-settings-site-owner.png")
+        so.click("dialog.user-settings button[data-tab='outhouses']")
+        so.wait_for_selector(".dir-summary strong", timeout=10000)
+        total = api("GET", "/api/safety/outhouses", None, TOKEN)["total_outhouses"]
+        assert so.inner_text(".dir-summary").startswith(f"{total} outhouses"), so.inner_text(".dir-summary")
+        so.fill(".dir-search", "gnomes")   # an old name
+        so.wait_for_selector(f".dir-row[data-outhouse='{den['id']}'] .dir-prev:has-text('Gnomes')", timeout=10000)
+        so.wait_for_timeout(300)
+        so.screenshot(path=f"{SHOTS}/{3902 if label == 'desktop' else 3912}-{label}-outhouses-search.png")
+        so.click(f".dir-row[data-outhouse='{den['id']}']")
+        so.wait_for_selector(".dir-head h2:text-is(\"Dave's Den\")", timeout=10000)
+        so.wait_for_selector(".dir-member:has-text('@dave')")
+        so.wait_for_timeout(300)
+        so.screenshot(path=f"{SHOTS}/{3903 if label == 'desktop' else 3913}-{label}-outhouse-detail.png")
+        so.click(f".dir-ch[data-channel='{den_chan['id']}']")
+        so.wait_for_selector(".dir-msg:has-text('Den rules: no gnomes')", timeout=10000)
+        assert not any(m["id"] == CAROL for m in api("GET", f"/api/guilds/{den['id']}/members", None, dave["token"])), "viewing joined the owner"
+        so.screenshot(path=f"{SHOTS}/{3904 if label == 'desktop' else 3914}-{label}-owner-read-only-channel.png")
+        so.click(".sc-back button")
+        so.wait_for_selector(".dir-shut-btn", timeout=10000)
+        so.click(".dir-shut-btn")
+        so.wait_for_selector("dialog.sc-form[open] textarea")
+        so.fill("dialog.sc-form[open] textarea", f"UI test shut down ({label})")
+        so.wait_for_timeout(200)
+        so.screenshot(path=f"{SHOTS}/{3905 if label == 'desktop' else 3915}-{label}-shut-down-confirm.png")
+        if label == "desktop":
+            dp = browser.new_page(viewport={"width": 1280, "height": 800})
+            watch(dp, "tombstone-desktop")
+            dp.add_init_script(f"localStorage.setItem('outhouse_token', {json.dumps(dave['token'])}); localStorage.setItem('outhouse_guild', {json.dumps(den['id'])});")
+            dp.goto(BASE + "/")
+            dp.wait_for_selector("#messages .msg:has-text('Den rules')", timeout=15000)
+        so.click("dialog.sc-form[open] button[value=ok]")
+        so.wait_for_selector(".dir-shut-banner", timeout=10000)
+        so.wait_for_selector(".dir-actions button:has-text('Restore')")
+        assert so.is_disabled(".dir-actions button:has-text('Delete permanently')") is False
+        so.screenshot(path=f"{SHOTS}/{3906 if label == 'desktop' else 3916}-{label}-shut-down.png")
+        if label == "desktop":
+            # Live: the open outhouse turns into the notice; it stays on the rail, greyed with a lock.
+            dp.wait_for_selector(".empty.tombstone:has-text('shut down by the server owner') .tombstone-date:has-text('removed from your list on')", timeout=10000)
+            dp.wait_for_selector(".guild.closed[data-name=\"Dave's Den\"] .closed-badge")
+            assert "Closed by the server owner" in dp.get_attribute(".guild.closed[data-name=\"Dave's Den\"]", "title")
+            dp.wait_for_timeout(300)
+            dp.screenshot(path=f"{SHOTS}/3907-desktop-tombstone.png")
+            dp.close()
+        else:
+            # Erin opens it from the rail on her phone, then leaves early.
+            pp_ = browser.new_page(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
+            watch(pp_, "tombstone-phone")
+            pp_.add_init_script(f"localStorage.setItem('outhouse_token', {json.dumps(erin['token'])}); localStorage.setItem('outhouse_guild', {json.dumps(G)});")
+            pp_.goto(BASE + "/")
+            pp_.wait_for_selector("#guild-list .guild", state="attached", timeout=15000)
+            pp_.click("#nav-toggle")
+            pp_.wait_for_timeout(400)
+            pp_.wait_for_selector(".guild.closed[data-name=\"Dave's Den\"] .closed-badge")
+            pp_.screenshot(path=f"{SHOTS}/3918-phone-rail-closed-outhouse.png")
+            pp_.click(".guild.closed[data-name=\"Dave's Den\"]")
+            pp_.wait_for_selector(".empty.tombstone .tombstone-leave", timeout=10000)
+            pp_.wait_for_timeout(400)
+            pp_.screenshot(path=f"{SHOTS}/3917-phone-tombstone.png")
+            pp_.click(".empty.tombstone .tombstone-leave")
+            pp_.wait_for_selector(".guild[data-name=\"Dave's Den\"]", state="detached", timeout=10000)
+            assert all(g["id"] != den["id"] for g in api("GET", "/api/guilds", None, erin["token"]))
+            pp_.close()
+        assert any(g["id"] == den["id"] and g.get("closed_until") for g in api("GET", "/api/guilds", None, dave["token"]))
+        so.click(".dir-actions button:has-text('Restore')")
+        so.wait_for_selector(".dir-shut-btn", timeout=10000)
+        assert any(g["id"] == den["id"] for g in api("GET", "/api/guilds", None, dave["token"]))
+        so.close()
 
     browser.close()
 

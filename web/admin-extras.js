@@ -91,7 +91,7 @@ function fmtUptime(seconds) {
 }
 
 async function drawServerStatus(main) {
-  const s = await tryApi("GET", `/api/guilds/${state.guildId}/server-status`).catch(() => null);
+  const s = await tryApi("GET", "/api/safety/server-status").catch(() => null);
   if (!s) return;
   main.replaceChildren();
   const b = s.backup;

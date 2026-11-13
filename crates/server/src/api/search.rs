@@ -350,7 +350,8 @@ pub async fn unread(
     for guild_id in guild_ids {
         let ctx = match member_ctx(&st.db, guild_id, user.id).await {
             Ok(ctx) => ctx,
-            Err(AppError::NotFound) => continue, // left in the meantime
+            // Left in the meantime, or shut down by the site owner.
+            Err(AppError::NotFound | AppError::Gone(_)) => continue,
             Err(e) => return Err(e),
         };
         let visible = visible_text_channels(&st.db, &ctx, 0).await?;

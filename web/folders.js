@@ -238,8 +238,9 @@ const dragOk = () => !(typeof isTouch === "function" && isTouch());
 
 function railGuildButton(g, extra = "") {
   return el("button", {
-    class: `guild${g.id === state.guildId ? " active" : ""}${g.icon_url ? " has-icon" : ""}${extra}`,
-    title: g.name,
+    class: `guild${g.id === state.guildId ? " active" : ""}${g.icon_url ? " has-icon" : ""}${g.closed_until ? " closed" : ""}${extra}`,
+    title: g.closed_until ? `${g.name}: Closed by the server owner` : g.name,
+    "data-name": g.name,
     "aria-label": g.name,
     "data-menu": "guild",
     "data-id": g.id,

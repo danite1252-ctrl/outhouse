@@ -93,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
     api::threads::spawn_archiver(state.clone());
     armory::spawn_refresher(state.clone());
     api::safety::spawn_digest(state.clone());
+    api::outhouses::spawn_remover(state.clone());
     api::detector::spawn_worker(state.clone());
     ips::spawn_pruner(state.clone());
     api::police::spawn_cleaner(state.clone());

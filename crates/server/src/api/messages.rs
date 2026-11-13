@@ -546,6 +546,10 @@ pub async fn post_bot_message_with(st: &AppState, post: BotPost) -> AppResult<Me
         reply_to_id,
         filtered,
     } = post;
+    // Webhooks, feeds and bots can't post in a shut-down outhouse either.
+    if guild_id != DM_GUILD {
+        crate::perms::refuse_if_shut_down(&st.db, guild_id).await?;
+    }
     let id = st.ids.next_id();
     sqlx::query(
         "INSERT INTO messages

@@ -26,6 +26,7 @@ mod loot;
 pub mod members;
 pub mod messages;
 mod notifications;
+pub mod outhouses;
 pub mod police;
 pub mod polls;
 mod profiles;
@@ -539,6 +540,21 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/safety/guilds/{id}/family", put(safety::set_family))
         .route("/api/safety/digest", get(safety::digest))
+        .route("/api/safety/server-status", get(outhouses::server_status))
+        .route("/api/safety/outhouses", get(outhouses::list))
+        .route("/api/safety/outhouses/{id}", get(outhouses::get))
+        .route(
+            "/api/safety/outhouses/{id}/actions",
+            post(outhouses::action),
+        )
+        .route(
+            "/api/safety/outhouses/{id}/remove-members-now",
+            post(outhouses::remove_members_now),
+        )
+        .route(
+            "/api/safety/outhouses/{id}/channels/{channel}/messages",
+            get(outhouses::channel_history),
+        )
         // Blocked networks (permanent suspensions; site owner only)
         .route(
             "/api/safety/users/{id}/ip-block-preview",
