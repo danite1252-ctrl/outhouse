@@ -4279,9 +4279,10 @@ with sync_playwright() as p:
             break  # hidden: it's quarantined now
         time.sleep(0.25)
     # The owner's chat view may have loaded it in the moment before it was checked
-    # (adults see pictures while they're checked); from now on nobody may get it.
-    party_served = []
-    op.on("response", lambda r: "party.png" in r.url and r.status == 200 and party_served.append(r.url))
+    # (adults see pictures while they're checked, and a request already on its way
+    # can still be answered); nothing asked for from now on may be served.
+    late_requests = []
+    op.on("request", lambda q: "party.png" in q.url and late_requests.append(q))
     op.wait_for_timeout(500)
     op.evaluate("openSafetyConsole()")
     op.wait_for_selector("dialog.safety-console .sc-row.child:has-text('Automatic: explicit content')", timeout=15000)
@@ -4303,7 +4304,8 @@ with sync_playwright() as p:
     op.evaluate("document.querySelector('dialog.safety-console .sc-files .dt-age-line').scrollIntoView({block: 'center'})")
     op.wait_for_timeout(300)
     op.screenshot(path=f"{SHOTS}/3615-age-review-line.png")
-    assert not party_served, party_served
+    served = [q.url for q in late_requests if q.response() is not None and q.response().status == 200]
+    assert not served, served
     op.keyboard.press("Escape")
     # Settings: the age check (Reports → Image detector).
     op.evaluate("openSafetyConsole('detector')")
