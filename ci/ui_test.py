@@ -4285,10 +4285,11 @@ with sync_playwright() as p:
     op.click("dialog.safety-console .sc-row.child:has-text('Automatic: explicit content') >> nth=0")
     op.wait_for_selector("dialog.safety-console .dt-auto", timeout=10000)
     op.wait_for_selector("dialog.safety-console .dt-age-line:has-text('youngest estimated ~8')", timeout=15000)
-    text = op.inner_text("dialog.safety-console")
+    # Section headings are upper-cased by CSS (inner_text returns them as shown).
+    text = op.inner_text("dialog.safety-console").lower()
     for needle in ("Automatic escalation", "Automatic: explicit content with a face estimated 13 or under",
                    "preliminary automated estimate, not evidence", "Suspend now"):
-        assert needle in text, needle
+        assert needle.lower() in text, needle
     assert op.query_selector("dialog.safety-console .sc-files img, dialog.safety-console .sc-files video") is None, "escalated media shown"
     assert op.query_selector("dialog.safety-console .dt-approve") is None, "approve offered on a child-safety escalation"
     op.evaluate("document.querySelector('dialog.safety-console .dt-auto').scrollIntoView({block: 'center'})")
