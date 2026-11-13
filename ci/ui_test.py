@@ -4308,8 +4308,18 @@ with sync_playwright() as p:
     op.evaluate("document.querySelector('dialog.safety-console .sc-files .dt-age-line').scrollIntoView({block: 'center'})")
     op.wait_for_timeout(300)
     op.screenshot(path=f"{SHOTS}/3615-age-review-line.png")
-    served = [q.url for q in late_requests if q.response() is not None and q.response().status == 200]
-    assert not served, served
+    # The server refuses it now (a 200 seen by the page can be Chrome's memory
+    # cache re-using what it had before the escalation, never a new download),
+    # and the page doesn't show it anywhere.
+    party_urls = {q.url for q in late_requests} | {BASE + a["url"] for a in young_msg.get("attachments", []) if a.get("url")}
+    for url in party_urls:
+        try:
+            urllib.request.urlopen(url)
+            errors.append(f"the escalated picture was served: {url}")
+        except urllib.error.HTTPError as e:
+            assert e.code in (451, 404), (url, e.code)
+    shown = op.evaluate("[...document.querySelectorAll('img')].filter((i) => i.src.includes('party.png') && i.getClientRects().length).length")
+    assert shown == 0, f"the escalated picture is on screen ({shown})"
     op.keyboard.press("Escape")
     # Settings: the age check (Reports → Image detector).
     op.evaluate("openSafetyConsole('detector')")
