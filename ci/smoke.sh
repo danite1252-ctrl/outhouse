@@ -4293,6 +4293,29 @@ curl -fsS "$BASE/files/$AVK/avatar" -o /tmp/dtfile && cmp -s /tmp/dtfile "$DT/av
 act "$(dtreport "$DEK")" '{"action":"remove_file"}' | jq -e '.report.status == "closed" and (.report.resolution | test("Removed"))' >/dev/null
 [ "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/emojis/$DEMO")" = 404 ]
 
+step "outhouse picture and banner go through the image detector like avatars"
+code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $TOKEN_B" -F "file=@$DT/plain.png;type=image/png" "$BASE/api/guilds/$DG/icon")
+[ "$code" = 403 ]   # Bob can't manage the outhouse
+code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $TOKEN_A" -F "file=@$DT/avatar-flag.png;type=image/png" "$BASE/api/guilds/$DG/icon")
+[ "$code" = 200 ]; GIK=$(jq -r '.icon_url' /tmp/body | cut -d/ -f3); [ -n "$GIK" ] && [ "$GIK" != null ]
+dtwait "$GIK" "flagged,hidden"
+psql "$DATABASE_URL" -tAc "SELECT kind = 'guild_icon' AND guild_id = $DG FROM file_scans WHERE storage_key = '$GIK'" | grep -qx t
+code=$(curl -sS -D /tmp/headers -o /tmp/dtfile -w "%{http_code}" "$BASE/files/$GIK/icon")
+[ "$code" = 200 ] && grep -qi "content-type: image/svg+xml" /tmp/headers && grep -q "<svg" /tmp/dtfile
+DRG=$(dtreport "$GIK"); [ -n "$DRG" ]
+tok "$TOKEN_A" call GET "/api/safety/reports/$DRG" | jq -e --arg g "$DG" '.detector.kind == "guild_icon" and .snapshot.kind == "guild" and .snapshot.guild.id == $g' >/dev/null
+[ "$(psql "$DATABASE_URL" -tAc "SELECT reported_user_id = $ALICE AND guild_id = $DG FROM reports WHERE id = $DRG")" = t ]
+act "$DRG" '{"action":"remove_file"}' | jq -e '.report.status == "closed"' >/dev/null
+[ "$(psql "$DATABASE_URL" -tAc "SELECT icon_key IS NULL FROM guilds WHERE id = $DG")" = t ]
+tok "$TOKEN_B" call GET "/api/guilds/$DG/info" | jq -e '.icon_url == null' >/dev/null
+# A clean banner shows as normal; removing it clears it.
+code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $TOKEN_A" -F "file=@$DT/plain.png;type=image/png" "$BASE/api/guilds/$DG/banner")
+[ "$code" = 200 ]; GBK=$(jq -r '.banner_url' /tmp/body | cut -d/ -f3)
+dtwait "$GBK" "clean,none"
+[ "$(dtfile "/files/$GBK/banner")" = 200 ] && cmp -s /tmp/dtfile "$DT/plain.png"
+tok "$TOKEN_A" call DELETE "/api/guilds/$DG/banner" | jq -e '.banner_url == null' >/dev/null
+tok "$TOKEN_A" call GET "/api/guilds/$DG/audit-log?action=guild_update" | jq -e '[.entries[] | select(.details | test("banner"))] | length >= 2' >/dev/null
+
 step "detector: a child-safety report shows the detector score while the file stays quarantined (451, owner included)"
 [ "$(dtupload "$TOKEN_D" "$DCH" "$DT/plain2.png" "a cat")" = 200 ]
 DM9=$(jq -r .id /tmp/body); DK9=$(dtkey "$DM9"); dtwait "$DK9" "clean,none"
@@ -4451,5 +4474,152 @@ psql "$DATABASE_URL" -qc "UPDATE file_scans SET face_count = NULL, min_est_age =
 for _ in $(seq 1 60); do [ "$(psql "$DATABASE_URL" -tAc "SELECT face_count FROM file_scans WHERE storage_key = '$AK6'")" = 1 ] && break; sleep 0.25; done
 tok "$TOKEN_A" call GET "/api/safety/reports/$AR6" | jq -e '(.report.child_safety | not) and .files[0].detector.min_age == 8 and (.files[0].detector.age_line | test("~8"))' >/dev/null
 act "$AR6" '{"action":"dismiss"}' >/dev/null
+
+# ---------------------------------------------------------------------------
+# Outhouse folders on the rail (feat-folders): per person, private, synced.
+# ---------------------------------------------------------------------------
+step "folders: default layout is every outhouse in joined order"
+TOKEN=""; fail_call GET /api/users/@me/guild-layout; TOKEN=$TOKEN_A
+FF1=$(tok "$TOKEN_A" call POST /api/guilds '{"name":"Folder One"}' | jq -r .id)
+FF2=$(tok "$TOKEN_A" call POST /api/guilds '{"name":"Folder Two"}' | jq -r .id)
+FF3=$(tok "$TOKEN_A" call POST /api/guilds '{"name":"Folder Three"}' | jq -r .id)
+FCG=$(tok "$TOKEN_C" call POST /api/guilds '{"name":"Carl Only"}' | jq -r .id)
+NA=$(tok "$TOKEN_A" call GET /api/guilds | jq length)
+tok "$TOKEN_A" call GET /api/users/@me/guild-layout > /tmp/lay.json
+jq -e --argjson n "$NA" '(.items | length) == $n and all(.items[]; .type == "guild")' /tmp/lay.json >/dev/null
+diff <(jq -r '.items[].id' /tmp/lay.json) <(tok "$TOKEN_A" call GET /api/guilds | jq -r '.[].id')
+
+step "folders: create with outhouses in it; strangers' and repeated outhouses are dropped; new ones go at the end"
+rm -f /tmp/gw-lay.jsonl; node ci/gateway_probe.mjs "$BASE" "$TOKEN_A" /tmp/gw-lay.jsonl 20 & GWL=$!
+wait_for /tmp/gw-lay.jsonl '.t == "READY"'
+tok "$TOKEN_A" call PUT /api/users/@me/guild-layout '{"items":[{"type":"guild","id":"'"$FCG"'"},{"type":"folder","name":"  Raids  ","color":"blue","guild_ids":["'"$FF2"'","'"$FCG"'","'"$FF1"'","'"$FF2"'"]},{"type":"guild","id":"'"$FF3"'"},{"type":"guild","id":"'"$FF1"'"}]}' > /tmp/lay.json
+jq -e --arg a "$FF1" --arg b "$FF2" --arg c "$FF3" --arg x "$FCG" --argjson n "$NA" '
+  .items[0].type == "folder" and .items[0].name == "Raids" and .items[0].color == "blue" and (.items[0].collapsed | not)
+  and .items[0].guild_ids == [$b, $a] and .items[1] == {"type":"guild","id":$c}
+  and (.items | length) == ($n - 1) and ([.. | strings | select(. == $x)] | length) == 0' /tmp/lay.json >/dev/null
+FID=$(jq -r '.items[0].id' /tmp/lay.json)
+wait_for /tmp/gw-lay.jsonl '.t == "GUILD_LAYOUT_CHANGED"'
+kill $GWL 2>/dev/null || true
+# Joined later: at the end, outside folders.
+FF4=$(tok "$TOKEN_A" call POST /api/guilds '{"name":"Folder Four"}' | jq -r .id)
+tok "$TOKEN_A" call GET /api/users/@me/guild-layout | jq -e --arg d "$FF4" '.items[-1] == {"type":"guild","id":$d}' >/dev/null
+
+step "folders: rename, colour, collapse and reorder keep the folder's ID"
+tok "$TOKEN_A" call PUT /api/users/@me/guild-layout '{"items":[{"type":"guild","id":"'"$FF3"'"},{"type":"folder","id":"'"$FID"'","name":"Raid nights","color":"teal","collapsed":true,"guild_ids":["'"$FF1"'","'"$FF2"'"]}]}' >/dev/null
+tok "$TOKEN_A" call GET /api/users/@me/guild-layout | jq -e --arg f "$FID" --arg a "$FF1" --arg b "$FF2" --arg c "$FF3" '
+  .items[0] == {"type":"guild","id":$c} and .items[1].id == $f and .items[1].name == "Raid nights" and .items[1].color == "teal"
+  and .items[1].collapsed and .items[1].guild_ids == [$a, $b]' >/dev/null
+# A made-up folder ID (or someone else's) becomes a new one.
+NEWF=$(tok "$TOKEN_A" call PUT /api/users/@me/guild-layout '{"items":[{"type":"folder","id":"12345","name":"Mine","guild_ids":[]},{"type":"folder","id":"'"$FID"'","name":"Raid nights","guild_ids":["'"$FF1"'"]}]}' | jq -r '.items[0].id')
+[ "$NEWF" != 12345 ] && [ "$NEWF" != "$FID" ]
+
+step "folders: validation (names, colours, limits)"
+fail_call PUT /api/users/@me/guild-layout '{"items":[{"type":"folder","name":"   ","guild_ids":[]}]}'
+fail_call PUT /api/users/@me/guild-layout '{"items":[{"type":"folder","name":"'"$(printf 'x%.0s' $(seq 1 33))"'","guild_ids":[]}]}'
+fail_call PUT /api/users/@me/guild-layout '{"items":[{"type":"folder","name":"A","color":"#ff0000","guild_ids":[]}]}'
+fail_call PUT /api/users/@me/guild-layout '{"items":[{"type":"shelf","name":"A"}]}'
+fail_call PUT /api/users/@me/guild-layout "$(jq -nc '{items: [range(51) | {type:"folder", name:"F\(.)", guild_ids:[]}]}')"
+tok "$TOKEN_A" call PUT /api/users/@me/guild-layout "$(jq -nc '{items: [range(50) | {type:"folder", name:"F\(.)", guild_ids:[]}]}')" | jq -e '[.items[] | select(.type == "folder")] | length == 50' >/dev/null
+# Still there after the bad attempts? (a failed save changes nothing)
+fail_call PUT /api/users/@me/guild-layout '{"items":[{"type":"folder","name":"","guild_ids":[]}]}'
+tok "$TOKEN_A" call GET /api/users/@me/guild-layout | jq -e '[.items[] | select(.type == "folder")] | length == 50' >/dev/null
+
+step "folders: private to you; leaving an outhouse takes it out of your folders"
+FINV=$(tok "$TOKEN_A" call POST "/api/guilds/$FF1/invites" | jq -r .code)
+tok "$TOKEN_B" call POST "/api/invites/$FINV" >/dev/null
+tok "$TOKEN_B" call GET /api/users/@me/guild-layout | jq -e '[.items[] | select(.type == "folder")] | length == 0' >/dev/null
+tok "$TOKEN_B" call PUT /api/users/@me/guild-layout '{"items":[{"type":"folder","name":"Bob stuff","guild_ids":["'"$FF1"'","'"$FF2"'"]}]}' | jq -e --arg a "$FF1" '.items[0].guild_ids == [$a]' >/dev/null
+tok "$TOKEN_A" call GET /api/users/@me/guild-layout | jq -e 'all(.items[]; .name != "Bob stuff")' >/dev/null
+tok "$TOKEN_B" call POST "/api/guilds/$FF1/leave" >/dev/null
+tok "$TOKEN_B" call GET /api/users/@me/guild-layout | jq -e --arg a "$FF1" '.items[0].name == "Bob stuff" and .items[0].guild_ids == [] and ([.. | strings | select(. == $a)] | length) == 0' >/dev/null
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM guild_rail_positions WHERE user_id = $BOB AND guild_id = $FF1")" = 0 ]
+# Rejoining doesn't put it back in the folder.
+tok "$TOKEN_B" call POST "/api/invites/$FINV" >/dev/null
+tok "$TOKEN_B" call GET /api/users/@me/guild-layout | jq -e --arg a "$FF1" '.items[0].guild_ids == [] and .items[-1] == {"type":"guild","id":$a}' >/dev/null
+
+step "folders: deleting a folder puts its outhouses back on the rail"
+tok "$TOKEN_A" call PUT /api/users/@me/guild-layout '{"items":[{"type":"folder","name":"Temp","guild_ids":["'"$FF1"'","'"$FF2"'"]}]}' >/dev/null
+tok "$TOKEN_A" call PUT /api/users/@me/guild-layout '{"items":[]}' | jq -e --arg a "$FF1" --arg b "$FF2" --argjson n "$((NA + 1))" '
+  (.items | length) == $n and all(.items[]; .type == "guild") and any(.items[]; .id == $a) and any(.items[]; .id == $b)' >/dev/null
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM guild_folders WHERE user_id = $ALICE")" = 0 ]
+
+# ---------------------------------------------------------------------------
+# Outhouse info and Settings → Overview (feat-folders).
+# ---------------------------------------------------------------------------
+step "outhouse info: Manage Outhouse only, validated, logged, live, name history"
+IG=$(tok "$TOKEN_A" call POST /api/guilds '{"name":"Info Hut"}' | jq -r .id)
+IINV=$(tok "$TOKEN_A" call POST "/api/guilds/$IG/invites" | jq -r .code)
+tok "$TOKEN_B" call POST "/api/invites/$IINV" >/dev/null
+[ "$(tok "$TOKEN_B" status PATCH "/api/guilds/$IG" '{"name":"Bob was here"}')" = 403 ]
+[ "$(tok "$TOKEN_C" status GET "/api/guilds/$IG/info")" = 404 ]
+[ "$(tok "$TOKEN_C" status PATCH "/api/guilds/$IG" '{"name":"Carl"}')" = 404 ]
+for bad in '{"name":"   "}' '{"name":"'"$(printf 'n%.0s' $(seq 1 101))"'"}' '{"tagline":"'"$(printf 't%.0s' $(seq 1 81))"'"}' \
+  '{"tagline":"two\nlines"}' '{"description":"'"$(printf 'd%.0s' $(seq 1 1001))"'"}' '{"rules":"'"$(printf 'r%.0s' $(seq 1 2001))"'"}' \
+  '{"links":[{"label":"Site","url":"http://example.com"}]}' '{"links":[{"label":"Site","url":"javascript:alert(1)"}]}' \
+  '{"links":[{"label":"","url":"https://example.com"}]}' '{"links":[{"label":"Site","url":"https://"}]}' \
+  "$(jq -nc '{links: [range(6) | {label: "L\(.)", url: "https://example.com/\(.)"}]}')"; do
+  [ "$(tok "$TOKEN_A" status PATCH "/api/guilds/$IG" "$bad")" = 400 ] || { echo "accepted: $bad"; cat /tmp/body; exit 1; }
+done
+rm -f /tmp/gw-info.jsonl; node ci/gateway_probe.mjs "$BASE" "$TOKEN_B" /tmp/gw-info.jsonl 20 & GWI=$!
+wait_for /tmp/gw-info.jsonl '.t == "READY"'
+tok "$TOKEN_A" call PATCH "/api/guilds/$IG" '{"name":"  Info Shed ","tagline":"Raids on Tuesdays","description":"We **raid**.\nBring food.","rules":"1. Be nice.","links":[{"label":"Website","url":"https://example.com/shed"},{"label":"","url":""}]}' \
+  | jq -e '.name == "Info Shed" and .tagline == "Raids on Tuesdays" and .rules == "1. Be nice." and .links == [{"label":"Website","url":"https://example.com/shed"}] and .can_manage' >/dev/null
+wait_for /tmp/gw-info.jsonl '.t == "GUILD_UPDATE" and .d.id == $g and .d.name == "Info Shed"' --arg g "$IG"
+kill $GWI 2>/dev/null || true
+tok "$TOKEN_A" call PATCH "/api/guilds/$IG" '{"name":"Info Hut"}' >/dev/null
+tok "$TOKEN_B" call GET "/api/guilds/$IG/info" | jq -e --arg a "$ALICE" '.name == "Info Hut" and .member_count == 2 and .owner.id == $a and (.can_manage | not)
+  and .joined_at != null and (.name_history | length) == 2 and .name_history[0].old == "Info Shed" and .name_history[0].new == "Info Hut"
+  and .name_history[1].old == "Info Hut" and .description == "We **raid**.\nBring food."' >/dev/null
+tok "$TOKEN_B" call GET /api/guilds | jq -e --arg g "$IG" '.[] | select(.id == $g) | .name == "Info Hut" and .icon_url == null' >/dev/null
+tok "$TOKEN_A" call GET "/api/guilds/$IG/audit-log?action=guild_update" | jq -e '(.entries | length) >= 2 and any(.entries[]; .details | test("Name: Info Hut → Info Shed"))
+  and any(.actions[]; .key == "guild_update")' >/dev/null
+# Manage Outhouse through a role works too.
+MGR=$(tok "$TOKEN_A" call POST "/api/guilds/$IG/roles" '{"name":"Manager","permissions":"'"$((1 << 26))"'"}' | jq -r .id)
+tok "$TOKEN_A" call PUT "/api/guilds/$IG/members/$BOB/roles/$MGR" >/dev/null
+tok "$TOKEN_B" call PATCH "/api/guilds/$IG" '{"tagline":"Bob tidied this"}' | jq -e '.tagline == "Bob tidied this" and .can_manage' >/dev/null
+
+# ---------------------------------------------------------------------------
+# "View outhouse as role" (feat-folders): the server's preview permissions.
+# ---------------------------------------------------------------------------
+step "view as role: same rules as real members (overwrites, hidden and read-only channels)"
+PVG=$(tok "$TOKEN_A" call POST /api/guilds '{"name":"Preview Hall"}' | jq -r .id)
+PVI=$(tok "$TOKEN_A" call POST "/api/guilds/$PVG/invites" | jq -r .code)
+tok "$TOKEN_B" call POST "/api/invites/$PVI" >/dev/null
+PR1=$(tok "$TOKEN_A" call POST "/api/guilds/$PVG/roles" '{"name":"Raider"}' | jq -r .id)
+PR2=$(tok "$TOKEN_A" call POST "/api/guilds/$PVG/roles" '{"name":"Officer"}' | jq -r .id)
+PHID=$(tok "$TOKEN_A" call POST "/api/guilds/$PVG/channels" '{"name":"officers"}' | jq -r .id)
+PRO=$(tok "$TOKEN_A" call POST "/api/guilds/$PVG/channels" '{"name":"announcements"}' | jq -r .id)
+PRD=$(tok "$TOKEN_A" call POST "/api/guilds/$PVG/channels" '{"name":"raider-quiet"}' | jq -r .id)
+PSEC=$(tok "$TOKEN_A" call POST "/api/guilds/$PVG/channels" '{"name":"owner-only"}' | jq -r .id)
+tok "$TOKEN_A" call PUT "/api/channels/$PHID/permissions/$PVG" '{"kind":"role","allow":"0","deny":"1"}' >/dev/null
+tok "$TOKEN_A" call PUT "/api/channels/$PHID/permissions/$PR2" '{"kind":"role","allow":"1","deny":"0"}' >/dev/null
+tok "$TOKEN_A" call PUT "/api/channels/$PRO/permissions/$PVG" '{"kind":"role","allow":"0","deny":"2"}' >/dev/null
+tok "$TOKEN_A" call PUT "/api/channels/$PRD/permissions/$PR1" '{"kind":"role","allow":"0","deny":"2"}' >/dev/null
+tok "$TOKEN_A" call PUT "/api/channels/$PSEC/permissions/$PVG" '{"kind":"role","allow":"0","deny":"1"}' >/dev/null
+bits() { jq -r --arg c "$1" '.channels[$c] // "0"' /tmp/pv.json; }
+has() { [ "$(( $1 & $2 ))" != 0 ]; }
+hasnt() { [ "$(( $1 & $2 ))" = 0 ]; }
+tok "$TOKEN_A" call GET "/api/guilds/$PVG/preview-permissions?roles=" > /tmp/pv.json
+hasnt "$(bits "$PHID")" 1; has "$(bits "$PRO")" 1; hasnt "$(bits "$PRO")" 2; has "$(bits "$PRD")" 2
+jq -e '(.guild | tonumber) % 2 == 1 and .top_position == 0' /tmp/pv.json >/dev/null
+tok "$TOKEN_A" call GET "/api/guilds/$PVG/preview-permissions?roles=$PR2" > /tmp/pv.json
+has "$(bits "$PHID")" 1; has "$(bits "$PHID")" 2; hasnt "$(bits "$PRO")" 2
+tok "$TOKEN_A" call GET "/api/guilds/$PVG/preview-permissions?roles=$PR1" > /tmp/pv.json
+hasnt "$(bits "$PHID")" 1; hasnt "$(bits "$PRD")" 2; has "$(bits "$PRD")" 1
+tok "$TOKEN_A" call GET "/api/guilds/$PVG/preview-permissions?roles=$PR1,$PR2,$PVG" > /tmp/pv.json
+has "$(bits "$PHID")" 1; hasnt "$(bits "$PRD")" 2
+# Real member with the same roles agrees.
+tok "$TOKEN_A" call PUT "/api/guilds/$PVG/members/$BOB/roles/$PR1" >/dev/null
+tok "$TOKEN_B" call GET "/api/guilds/$PVG/permissions" | jq -e --arg c "$PRD" --arg h "$PHID" '(.channels[$c] | tonumber) % 4 == 1 and (.channels[$h] == null or ((.channels[$h] | tonumber) % 2 == 0))' >/dev/null
+
+step "view as role: Manage Roles only, this outhouse's roles only, never shows channels you can't see"
+[ "$(tok "$TOKEN_B" status GET "/api/guilds/$PVG/preview-permissions?roles=$PR2")" = 403 ]
+[ "$(tok "$TOKEN_C" status GET "/api/guilds/$PVG/preview-permissions")" = 404 ]
+[ "$(tok "$TOKEN_A" status GET "/api/guilds/$PVG/preview-permissions?roles=$MGR")" = 400 ]   # a role from another outhouse
+[ "$(tok "$TOKEN_A" status GET "/api/guilds/$PVG/preview-permissions?roles=abc")" = 400 ]
+PMR=$(tok "$TOKEN_A" call POST "/api/guilds/$PVG/roles" '{"name":"Role manager","permissions":"'"$((1 << 25))"'"}' | jq -r .id)
+tok "$TOKEN_A" call PUT "/api/guilds/$PVG/members/$BOB/roles/$PMR" >/dev/null
+tok "$TOKEN_B" call GET "/api/guilds/$PVG/preview-permissions?roles=$PR2" | jq -e --arg s "$PSEC" --arg h "$PHID" '(.channels | has($s) | not) and (.channels | has($h) | not)' >/dev/null
+tok "$TOKEN_A" call GET "/api/guilds/$PVG/preview-permissions?roles=$PR2" | jq -e --arg s "$PSEC" '.channels | has($s)' >/dev/null
 
 echo "Smoke test passed."

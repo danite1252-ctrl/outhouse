@@ -2323,6 +2323,7 @@ async function openUserSettings(tab = "account") {
     ["voice", "Voice & audio"],
     typeof drawNotificationsPage === "function" ? ["notifications", "Notifications"] : null,
     typeof drawPrivacyPage === "function" ? ["privacy", "Privacy & friends"] : null,
+    typeof drawFoldersPage === "function" ? ["folders", "Folders"] : null,
   ].filter(Boolean);
   const draw = (active) => {
     stopMicTest();
@@ -2338,6 +2339,7 @@ async function openUserSettings(tab = "account") {
     if (active === "voice") return drawVoicePage(page);
     if (active === "notifications") return drawNotificationsPage(page);
     if (active === "privacy") return drawPrivacyPage(page);
+    if (active === "folders") return drawFoldersPage(page);
     return drawAccount(page);
   };
   draw(tab);
@@ -2723,7 +2725,7 @@ const MENUS = {
       here && can("create_invite") ? { label: "Invite people", onClick: invitePeople } : null,
       here && can("manage_channels") ? { label: "Create text channel", onClick: () => createChannel(TEXT) } : null,
       here && can("manage_channels") ? { label: "Create voice channel", onClick: () => createChannel(VOICE) } : null,
-      here && (can("manage_roles") || can("ban_members") || can("manage_webhooks") || can("manage_guild") || can("view_audit_log")) ? { label: "Outhouse settings", onClick: () => openSettings(can("manage_roles") ? "roles" : can("manage_webhooks") ? "integrations" : can("manage_guild") ? "emoji" : can("ban_members") ? "bans" : "audit") } : null,
+      here && (can("manage_roles") || can("ban_members") || can("manage_webhooks") || can("manage_guild") || can("view_audit_log")) ? { label: "Outhouse settings", onClick: () => openSettings(can("manage_guild") ? "overview" : can("manage_roles") ? "roles" : can("manage_webhooks") ? "integrations" : can("manage_guild") ? "emoji" : can("ban_members") ? "bans" : "audit") } : null,
       here && can("manage_guild") ? { label: "Custom emoji", onClick: () => openSettings("emoji") } : null,
       ...(typeof notifyMenuItems === "function" ? ["sep", ...notifyMenuItems("guild", g)] : []),
       "sep",
@@ -2868,6 +2870,8 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
   const shell = settingsShell("Outhouse settings");
   const { nav, main } = shell;
   let drawing = 0;
+  // The role picked on the Roles tab, remembered while settings are open.
+  let lastRoleId = selectedRoleId;
   const draw = async (activeTab, roleId) => {
     const mine = ++drawing;
     // Mark the tab straight away; the page follows once the roles are in.
@@ -2876,20 +2880,11 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
     if (mine !== drawing) return; // another tab was picked meanwhile
     state.roles = roles;
     nav.replaceChildren(el("h3", {}, currentGuild().name.toUpperCase()));
+    if (can("manage_guild") && typeof drawGuildOverview === "function") {
+      nav.append(el("button", { class: activeTab === "overview" ? "active" : "", "data-tab": "overview", onclick: () => draw("overview") }, "Overview"));
+    }
     if (can("manage_roles")) {
-      nav.append(el("h3", {}, "ROLES"));
-      for (const r of roles) {
-        nav.append(el("button", {
-          class: activeTab === "roles" && roleId === r.id ? "active" : "",
-          onclick: () => draw("roles", r.id),
-        }, el("span", { class: "swatch", style: `width:10px;height:10px;border-radius:50%;background:${hexColour(r.color) || "#a1a1aa"}` }), r.name));
-      }
-      nav.append(el("button", { onclick: async () => {
-        const name = await ask("New role", { placeholder: "Raider", confirm: "Create" });
-        if (!name) return;
-        const role = await tryApi("POST", `/api/guilds/${state.guildId}/roles`, { name }).catch(() => null);
-        if (role) draw("roles", role.id);
-      } }, "＋ Create role"));
+      nav.append(el("button", { class: activeTab === "roles" ? "active" : "", "data-tab": "roles", onclick: () => draw("roles", lastRoleId) }, "Roles"));
     }
     if (can("manage_webhooks") || can("manage_guild")) nav.append(el("h3", {}, "APPS"));
     if (can("manage_webhooks")) {
@@ -2942,10 +2937,65 @@ async function openSettings(tab = "roles", selectedRoleId = null) {
     if (activeTab === "bots") return drawBots(page);
     if (activeTab === "emoji") return drawEmojiSettings(page);
     if (activeTab === "stickers") return drawStickerSettings(page);
-    const role = roles.find((r) => r.id === roleId) || roles.find((r) => r.id !== state.guildId) || roles[0];
-    if (role) drawRole(page, role, (id) => draw("roles", id));
+    if (activeTab === "overview" && typeof drawGuildOverview === "function") return drawGuildOverview(page);
+    const role = roles.find((r) => r.id === roleId) || roles.find((r) => r.id === lastRoleId) || roles.find((r) => r.id !== state.guildId) || roles[0];
+    if (role) {
+      lastRoleId = role.id;
+      drawRolesTab(page, roles, role, (id) => draw("roles", id));
+    }
   };
   draw(tab, selectedRoleId);
+}
+
+// Outhouse settings → Roles: pick the role from a dropdown, then edit it.
+function drawRolesTab(page, roles, role, redraw) {
+  const everyoneId = state.guildId;
+  // Most senior first, @everyone last.
+  const ordered = [...roles.filter((r) => r.id !== everyoneId).sort((a, b) => b.position - a.position || (a.id < b.id ? -1 : 1)),
+    ...roles.filter((r) => r.id === everyoneId)];
+  const count = (r) => (r.id === everyoneId ? state.members.length : state.members.filter((m) => m.role_ids.includes(r.id)).length);
+  const colourOf = (r) => (r.id === everyoneId ? "#a1a1aa" : hexColour(r.color) || "#a1a1aa");
+  const picker = el("select", { class: "select role-picker", id: "role-picker", "aria-label": "Role to edit", onchange: () => redraw(picker.value) },
+    ordered.map((r) => el("option", { value: r.id, selected: r.id === role.id },
+      `${r.id === everyoneId ? "@everyone (everybody)" : r.name} · ${count(r)} member${count(r) === 1 ? "" : "s"}`)));
+  // Native selects can't colour a dot per option everywhere: the swatch beside it shows the picked one.
+  const swatch = el("span", { class: "role-picker-swatch", style: `background:${colourOf(role)}` });
+  const isEveryone = role.id === everyoneId;
+  const idx = ordered.indexOf(role);
+  const above = !isEveryone && idx > 0 ? ordered[idx - 1] : null;
+  const below = !isEveryone && ordered[idx + 1] && ordered[idx + 1].id !== everyoneId ? ordered[idx + 1] : null;
+  const mine = myTop();
+  const canMoveUp = above && mine > above.position && mine > role.position;
+  const canMoveDown = below && mine > role.position;
+  const patchPos = (r, position) => tryApi("PATCH", `/api/guilds/${state.guildId}/roles/${r.id}`, { position });
+  const move = async (other, up) => {
+    // Swap places (if they share a number, step past it).
+    const mineTo = other.position === role.position ? role.position + (up ? 1 : -1) : other.position;
+    const otherTo = role.position;
+    const ok = await patchPos(role, Math.max(1, mineTo)).then(() => true, () => false);
+    if (ok && other.position !== role.position) await patchPos(other, otherTo).catch(() => {});
+    redraw(role.id);
+  };
+  const editor = el("div", { class: "role-editor" });
+  page.append(
+    el("h2", {}, "Roles"),
+    el("p", { class: "muted", style: "margin:0" }, "Roles give people permissions and a colour. Higher roles win when they disagree; you can edit roles below your own top role."),
+    el("div", { class: "role-bar" },
+      el("div", { class: "role-picker-wrap" }, swatch, picker),
+      el("button", { class: "ghost", type: "button", id: "create-role", onclick: async () => {
+        const name = await ask("New role", { placeholder: "Raider", confirm: "Create" });
+        if (!name) return;
+        const r = await tryApi("POST", `/api/guilds/${state.guildId}/roles`, { name }).catch(() => null);
+        if (r) redraw(r.id);
+      } }, "＋ Create role")),
+    el("div", { class: "role-tools" },
+      isEveryone ? null : el("button", { class: "ghost small-btn", type: "button", disabled: !canMoveUp, title: "Rank this role higher", onclick: () => move(above, true) }, "↑ Move up"),
+      isEveryone ? null : el("button", { class: "ghost small-btn", type: "button", disabled: !canMoveDown, title: "Rank this role lower", onclick: () => move(below, false) }, "↓ Move down"),
+      typeof startRolePreview === "function" ? el("button", { class: "ghost small-btn view-as", type: "button", onclick: () => startRolePreview([role.id]) },
+        `👁 View outhouse as ${isEveryone ? "@everyone" : role.name}`) : null),
+    editor,
+  );
+  drawRole(editor, role, (id) => redraw(id));
 }
 
 // A ✕ / ✓ switch (or ✕ / inherit / ✓ when `inherit` is true).

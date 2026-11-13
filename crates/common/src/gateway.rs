@@ -47,6 +47,11 @@ pub enum ServerEvent {
         #[serde(with = "as_string")]
         guild_id: i64,
     },
+    /// An outhouse's name or picture changed (sent to its members).
+    GuildUpdate(Guild),
+    /// Your rail folders or outhouse order changed on another device:
+    /// re-fetch them (sent to you only).
+    GuildLayoutChanged,
     /// Roles, member roles or channel permissions changed: re-fetch
     /// channels, roles, members and your permissions.
     GuildRefresh {

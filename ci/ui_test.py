@@ -4456,6 +4456,271 @@ with sync_playwright() as p:
     sp7.screenshot(path=f"{SHOTS}/3710-desktop-sender-request-note.png")
     sp7.close()
 
+    # ---- Rail folders, the pinned Reports shield, Outhouse info / Overview, the Roles
+    # tab and "View outhouse as role" (folders.js, guild-info.js, role-preview.js) ----
+    rail_ids = [api("POST", "/api/guilds", {"name": f"Rail {i:02d}"}, TOKEN)["id"] for i in range(1, 13)]
+    api("PUT", "/api/users/@me/guild-layout", {"items": [
+        {"type": "folder", "name": "Raids", "color": "ember", "guild_ids": [G]},
+        {"type": "folder", "name": "Hobbies", "color": "teal", "collapsed": True, "guild_ids": [family["id"], rail_ids[0], rail_ids[1]]},
+    ]}, TOKEN)
+    api("POST", f"/api/channels/{fchan['id']}/messages", {"content": f"<@{CAROL}> folder badge check"}, dave["token"])
+
+    def lay():
+        return api("GET", "/api/users/@me/guild-layout", None, TOKEN)["items"]
+
+    def wait_lay(check, what, timeout=10):
+        end = time.time() + timeout
+        while True:
+            items = lay()
+            if check(items):
+                return items
+            if time.time() > end:
+                sys.exit(f"layout never {what}: {json.dumps(items)}")
+            time.sleep(0.25)
+
+    def folder_named(items, name):
+        return next((it for it in items if it["type"] == "folder" and it["name"] == name), None)
+
+    def rail_page(label, mobile=False, vp=None):
+        pg = browser.new_page(viewport=vp or ({"width": 390, "height": 844} if mobile else {"width": 1280, "height": 800}), is_mobile=mobile, has_touch=mobile)
+        watch(pg, label)
+        pg.add_init_script(f"localStorage.setItem('outhouse_token', {json.dumps(TOKEN)}); localStorage.setItem('outhouse_guild', {json.dumps(G)}); localStorage.setItem('outhouse_channel_{G}', {json.dumps(general['id'])});")
+        pg.goto(BASE + "/")
+        pg.wait_for_selector(".rail-folder", timeout=15000)
+        pg.wait_for_timeout(500)
+        return pg
+
+    fp = rail_page("folders-desktop")
+    # Expanded: the folder header, then its outhouse inside the tinted strip.
+    fp.wait_for_selector(".rail-folder.open[data-folder] .folder-guilds .guild[title='UI Test Guild'].active")
+    # Collapsed: a 2×2 preview tile with the mentions inside added up.
+    fp.wait_for_selector(".folder-tile[title^='Hobbies'] .folder-mini .mini >> nth=2")
+    fp.wait_for_selector(".folder-tile[title^='Hobbies'] .mention-badge", timeout=10000)
+    assert fp.locator(".guild[title='Family']").count() == 0, "a collapsed folder's outhouses showed"
+    fp.screenshot(path=f"{SHOTS}/3801-desktop-rail-folders.png")
+    fp.click(".folder-tile[title^='Hobbies']")
+    fp.wait_for_selector(".rail-folder.open .guild[title='Family']")
+    wait_lay(lambda it: not folder_named(it, "Hobbies")["collapsed"], "expanded Hobbies")
+    fp.screenshot(path=f"{SHOTS}/3802-desktop-rail-folder-expanded.png")
+    fp.click(".folder-head[title='Hobbies']")
+    wait_lay(lambda it: folder_named(it, "Hobbies")["collapsed"], "collapsed Hobbies again")
+    # The open outhouse peeks out under its collapsed folder.
+    fp.click(".folder-head[title='Raids']")
+    fp.wait_for_selector(".rail-folder.closed .guild.peek.active[title='UI Test Guild']")
+    fp.screenshot(path=f"{SHOTS}/3803-desktop-rail-folder-collapsed-active.png")
+    fp.click(".folder-tile[title^='Raids']")
+    fp.wait_for_selector(".rail-folder.open .folder-guilds .guild[title='UI Test Guild']")
+    # The shield sits in the rail's footer, not in the scrolling list, and stays put.
+    sc = fp.evaluate("(() => { const s = document.getElementById('rail-scroll'); return { sh: s.scrollHeight, ch: s.clientHeight }; })()")
+    assert sc["sh"] > sc["ch"] + 100, f"rail doesn't scroll: {sc}"
+    fp.wait_for_selector("#rail-foot #safety-btn")
+    assert fp.locator("#rail-scroll #safety-btn").count() == 0
+    before = fp.query_selector("#safety-btn").bounding_box()
+    fp.evaluate("document.getElementById('rail-scroll').scrollTo(0, 100000)")
+    fp.wait_for_timeout(300)
+    after = fp.query_selector("#safety-btn").bounding_box()
+    assert before == after and after["y"] + after["height"] > 800 - 60, f"shield moved or isn't at the bottom: {before} {after}"
+    panel = fp.query_selector(".user-panel").bounding_box()
+    foot = fp.query_selector("#rail-foot").bounding_box()
+    assert abs(foot["y"] - panel["y"]) <= 1 and abs(foot["height"] - panel["height"]) <= 1, f"rail footer {foot} vs user panel {panel}"
+    jb = fp.query_selector("#join-guild").bounding_box()
+    assert jb["y"] + jb["height"] <= foot["y"], "the join button is under the footer"
+    fp.screenshot(path=f"{SHOTS}/3804-desktop-rail-scrolled-shield-pinned.png")
+    fp.evaluate("document.getElementById('rail-scroll').scrollTo(0, 0)")
+    # Outhouse menu: info, folders, moving.
+    fp.click(".guild[title='UI Test Guild']", button="right")
+    for label in ("Outhouse info", "Add to folder", "Remove from Raids", "Move up", "Move down"):
+        fp.wait_for_selector(f".menu button:has-text('{label}')")
+    fp.hover(".menu button:has-text('Add to folder')")
+    fp.wait_for_selector(".menu button:has-text('New folder…')")
+    fp.screenshot(path=f"{SHOTS}/3805-desktop-outhouse-folder-menu.png")
+    fp.click(".menu button:has-text('New folder…')")
+    fp.fill("dialog[open] input", "Main")
+    fp.click("dialog[open] button.primary")
+    items = wait_lay(lambda it: folder_named(it, "Main") and folder_named(it, "Main")["guild_ids"] == [G], "got a Main folder")
+    assert folder_named(items, "Raids")["guild_ids"] == [], items
+    # Folder menu: rename, colour, collapse all, delete.
+    fp.click(".folder-head[title='Raids']", button="right")
+    fp.hover(".menu button:has-text('Colour')")
+    fp.wait_for_selector(".menu button:has-text('Purple')")
+    fp.screenshot(path=f"{SHOTS}/3806-desktop-folder-menu.png")
+    fp.click(".menu button:has-text('Purple')")
+    wait_lay(lambda it: folder_named(it, "Raids")["color"] == "purple", "purple")
+    fp.click(".folder-head[title='Raids']", button="right")
+    fp.click(".menu button:has-text('Rename…')")
+    fp.fill("dialog[open] input", "Raid nights")
+    fp.click("dialog[open] button.primary")
+    wait_lay(lambda it: folder_named(it, "Raid nights") is not None, "renamed")
+    # Drag and drop: Rail 05 above Rail 04, then Rail 06 into "Raid nights", then a folder below another.
+    fp.drag_and_drop(".guild[title='Rail 05']", ".guild[title='Rail 04']", target_position={"x": 24, "y": 6})
+    def order(items):
+        return [it.get("id") if it["type"] == "guild" else f"folder:{it['name']}" for it in items]
+    wait_lay(lambda it: order(it).index(rail_ids[4]) == order(it).index(rail_ids[3]) - 1, "Rail 05 before Rail 04")
+    fp.drag_and_drop(".guild[title='Rail 06']", ".folder-head[title='Raid nights']", target_position={"x": 26, "y": 20})
+    wait_lay(lambda it: folder_named(it, "Raid nights")["guild_ids"] == [rail_ids[5]], "Rail 06 in Raid nights")
+    fp.wait_for_selector(".rail-folder.open[style*='--fc'] .folder-guilds .guild[title='Rail 06']")
+    # (Both on screen: a drag can't start if the rail scrolls under the pointer.)
+    fp.drag_and_drop(".folder-head[title='Main']", ".folder-tile[title^='Hobbies']", target_position={"x": 24, "y": 42})
+    wait_lay(lambda it: order(it).index("folder:Main") == order(it).index("folder:Hobbies") + 1, "Main after Hobbies")
+    fp.wait_for_timeout(300)
+    fp.screenshot(path=f"{SHOTS}/3807-desktop-rail-after-drag.png")
+    # Settings → Folders: the same, as buttons.
+    fp.evaluate("openUserSettings('folders')")
+    fp.wait_for_selector(".fo-card:has-text('Raid nights')")
+    fp.wait_for_timeout(300)
+    fp.screenshot(path=f"{SHOTS}/3808-desktop-settings-folders.png")
+    fp.click(".fo-card:has-text('Main') button:has-text('Delete')")
+    fp.click("dialog[open]:has-text('Delete “Main”') button.primary")
+    wait_lay(lambda it: folder_named(it, "Main") is None and any(x["type"] == "guild" and x["id"] == G for x in it), "Main deleted")
+    fp.wait_for_selector(".fo-card:has-text('Main')", state="detached")
+    fp.keyboard.press("Escape")
+    fp.wait_for_selector("dialog.settings", state="detached")
+    fp.wait_for_selector("#guild-list > .guild[title='UI Test Guild']")
+
+    # Outhouse info (any member) and Settings → Overview (Manage Outhouse).
+    api("PATCH", f"/api/guilds/{G}", {"name": "UI Test Guild", "tagline": "Raids Tuesday and Thursday",
+        "description": "Classic+ raiding for **WoW: Forever**.\nSay g'day in #general.", "rules": "1. Be nice.\n2. Soft reserves are final.",
+        "links": [{"label": "Guild website", "url": "https://example.com/guild"}]}, TOKEN)
+    upload(f"/api/guilds/{family['id']}/icon", {}, {"file": ("icon.png", make_png(64), "image/png")}, dave["token"])
+    fp.click(".guild[title='UI Test Guild']", button="right")
+    fp.click(".menu button:has-text('Outhouse info')")
+    fp.wait_for_selector("dialog.guild-info .gi-stats", timeout=10000)
+    fp.wait_for_selector("dialog.guild-info .gi-tagline:has-text('Raids Tuesday and Thursday')")
+    fp.wait_for_selector("dialog.guild-info .gi-text strong:has-text('WoW: Forever')")
+    fp.wait_for_selector("dialog.guild-info .gi-link:has-text('Guild website')")
+    fp.wait_for_timeout(300)
+    fp.screenshot(path=f"{SHOTS}/3811-desktop-outhouse-info.png")
+    fp.keyboard.press("Escape")
+    fp.wait_for_selector("dialog.guild-info", state="detached")
+    # The name at the top of the channel column: its menu has Outhouse info too.
+    fp.click("#guild-name")
+    fp.wait_for_selector(".menu button:has-text('Outhouse info')")
+    fp.keyboard.press("Escape")
+    fp.evaluate("openSettings('overview')")
+    fp.wait_for_selector("dialog.settings .gi-pics", timeout=10000)
+    fp.fill("dialog.settings input[maxlength='80']", "Raids Tuesday, Thursday and Sunday")
+    fp.click("dialog.settings .settings-actions button.primary")
+    fp.wait_for_selector(".toast:has-text('Outhouse saved.')", timeout=10000)
+    assert api("GET", f"/api/guilds/{G}/info", None, dave["token"])["tagline"] == "Raids Tuesday, Thursday and Sunday"
+    fp.wait_for_selector("dialog.settings .gi-pics")
+    fp.wait_for_timeout(300)
+    fp.screenshot(path=f"{SHOTS}/3812-desktop-overview-settings.png")
+    # A picture on the rail (the family outhouse got one above).
+    fp.keyboard.press("Escape")
+    fp.wait_for_selector(".folder-tile[title^='Hobbies'] .mini img", timeout=10000)
+    # Renamed live (GUILD_UPDATE): rail tooltip and the header.
+    api("PATCH", f"/api/guilds/{G}", {"name": "UI Test Guild 2"}, TOKEN)
+    fp.wait_for_selector(".guild[title='UI Test Guild 2']", timeout=10000)
+    fp.wait_for_selector("#guild-name:has-text('UI Test Guild 2')")
+    api("PATCH", f"/api/guilds/{G}", {"name": "UI Test Guild"}, TOKEN)
+    fp.wait_for_selector(".guild[title='UI Test Guild']", timeout=10000)
+
+    # Settings → Roles: one tab, a role picker.
+    pv_role = api("POST", f"/api/guilds/{G}/roles", {"name": "Previewer", "color": 0x60a5fa}, TOKEN)
+    pv_hidden = api("POST", f"/api/guilds/{G}/channels", {"name": "previewers-only"}, TOKEN)
+    pv_ro = api("POST", f"/api/guilds/{G}/channels", {"name": "read-only-news"}, TOKEN)
+    VIEW, SEND = 1, 2
+    api("PUT", f"/api/channels/{pv_hidden['id']}/permissions/{G}", {"kind": "role", "allow": "0", "deny": str(VIEW)}, TOKEN)
+    api("PUT", f"/api/channels/{pv_hidden['id']}/permissions/{pv_role['id']}", {"kind": "role", "allow": str(VIEW), "deny": "0"}, TOKEN)
+    api("PUT", f"/api/channels/{pv_ro['id']}/permissions/{G}", {"kind": "role", "allow": "0", "deny": str(SEND)}, TOKEN)
+    api("POST", f"/api/channels/{pv_ro['id']}/messages", {"content": "Patch day tomorrow."}, TOKEN)
+    fp.wait_for_selector("#text-channels .channel:has-text('previewers-only')", timeout=10000)
+    fp.evaluate("openSettings('roles')")
+    fp.wait_for_selector("#role-picker", timeout=10000)
+    assert fp.locator("dialog.settings .settings-nav button:text-is('Roles')").count() == 1
+    assert fp.locator("dialog.settings .settings-nav button:text-is('Previewer')").count() == 0, "roles are still nav buttons"
+    opts = fp.eval_on_selector_all("#role-picker option", "os => os.map((o) => o.textContent)")
+    assert opts[-1].startswith("@everyone"), opts
+    fp.select_option("#role-picker", pv_role["id"])
+    fp.wait_for_selector("dialog.settings h2:text-is('Edit role: Previewer')")
+    fp.click("dialog.settings .settings-nav button:text-is('Overview')")
+    fp.wait_for_selector("dialog.settings .gi-pics")
+    fp.click("dialog.settings .settings-nav button:text-is('Roles')")
+    fp.wait_for_selector("dialog.settings h2:text-is('Edit role: Previewer')")   # remembered
+    fp.wait_for_timeout(300)
+    fp.screenshot(path=f"{SHOTS}/3813-desktop-roles-tab.png")
+    # View outhouse as @everyone: the hidden channel goes, the read-only one can't be posted in.
+    fp.select_option("#role-picker", G)
+    fp.wait_for_selector("dialog.settings h2:text-is('@everyone')")
+    fp.click("dialog.settings button.view-as")
+    fp.wait_for_selector("#preview-banner .pv-exit", timeout=10000)
+    fp.wait_for_selector("#text-channels .channel:has-text('previewers-only')", state="detached")
+    fp.click("#text-channels .channel:has-text('read-only-news')")
+    fp.wait_for_selector("#messages .msg:has-text('Patch day tomorrow.')", timeout=10000)
+    assert fp.is_disabled("#composer-input")
+    assert "can't post" in fp.get_attribute("#composer-input", "placeholder")
+    fp.wait_for_timeout(300)
+    fp.screenshot(path=f"{SHOTS}/3814-desktop-view-as-everyone.png")
+    # Add a role: Previewer sees its channel again.
+    fp.click("#preview-banner .pv-add")
+    fp.click(".menu button:has-text('Previewer')")
+    fp.wait_for_selector("#preview-banner .pv-chip:has-text('Previewer')")
+    fp.wait_for_selector("#text-channels .channel:has-text('previewers-only')", timeout=10000)
+    fp.screenshot(path=f"{SHOTS}/3815-desktop-view-as-previewer.png")
+    fp.click("#preview-banner .pv-exit")
+    fp.wait_for_selector("#preview-banner", state="detached")
+    fp.wait_for_function("!document.getElementById('composer-input').disabled", timeout=10000)
+    # Switching outhouse ends a preview.
+    fp.evaluate("openSettings('roles')")
+    fp.wait_for_selector("dialog.settings button.view-as", timeout=10000)
+    fp.click("dialog.settings button.view-as")
+    fp.wait_for_selector("#preview-banner")
+    fp.click(".guild[title='Rail 12']")
+    fp.wait_for_selector("#preview-banner", state="detached")
+    fp.close()
+
+    # Phone: the drawer with folders and the pinned shield, long-press menus, settings.
+    for label, kw in (("phone", {"mobile": True}), ("android", {"mobile": True, "vp": {"width": 393, "height": 852}})):
+        php = rail_page(f"folders-{label}", **kw)
+        php.click("#nav-toggle")
+        php.wait_for_timeout(500)
+        box = php.query_selector("#safety-btn").bounding_box()
+        vh = 844 if label == "phone" else 852
+        assert box["y"] + box["height"] <= vh and box["y"] > vh - 120, f"{label}: shield not at the bottom: {box}"
+        php.screenshot(path=f"{SHOTS}/382{1 if label == 'phone' else 5}-{label}-rail-folders.png")
+        php.eval_on_selector(".folder-tile[title^='Hobbies']", "e => { const r = e.getBoundingClientRect(); e.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 20, clientY: r.top + 20 })); }")
+        php.wait_for_selector(".menu button:has-text('Expand')")
+        php.wait_for_selector(".menu button:has-text('Move up')")
+        php.screenshot(path=f"{SHOTS}/382{2 if label == 'phone' else 6}-{label}-folder-menu.png")
+        php.keyboard.press("Escape")
+        if label == "phone":
+            php.eval_on_selector(".guild[title='UI Test Guild']", "e => { const r = e.getBoundingClientRect(); e.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 20, clientY: r.top + 20 })); }")
+            php.wait_for_selector(".menu button:has-text('Add to folder')")
+            php.click(".menu button:has-text('Move down')")
+            php.wait_for_timeout(300)
+            php.evaluate("document.getElementById('app').classList.remove('show-nav')")
+            php.evaluate("openUserSettings('folders')")
+            php.wait_for_selector(".fo-card:has-text('Hobbies')")
+            php.wait_for_timeout(300)
+            php.screenshot(path=f"{SHOTS}/3823-phone-settings-folders.png")
+            php.keyboard.press("Escape")
+            php.wait_for_selector("dialog.settings", state="detached")
+            php.evaluate(f"openGuildInfo({json.dumps(G)})")
+            php.wait_for_selector("dialog.guild-info .gi-stats", timeout=10000)
+            php.wait_for_timeout(300)
+            php.screenshot(path=f"{SHOTS}/3824-phone-outhouse-info.png")
+            php.keyboard.press("Escape")
+            php.evaluate("openSettings('overview')")
+            php.wait_for_selector("dialog.settings .gi-pics", timeout=10000)
+            php.wait_for_timeout(300)
+            php.screenshot(path=f"{SHOTS}/3827-phone-overview-settings.png")
+            php.click("dialog.settings .settings-nav button:text-is('Roles')")
+            php.wait_for_selector("#role-picker", timeout=10000)
+            assert php.evaluate("document.getElementById('role-picker').tagName") == "SELECT"
+            php.wait_for_timeout(300)
+            php.screenshot(path=f"{SHOTS}/3828-phone-roles-tab.png")
+            php.select_option("#role-picker", G)
+            php.wait_for_selector("dialog.settings h2:text-is('@everyone')")
+            php.click("dialog.settings button.view-as")
+            php.wait_for_selector("#preview-banner .pv-exit", timeout=10000)
+            php.wait_for_timeout(400)
+            php.screenshot(path=f"{SHOTS}/3829-phone-view-as-everyone.png")
+            php.click("#nav-toggle")
+            php.wait_for_timeout(500)
+            assert php.locator("#text-channels .channel:has-text('previewers-only')").count() == 0
+            php.screenshot(path=f"{SHOTS}/3830-phone-view-as-everyone-drawer.png")
+        php.close()
+
     browser.close()
 
     # Scrollbars (headless Chrome hides them unless asked): a long chat at

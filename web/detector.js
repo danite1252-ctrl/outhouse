@@ -210,6 +210,8 @@ const DT_WHERE = {
   banner: "a profile banner",
   emoji: "a custom emoji",
   sticker: "a sticker",
+  guild_icon: "an outhouse picture",
+  guild_banner: "an outhouse banner",
 };
 
 // An automatic child-safety escalation (the age rule): why, in numbers.
@@ -233,7 +235,7 @@ function detectorReportPanel(d, act) {
   const x = d.detector;
   if (!x || d.report.source !== "detector") return auto;
   if (d.report.child_safety) return auto;
-  const profile = ["avatar", "banner", "emoji", "sticker"].includes(x.kind);
+  const profile = ["avatar", "banner", "emoji", "sticker", "guild_icon", "guild_banner"].includes(x.kind);
   const decided = x.review === "approved" ? "Approved: shown as normal."
     : x.review === "blurred" ? (profile ? "Kept hidden." : x.teen ? "Kept held." : "Kept blurred: people can click through.")
       : null;

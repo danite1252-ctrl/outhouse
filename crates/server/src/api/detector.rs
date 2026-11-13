@@ -61,6 +61,8 @@ pub const KIND_AVATAR: &str = "avatar";
 pub const KIND_BANNER: &str = "banner";
 pub const KIND_EMOJI: &str = "emoji";
 pub const KIND_STICKER: &str = "sticker";
+pub const KIND_GUILD_ICON: &str = "guild_icon";
+pub const KIND_GUILD_BANNER: &str = "guild_banner";
 /// Scanned only for a report's review screen (nothing is held).
 const KIND_REPORT: &str = "report";
 
@@ -393,7 +395,10 @@ async fn guild_has_teens(db: &PgPool, guild_id: i64) -> bool {
 // ---- Deciding what people see -----------------------------------------------------------
 
 fn profile_kind(kind: &str) -> bool {
-    matches!(kind, KIND_AVATAR | KIND_BANNER | KIND_EMOJI | KIND_STICKER)
+    matches!(
+        kind,
+        KIND_AVATAR | KIND_BANNER | KIND_EMOJI | KIND_STICKER | KIND_GUILD_ICON | KIND_GUILD_BANNER
+    )
 }
 
 /// What people see of a picture, given its scan and where it was posted.
@@ -1369,6 +1374,11 @@ async fn announce(st: &AppState, key: &str, kind: &str, guild_id: Option<i64>) {
                 );
             }
         }
+        KIND_GUILD_ICON | KIND_GUILD_BANNER => {
+            if let Some(guild_id) = guild_id {
+                super::guild_info::announce(st, guild_id).await;
+            }
+        }
         _ => {}
     }
 }
@@ -1644,6 +1654,27 @@ async fn remove_everywhere(st: &AppState, row: &ScanRow) -> AppResult<usize> {
                 .execute(&st.db)
                 .await?;
             Ok(n as usize)
+        }
+        KIND_GUILD_ICON | KIND_GUILD_BANNER => {
+            let col = if row.kind == KIND_GUILD_ICON {
+                "icon_key"
+            } else {
+                "banner_key"
+            };
+            let guilds: Vec<i64> = sqlx::query_scalar(&format!(
+                "UPDATE guilds SET {col} = NULL WHERE {col} = $1 RETURNING id"
+            ))
+            .bind(key)
+            .fetch_all(&st.db)
+            .await?;
+            sqlx::query("DELETE FROM profile_files WHERE storage_key = $1")
+                .bind(key)
+                .execute(&st.db)
+                .await?;
+            for g in &guilds {
+                super::guild_info::announce(st, *g).await;
+            }
+            Ok(guilds.len())
         }
         KIND_EMOJI | KIND_STICKER => {
             let table = if row.kind == KIND_EMOJI {

@@ -13,9 +13,11 @@ mod dms;
 pub mod emojis;
 pub mod events;
 mod feeds;
+mod folders;
 mod forward;
 pub mod friends;
 mod gifs;
+pub mod guild_info;
 pub mod guilds;
 pub mod invites;
 mod ipblocks;
@@ -67,9 +69,37 @@ pub fn router(state: AppState) -> Router {
         .route("/api/users/@me/unread", get(search::unread))
         // Outhouses
         .route("/api/guilds", get(guilds::list).post(guilds::create))
-        .route("/api/guilds/{id}", delete(guilds::delete))
+        .route(
+            "/api/guilds/{id}",
+            delete(guilds::delete).patch(guild_info::update),
+        )
         .route("/api/guilds/{id}/leave", post(guilds::leave))
         .route("/api/guilds/{id}/permissions", get(guilds::my_permissions))
+        .route(
+            "/api/guilds/{id}/preview-permissions",
+            get(guilds::preview_permissions),
+        )
+        .route("/api/guilds/{id}/info", get(guild_info::get))
+        .route(
+            "/api/guilds/{id}/icon",
+            post(guild_info::upload_icon)
+                .delete(guild_info::delete_icon)
+                .layer(DefaultBodyLimit::max(
+                    profiles::MAX_AVATAR_BYTES + 64 * 1024,
+                )),
+        )
+        .route(
+            "/api/guilds/{id}/banner",
+            post(guild_info::upload_banner)
+                .delete(guild_info::delete_banner)
+                .layer(DefaultBodyLimit::max(
+                    profiles::MAX_BANNER_BYTES + 64 * 1024,
+                )),
+        )
+        .route(
+            "/api/users/@me/guild-layout",
+            get(folders::get).put(folders::put),
+        )
         .route(
             "/api/guilds/{id}/invites",
             get(invites::list).post(invites::create),

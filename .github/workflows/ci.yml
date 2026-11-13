@@ -131,6 +131,9 @@ jobs:
           node --check web/safety.js
           node --check web/detector.js
           node --check web/profiles.js
+          node --check web/folders.js
+          node --check web/guild-info.js
+          node --check web/role-preview.js
           node --check web/bots/dice-bot.mjs
       - name: Deploy scripts check (bash -n + shellcheck)
         run: |

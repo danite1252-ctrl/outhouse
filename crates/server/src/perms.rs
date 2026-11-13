@@ -128,6 +128,60 @@ pub async fn member_ctx(db: &PgPool, guild_id: i64, user_id: i64) -> AppResult<M
     })
 }
 
+/// A pretend member who has only @everyone and `role_ids` (for "View
+/// outhouse as role"): the same rules as a real member, but never the
+/// owner, never timed out, and no member-specific overwrites (user 0).
+/// Roles must be this outhouse's (else BadRequest).
+pub async fn role_set_ctx(db: &PgPool, guild_id: i64, role_ids: &[i64]) -> AppResult<MemberCtx> {
+    let owner_id: i64 = sqlx::query_scalar("SELECT owner_id FROM guilds WHERE id = $1")
+        .bind(guild_id)
+        .fetch_optional(db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let roles = sqlx::query_as::<_, RoleRow>(
+        "SELECT id, permissions, deny_permissions, position FROM roles
+         WHERE guild_id = $1 AND (id = $1 OR id = ANY($2))",
+    )
+    .bind(guild_id)
+    .bind(role_ids)
+    .fetch_all(db)
+    .await?;
+    let wanted: std::collections::HashSet<i64> = role_ids
+        .iter()
+        .copied()
+        .filter(|&r| r != guild_id)
+        .collect();
+    let found = roles.iter().filter(|r| wanted.contains(&r.id)).count();
+    if found != wanted.len() {
+        return Err(AppError::BadRequest(
+            "Those roles aren't all from this outhouse.".into(),
+        ));
+    }
+    let everyone = roles
+        .iter()
+        .find(|r| r.id == guild_id)
+        .map(|r| r.permissions as u64)
+        .unwrap_or(p::DEFAULT_EVERYONE);
+    let others: Vec<&RoleRow> = roles.iter().filter(|r| r.id != guild_id).collect();
+    let role_perms: Vec<RolePerms> = others
+        .iter()
+        .map(|r| RolePerms {
+            allow: r.permissions as u64,
+            deny: r.deny_permissions as u64,
+            position: r.position,
+        })
+        .collect();
+    Ok(MemberCtx {
+        guild_id,
+        user_id: 0,
+        owner_id,
+        role_ids: others.iter().map(|r| r.id).collect(),
+        base: p::base_permissions(false, everyone, &role_perms),
+        top_position: others.iter().map(|r| r.position).max().unwrap_or(0),
+        timed_out: false,
+    })
+}
+
 #[derive(sqlx::FromRow)]
 struct OverwriteRow {
     target_id: i64,

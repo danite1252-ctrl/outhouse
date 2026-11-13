@@ -33,6 +33,10 @@ pub struct Guild {
     #[serde(with = "as_string")]
     pub owner_id: i64,
     pub created_at: DateTime<Utc>,
+    /// The outhouse's picture (null: its initials are shown).
+    #[serde(default)]
+    #[cfg_attr(feature = "sqlx", sqlx(default))]
+    pub icon_url: Option<String>,
 }
 
 /// A member of a server: the user plus their server-specific details.

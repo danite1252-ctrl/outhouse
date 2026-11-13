@@ -93,6 +93,7 @@ pub async fn user_label(st: &AppState, guild_id: i64, user_id: i64) -> String {
 
 /// Every action the log records, with a label for the settings screen.
 pub const ACTIONS: &[(&str, &str)] = &[
+    ("guild_update", "Changed the outhouse"),
     ("channel_create", "Created a channel"),
     ("channel_update", "Changed a channel"),
     ("channel_delete", "Deleted a channel"),

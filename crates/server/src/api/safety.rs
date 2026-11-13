@@ -1342,6 +1342,22 @@ pub(crate) async fn detector_report(st: &AppState, t: DetectorTarget) -> AppResu
             };
             user_target(st, None, uploader).await?
         }
+        super::detector::KIND_GUILD_ICON | super::detector::KIND_GUILD_BANNER => {
+            let Some(uploader) = t.uploader_id else {
+                return Ok(());
+            };
+            match t.guild_id {
+                // The outhouse it's on, with the person who put it there.
+                Some(guild_id) => match guild_target(st, uploader, guild_id).await {
+                    Ok(mut target) => {
+                        target.reported_user_id = Some(uploader);
+                        target
+                    }
+                    Err(_) => user_target(st, None, uploader).await?,
+                },
+                None => user_target(st, None, uploader).await?,
+            }
+        }
         kind @ (super::detector::KIND_EMOJI | super::detector::KIND_STICKER) => {
             let table = if kind == "emoji" {
                 "emojis"

@@ -2759,3 +2759,145 @@ dialog.ho-dialog .row button, dialog.ho-result .row button { min-width: 110px; p
   .ho-result-row { grid-template-columns: minmax(0, 1fr) auto; }
   .ho-result-label { grid-column: 1 / -1; }
 }
+
+/* ---------- Left rail: scrolling list + pinned footer, outhouse folders (folders.js) ---------- */
+.rail { gap: 0; padding: 0; overflow: hidden; }
+.rail-scroll { flex: 1 1 auto; min-height: 0; width: 100%; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 0; scrollbar-width: none; overscroll-behavior: contain; }
+.rail-scroll::-webkit-scrollbar { display: none; }
+.rail-scroll > * { flex: 0 0 auto; }
+/* Lines up with the user panel at the bottom of the channel column. */
+.rail-foot { flex: 0 0 60px; height: 60px; width: 100%; border-top: 1px solid var(--line); display: grid; place-items: center; background: var(--panel); }
+.rail-foot:empty { display: none; }
+.guild.has-icon { padding: 0; overflow: visible; background: var(--raised); }
+.guild .guild-icon { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block; pointer-events: none; }
+.guild.has-icon.active { background: var(--raised); box-shadow: 0 0 0 2px var(--ember); }
+
+.rail-folder { --fc: var(--ember); width: 60px; display: flex; flex-direction: column; align-items: center; gap: 8px; border-radius: 18px; position: relative; }
+.rail-folder.open { background: color-mix(in srgb, var(--fc) 14%, transparent); padding: 4px 0 6px; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fc) 28%, transparent); }
+.folder-guilds { display: flex; flex-direction: column; gap: 8px; align-items: center; }
+.folder-head { width: 52px; min-height: 38px; border: 0; border-radius: 12px; background: transparent; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; padding: 4px 2px 3px; color: var(--fc); }
+.folder-head:hover { background: color-mix(in srgb, var(--fc) 18%, transparent); }
+.folder-name { max-width: 50px; font-size: 9px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; line-height: 1.15; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: .85; }
+.folder-tile { width: 48px; height: 48px; border: 0; border-radius: 16px; position: relative; padding: 5px; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--fc) 22%, var(--raised)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fc) 45%, transparent); transition: background .15s; }
+.folder-tile:hover { background: color-mix(in srgb, var(--fc) 32%, var(--raised)); }
+.rail-folder.has-active .folder-tile { box-shadow: inset 0 0 0 2px var(--fc); }
+.folder-mini { width: 100%; height: 100%; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 3px; }
+.folder-mini.n1 { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+.folder-mini .mini { border-radius: 6px; background: var(--panel); color: var(--text); font-size: 9px; font-weight: 700; display: grid; place-items: center; overflow: hidden; min-width: 0; min-height: 0; }
+.folder-mini.n1 .mini { font-size: 15px; border-radius: 10px; }
+.folder-mini .mini img { width: 100%; height: 100%; object-fit: cover; }
+.folder-tile .badge { position: absolute; right: -2px; bottom: -2px; width: 14px; height: 14px; border-radius: 50%; background: var(--ember); border: 3px solid var(--panel); }
+.folder-tile .mention-badge.rail-badge { position: absolute; right: -4px; bottom: -4px; margin: 0; border: 3px solid var(--panel); height: 22px; line-height: 16px; border-radius: 11px; }
+.guild.peek { width: 40px; height: 40px; margin-top: -2px; font-size: 13px; }
+.guild.peek.active::before { top: 4px; height: 32px; left: -16px; }
+.guild.dragging, .folder-head.dragging, .folder-tile.dragging { opacity: .35; }
+/* Drop indicators: an ember line above or below, a ring for "into the folder". */
+.guild-list .drop-before::after, .guild-list .drop-after::after { content: ""; position: absolute; left: 50%; width: 52px; height: 3px; margin-left: -26px; border-radius: 2px; background: var(--glow); box-shadow: 0 0 6px var(--ember); pointer-events: none; z-index: 2; }
+.guild-list .drop-before::after { top: -6px; }
+.guild-list .drop-after::after { bottom: -6px; }
+.guild-list .folder-head.drop-before::after { top: -4px; }
+.guild-list .rail-folder.drop-before::after { top: -5px; }
+.guild-list .rail-folder.drop-after::after { bottom: -5px; }
+.guild-list .drop-into { box-shadow: 0 0 0 2px var(--glow) !important; border-radius: 14px; }
+.guild-list { min-height: 8px; position: relative; padding-bottom: 2px; }
+.guild-list.drop-end::after { content: ""; position: absolute; left: 50%; bottom: -5px; width: 52px; height: 3px; margin-left: -26px; border-radius: 2px; background: var(--glow); }
+
+/* User settings → Folders */
+.fo-top { display: flex; gap: 8px; flex-wrap: wrap; }
+.fo-top .primary { padding: 0 16px; }
+.fo-card { --fc: var(--ember); display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); border-left: 4px solid var(--fc); border-radius: 12px; background: color-mix(in srgb, var(--fc) 6%, transparent); }
+.fo-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.fo-name { font-family: Montserrat, sans-serif; font-weight: 800; font-size: 15px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fo-actions { margin-left: auto; display: flex; gap: 4px; }
+.fo-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.fo-row .select { width: auto; }
+.fo-check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.fo-btn { height: 32px; min-width: 32px; padding: 0 10px; border-radius: 8px; }
+.fo-guilds { display: grid; gap: 4px; }
+.fo-guild { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 10px; border-radius: 8px; background: var(--night); min-width: 0; }
+.fo-gname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.fo-guild .select { width: auto; max-width: 140px; height: 32px; }
+.fo-sub { margin: 8px 0 0; }
+.fo-add { max-width: 260px; }
+
+/* ---------- Outhouse info panel and Settings → Overview (guild-info.js) ---------- */
+.gi-icon { border-radius: 24px; background: var(--raised); display: grid; place-items: center; overflow: hidden; font: 800 30px/1 Montserrat, Inter, sans-serif; color: var(--text); flex: 0 0 auto; }
+.gi-icon img { width: 100%; height: 100%; object-fit: cover; }
+.gi-avatar { border-radius: 30px; }
+.gi-banner { background: linear-gradient(135deg, color-mix(in srgb, var(--ember) 55%, var(--night)), color-mix(in srgb, var(--glow) 25%, var(--night))); background-size: cover; background-position: center; }
+.gi-banner.img { background-color: var(--raised); }
+.gi-tagline { color: var(--glow); font-weight: 600; margin-top: 4px; overflow-wrap: anywhere; }
+.gi-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.gi-stat { display: grid; gap: 2px; padding: 10px 12px; border-radius: 10px; background: var(--night); border: 1px solid var(--line); min-width: 0; }
+.gi-stat strong { font-size: 16px; display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gi-stat span { font-size: 12px; }
+.gi-online-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--vacant); display: inline-block; }
+.gi-owner { display: flex; align-items: center; gap: 6px; border: 0; background: none; padding: 0; font-weight: 700; font-size: 15px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.gi-owner:hover { color: var(--glow); }
+.gi-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+.gi-text a { color: var(--glow); }
+.gi-rules { padding: 10px 12px; border-left: 3px solid var(--ember); background: var(--night); border-radius: 0 8px 8px 0; }
+.gi-links { display: grid; gap: 6px; }
+.gi-link { display: flex; align-items: baseline; gap: 8px; padding: 9px 12px; border-radius: 8px; background: var(--night); border: 1px solid var(--line); color: var(--text); text-decoration: none; min-width: 0; }
+.gi-link:hover { border-color: var(--ember); }
+.gi-link-label { font-weight: 600; color: var(--glow); }
+.gi-link-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gi-roles { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.gi-role { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 13px; background: var(--night); border: 1px solid var(--line); font-size: 13px; font-weight: 600; }
+.gi-role .swatch { width: 10px; height: 10px; border-radius: 50%; }
+.gi-pics { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px; align-items: start; }
+.gi-pic { display: flex; gap: 12px; align-items: center; margin-top: 6px; }
+.gi-pic-banner { display: grid; gap: 8px; }
+.gi-banner-prev { height: 72px; border-radius: 10px; background: linear-gradient(135deg, color-mix(in srgb, var(--ember) 55%, var(--night)), color-mix(in srgb, var(--glow) 25%, var(--night))); background-size: cover; background-position: center; border: 1px solid var(--line); }
+.gi-pic-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.gi-label-row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.gi-count.over { color: var(--occupied); }
+dialog.settings textarea { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--night); color: var(--text); font: inherit; resize: vertical; outline: none; }
+dialog.settings textarea:focus { border-color: var(--ember); }
+.gi-link-rows { display: grid; gap: 6px; }
+.gi-link-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto; gap: 6px; align-items: center; }
+.gi-link-row input { width: 100%; min-width: 0; }
+.gi-add-link { justify-self: start; }
+
+/* Settings → Roles: the role picker */
+.role-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.role-picker-wrap { position: relative; flex: 1 1 260px; min-width: 0; display: flex; }
+.role-picker { flex: 1; min-width: 0; height: 42px; padding-left: 32px; font-weight: 600; }
+.role-picker-swatch { position: absolute; left: 12px; top: 50%; width: 12px; height: 12px; margin-top: -6px; border-radius: 50%; pointer-events: none; box-shadow: 0 0 0 2px var(--night); }
+.role-tools { display: flex; gap: 6px; flex-wrap: wrap; }
+.small-btn { height: 32px; padding: 0 10px; font-size: 13px; }
+.view-as { border-color: color-mix(in srgb, var(--ember) 55%, var(--line)); color: var(--glow); }
+.role-editor { display: grid; gap: 14px; padding-top: 6px; border-top: 1px solid var(--line); }
+.role-editor > h2 { font-size: 18px; }
+
+/* "View outhouse as role" (role-preview.js) */
+.preview-banner { position: sticky; top: 0; z-index: 15; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 14px; background: var(--ember); color: #1a0d05; font-weight: 700; font-size: 14px; }
+.pv-label { white-space: nowrap; }
+.pv-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; min-width: 0; }
+.pv-chip { --rc: #a1a1aa; display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 4px 0 9px; border-radius: 13px; background: #1a0d05; color: var(--text); font-size: 13px; }
+.pv-chip.plain { padding-right: 10px; }
+.pv-chip .swatch { width: 9px; height: 9px; border-radius: 50%; background: var(--rc); }
+.pv-chip-x { width: 20px; height: 20px; border: 0; border-radius: 50%; background: #ffffff1a; font-size: 11px; line-height: 1; display: grid; place-items: center; }
+.pv-chip-x:hover { background: #ffffff33; }
+.pv-add { width: 26px; height: 26px; border-radius: 50%; border: 2px dashed #1a0d0599; background: none; color: #1a0d05; font-weight: 800; }
+.pv-exit { margin-left: auto; height: 30px; padding: 0 12px; border: 0; border-radius: 8px; background: #1a0d05; color: var(--glow); font-weight: 700; }
+.app.previewing .sidebar { box-shadow: inset 0 3px 0 var(--ember); }
+.composer-wrap.pv-readonly .composer { opacity: .6; }
+@media (max-width: 760px) {
+  .gi-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gi-pics { grid-template-columns: 1fr; }
+  .gi-link-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .gi-link-row .gi-link-url-in { grid-column: 1 / 2; grid-row: 2; }
+  .preview-banner { padding: 6px 8px; gap: 6px; font-size: 13px; }
+  .role-picker { font-size: 16px; }
+}
+/* Previewing: every composer button is visibly off. */
+.composer-wrap.pv-off .composer button { opacity: .3; filter: grayscale(1); pointer-events: none; cursor: default; }
+.composer-wrap.pv-off .composer { background: var(--night); border-style: dashed; }
+.composer-wrap.pv-off .composer textarea::placeholder { color: var(--glow); opacity: .9; }
+.composer-wrap.pv-readonly .composer { opacity: 1; }
+@media (max-width: 760px) {
+  /* Room for the preview note: the (switched off) tools step aside. */
+  .composer-wrap.pv-off .composer .tool, .composer-wrap.pv-off .composer #attach-btn { display: none; }
+}

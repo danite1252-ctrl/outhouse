@@ -223,7 +223,8 @@ function renderSafetyBadge() {
   if (!state.safety.owner) { btn?.remove(); return; }
   if (!btn) {
     btn = el("button", { id: "safety-btn", class: "rail-btn safety", title: "Reports", "aria-label": "Reports", onclick: () => openSafetyConsole() }, shieldIcon());
-    document.getElementById("join-guild")?.after(btn);
+    // Pinned to the bottom of the rail, below everything that scrolls.
+    document.getElementById("rail-foot")?.append(btn);
   }
   const { open, urgent } = state.safety;
   btn.classList.toggle("urgent", urgent > 0);

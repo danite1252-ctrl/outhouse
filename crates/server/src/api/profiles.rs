@@ -12,7 +12,7 @@ use crate::auth::{self, AuthUser, USER_COLUMNS};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
-const KEY_ALPHABET: &[u8] = b"abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+pub(crate) const KEY_ALPHABET: &[u8] = b"abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 pub const MAX_AVATAR_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_BANNER_BYTES: usize = 10 * 1024 * 1024;
 
@@ -74,7 +74,7 @@ pub async fn get(
     }))
 }
 
-fn image_type(content_type: &str, filename: &str) -> Option<&'static str> {
+pub(crate) fn image_type(content_type: &str, filename: &str) -> Option<&'static str> {
     let by_type = match content_type {
         "image/png" => Some("image/png"),
         "image/jpeg" => Some("image/jpeg"),
