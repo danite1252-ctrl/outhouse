@@ -4,6 +4,10 @@
 #      starting from an invite page (it links to the landing page and /app);
 #   2. API scan (active: injection, XSS, traversal...) of the main API
 #      endpoints with a signed-in user's token (ci/zap-openapi.json).
+#      Left out on purpose: the per-address rate-limited sign-in helpers
+#      (/api/auth/forgot, /reset/check, /verify-email): once ZAP hits their
+#      limit, the 429s look like "SQL injection changes the answer". ci/auth_test.sh
+#      covers them (bad tokens, limits, neutral answers).
 # High-risk alerts fail the job unless ci/zap-rules.tsv says why they're
 # false positives, and so does any request ZAP makes the server fail (500). Everything found is printed as a table.
 #   BASE=http://127.0.0.1:8080 bash ci/zap.sh
