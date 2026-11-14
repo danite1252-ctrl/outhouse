@@ -224,7 +224,8 @@ SEALED=$(psql "$DATABASE_URL" -tAc "SELECT totp_pending FROM users WHERE usernam
 [[ "$SEALED" == v1.* ]] && [[ "$SEALED" != *"$SECRET"* ]]
 expect 400 POST /api/auth/2fa/confirm '{"code":"000000"}' "$VERA"
 M9=$(mail_n)
-expect 200 POST /api/auth/2fa/confirm "{\"code\":\"$(totp "$SECRET" -1)\"}" "$VERA"
+CONF_CODE=$(totp "$SECRET" -1)
+expect 200 POST /api/auth/2fa/confirm "{\"code\":\"$CONF_CODE\"}" "$VERA"
 jq -e '.enabled and (.recovery_codes | length) == 10' "$AB" >/dev/null
 R1=$(jq -r '.recovery_codes[0]' "$AB"); R2=$(jq -r '.recovery_codes[1]' "$AB"); R3=$(jq -r '.recovery_codes[2]' "$AB")
 [ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM recovery_codes WHERE user_id = $(uid_of "vera$RUN") AND code_hash LIKE '%$R1%'")" = 0 ]
@@ -240,8 +241,9 @@ expect 200 POST /api/auth/login "{\"username\":\"vera$RUN\",\"password\":\"new-p
 jq -e '.mfa_required == true and (.token | not) and (.ticket | length) == 64' "$AB" >/dev/null
 TICKET=$(jq -r .ticket "$AB")
 expect 401 GET /api/users/@me "" "$TICKET"   # a ticket is no session
-# The code used to turn it on can't be used again.
-expect 400 POST /api/auth/login/2fa "{\"ticket\":\"$TICKET\",\"code\":\"$(totp "$SECRET" -1)\",\"trust_days\":30}" "" 198.18.42.1
+# The code used to turn it on can't be used again (that exact code: regenerating
+# "one step back" here would be a fresh, valid code once a 30 s step has passed).
+expect 400 POST /api/auth/login/2fa "{\"ticket\":\"$TICKET\",\"code\":\"$CONF_CODE\",\"trust_days\":30}" "" 198.18.42.1
 CODE0=$(totp "$SECRET" 0)
 expect 200 POST /api/auth/login/2fa "{\"ticket\":\"$TICKET\",\"code\":\"$CODE0\",\"trust_days\":30}" "" 198.18.42.1 -c "$JAR" -D /tmp/auth-headers
 VERA2=$(jq -r .token "$AB")
