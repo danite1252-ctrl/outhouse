@@ -16,10 +16,12 @@ mod handover;
 mod ipblock;
 mod ips;
 mod livekit;
+mod mail;
 mod perms;
 mod push;
 mod security;
 mod state;
+mod twofa;
 mod wowhead;
 mod wowhead_loot;
 mod wowhead_page;
@@ -79,6 +81,9 @@ async fn main() -> anyhow::Result<()> {
     if config.giphy_api_key.is_none() {
         tracing::info!("GIPHY_API_KEY not set: the GIF picker is switched off");
     }
+    // Email (password resets, confirmations) and the two-factor secret key.
+    mail::init(&config);
+    twofa::init(&config.upload_dir);
     let mut state = AppState::new(db, config);
     match push::load_or_create(&state.db).await {
         Ok(vapid) => state.vapid = Some(std::sync::Arc::new(vapid)),
@@ -101,6 +106,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!(error = %e, "couldn't load the blocked networks");
     }
     ipblock::spawn_refresher(state.clone());
+    api::twofactor::spawn_tidier(state.clone());
     // `/` is the welcome page (it sends signed-in people and the apps on to
     // `/app`); `/app` and `/login` are the web client. Everything else is a
     // plain file from the web folder.
@@ -110,6 +116,13 @@ async fn main() -> anyhow::Result<()> {
         .route_service("/", ServeFile::new(web_path.join("landing.html")))
         .route_service("/app", ServeFile::new(&client))
         .route_service("/login", ServeFile::new(&client))
+        // The pages email links open (no inline scripts; they work in the
+        // apps' webviews and in any browser).
+        .route_service("/reset", ServeFile::new(web_path.join("email-link.html")))
+        .route_service(
+            "/verify-email",
+            ServeFile::new(web_path.join("email-link.html")),
+        )
         .fallback_service(ServeDir::new(&web_dir))
         .layer(axum::middleware::map_response(no_stale_files))
         .layer(axum::middleware::from_fn(security::reject_nul))
@@ -165,6 +178,10 @@ async fn run_command(command: &str, args: &[String]) -> anyhow::Result<i32> {
 fn redact_uri(uri: &axum::http::Uri) -> String {
     match uri.path().strip_prefix("/evidence/") {
         Some(token) => format!("/evidence/{}…", token.chars().take(8).collect::<String>()),
+        // Reset and confirmation links carry one-time tokens.
+        None if uri.query().is_some_and(|q| q.contains("token=")) => {
+            format!("{}?token=…", uri.path())
+        }
         None => uri.to_string(),
     }
 }

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- The page reset and confirmation emails link to (/reset, /verify-email).
+     Its link carries a one-time token: never send it anywhere else. -->
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#121214">
+<meta name="color-scheme" content="dark">
+<title>Outhouse</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/account-security.css">
+</head>
+<body>
+<main class="link-page">
+  <div class="auth-card" id="card">
+    <img src="/logo.svg" alt="" class="auth-logo small-logo">
+    <h1 class="wordmark">OUTHOUSE</h1>
+    <p class="muted" id="status">One moment…</p>
+  </div>
+</main>
+<script src="/email-link.js"></script>
+</body>
+</html>

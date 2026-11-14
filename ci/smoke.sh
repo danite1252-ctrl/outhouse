@@ -29,6 +29,15 @@ PUSH=http://127.0.0.1:8097
 python3 ci/push_mock.py 8097 >/tmp/push-mock.log 2>&1 &
 PUSH_PID=$!
 export PUSH_EXTRA_ENDPOINTS=$PUSH/push/
+# Email (password resets, confirmations): a local SMTP sink that writes each
+# mail to $MAIL_DIR as JSON (ci/smtp_sink.py); ci/auth_test.sh reads them.
+export MAIL_DIR=/tmp/outhouse-mail
+rm -rf "$MAIL_DIR"; mkdir -p "$MAIL_DIR"
+python3 ci/smtp_sink.py 2525 "$MAIL_DIR" >/tmp/smtp-sink.log 2>&1 &
+SMTP_PID=$!
+export SMTP_HOST=127.0.0.1 SMTP_PORT=2525 SMTP_TLS=none MAIL_FROM="Outhouse <no-reply@outhouse.test>"
+# The two-factor secret key (a throwaway for tests; real servers get one from deploy/setup.sh).
+export AUTH_SECRET_KEY=ci-only-auth-secret-key-0123456789abcdef
 # Child-safety reports alert the owner through the deploy kit's alert settings.
 export ALERT_NTFY_URL=$PUSH/alert/safety-ntfy ALERT_WEBHOOK_URL=$PUSH/alert/safety-hook
 # Where backup.sh would leave its status (read by the server status page).
@@ -67,7 +76,7 @@ export MESSAGE_REQUESTS_PER_DAY=4 MESSAGE_REQUEST_MAX_MESSAGES=3
 rm -f /tmp/gw-*.jsonl
 ./target/debug/outhouse-server >"$LOG" 2>&1 &
 SERVER=$!
-trap 'kill $SERVER $MOCK_PID $LK_PID $PUSH_PID $DETECTOR_PID 2>/dev/null || true' EXIT
+trap 'kill $SERVER $MOCK_PID $LK_PID $PUSH_PID $SMTP_PID $DETECTOR_PID 2>/dev/null || true' EXIT
 
 for i in $(seq 1 60); do
   curl -fsS "$BASE/api/health" >/dev/null 2>&1 && break
@@ -108,9 +117,9 @@ fail_call() {
 enc() { jq -rn --arg v "$1" '$v|@uri'; }
 
 step "register two users"
-A=$(call POST /api/auth/register '{"username":"alice","password":"password123","birth_date":"1990-01-01","display_name":"Alice"}')
+A=$(call POST /api/auth/register '{"username":"alice","email":"alice@example.test","password":"password123","birth_date":"1990-01-01","display_name":"Alice"}')
 TOKEN_A=$(jq -r .token <<<"$A"); ALICE=$(jq -r .user.id <<<"$A")
-B=$(call POST /api/auth/register '{"username":"bob","password":"password123","birth_date":"1990-01-01","display_name":"Bob"}')
+B=$(call POST /api/auth/register '{"username":"bob","email":"bob@example.test","password":"password123","birth_date":"1990-01-01","display_name":"Bob"}')
 TOKEN_B=$(jq -r .token <<<"$B"); BOB=$(jq -r .user.id <<<"$B")
 # Signing out also closes that session's open gateway connection (checked
 # in the security section near the end; the server re-checks every 30 s).
@@ -218,7 +227,7 @@ TOKEN=$TOKEN_B
 call GET "/api/guilds/$GUILD/search?q=loot+council" | jq -e '.total == 0' >/dev/null
 call GET "/api/users/@me/unread" | jq -e --arg id "$SECRET" '[.channels[] | select(.channel_id == $id)] | length == 0' >/dev/null
 TOKEN=$TOKEN_A
-OUT=$(call POST /api/auth/register '{"username":"outsider","password":"password123","birth_date":"1990-01-01"}' | jq -r .token)
+OUT=$(call POST /api/auth/register '{"username":"outsider","email":"outsider@example.test","password":"password123","birth_date":"1990-01-01"}' | jq -r .token)
 TOKEN=$OUT; fail_call GET "/api/guilds/$GUILD/search?q=onyxia"; TOKEN=$TOKEN_A
 
 step "unread and mention counts"
@@ -285,7 +294,7 @@ call GET /api/users/@me | jq -e '.bot == true' >/dev/null
 TOKEN=$TOKEN_A
 OUTHOUSE_URL=$BASE OUTHOUSE_BOT_TOKEN=$BOT_TOKEN node web/bots/dice-bot.mjs >/tmp/bot.log 2>&1 &
 BOT_PID=$!
-trap 'kill $SERVER $BOT_PID $MOCK_PID $LK_PID $PUSH_PID $DETECTOR_PID 2>/dev/null || true' EXIT
+trap 'kill $SERVER $BOT_PID $MOCK_PID $LK_PID $PUSH_PID $SMTP_PID $DETECTOR_PID 2>/dev/null || true' EXIT
 for i in $(seq 1 20); do
   call GET "/api/guilds/$GUILD/commands" | jq -e 'length == 3' >/dev/null 2>&1 && break
   sleep 1
@@ -310,7 +319,7 @@ fail_call GET "/api/channels/$PINS/messages?before=notanid"
 
 step "direct messages"
 TOKEN=$OUT; OUTSIDER=$(call GET /api/users/@me | jq -r .id); TOKEN=$TOKEN_A
-C3=$(call POST /api/auth/register '{"username":"carl","password":"password123","birth_date":"1990-01-01","display_name":"Carl"}')
+C3=$(call POST /api/auth/register '{"username":"carl","email":"carl@example.test","password":"password123","birth_date":"1990-01-01","display_name":"Carl"}')
 TOKEN_C=$(jq -r .token <<<"$C3"); CARL=$(jq -r .user.id <<<"$C3")
 TOKEN=$TOKEN_C; call POST "/api/invites/$CODE" >/dev/null
 call POST /api/push/subscriptions "$(curl -fsS "$PUSH/new/carl")" >/dev/null; TOKEN=$TOKEN_A
@@ -1778,7 +1787,7 @@ TOKEN=$TOKEN_B; DELB=$(call POST "/api/channels/$CHAN/messages" '{"content":"bob
 call DELETE "/api/channels/$CHAN/messages/$DEL" >/dev/null    # your own: not logged
 call DELETE "/api/channels/$CHAN/messages/$DELB" >/dev/null   # someone else's: logged
 call GET "/api/guilds/$GUILD/audit-log?action=message_delete" | jq -e --arg b "$BOB" '.entries[0].target_id == $b and (.entries[0].details | contains("bob says rude words")) and all(.entries[]; .details | contains("“rude words”") | not)' >/dev/null
-KR=$(call POST /api/auth/register '{"username":"kickme","password":"password123","birth_date":"1990-01-01"}')
+KR=$(call POST /api/auth/register '{"username":"kickme","email":"kickme@example.test","password":"password123","birth_date":"1990-01-01"}')
 TOKEN=$(jq -r .token <<<"$KR"); call POST "/api/invites/$CODE" >/dev/null; TOKEN=$TOKEN_A
 KICKED=$(jq -r .user.id <<<"$KR")
 call DELETE "/api/guilds/$GUILD/members/$KICKED" >/dev/null
@@ -2244,7 +2253,7 @@ fail_call GET "/api/invites/..%2Fetc"
 fail_call POST "/api/invites/$C1"
 IU=()
 for n in 1 2 3; do
-  R=$(call POST /api/auth/register "{\"username\":\"invitee$n\",\"password\":\"password123\",\"birth_date\":\"1990-01-01\",\"display_name\":\"Invitee $n\"}")
+  R=$(call POST /api/auth/register "{\"username\":\"invitee$n\",\"email\":\"inviteen@example.test\",\"password\":\"password123\",\"birth_date\":\"1990-01-01\",\"display_name\":\"Invitee $n\"}")
   IU+=("$(jq -r .token <<<"$R")")
 done
 TOKEN=${IU[0]}; call POST "/api/invites/$C1" | jq -e --arg g "$IGUILD" '.id == $g' >/dev/null
@@ -2741,7 +2750,7 @@ kill $GW_LOGOUT_PID 2>/dev/null || true
 
 step "security: sign-in brute-force limits (per account and per address)"
 TOKEN=""
-call POST /api/auth/register '{"username":"lockme","password":"password123","birth_date":"1990-01-01"}' >/dev/null
+call POST /api/auth/register '{"username":"lockme","email":"lockme@example.test","password":"password123","birth_date":"1990-01-01"}' >/dev/null
 xff_login() { # xff_login IP USER PASSWORD -> HTTP status
   curl -sS -o /tmp/body -w "%{http_code}" -H "Content-Type: application/json" -H "X-Forwarded-For: $1" \
     -d '{"username":"'"$2"'","password":"'"$3"'"}' "$BASE/api/auth/login"
@@ -2765,11 +2774,11 @@ code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Content-Type: application/jso
 step "security: sign-up and invite look-up limits"
 for i in $(seq 1 20); do
   code=$(curl -sS -o /dev/null -w "%{http_code}" -H "Content-Type: application/json" -H "X-Forwarded-For: 203.0.113.60" \
-    -d '{"username":"!","password":"password123","birth_date":"1990-01-01"}' "$BASE/api/auth/register")
+    -d '{"username":"!","email":"someone@example.test","password":"password123","birth_date":"1990-01-01"}' "$BASE/api/auth/register")
   [ "$code" = 400 ]
 done
 code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Content-Type: application/json" -H "X-Forwarded-For: 203.0.113.60" \
-  -d '{"username":"toomany","password":"password123","birth_date":"1990-01-01"}' "$BASE/api/auth/register")
+  -d '{"username":"toomany","email":"toomany@example.test","password":"password123","birth_date":"1990-01-01"}' "$BASE/api/auth/register")
 [ "$code" = 429 ] || { echo "sign-up limit: $code"; cat /tmp/body; exit 1; }
 for i in $(seq 1 120); do
   code=$(curl -sS -o /dev/null -w "%{http_code}" -H "X-Forwarded-For: 203.0.113.70" "$BASE/api/invites/zzzz$i")
@@ -2796,12 +2805,12 @@ for mode in invite closed; do
   [ "$(reg '{"username":"reg'"$mode"'2","password":"password123","birth_date":"1990-01-01","invite":"nope1234"}')" = 403 ]
   if [ "$mode" = invite ]; then
     grep -q "need an invite" /tmp/body
-    [ "$(reg '{"username":"reginvite3","password":"password123","birth_date":"1990-01-01","invite":"'"$REG_INV"'"}')" = 200 ] || { cat /tmp/body; exit 1; }
+    [ "$(reg '{"username":"reginvite3","email":"reginvite3@example.test","password":"password123","birth_date":"1990-01-01","invite":"'"$REG_INV"'"}')" = 200 ] || { cat /tmp/body; exit 1; }
     T3=$(jq -r .token /tmp/body)
     curl -fsS -X POST -H "Authorization: Bearer $T3" "$R/api/invites/$REG_INV" | jq -e --arg g "$GUILD" '.id == $g' >/dev/null
   else
     grep -q "closed" /tmp/body
-    [ "$(reg '{"username":"regclosed3","password":"password123","birth_date":"1990-01-01","invite":"'"$REG_INV"'"}')" = 403 ]
+    [ "$(reg '{"username":"regclosed3","email":"regclosed3@example.test","password":"password123","birth_date":"1990-01-01","invite":"'"$REG_INV"'"}')" = 403 ]
   fi
   # Signing in still works.
   curl -fsS -H "Content-Type: application/json" -d '{"username":"bob","password":"password123"}' "$R/api/auth/login" >/dev/null
@@ -2982,7 +2991,7 @@ TOKEN=$TOKEN_A
 AM=$(call POST "/api/guilds/$GUILD/channels" '{"name":"automod-test"}' | jq -r .id)
 AML=$(call POST "/api/guilds/$GUILD/channels" '{"name":"mod-log"}' | jq -r .id)
 call GET "/api/channels/$AM/automod" | jq -e '(.word_filter | not) and (.spam_filter | not) and .exempt_moderators and .use_default_words and .whole_word' >/dev/null
-DORA=$(TOKEN="" call POST /api/auth/register '{"username":"dora","password":"password123","birth_date":"1990-01-01","display_name":"Dora"}')
+DORA=$(TOKEN="" call POST /api/auth/register '{"username":"dora","email":"dora@example.test","password":"password123","birth_date":"1990-01-01","display_name":"Dora"}')
 TOKEN_D=$(jq -r .token <<<"$DORA"); DORA_ID=$(jq -r .user.id <<<"$DORA")
 AMINV=$(call POST "/api/guilds/$GUILD/invites" | jq -r .code)
 TOKEN=$TOKEN_D; call POST "/api/invites/$AMINV" >/dev/null
@@ -3224,16 +3233,16 @@ act() { # act REPORT JSON -> report detail (as the owner)
 
 step "safety: sign-up asks for a date of birth; only the age group is kept"
 TEEN_DOB=$(date -u -d '15 years ago' +%F); KID_DOB=$(date -u -d '10 years ago' +%F)
-[ "$(xreg 1 '{"username":"nodob","password":"password123"}')" = 400 ] && grep -q "date of birth" /tmp/body
-[ "$(xreg 2 '{"username":"kiddo","password":"password123","birth_date":"'"$KID_DOB"'"}')" = 403 ] && grep -q "13 or older" /tmp/body
-[ "$(xreg 3 '{"username":"oddone","password":"password123","birth_date":"31/12/1990"}')" = 400 ]
-[ "$(xreg 4 '{"username":"futurekid","password":"password123","birth_date":"2999-01-01"}')" = 400 ]
+[ "$(xreg 1 '{"username":"nodob","email":"nodob@example.test","password":"password123"}')" = 400 ] && grep -q "date of birth" /tmp/body
+[ "$(xreg 2 '{"username":"kiddo","email":"kiddo@example.test","password":"password123","birth_date":"'"$KID_DOB"'"}')" = 403 ] && grep -q "13 or older" /tmp/body
+[ "$(xreg 3 '{"username":"oddone","email":"oddone@example.test","password":"password123","birth_date":"31/12/1990"}')" = 400 ]
+[ "$(xreg 4 '{"username":"futurekid","email":"futurekid@example.test","password":"password123","birth_date":"2999-01-01"}')" = 400 ]
 psql "$DATABASE_URL" -tAc "SELECT count(*) FROM users WHERE username IN ('nodob','kiddo','oddone','futurekid')" | grep -qx 0
-[ "$(xreg 5 '{"username":"tia","password":"password123","display_name":"Tia","birth_date":"'"$TEEN_DOB"'"}')" = 200 ]
+[ "$(xreg 5 '{"username":"tia","email":"tia@example.test","password":"password123","display_name":"Tia","birth_date":"'"$TEEN_DOB"'"}')" = 200 ]
 TOKEN_T=$(jq -r .token /tmp/body); TIA=$(jq -r .user.id /tmp/body)
-[ "$(xreg 6 '{"username":"adam","password":"password123","display_name":"Adam","birth_date":"1985-06-01"}')" = 200 ]
+[ "$(xreg 6 '{"username":"adam","email":"adam@example.test","password":"password123","display_name":"Adam","birth_date":"1985-06-01"}')" = 200 ]
 TOKEN_AD=$(jq -r .token /tmp/body); ADAM=$(jq -r .user.id /tmp/body)
-[ "$(xreg 7 '{"username":"fran","password":"password123","display_name":"Fran","birth_date":"1979-02-02"}')" = 200 ]
+[ "$(xreg 7 '{"username":"fran","email":"fran@example.test","password":"password123","display_name":"Fran","birth_date":"1979-02-02"}')" = 200 ]
 TOKEN_F=$(jq -r .token /tmp/body); FRAN=$(jq -r .user.id /tmp/body)
 psql "$DATABASE_URL" -tAc "SELECT age_bracket || ',' || dm_privacy FROM users WHERE id = $TIA" | grep -qx "teen,friends"
 psql "$DATABASE_URL" -tAc "SELECT age_bracket FROM users WHERE id = $ADAM" | grep -qx adult
@@ -3424,7 +3433,7 @@ act "$R3" '{"action":"delete_evidence"}' | jq -e '.report.evidence_released and 
 kill $SP1 $SP2 2>/dev/null || true
 
 step "safety: rate limit per reporter"
-[ "$(xreg 8 '{"username":"rachel","password":"password123","birth_date":"1990-03-03"}')" = 200 ]
+[ "$(xreg 8 '{"username":"rachel","email":"rachel@example.test","password":"password123","birth_date":"1990-03-03"}')" = 200 ]
 TOKEN_R=$(jq -r .token /tmp/body)
 tok "$TOKEN_R" call POST "/api/invites/$SINV2" >/dev/null
 RL=()
@@ -3451,7 +3460,7 @@ act "$R6" '{"action":"timeout","guild_id":"'"$GUILD"'","minutes":10}' >/dev/null
 tok "$TOKEN_A" call GET "/api/guilds/$GUILD/members" | jq -e --arg b "$BOB" '.[] | select(.id == $b) | .timeout_until != null' >/dev/null
 tok "$TOKEN_A" call POST "/api/guilds/$GUILD/members/$BOB/timeout" '{"minutes":0}' >/dev/null
 act "$R6" '{"action":"note","text":"Second time this month."}' | jq -e 'any(.log[]; .action == "note" and .details == "Second time this month.") and any(.log[]; .action == "warn")' >/dev/null
-[ "$(xreg 9 '{"username":"kev","password":"password123","birth_date":"1990-04-04"}')" = 200 ]
+[ "$(xreg 9 '{"username":"kev","email":"kev@example.test","password":"password123","birth_date":"1990-04-04"}')" = 200 ]
 TOKEN_K=$(jq -r .token /tmp/body); KEV=$(jq -r .user.id /tmp/body)
 tok "$TOKEN_K" call POST "/api/invites/$SINV2" >/dev/null
 tok "$TOKEN_A" call POST "/api/safety/users/$KEV/actions" '{"action":"kick","guild_id":"'"$GUILD"'"}' >/dev/null
@@ -3465,7 +3474,7 @@ tok "$TOKEN_A" fail_call POST "/api/safety/users/$ALICE/actions" '{"action":"sus
 tok "$TOKEN_A" call GET "/api/guilds/$GUILD/audit-log?action=member_ban" | jq -e --arg k "$KEV" '.entries[0].target_id == $k and (.entries[0].details | test("Outhouse Safety"))' >/dev/null
 
 step "safety: suspending an account signs it out everywhere, stops its bots and hides its profile"
-[ "$(xreg 10 '{"username":"sam","password":"password123","display_name":"Sam","birth_date":"1990-05-05"}')" = 200 ]
+[ "$(xreg 10 '{"username":"sam","email":"sam@example.test","password":"password123","display_name":"Sam","birth_date":"1990-05-05"}')" = 200 ]
 TOKEN_S=$(jq -r .token /tmp/body); SAM=$(jq -r .user.id /tmp/body)
 tok "$TOKEN_S" call POST "/api/invites/$SINV2" >/dev/null
 SAMG=$(tok "$TOKEN_S" call POST /api/guilds '{"name":"Sam Place"}' | jq -r .id)
@@ -3506,7 +3515,7 @@ tok "$TOKEN_A" call GET /api/safety/summary | jq -e '.open >= 1' >/dev/null
 tok "$TOKEN_T" call PUT "/api/users/@me/blocks/$ADAM" >/dev/null
 
 step "safety: child-safety alerts nudge to suspend; Suspend now (until reviewed, neutral reason only), then permanent or lifted"
-[ "$(xreg 11 '{"username":"nate","password":"password123","display_name":"Nate","birth_date":"1990-07-07"}')" = 200 ]
+[ "$(xreg 11 '{"username":"nate","email":"nate@example.test","password":"password123","display_name":"Nate","birth_date":"1990-07-07"}')" = 200 ]
 TOKEN_N=$(jq -r .token /tmp/body); NATE=$(jq -r .user.id /tmp/body)
 tok "$TOKEN_N" call POST "/api/invites/$SINV2" >/dev/null
 NM1=$(tok "$TOKEN_N" call POST "/api/channels/$CHAN/messages" '{"content":"an ordinary message from nate"}' | jq -r .id)
@@ -3696,7 +3705,7 @@ purge_ips() { tok "$TOKEN_A" call POST /api/safety/ips/purge; }
 
 step "IPs: sign-up and sign-in record the visitor's address from the proxy chain"
 # Caddy sends "<visitor>, <Apache>": the visitor is recorded, not Apache.
-[ "$(ipreq '203.0.113.20, 192.168.1.32' /api/auth/register '{"username":"ivy","password":"password123","display_name":"Ivy","birth_date":"1990-06-06"}')" = 200 ]
+[ "$(ipreq '203.0.113.20, 192.168.1.32' /api/auth/register '{"username":"ivy","email":"ivy@example.test","password":"password123","display_name":"Ivy","birth_date":"1990-06-06"}')" = 200 ]
 TOKEN_IVY=$(jq -r .token /tmp/body); IVY=$(jq -r .user.id /tmp/body)
 [ "$(uip "$IVY" 203.0.113.20)" = "register,1" ]
 [ "$(psql "$DATABASE_URL" -tAc "SELECT host(last_ip) FROM users WHERE id = $IVY")" = 203.0.113.20 ]
@@ -3747,11 +3756,11 @@ tok "$TOKEN_A" call GET "/api/safety/users/$IVY" | jq -e '.ip_note | test("Share
 step "IPs: a new account on a suspended or banned account's address gets one quiet hint for the owner"
 OPEN_BEFORE=$(tok "$TOKEN_A" call GET /api/safety/summary | jq .open)
 NTFY_BEFORE=$(curl -fsS "$PUSH/alerts/safety-ntfy" | jq length)
-[ "$(ipreq '198.18.20.1' /api/auth/register '{"username":"zed","password":"password123","display_name":"Zed","birth_date":"1990-07-07"}')" = 200 ]
+[ "$(ipreq '198.18.20.1' /api/auth/register '{"username":"zed","email":"zed@example.test","password":"password123","display_name":"Zed","birth_date":"1990-07-07"}')" = 200 ]
 ZED=$(jq -r .user.id /tmp/body)
 TOKEN="" call POST /api/auth/login '{"username":"zed","password":"password123"}' >/dev/null   # also from 127.0.0.1
 tok "$TOKEN_A" call POST "/api/safety/users/$ZED/actions" '{"action":"suspend","days":7,"text":"ban evasion test"}' >/dev/null
-[ "$(ipreq '198.18.20.1, 192.168.1.32' /api/auth/register '{"username":"jax","password":"password123","display_name":"Jax","birth_date":"1990-08-08"}')" = 200 ]
+[ "$(ipreq '198.18.20.1, 192.168.1.32' /api/auth/register '{"username":"jax","email":"jax@example.test","password":"password123","display_name":"Jax","birth_date":"1990-08-08"}')" = 200 ]
 JAX=$(jq -r .user.id /tmp/body)
 [ "$(ipm_count "$JAX")" = 1 ]
 RIPM=$(psql "$DATABASE_URL" -tAc "SELECT id FROM reports WHERE source = 'ip-match' AND reported_user_id = $JAX")
@@ -3776,10 +3785,10 @@ tok "$TOKEN_A" call POST "/api/safety/users/$IVY/actions" '{"action":"ban","guil
 [ "$(ipm_count "$JAX")" = 2 ]
 tok "$TOKEN_A" call GET "/api/safety/reports?status=open" | jq -e --arg j "$JAX" 'any(.reports[]; .source == "ip-match" and .reported_user.id == $j and (.preview | test("Signed in") and test("@ivy") and test("banned in Smoke Test")))' >/dev/null
 # Home-network (LAN) and trusted-proxy addresses never make a hint, and nobody matches themselves.
-[ "$(ipreq '192.168.1.77' /api/auth/register '{"username":"lana","password":"password123","birth_date":"1990-09-09"}')" = 200 ]
+[ "$(ipreq '192.168.1.77' /api/auth/register '{"username":"lana","email":"lana@example.test","password":"password123","birth_date":"1990-09-09"}')" = 200 ]
 LANA=$(jq -r .user.id /tmp/body)
 tok "$TOKEN_A" call POST "/api/safety/users/$LANA/actions" '{"action":"suspend","days":1}' >/dev/null
-[ "$(ipreq '192.168.1.77' /api/auth/register '{"username":"lena","password":"password123","birth_date":"1990-09-09"}')" = 200 ]
+[ "$(ipreq '192.168.1.77' /api/auth/register '{"username":"lena","email":"lena@example.test","password":"password123","birth_date":"1990-09-09"}')" = 200 ]
 LENA=$(jq -r .user.id /tmp/body)
 [ "$(uip "$LENA" 192.168.1.77)" = "register,1" ]
 [ "$(ipm_count "$LENA")" = 0 ]
@@ -3822,7 +3831,7 @@ tok "$TOKEN_A" call POST "/api/safety/users/$LANA/actions" '{"action":"unsuspend
 
 step "blocked networks: only for permanent suspensions; v4 /32 and v6 /64; private, own and proxy addresses skipped"
 reload_blocks() { tok "$TOKEN_A" call POST /api/safety/ip-blocks/reload >/dev/null; }
-[ "$(ipreq '203.0.113.150' /api/auth/register '{"username":"pete","password":"password123","display_name":"Pete","birth_date":"1990-08-08"}')" = 200 ]
+[ "$(ipreq '203.0.113.150' /api/auth/register '{"username":"pete","email":"pete@example.test","password":"password123","display_name":"Pete","birth_date":"1990-08-08"}')" = 200 ]
 TOKEN_PE=$(jq -r .token /tmp/body); PETE=$(jq -r .user.id /tmp/body)
 [ "$(ipreq '2001:db8:abcd:12::5' /api/auth/login '{"username":"pete","password":"password123"}')" = 200 ]
 [ "$(ipreq '10.0.0.9' /api/auth/login '{"username":"pete","password":"password123"}')" = 200 ]
@@ -3832,7 +3841,7 @@ TOKEN_PE=$(jq -r .token /tmp/body); PETE=$(jq -r .user.id /tmp/body)
 [ "$(ipreq '203.0.113.151' /api/users/@me '' "$TOKEN_A")" = 200 ]
 psql "$DATABASE_URL" -qc "INSERT INTO user_ips (user_id, ip, kind) VALUES ($ALICE, '203.0.113.151', 'login') ON CONFLICT DO NOTHING"
 # Quinn already used Pete's network before the block (a housemate).
-[ "$(ipreq '203.0.113.150' /api/auth/register '{"username":"quinn","password":"password123","display_name":"Quinn","birth_date":"1991-09-09"}')" = 200 ]
+[ "$(ipreq '203.0.113.150' /api/auth/register '{"username":"quinn","email":"quinn@example.test","password":"password123","display_name":"Quinn","birth_date":"1991-09-09"}')" = 200 ]
 TOKEN_Q=$(jq -r .token /tmp/body); QUINN=$(jq -r .user.id /tmp/body)
 tok "$TOKEN_PE" call POST "/api/invites/$SINV2" >/dev/null
 PM=$(tok "$TOKEN_PE" call POST "/api/channels/$CHAN/messages" '{"content":"pete was here"}' | jq -r .id)
@@ -3863,10 +3872,10 @@ kill $SPQ 2>/dev/null || true
 
 step "blocked networks: strict: no sign-up, sign-in or use from them (any account), the owner and allowed accounts excepted; attempts kept"
 ATT0=$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM blocked_attempts")
-[ "$(ipreq '203.0.113.150' /api/auth/register '{"username":"pete2","password":"password123","birth_date":"1990-08-08"}')" = 403 ]
+[ "$(ipreq '203.0.113.150' /api/auth/register '{"username":"pete2","email":"pete2@example.test","password":"password123","birth_date":"1990-08-08"}')" = 403 ]
 jq -e '.error == "New accounts can'"'"'t be created from your network right now. If you think this is a mistake, contact the server owner."' /tmp/body >/dev/null
-[ "$(ipreq '2001:db8:abcd:12:ffff::1' /api/auth/register '{"username":"pete3","password":"password123","birth_date":"1990-08-08"}')" = 403 ]   # same /64
-[ "$(ipreq '2001:db8:abcd:13::1' /api/auth/register '{"username":"olive","password":"password123","birth_date":"1990-08-08"}')" = 200 ]  # next /64: fine
+[ "$(ipreq '2001:db8:abcd:12:ffff::1' /api/auth/register '{"username":"pete3","email":"pete3@example.test","password":"password123","birth_date":"1990-08-08"}')" = 403 ]   # same /64
+[ "$(ipreq '2001:db8:abcd:13::1' /api/auth/register '{"username":"olive","email":"olive@example.test","password":"password123","birth_date":"1990-08-08"}')" = 200 ]  # next /64: fine
 [ "$(ipreq '203.0.113.150' /api/auth/login '{"username":"quinn","password":"password123"}')" = 403 ]
 jq -e '.error | test("can'"'"'t be used from your network")' /tmp/body >/dev/null
 [ "$(ipreq '203.0.113.150' /api/auth/login '{"username":"quinn","password":"wrong-password"}')" = 403 ]   # says nothing about the password
@@ -3906,12 +3915,12 @@ tok "$TOKEN_A" call POST "/api/safety/ip-blocks/$B4/extend" '{"days":365}' >/dev
 psql "$DATABASE_URL" -tAc "SELECT (expires_at > now() + interval '364 days')::TEXT FROM ip_blocks WHERE id = $B4" | grep -qx true
 psql "$DATABASE_URL" -qc "UPDATE ip_blocks SET expires_at = now() - interval '1 second' WHERE id = $B4"
 reload_blocks
-[ "$(ipreq '203.0.113.150' /api/auth/register '{"username":"pete4","password":"password123","birth_date":"1990-08-08"}')" = 200 ]
+[ "$(ipreq '203.0.113.150' /api/auth/register '{"username":"pete4","email":"pete4@example.test","password":"password123","birth_date":"1990-08-08"}')" = 200 ]
 tok "$TOKEN_A" call GET /api/safety/ip-blocks | jq -e --arg b "$B4" '.blocks[] | select(.id == $b) | .active | not' >/dev/null
 tok "$TOKEN_A" call POST "/api/safety/ip-blocks/$B4/extend" '{}' >/dev/null    # until removed again
-[ "$(ipreq '203.0.113.150' /api/auth/register '{"username":"pete5","password":"password123","birth_date":"1990-08-08"}')" = 403 ]
+[ "$(ipreq '203.0.113.150' /api/auth/register '{"username":"pete5","email":"pete5@example.test","password":"password123","birth_date":"1990-08-08"}')" = 403 ]
 tok "$TOKEN_A" call POST "/api/safety/ip-blocks/$B6/remove" >/dev/null
-[ "$(ipreq '2001:db8:abcd:12::77' /api/auth/register '{"username":"pete6","password":"password123","birth_date":"1990-08-08"}')" = 200 ]
+[ "$(ipreq '2001:db8:abcd:12::77' /api/auth/register '{"username":"pete6","email":"pete6@example.test","password":"password123","birth_date":"1990-08-08"}')" = 200 ]
 psql "$DATABASE_URL" -tAc "SELECT count(*) FROM ip_blocks WHERE id = $B6 AND removed_at IS NOT NULL" | grep -qx 1
 tok "$TOKEN_A" call GET /api/safety/ip-blocks | jq -e --arg b "$B6" 'all(.blocks[]; .id != $b)' >/dev/null
 tok "$TOKEN_A" call GET /api/safety/log | jq -e '[.entries[].action] | (index("ip_block") and index("ip_block_extend") and index("ip_unblock") and index("ip_exempt"))' >/dev/null
@@ -3934,11 +3943,11 @@ tok "$TOKEN_B" call GET "/api/users/@me/unread" | jq -e --arg c "$UC" '.channels
 # Full profiles, name history and DM message requests (feat-profiles)
 # ---------------------------------------------------------------------------
 step "profiles: name history (display names, nicknames) is recorded and shown by who can see it"
-[ "$(xreg 11 '{"username":"pia","password":"password123","display_name":"Pia","birth_date":"1991-03-03"}')" = 200 ]
+[ "$(xreg 11 '{"username":"pia","email":"pia@example.test","password":"password123","display_name":"Pia","birth_date":"1991-03-03"}')" = 200 ]
 TOKEN_P=$(jq -r .token /tmp/body); PIA=$(jq -r .user.id /tmp/body)
-[ "$(xreg 12 '{"username":"quin","password":"password123","display_name":"Quin","birth_date":"1992-04-04"}')" = 200 ]
+[ "$(xreg 12 '{"username":"quin","email":"quin@example.test","password":"password123","display_name":"Quin","birth_date":"1992-04-04"}')" = 200 ]
 TOKEN_Q=$(jq -r .token /tmp/body); QUIN=$(jq -r .user.id /tmp/body)
-[ "$(xreg 13 '{"username":"rex","password":"password123","display_name":"Rex","birth_date":"1993-05-05"}')" = 200 ]
+[ "$(xreg 13 '{"username":"rex","email":"rex@example.test","password":"password123","display_name":"Rex","birth_date":"1993-05-05"}')" = 200 ]
 TOKEN_R=$(jq -r .token /tmp/body); REX=$(jq -r .user.id /tmp/body)
 # Pia and Quin share "Profile Porch"; Rex shares nothing with anyone.
 PG=$(tok "$TOKEN_P" call POST /api/guilds '{"name":"Profile Porch"}' | jq -r .id)
@@ -4015,7 +4024,7 @@ wait_for /tmp/gw-req-pia.jsonl '.t == "MESSAGE_CREATE" and .d.content == "thanks
 tok "$TOKEN_A" call GET "/api/safety/users/$REX" | jq -e '.message_requests.sent == 1 and .message_requests.accepted == 1' >/dev/null
 
 step "message requests: ignore (sender isn't told), block, report; outhouse-mates aren't held"
-[ "$(xreg 14 '{"username":"sid","password":"password123","display_name":"Sid","birth_date":"1990-06-06"}')" = 200 ]
+[ "$(xreg 14 '{"username":"sid","email":"sid@example.test","password":"password123","display_name":"Sid","birth_date":"1990-06-06"}')" = 200 ]
 TOKEN_SI=$(jq -r .token /tmp/body); SID=$(jq -r .user.id /tmp/body)
 SDM=$(tok "$TOKEN_SI" call POST /api/dms '{"user_ids":["'"$PIA"'"]}' | jq -r .id)
 tok "$TOKEN_SI" call POST "/api/channels/$SDM/messages" '{"content":"cheap gold, PM me"}' >/dev/null
@@ -4026,7 +4035,7 @@ tok "$TOKEN_SI" call GET /api/dms | jq -e --arg id "$SDM" '.[] | select(.id == $
 tok "$TOKEN_SI" call POST "/api/channels/$SDM/messages" '{"content":"still there?"}' >/dev/null
 tok "$TOKEN_P" call GET /api/dms/requests | jq -e '.count == 0' >/dev/null
 tok "$TOKEN_P" fail_call POST "/api/dms/requests/$SDM/accept" # ignored is gone from her list
-[ "$(xreg 15 '{"username":"tom","password":"password123","display_name":"Tom","birth_date":"1990-07-07"}')" = 200 ]
+[ "$(xreg 15 '{"username":"tom","email":"tom@example.test","password":"password123","display_name":"Tom","birth_date":"1990-07-07"}')" = 200 ]
 TOKEN_TO=$(jq -r .token /tmp/body); TOM=$(jq -r .user.id /tmp/body)
 TOMDM=$(tok "$TOKEN_TO" call POST /api/dms '{"user_ids":["'"$PIA"'"]}' | jq -r .id)
 tok "$TOKEN_TO" call POST "/api/channels/$TOMDM/messages" '{"content":"hey"}' >/dev/null
@@ -4050,7 +4059,7 @@ jq -e '.request == null and (.recipients | length == 2)' <<<"$QDM" >/dev/null; Q
 tok "$TOKEN_Q" call POST "/api/channels/$QDM/messages" '{"content":"porch tonight?"}' >/dev/null
 tok "$TOKEN_P" call GET "/api/channels/$QDM/messages" | jq -e 'length == 1' >/dev/null
 # Group DMs: only friends and outhouse-mates, new or existing.
-[ "$(xreg 16 '{"username":"uma","password":"password123","display_name":"Uma","birth_date":"1990-08-08"}')" = 200 ]
+[ "$(xreg 16 '{"username":"uma","email":"uma@example.test","password":"password123","display_name":"Uma","birth_date":"1990-08-08"}')" = 200 ]
 TOKEN_U=$(jq -r .token /tmp/body); UMA=$(jq -r .user.id /tmp/body)
 tok "$TOKEN_U" call POST "/api/invites/$PINV" >/dev/null
 [ "$(tok "$TOKEN_P" status POST /api/dms '{"user_ids":["'"$QUIN"'","'"$REX"'"]}')" = 403 ] && grep -q "Group DMs are only for friends" /tmp/body
@@ -4065,7 +4074,7 @@ tok "$TOKEN_P" call GET /api/dms | jq -e --arg id "$SDM" 'any(.[]; .id == $id)' 
 tok "$TOKEN_P" call GET "/api/channels/$SDM/messages" | jq -e 'length == 2' >/dev/null
 tok "$TOKEN_SI" call GET /api/dms | jq -e --arg id "$SDM" '.[] | select(.id == $id) | .request == null' >/dev/null
 # A new one, then joining her outhouse.
-[ "$(xreg 17 '{"username":"vic","password":"password123","display_name":"Vic","birth_date":"1990-09-09"}')" = 200 ]
+[ "$(xreg 17 '{"username":"vic","email":"vic@example.test","password":"password123","display_name":"Vic","birth_date":"1990-09-09"}')" = 200 ]
 TOKEN_V=$(jq -r .token /tmp/body); VIC=$(jq -r .user.id /tmp/body)
 VDM=$(tok "$TOKEN_V" call POST /api/dms '{"user_ids":["'"$PIA"'"]}' | jq -r .id)
 tok "$TOKEN_V" call POST "/api/channels/$VDM/messages" '{"content":"hello from vic"}' >/dev/null
@@ -4095,7 +4104,7 @@ step "message requests: the privacy setting, the daily limit, and bots are never
 tok "$TOKEN_P" call GET /api/users/@me/privacy | jq -e '.message_requests == "allow"' >/dev/null
 tok "$TOKEN_P" call PUT /api/users/@me/privacy '{"message_requests":"block"}' | jq -e '.message_requests == "block" and .allow_dms == "everyone"' >/dev/null
 tok "$TOKEN_P" fail_call PUT /api/users/@me/privacy '{"message_requests":"maybe"}'
-[ "$(xreg 18 '{"username":"wes","password":"password123","display_name":"Wes","birth_date":"1990-10-10"}')" = 200 ]
+[ "$(xreg 18 '{"username":"wes","email":"wes@example.test","password":"password123","display_name":"Wes","birth_date":"1990-10-10"}')" = 200 ]
 TOKEN_W=$(jq -r .token /tmp/body); WES=$(jq -r .user.id /tmp/body)
 [ "$(tok "$TOKEN_W" status POST /api/dms '{"user_ids":["'"$PIA"'"]}')" = 403 ] && grep -q "only takes messages from friends and people in their outhouses" /tmp/body
 tok "$TOKEN_W" call GET "/api/users/$PIA/contact" | jq -e '(.can_message | not) and .request' >/dev/null
@@ -4736,5 +4745,12 @@ tok "$TOKEN_A" call POST "/api/safety/outhouses/$DXB/actions" '{"action":"shut_d
 tok "$TOKEN_A" call POST "/api/safety/outhouses/$DXB/actions" '{"action":"delete","confirm_name":"Dir Bobs Shed"}' | jq -e '.deleted' >/dev/null
 [ "$(tok "$TOKEN_A" status GET "/api/safety/outhouses/$DXB")" = 404 ]
 [ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM safety_log WHERE guild_id = $DXB AND action IN ('outhouse_shut_down','outhouse_restore','outhouse_delete','outhouse_view','outhouse_members_removed')")" -ge 8 ]
+
+# ---------------------------------------------------------------------------
+# Email, password resets and two-factor sign-in (feat-auth): its own script,
+# so it can also run on its own against a local server.
+# ---------------------------------------------------------------------------
+step "email, password resets, two-factor (ci/auth_test.sh)"
+BASE=$BASE MAIL_DIR=$MAIL_DIR OWNER_TOKEN=$TOKEN_A bash ci/auth_test.sh
 
 echo "Smoke test passed."

@@ -792,6 +792,100 @@
      }
     }
    }
+  },
+  "/api/auth/2fa": {
+   "get": {
+    "summary": "two-factor status and trusted devices",
+    "parameters": [],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/auth/forgot": {
+   "post": {
+    "summary": "forgot password (neutral answer)",
+    "parameters": [],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       },
+       "example": {
+        "login": "zap-nobody"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/auth/reset/check": {
+   "post": {
+    "summary": "reset link check",
+    "parameters": [],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       },
+       "example": {
+        "token": "0000000000000000000000000000000000000000000000000000000000000000"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/api/auth/verify-email": {
+   "post": {
+    "summary": "email confirmation",
+    "parameters": [],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       },
+       "example": {
+        "token": "0000000000000000000000000000000000000000000000000000000000000000"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
+  },
+  "/reset": {
+   "get": {
+    "summary": "reset page",
+    "parameters": [],
+    "responses": {
+     "200": {
+      "description": "ok"
+     }
+    }
+   }
   }
  }
 }

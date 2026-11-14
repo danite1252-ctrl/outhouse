@@ -1378,6 +1378,9 @@ pub struct RegisterRequest {
     /// or 18+); under 13s can't sign up.
     #[serde(default)]
     pub birth_date: Option<String>,
+    /// Needed for new accounts (password resets go to it once confirmed).
+    #[serde(default)]
+    pub email: Option<String>,
 }
 
 /// Change your own account. Leave out anything you're not changing.

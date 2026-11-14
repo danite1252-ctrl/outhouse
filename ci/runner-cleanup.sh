@@ -22,13 +22,13 @@ fi
 
 # Test server, mocks, bot and gateway probe from earlier runs.
 for p in 'target/debug/outhouse-server' 'ci/wow_mock.py' 'ci/livekit_mock.py' 'ci/push_mock.py' \
-         'ci/gateway_probe.mjs' 'web/bots/dice-bot.mjs' 'deploy/detector/detector.py'; do
+         'ci/gateway_probe.mjs' 'web/bots/dice-bot.mjs' 'deploy/detector/detector.py' 'ci/smtp_sink.py'; do
   pkill -f "$p" 2>/dev/null || true
 done
-# Anything else still holding the ports CI uses: server 8080, image detector 8095, mocks 8097-8099,
+# Anything else still holding the ports CI uses: server 8080, image detector 8095, mocks 8097-8099, SMTP sinks 2525-2526, the no-SMTP server 8183,
 # LiveKit 7880-7882 (host network). Not 5432: that's the job's Postgres service.
 if command -v fuser >/dev/null 2>&1; then
-  for port in 8080 8095 8097 8098 8099 7880 7881; do fuser -k -n tcp "$port" >/dev/null 2>&1 || true; done
+  for port in 8080 8095 8097 8098 8099 7880 7881 2525 2526 8183; do fuser -k -n tcp "$port" >/dev/null 2>&1 || true; done
   fuser -k -n udp 7882 >/dev/null 2>&1 || true
 fi
 

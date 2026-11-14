@@ -1,0 +1,87 @@
+/* Account security: sign-in steps, banners, email and two-factor settings,
+   the site owner's sign-in tools, and the pages email links open. */
+
+/* ---- sign-in screen ---- */
+.auth-step-title { margin: 0; text-align: center; font-size: 18px; }
+.auth-card .small-logo { width: 72px; }
+.auth-card .auth-check { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 8px; font-weight: 500; color: var(--text); font-size: 14px; }
+.auth-card .auth-check input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--ember); margin: 0; padding: 0; }
+.auth-card .auth-check select { height: 34px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--night); color: var(--text); font: inherit; }
+.auth-card .auth-check select:disabled { opacity: .5; }
+.auth-card { min-width: 0; }
+.auth-card input { min-width: 0; }
+.auth-card #auth-2fa-code { width: 100%; font-size: 22px; letter-spacing: .2em; text-align: center; font-family: "JetBrains Mono", ui-monospace, monospace; }
+.auth-note { background: color-mix(in srgb, var(--vacant) 12%, var(--night)); border: 1px solid color-mix(in srgb, var(--vacant) 40%, var(--line)); border-radius: 10px; padding: 10px 12px; font-size: 14px; line-height: 1.45; text-align: left !important; }
+.auth-note.warn { background: color-mix(in srgb, var(--glow) 12%, var(--night)); border-color: color-mix(in srgb, var(--glow) 45%, var(--line)); }
+
+/* ---- banners (top of the chat) ---- */
+.acct-banner { display: flex; align-items: center; gap: 10px; padding: 8px 12px 8px 16px; background: color-mix(in srgb, var(--ember) 14%, var(--panel)); border-bottom: 1px solid color-mix(in srgb, var(--ember) 40%, var(--line)); font-size: 14px; flex-wrap: wrap; }
+.acct-banner.acct-2fa { background: color-mix(in srgb, var(--glow) 10%, var(--panel)); border-bottom-color: color-mix(in srgb, var(--glow) 35%, var(--line)); }
+.acct-banner.acct-2fa.strong { background: color-mix(in srgb, var(--ember) 18%, var(--panel)); border-bottom-color: var(--ember); }
+.acct-banner-icon { flex: 0 0 auto; }
+.acct-banner-text { flex: 1 1 220px; min-width: 0; line-height: 1.35; }
+.acct-banner-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.acct-banner-btn { height: 30px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--raised); color: var(--text); font-weight: 600; font-size: 13px; }
+.acct-banner-btn.primary-ish { background: var(--ember); color: var(--night); border-color: var(--ember); }
+.acct-banner-btn:hover { filter: brightness(1.1); }
+.acct-banner-btn:disabled { opacity: .6; }
+.acct-banner-x { width: 28px; height: 28px; flex: 0 0 28px; }
+@media (max-width: 760px) {
+  .acct-banner { padding: 8px 10px; gap: 8px; font-size: 13px; }
+  .acct-banner-text { flex-basis: calc(100% - 70px); }
+  .acct-banner-actions { margin-left: 26px; }
+}
+
+/* ---- settings ---- */
+.acct-section { display: flex; flex-direction: column; gap: 8px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--night); }
+.acct-section h3 { margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.acct-sub { margin: 8px 0 0; font-size: 14px; }
+.acct-tight { margin: 0; line-height: 1.45; }
+.acct-warn { color: var(--glow); }
+.acct-chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: .02em; border: 1px solid var(--line); color: var(--muted); }
+.acct-chip.good { color: var(--vacant); border-color: color-mix(in srgb, var(--vacant) 50%, var(--line)); }
+.acct-chip.warn { color: var(--glow); border-color: color-mix(in srgb, var(--glow) 55%, var(--line)); }
+.acct-email-line { font-size: 15px; word-break: break-all; }
+.acct-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.acct-devices { display: flex; flex-direction: column; gap: 8px; }
+.acct-device { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.acct-device-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.acct-device-main strong { margin-right: 6px; }
+
+/* ---- dialogs ---- */
+dialog.acct-dialog { width: min(420px, 94vw); }
+dialog.acct-dialog.acct-wide { width: min(560px, 96vw); }
+dialog.acct-dialog input[type=password], dialog.acct-dialog input[type=email], dialog.acct-dialog input[type=text] { width: 100%; color: var(--text); }
+dialog.acct-dialog .acct-code { font-size: 20px; letter-spacing: .18em; text-align: center; font-family: "JetBrains Mono", ui-monospace, monospace; }
+.acct-scan { display: flex; gap: 16px; align-items: flex-start; }
+.acct-qr { width: 184px; height: 184px; flex: 0 0 184px; background: #fff; border-radius: 10px; padding: 6px; image-rendering: pixelated; }
+.acct-scan-side { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.acct-steps { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.4; }
+.acct-secret { display: block; padding: 8px 10px; border-radius: 8px; background: var(--night); border: 1px solid var(--line); font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 14px; letter-spacing: .04em; word-break: break-all; user-select: all; }
+.acct-codes-wrap { display: flex; flex-direction: column; gap: 10px; }
+.acct-codes { margin: 0; padding: 12px 12px 12px 34px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 18px; background: var(--night); border: 1px solid var(--line); border-radius: 10px; }
+.acct-codes code { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 15px; user-select: all; }
+.acct-link-field { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; }
+@media (max-width: 520px) {
+  .acct-scan { flex-direction: column; align-items: center; }
+  .acct-scan-side { width: 100%; }
+  .acct-codes { grid-template-columns: 1fr; }
+}
+
+/* ---- site owner ---- */
+.acct-status-block { display: flex; flex-direction: column; gap: 10px; }
+.acct-status-block h3 { margin: 6px 0 0; }
+.acct-test-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.acct-test-row input { flex: 1 1 220px; min-width: 0; height: 38px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--night); color: var(--text); }
+.acct-owner-wrap { display: flex; flex-direction: column; gap: 14px; }
+.acct-owner-section { background: none; }
+
+/* ---- the page email links open (/reset, /verify-email) ---- */
+.link-page { min-height: 100%; display: grid; place-items: center; padding: 24px; }
+.link-page .auth-card { gap: 14px; }
+.link-page .auth-card .primary { display: grid; place-items: center; text-decoration: none; }
+.link-page .who { text-align: center; font-weight: 600; }
+.link-page .done-icon { font-size: 40px; text-align: center; }
+.link-page .auth-card label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.link-page .auth-card input { width: 100%; color: var(--text); }
+.link-page .auth-card #code { font-size: 20px; letter-spacing: .18em; text-align: center; font-family: "JetBrains Mono", ui-monospace, monospace; }

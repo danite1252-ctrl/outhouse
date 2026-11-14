@@ -12,6 +12,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono&family=Montserrat:wght@800&display=swap">
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="account-security.css">
 </head>
 <body>
 
@@ -23,13 +24,45 @@
     <p class="muted" id="auth-subtitle">Welcome back. Pull up a seat.</p>
     <label>Username<input name="username" autocomplete="username" required minlength="2" maxlength="32"></label>
     <label id="display-name-field" hidden>Display name<input name="display_name" maxlength="32" placeholder="What friends call you"></label>
+    <label id="email-field" hidden>Email<input name="email" type="email" autocomplete="email" maxlength="254" placeholder="you@example.com"></label>
+    <p class="muted small auth-hint" id="email-hint" hidden>For password resets and security notices only. Nobody else sees it.</p>
     <label id="birth-date-field" hidden>Date of birth<input name="birth_date" type="date" autocomplete="bday" min="1900-01-01"></label>
     <p class="muted small auth-hint" id="birth-date-hint" hidden>Only used to work out your age group; the date itself isn't kept. You need to be 13 or older.</p>
     <p class="muted small auth-hint ip-hint" id="ip-hint" hidden>To keep Outhouse safe, sign-in IP addresses are kept for <span id="ip-days">90</span> days and only the site owner can see them.</p>
     <label>Password<input name="password" type="password" autocomplete="current-password" required minlength="8"></label>
     <p class="error" id="auth-error" role="alert"></p>
     <button type="submit" class="primary" id="auth-submit">Sign in</button>
+    <button type="button" class="link" id="auth-forgot">Forgot password?</button>
     <button type="button" class="link" id="auth-toggle">New here? Create an account</button>
+  </form>
+
+  <!-- Two-factor: the code step after a right password -->
+  <form id="auth-2fa-form" class="auth-card" method="post" hidden>
+    <img src="logo.svg" alt="" class="auth-logo small-logo">
+    <h1 class="wordmark">OUTHOUSE</h1>
+    <h2 class="auth-step-title">Two-factor sign-in</h2>
+    <p class="muted" id="auth-2fa-text">Enter the 6-digit code from your authenticator app.</p>
+    <label id="auth-2fa-label">Code<input name="code" id="auth-2fa-code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" required></label>
+    <label class="auth-check"><input type="checkbox" name="trust" id="auth-2fa-trust" checked><span>Trust this device for</span>
+      <select name="trust_days" id="auth-2fa-days" aria-label="How long to trust this device"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select></label>
+    <p class="muted small auth-hint">Only on your own device. You won't be asked for a code here until then.</p>
+    <p class="error" id="auth-2fa-error" role="alert"></p>
+    <button type="submit" class="primary" id="auth-2fa-submit">Verify</button>
+    <button type="button" class="link" id="auth-2fa-switch">Use a recovery code instead</button>
+    <button type="button" class="link" id="auth-2fa-back">Back to sign in</button>
+  </form>
+
+  <!-- Forgot password -->
+  <form id="auth-forgot-form" class="auth-card" method="post" hidden>
+    <img src="logo.svg" alt="" class="auth-logo small-logo">
+    <h1 class="wordmark">OUTHOUSE</h1>
+    <h2 class="auth-step-title">Forgot your password?</h2>
+    <p class="muted">Enter your username or email. If the account has a confirmed email, we'll send it a link to choose a new password.</p>
+    <label>Username or email<input name="login" id="auth-forgot-login" autocomplete="username" required maxlength="254"></label>
+    <p class="auth-note" id="auth-forgot-done" role="status" hidden></p>
+    <p class="error" id="auth-forgot-error" role="alert"></p>
+    <button type="submit" class="primary" id="auth-forgot-submit">Send reset link</button>
+    <button type="button" class="link" id="auth-forgot-back">Back to sign in</button>
   </form>
 </section>
 
@@ -157,6 +190,7 @@
 <script src="outhouses.js"></script>
 <script src="detector.js"></script>
 <script src="profiles.js"></script>
+<script src="account-security.js"></script>
 <script src="entry.js"></script>
 </body>
 </html>

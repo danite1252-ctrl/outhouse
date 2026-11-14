@@ -62,7 +62,7 @@ token = None
 if not NO_API:
     suffix = str(int(time.time()))[-6:]
     req = urllib.request.Request(BASE + "/api/auth/register", method="POST",
-                                 data=json.dumps({"username": f"lander{suffix}", "password": "password123", "birth_date": "1990-01-01"}).encode(),
+                                 data=json.dumps({"username": f"lander{suffix}", "email": "someone@example.test", "password": "password123", "birth_date": "1990-01-01"}).encode(),
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req) as res:
         token = json.loads(res.read())["token"]

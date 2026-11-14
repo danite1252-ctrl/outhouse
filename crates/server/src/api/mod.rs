@@ -1,6 +1,6 @@
 //! REST API routes.
 
-mod account;
+pub(crate) mod account;
 mod attendance;
 pub(crate) mod audit;
 mod badges;
@@ -31,6 +31,7 @@ pub mod police;
 pub mod polls;
 mod profiles;
 pub mod raid_settings;
+pub mod recovery;
 pub mod requests;
 mod roles;
 pub mod safety;
@@ -40,6 +41,7 @@ mod softres;
 pub mod sounds;
 mod stickers;
 pub mod threads;
+pub mod twofactor;
 pub mod voice;
 mod webhooks;
 pub mod wow;
@@ -66,6 +68,39 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/registration", get(account::registration_mode))
         .route("/api/auth/login", post(account::login))
         .route("/api/auth/logout", post(account::logout))
+        // Two-factor sign-in, email confirmation, password resets.
+        .route("/api/auth/login/2fa", post(twofactor::login_code))
+        .route("/api/auth/forgot", post(recovery::forgot))
+        .route("/api/auth/reset/check", post(recovery::reset_check))
+        .route("/api/auth/reset", post(recovery::reset))
+        .route("/api/auth/verify-email", post(recovery::verify_email))
+        .route("/api/auth/2fa", get(twofactor::status))
+        .route("/api/auth/2fa/setup", post(twofactor::setup))
+        .route("/api/auth/2fa/confirm", post(twofactor::confirm))
+        .route(
+            "/api/auth/2fa/recovery-codes",
+            post(twofactor::new_recovery_codes),
+        )
+        .route("/api/auth/2fa/disable", post(twofactor::disable))
+        .route(
+            "/api/auth/2fa/devices",
+            delete(twofactor::forget_all_devices),
+        )
+        .route(
+            "/api/auth/2fa/devices/{id}",
+            delete(twofactor::forget_device),
+        )
+        .route("/api/users/@me/email", put(recovery::change_email))
+        .route("/api/users/@me/email/resend", post(recovery::resend))
+        .route(
+            "/api/safety/users/{id}/reset-link",
+            post(recovery::owner_reset_link),
+        )
+        .route(
+            "/api/safety/users/{id}/remove-2fa",
+            post(twofactor::owner_remove),
+        )
+        .route("/api/safety/email-test", post(recovery::email_test))
         .route("/api/users/@me", get(account::me).patch(account::update_me))
         .route("/api/users/@me/unread", get(search::unread))
         // Outhouses

@@ -45,7 +45,7 @@ def api(method, path, body=None, token=None):
 
 
 def register(name, display):
-    return api("POST", "/api/auth/register", {"username": name, "password": "password123", "birth_date": "1990-01-01", "display_name": display})
+    return api("POST", "/api/auth/register", {"username": name, "email": "someone@example.test", "password": "password123", "birth_date": "1990-01-01", "display_name": display})
 
 
 suffix = str(int(time.time()))[-6:]
@@ -264,6 +264,7 @@ with sync_playwright() as p:
         shot(pg, f"{n}-invite-register-{label}")
         pg.fill("input[name=username]", f"newbie{label[:2]}{suffix}")
         pg.fill("input[name=display_name]", f"Newbie {label}")
+        pg.fill("input[name=email]", f"newbie{label[:2]}{suffix}@example.test")
         pg.fill("input[name=password]", "password123")
         pg.fill("input[name=birth_date]", "1990-01-01")
         pg.click("#auth-submit")

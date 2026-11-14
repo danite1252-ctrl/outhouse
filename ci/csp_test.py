@@ -39,7 +39,7 @@ for _ in range(60):
         time.sleep(1)
 
 suffix = str(int(time.time()))[-6:]
-me = api("POST", "/api/auth/register", {"username": f"csp{suffix}", "password": "password123", "birth_date": "1990-01-01", "display_name": "Cass"})
+me = api("POST", "/api/auth/register", {"username": f"csp{suffix}", "email": "someone@example.test", "password": "password123", "birth_date": "1990-01-01", "display_name": "Cass"})
 TOKEN = me["token"]
 guild = api("POST", "/api/guilds", {"name": "CSP Check"}, TOKEN)
 chan = api("POST", f"/api/guilds/{guild['id']}/channels", {"name": "chat"}, TOKEN)

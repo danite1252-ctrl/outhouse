@@ -403,6 +403,16 @@ let registering = false;
 function showAuth() {
   $("app").hidden = true;
   $("auth").hidden = false;
+  showAuthCard("auth-form");
+}
+
+// One card at a time on the sign-in screen: sign in / sign up, the
+// two-factor code step, or "Forgot password?".
+function showAuthCard(id) {
+  for (const card of ["auth-form", "auth-2fa-form", "auth-forgot-form"]) {
+    const node = $(card);
+    if (node) node.hidden = card !== id;
+  }
 }
 
 // How many days sign-in IP addresses are kept (the server's IP_RETENTION_DAYS).
@@ -422,6 +432,11 @@ function ipRetentionLine(days) {
 function setAuthMode(isRegister) {
   registering = isRegister;
   $("display-name-field").hidden = !isRegister;
+  // New accounts give an email (password resets go there once confirmed).
+  $("email-field").hidden = !isRegister;
+  $("email-hint").hidden = !isRegister;
+  $("email-field").querySelector("input").required = isRegister;
+  $("auth-forgot").hidden = isRegister;
   // Sign-ups give a date of birth (only the age group is kept).
   $("birth-date-field").hidden = !isRegister;
   $("birth-date-hint").hidden = !isRegister;
@@ -429,6 +444,14 @@ function setAuthMode(isRegister) {
   // Sign-in IP addresses are kept for a while (only the site owner sees them).
   $("ip-hint").hidden = !isRegister;
   if (isRegister) ipRetentionDays().then((days) => { $("ip-days").textContent = String(days); });
+  if (isRegister) {
+    // Email isn't set up on this server yet: say the link comes later.
+    fetch("/api/auth/registration").then((r) => r.json()).then((d) => {
+      $("email-hint").textContent = d.email_available === false
+        ? "For password resets and security notices only. Nobody else sees it. (This server can't send email yet, so the confirmation link comes later.)"
+        : "For password resets and security notices only. Nobody else sees it. We'll send a link to confirm it.";
+    }).catch(() => {});
+  }
   $("auth-submit").textContent = isRegister ? "Create account" : "Sign in";
   $("auth-toggle").textContent = isRegister ? "Already have an account? Sign in" : "New here? Create an account";
   $("auth-subtitle").textContent = isRegister ? "Grab a spot out the back." : "Welcome back. Pull up a seat.";
@@ -442,6 +465,7 @@ $("auth-form").addEventListener("submit", async (e) => {
   const form = new FormData(e.target);
   const body = { username: form.get("username"), password: form.get("password") };
   if (registering) {
+    body.email = form.get("email") || "";
     body.display_name = form.get("display_name") || null;
     body.birth_date = form.get("birth_date") || null;
     // Servers that only take sign-ups by invite (REGISTRATION=invite) check this.
@@ -450,12 +474,108 @@ $("auth-form").addEventListener("submit", async (e) => {
   $("auth-error").textContent = "";
   try {
     const res = await api("POST", registering ? "/api/auth/register" : "/api/auth/login", body);
-    state.token = res.token;
-    localStorage.setItem("outhouse_token", res.token);
+    // Two-factor on: the code step comes next (the password was right).
+    if (res.mfa_required) {
+      e.target.reset();
+      return showCodeStep(res);
+    }
+    finishSignIn(res);
     e.target.reset();
-    start();
   } catch (err) {
     $("auth-error").textContent = err.message;
+  }
+});
+
+function finishSignIn(res) {
+  state.token = res.token;
+  localStorage.setItem("outhouse_token", res.token);
+  start();
+}
+
+// ---- two-factor: the code step ----
+
+let codeTicket = null;
+let usingRecoveryCode = false;
+
+function setRecoveryMode(on) {
+  usingRecoveryCode = on;
+  const input = $("auth-2fa-code");
+  input.value = "";
+  input.inputMode = on ? "text" : "numeric";
+  input.maxLength = on ? 14 : 7;
+  input.autocomplete = on ? "off" : "one-time-code";
+  $("auth-2fa-label").firstChild.textContent = on ? "Recovery code" : "Code";
+  $("auth-2fa-text").textContent = on
+    ? "Enter one of the recovery codes you saved when you set up two-factor (like k7m2p-x9q4t). Each one works once."
+    : "Enter the 6-digit code from your authenticator app.";
+  $("auth-2fa-switch").textContent = on ? "Use a code from my app instead" : "Use a recovery code instead";
+  $("auth-2fa-error").textContent = "";
+}
+
+function showCodeStep(res) {
+  codeTicket = res.ticket;
+  setRecoveryMode(false);
+  showAuthCard("auth-2fa-form");
+  $("auth-2fa-code").focus();
+}
+
+$("auth-2fa-switch").addEventListener("click", () => { setRecoveryMode(!usingRecoveryCode); $("auth-2fa-code").focus(); });
+$("auth-2fa-back").addEventListener("click", () => { codeTicket = null; showAuthCard("auth-form"); });
+$("auth-2fa-trust").addEventListener("change", () => { $("auth-2fa-days").disabled = !$("auth-2fa-trust").checked; });
+
+$("auth-2fa-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("auth-2fa-error").textContent = "";
+  const btn = $("auth-2fa-submit");
+  btn.disabled = true;
+  try {
+    const res = await api("POST", "/api/auth/login/2fa", {
+      ticket: codeTicket,
+      code: $("auth-2fa-code").value.trim(),
+      trust_days: $("auth-2fa-trust").checked ? Number($("auth-2fa-days").value) : 0,
+    });
+    codeTicket = null;
+    $("auth-2fa-code").value = "";
+    showAuthCard("auth-form");
+    finishSignIn(res);
+  } catch (err) {
+    $("auth-2fa-error").textContent = err.message;
+    // An expired ticket or too many tries: back to the password.
+    if (/sign in again/i.test(err.message)) {
+      setTimeout(() => { codeTicket = null; showAuthCard("auth-form"); $("auth-error").textContent = err.message; }, 1500);
+    }
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ---- forgot password ----
+
+$("auth-forgot").addEventListener("click", () => {
+  $("auth-forgot-done").hidden = true;
+  $("auth-forgot-error").textContent = "";
+  const typed = $("auth-form").querySelector("input[name=username]").value.trim();
+  if (typed) $("auth-forgot-login").value = typed;
+  showAuthCard("auth-forgot-form");
+  $("auth-forgot-login").focus();
+});
+$("auth-forgot-back").addEventListener("click", () => showAuthCard("auth-form"));
+
+$("auth-forgot-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("auth-forgot-error").textContent = "";
+  const btn = $("auth-forgot-submit");
+  btn.disabled = true;
+  try {
+    const res = await api("POST", "/api/auth/forgot", { login: $("auth-forgot-login").value.trim() });
+    const done = $("auth-forgot-done");
+    done.textContent = res.message;
+    done.classList.toggle("warn", res.email_available === false);
+    done.hidden = false;
+  } catch (err) {
+    $("auth-forgot-error").textContent = err.message;
+  } finally {
+    btn.disabled = false;
   }
 });
 

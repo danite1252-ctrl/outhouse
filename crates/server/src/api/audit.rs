@@ -160,6 +160,11 @@ pub struct ServerStatus {
     pub backup: Option<BackupStatus>,
     /// The image detector: set up, online, queue length, last error.
     pub detector: serde_json::Value,
+    /// Email (mail.rs): set up or what's missing, last sent, last error.
+    pub email: serde_json::Value,
+    /// Where the two-factor encryption key comes from: "env"
+    /// (AUTH_SECRET_KEY), "file" (a key file the server made) or "missing".
+    pub auth_key: &'static str,
 }
 
 /// Reads the server's version: `OUTHOUSE_VERSION`, else the VERSION file
@@ -296,6 +301,8 @@ pub async fn server_status(
             && st.config.livekit_api_secret.is_some(),
         backup: read_backup_status().await,
         detector: super::detector::health(&st).await,
+        email: crate::mail::status_json(),
+        auth_key: crate::twofa::key_source().as_str(),
     }))
 }
 

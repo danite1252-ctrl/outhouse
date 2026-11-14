@@ -44,6 +44,12 @@ ENV
   chmod 600 .env
   echo "Saved deploy/.env (keep it private; it holds your passwords)."
 fi
+# The key two-factor secrets are encrypted with (README "Email & sign-in").
+# Made once; never change or lose it, or two-factor users need recovery codes.
+if ! grep -q '^AUTH_SECRET_KEY=' .env; then
+  echo "AUTH_SECRET_KEY=$(openssl rand -hex 32)" >> .env
+  echo "Added AUTH_SECRET_KEY to deploy/.env (two-factor sign-in). Keep it with your backups."
+fi
 if ! grep -q '^GITHUB_TOKEN=' .env; then
   say "App auto-updates (optional)"
   echo "The Windows and Android apps update themselves from this server, which"

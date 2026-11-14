@@ -90,6 +90,18 @@ services:
       ALERT_NTFY_URL: ${ALERT_NTFY_URL:-}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
       REPORTS_PER_HOUR: ${REPORTS_PER_HOUR:-}
+      # Email (password resets, confirmation links) and two-factor sign-in.
+      # See README "Email & sign-in". Without SMTP_HOST, resets go through the
+      # site owner (People → Create password reset link).
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      # starttls (port 587), tls (port 465) or none (a relay on this machine only).
+      SMTP_TLS: ${SMTP_TLS:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      # Encrypts two-factor secrets; deploy/setup.sh makes one. Never change it.
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-}
       # backup.sh leaves its result here; Outhouse settings → Server status shows it.
       BACKUP_STATUS_FILE: /app/status/backup.json
       # The image detector below (see README "Safety & reports" → "Image detector").

@@ -131,6 +131,8 @@ jobs:
           node --check web/safety.js
           node --check web/detector.js
           node --check web/profiles.js
+          node --check web/account-security.js
+          node --check web/email-link.js
           node --check web/folders.js
           node --check web/guild-info.js
           node --check web/role-preview.js
@@ -209,6 +211,14 @@ jobs:
           BNET_CLIENT_SECRET: mock-secret
           BNET_OAUTH_URL: http://127.0.0.1:8099/oauth
           BNET_API_URL: http://127.0.0.1:8099/api
+          # Email (ci/smtp_sink.py writes each mail to MAIL_DIR) and two-factor.
+          PUBLIC_URL: http://127.0.0.1:8080
+          SMTP_HOST: 127.0.0.1
+          SMTP_PORT: "2526"
+          SMTP_TLS: none
+          MAIL_FROM: Outhouse <no-reply@outhouse.test>
+          MAIL_DIR: /tmp/outhouse-mail-ui
+          AUTH_SECRET_KEY: ci-only-auth-secret-key-0123456789abcdef
         run: |
           docker rm -f livekit >/dev/null 2>&1 || true
           docker run -d --name livekit --network host livekit/livekit-server:latest \
@@ -239,10 +249,13 @@ jobs:
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:7880 >/dev/null 2>&1 && break; sleep 1; done
           curl -fsS http://127.0.0.1:7880 >/dev/null || { docker logs livekit; exit 1; }
           python3 ci/wow_mock.py 8099 > /tmp/wow-mock-ui.log 2>&1 &
+          rm -rf "$MAIL_DIR"; mkdir -p "$MAIL_DIR"
+          python3 ci/smtp_sink.py 2526 "$MAIL_DIR" > /tmp/smtp-sink-ui.log 2>&1 &
           ./target/debug/outhouse-server > /tmp/ui-server.log 2>&1 &
           python ci/landing_test.py
           python ci/invite_test.py
           python ci/ui_test.py
+          python ci/auth_ui_test.py
           python ci/csp_test.py
       - name: Screenshots (base64, for review)
         if: always()

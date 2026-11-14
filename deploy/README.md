@@ -731,6 +731,93 @@ If the Armory doesn't know a character (Blizzard's EU Forever data started
 late, and brand-new characters can take a while), people see a friendly note
 and can still save the character by hand.
 
+## Email & sign-in
+
+Outhouse uses email for three things: confirming the address people sign
+up with, **"Forgot password?"** links, and short security notices
+("your password was changed", "two-factor was turned off"). Every new
+account gives an email; older accounts see a banner asking them to add one.
+Two-factor sign-in (authenticator-app codes, with "Trust this device") is
+optional for everyone, but the app suggests it, more firmly for you and
+anyone who can manage or ban in an outhouse.
+
+### What goes in `deploy/.env`
+
+```
+SMTP_HOST=smtp-relay.brevo.com      # your provider's SMTP server
+SMTP_PORT=587                       # 587 (STARTTLS) or 465 (TLS)
+SMTP_USERNAME=...                   # from the provider
+SMTP_PASSWORD=...                   # from the provider (an SMTP key / app password)
+SMTP_TLS=starttls                   # starttls for 587, tls for 465 (blank = picked from the port)
+MAIL_FROM=Outhouse <no-reply@hartspace.cc>
+AUTH_SECRET_KEY=...                 # made by ./setup.sh; see below
+```
+
+Then `docker compose up -d` and, in Outhouse, **User settings → SITE OWNER →
+Server status → Email & sign-in → Send a test email**. It says straight
+away whether the provider took the mail (and the error if not). Links in
+emails always use `PUBLIC_URL` (`https://<your domain>`, set in
+docker-compose.yml), never whatever address a request came in on.
+
+Providers (any SMTP service works; these have free tiers):
+
+- **Brevo**: Settings → SMTP & API → SMTP: host `smtp-relay.brevo.com`, port
+  587, the login shown there, and a generated SMTP key as the password.
+  Add and verify your sending domain under Senders & domains.
+- **Mailgun**: Sending → Domain settings → SMTP credentials: host
+  `smtp.mailgun.org` (or `smtp.eu.mailgun.org`), port 587, user like
+  `postmaster@mg.hartspace.cc`, its password.
+- **Amazon SES**: SMTP settings → Create SMTP credentials: host
+  `email-smtp.<region>.amazonaws.com`, port 587, the generated user and
+  password (not your AWS keys). Verify the domain and ask AWS to leave the
+  sandbox, or it only sends to verified addresses.
+- **Gmail** (small servers): turn on 2-Step Verification for the Google
+  account, make an **app password** (myaccount.google.com → Security → App
+  passwords), then host `smtp.gmail.com`, port 587, your Gmail address as
+  the user, the app password as the password, and `MAIL_FROM` with that
+  same Gmail address. Gmail limits how much you can send a day.
+
+**So it doesn't land in spam**, the sending domain (the part after @ in
+`MAIL_FROM`) needs DNS records from your provider: an **SPF** TXT record
+(e.g. `v=spf1 include:spf.brevo.com ~all`, merged with any SPF record you
+already have; a domain has only one) and the **DKIM** record(s) they give
+you. A **DMARC** record (`_dmarc` TXT `v=DMARC1; p=none`) helps too. The
+provider's domain page shows when they're right.
+
+Without `SMTP_HOST`, nothing breaks: sign-up still asks for an email (the
+confirmation link goes out once email works), "Forgot password?" tells
+people to ask you, and Server status says "Email not set up".
+
+### `AUTH_SECRET_KEY` (two-factor)
+
+Two-factor secrets are stored encrypted with this key, so a copy of the
+database alone doesn't give anyone the codes. `./setup.sh` adds one to
+`.env` (`openssl rand -hex 32`, 32+ characters). Keep a copy with your
+backups (the database backup doesn't include it) and **never change it**:
+with a different key, everyone's authenticator codes stop working and they
+need a recovery code (or you remove their two-factor in People). If it
+isn't set, the server makes a key file in the uploads volume and Server
+status warns about it; setting the key later is fine (secrets made with
+the file still open).
+
+### When someone is locked out
+
+- **Forgot the password**: "Forgot password?" on the sign-in screen sends a
+  link (30 minutes, one use) to a confirmed email. The answer is the same
+  whether or not the account exists. Resetting signs them out everywhere
+  and forgets trusted devices; it doesn't lift a suspension, and blocked
+  networks are refused as for sign-in.
+- **No email, or lost it**: People → (them) → Sign-in & recovery → **Create
+  password reset link**: works once for 24 hours, shown to you once, logged.
+  Send it privately.
+- **Two-factor on**: the reset page also asks for a code from their app or
+  a recovery code. Lost the phone *and* the codes? Check it's really them,
+  then **Remove two-factor** (needs a reason; logged; they get an email).
+
+Email changes, resets, two-factor on/off/removed and recovery codes used are
+all in the safety log. Bots, webhooks and feeds never sign in, so none of
+this applies to them.
+
 ## Real client IPs
 Outhouse needs the visitor's real address for sign-in limits and the IP
 addresses above. The chain at home:

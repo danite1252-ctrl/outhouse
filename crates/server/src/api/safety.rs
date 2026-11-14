@@ -2047,6 +2047,17 @@ async fn subject_json(st: &AppState, user_id: i64) -> AppResult<Value> {
     .bind(user_id)
     .fetch_one(&st.db)
     .await?;
+    let (email, email_verified, email_pending): (Option<String>, bool, Option<String>) =
+        sqlx::query_as(
+            "SELECT email, email_verified_at IS NOT NULL, email_pending FROM users WHERE id = $1",
+        )
+        .bind(user_id)
+        .fetch_one(&st.db)
+        .await?;
+    let mut sign_in = super::twofactor::owner_summary(&st.db, user_id).await?;
+    sign_in["email"] = json!(email.as_deref().map(super::recovery::mask_email));
+    sign_in["email_verified"] = json!(email_verified);
+    sign_in["email_pending"] = json!(email_pending.as_deref().map(super::recovery::mask_email));
     Ok(json!({
         "id": u.id.to_string(),
         "username": u.username,
@@ -2088,6 +2099,8 @@ async fn subject_json(st: &AppState, user_id: i64) -> AppResult<Value> {
         "reports_made": reports_made,
         "ip_note": ip_note(),
         "log": log.iter().map(log_json).collect::<Vec<_>>(),
+        // Sign-in and recovery (People): masked email, two-factor.
+        "sign_in": sign_in,
         "names": names,
         "message_requests": message_requests,
     }))

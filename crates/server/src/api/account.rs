@@ -15,7 +15,7 @@ use crate::state::{AppState, Audience};
 /// way to make the server work hard).
 pub const MAX_PASSWORD_CHARS: usize = 256;
 
-fn check_new_password(password: &str) -> AppResult<()> {
+pub fn check_new_password(password: &str) -> AppResult<()> {
     let n = password.chars().count();
     if n < 8 {
         return Err(AppError::BadRequest(
@@ -37,6 +37,8 @@ pub async fn registration_mode() -> Json<serde_json::Value> {
         "mode": security::get().registration.as_str(),
         // For the "sign-in IP addresses are kept for N days" line.
         "ip_retention_days": crate::ips::retention_days(),
+        // Can this server send email (confirmation links, password resets)?
+        "email_available": crate::mail::configured(),
     }))
 }
 
@@ -118,6 +120,8 @@ pub async fn register(
     let username = req.username.trim().to_lowercase();
     validate_username(&username)?;
     check_new_password(&req.password)?;
+    // Every new account gives an email (see recovery.rs).
+    let email = super::recovery::normalize_email(req.email.as_deref().unwrap_or(""))?;
     check_registration_allowed(&st, req.invite.as_deref()).await?;
     // Only the age group is kept (never the date); under 13s are turned away.
     let bracket = super::safety::signup_bracket(&st.db, req.birth_date.as_deref()).await?;
@@ -133,8 +137,8 @@ pub async fn register(
 
     let hash = auth::hash_password(req.password).await?;
     let result = sqlx::query_as::<_, User>(
-        "INSERT INTO users (id, username, display_name, password_hash, age_bracket, dm_privacy)
-         VALUES ($1, $2, $3, $4, $5, CASE WHEN $5 = 'teen' THEN 'friends' ELSE 'everyone' END)
+        "INSERT INTO users (id, username, display_name, password_hash, age_bracket, dm_privacy, email)
+         VALUES ($1, $2, $3, $4, $5, CASE WHEN $5 = 'teen' THEN 'friends' ELSE 'everyone' END, $6)
          RETURNING id, username, display_name",
     )
     .bind(st.ids.next_id())
@@ -142,6 +146,7 @@ pub async fn register(
     .bind(&display_name)
     .bind(&hash)
     .bind(bracket)
+    .bind(&email)
     .fetch_one(&st.db)
     .await;
 
@@ -154,6 +159,10 @@ pub async fn register(
     };
     let token = auth::create_session(&st.db, user.id).await?;
     crate::ips::signed_in(&st, user.id, &token, ip, crate::ips::Kind::Register).await;
+    // The confirmation link goes out in the background (never holds this up).
+    if let Err(e) = super::recovery::send_confirmation(&st, user.id, &email).await {
+        tracing::warn!(error = %e, "couldn't queue a confirmation email");
+    }
     Ok(Json(AuthResponse { token, user }))
 }
 
@@ -174,11 +183,16 @@ async fn dummy_hash() -> AppResult<&'static String> {
     Ok(DUMMY.get_or_init(|| hash))
 }
 
+/// `POST /api/auth/login`: a session, or (two-factor on, and this device
+/// isn't trusted) `{"mfa_required": true, "ticket": "…"}` for the code step
+/// at `POST /api/auth/login/2fa` (twofactor.rs).
 pub async fn login(
     State(st): State<AppState>,
     ClientIp(ip): ClientIp,
+    headers: HeaderMap,
     Json(req): Json<LoginRequest>,
-) -> AppResult<Json<AuthResponse>> {
+) -> AppResult<axum::response::Response> {
+    use axum::response::IntoResponse;
     let username = req.username.trim().to_lowercase();
     // Brute-force protection: too many wrong passwords from one address, or
     // for one account, and sign-in pauses for a while (checked before the
@@ -247,10 +261,20 @@ pub async fn login(
         tracing::info!(%ip, user = %username, "suspended account tried to sign in");
         return Err(AppError::Refused(why));
     }
+    // Two-factor: the code step comes next (no session yet).
+    if let Some(ticket) = super::twofactor::ticket_if_needed(&st, &headers, row.id).await? {
+        return Ok(Json(serde_json::json!({
+            "mfa_required": true,
+            "ticket": ticket,
+            "expires_in": super::twofactor::TICKET_MINUTES * 60,
+            "trust_days": super::twofactor::TRUST_DAYS,
+        }))
+        .into_response());
+    }
     let user = auth::fetch_user(&st.db, row.id).await?;
     let token = auth::create_session(&st.db, user.id).await?;
     crate::ips::signed_in(&st, user.id, &token, ip, crate::ips::Kind::Login).await;
-    Ok(Json(AuthResponse { token, user }))
+    Ok(Json(AuthResponse { token, user }).into_response())
 }
 
 pub async fn logout(State(st): State<AppState>, headers: HeaderMap) -> AppResult<StatusCode> {
@@ -260,8 +284,22 @@ pub async fn logout(State(st): State<AppState>, headers: HeaderMap) -> AppResult
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn me(AuthUser(user): AuthUser) -> Json<User> {
-    Json(user)
+/// `GET /api/users/@me`: you, plus your email and two-factor state (for
+/// the "confirm your email", "add an email" and "set up two-factor" banners).
+pub async fn me(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<serde_json::Value>> {
+    let mut out = serde_json::to_value(&user).map_err(|e| anyhow::anyhow!(e))?;
+    if !user.bot {
+        if let (Some(obj), serde_json::Value::Object(extra)) = (
+            out.as_object_mut(),
+            super::recovery::account_flags(&st, user.id).await?,
+        ) {
+            obj.extend(extra);
+        }
+    }
+    Ok(Json(out))
 }
 
 /// Tidies a display name or nickname: trimmed, at most 32 characters.
@@ -293,10 +331,20 @@ pub async fn update_me(
             .bind(&new_hash)
             .execute(&st.db)
             .await?;
-        // Anyone else signed in as you gets signed out.
-        if let Some(token) = auth::bearer_token(&headers) {
-            auth::delete_other_sessions(&st.db, user.id, token).await?;
+        // Anyone else signed in as you gets signed out, trusted devices are
+        // forgotten and reset links stop working.
+        match auth::bearer_token(&headers) {
+            Some(token) => super::recovery::revoke_everything(&st.db, user.id, Some(token)).await?,
+            None => super::recovery::revoke_everything(&st.db, user.id, None).await?,
         }
+        super::recovery::password_changed_notice(
+            &st,
+            user.id,
+            &user.username,
+            &user.display_name,
+            false,
+        )
+        .await;
     }
 
     let mut user = user;

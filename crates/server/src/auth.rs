@@ -117,16 +117,6 @@ pub async fn delete_session(db: &PgPool, token: &str) -> AppResult<()> {
     Ok(())
 }
 
-/// Signs a user out everywhere except the session making the request.
-pub async fn delete_other_sessions(db: &PgPool, user_id: i64, keep_token: &str) -> AppResult<()> {
-    sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND token_hash <> $2")
-        .bind(user_id)
-        .bind(token_hash(keep_token))
-        .execute(db)
-        .await?;
-    Ok(())
-}
-
 /// The user for a login token or a bot token. Suspended accounts (and bots
 /// whose owner is suspended) get nothing.
 pub async fn user_for_token(db: &PgPool, token: &str) -> AppResult<Option<User>> {
