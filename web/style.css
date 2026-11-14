@@ -541,7 +541,12 @@ html.android-app { --safe-top: max(env(safe-area-inset-top, 0px), 32px); --safe-
 .sp-more { align-self: center; margin-top: 4px; }
 
 .msg.flash { background: #ffb34726; box-shadow: inset 3px 0 0 var(--glow); transition: background .4s; }
-.msg.pinned::after { content: "📌"; position: absolute; right: 18px; top: 6px; font-size: 11px; opacity: .7; pointer-events: none; }
+/* Pinned messages: a soft red tint and edge (mentions use amber), plus a label. */
+.msg.pinned { background: #e5484d12; box-shadow: inset 3px 0 0 #e5484d; }
+.msg.pinned:hover { background: #e5484d1c; }
+.msg.pinned.mentions-me { background: linear-gradient(90deg, #e5484d14, #ffb34710); }
+.msg.pinned::after { content: "📌 Pinned"; position: absolute; right: 18px; top: 6px; font-size: 11px; font-weight: 600; letter-spacing: .02em; color: #f0868a; pointer-events: none; }
+.msg.pinned:not(.first)::after { content: "📌"; }
 .msg.pinned:hover::after { display: none; }
 .msg-actions button.pin.on { background: #ff6b3526; }
 .detached-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px 6px 12px; margin-bottom: 6px; border-radius: 10px; background: var(--raised); border: 1px solid var(--line); font-size: 13px; color: var(--muted); }
