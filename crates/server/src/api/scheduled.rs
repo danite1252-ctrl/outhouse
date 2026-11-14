@@ -350,10 +350,9 @@ async fn fail(st: &AppState, row: &Row, why: String) -> AppResult<()> {
         ServerEvent::ScheduledUpdate(updated.into()),
     );
     if st.vapid.is_some() && st.is_away(row.user_id) {
-        let preview: String = crate::timetag::plain(&row.content)
-            .chars()
-            .take(80)
-            .collect();
+        // Time tags stay as they are; the device writes them out in its zone.
+        let cut: String = row.content.chars().take(80).collect();
+        let preview = crate::timetag::drop_partial_tag(&cut).to_string();
         let payload = json!({
             "title": "Your scheduled message wasn't sent",
             "body": format!("{why} It said: {preview}"),

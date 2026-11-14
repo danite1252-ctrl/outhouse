@@ -476,13 +476,13 @@ async fn plain_text(db: &PgPool, guild_id: i64, content: &str) -> String {
         }
     }
     out.push_str(rest);
-    // <t:…> time tags: the server can't know the reader's zone, so UTC.
-    let out = crate::timetag::plain(&out);
+    // <t:…> time tags stay as they are: the device's service worker writes
+    // them out in the reader's own time zone (web/sw.js).
     let out = out.replace("**", "").replace("__", "");
     let out = out.split_whitespace().collect::<Vec<_>>().join(" ");
     if out.chars().count() > MAX_BODY_CHARS {
         let cut: String = out.chars().take(MAX_BODY_CHARS - 1).collect();
-        format!("{cut}…")
+        format!("{}…", crate::timetag::drop_partial_tag(&cut))
     } else {
         out
     }

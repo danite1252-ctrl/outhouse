@@ -25,8 +25,19 @@ fn utc_text(unix: i64, style: char) -> Option<String> {
     })
 }
 
+/// Cuts off a time tag left unfinished at the end of shortened text (e.g.
+/// "raid at <t:17672" after trimming a notification), so readers never see
+/// half a tag.
+pub fn drop_partial_tag(text: &str) -> &str {
+    match text.rfind("<t:") {
+        Some(i) if !text[i..].contains('>') => text[..i].trim_end(),
+        _ => text,
+    }
+}
+
 /// Text with every time tag spelled out in UTC; anything that isn't a
 /// valid tag stays as it was.
+#[allow(dead_code)] // for plain-text places that can't run code (e.g. emails)
 pub fn plain(text: &str) -> String {
     if !text.contains("<t:") {
         return text.to_string();
@@ -72,6 +83,16 @@ fn parse(after: &str) -> Option<(String, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drops_half_tags() {
+        assert_eq!(drop_partial_tag("raid at <t:17672"), "raid at");
+        assert_eq!(
+            drop_partial_tag("raid at <t:1767259800:F> ok"),
+            "raid at <t:1767259800:F> ok"
+        );
+        assert_eq!(drop_partial_tag("no tags"), "no tags");
+    }
 
     #[test]
     fn makes_tags() {
