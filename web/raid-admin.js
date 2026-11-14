@@ -83,15 +83,18 @@ async function drawRaidSettings(page) {
     choices.map(([v, text]) => el("option", { value: v, selected: v === value }, text)));
   const cleanupSeries = cleanupPick("Old cards of repeating raids", settings.card_cleanup_series || "next", CARD_CLEANUP);
   const cleanupSingle = cleanupPick("Old cards of one-off raids", settings.card_cleanup_single || "off", CARD_CLEANUP.filter(([v]) => v !== "next"));
+  const realm = typeof realmTimeFields === "function" ? realmTimeFields(settings) : null;
   const save = el("button", { class: "primary", onclick: async () => {
     save.disabled = true;
     const saved = await tryApi("PUT", `/api/guilds/${state.guildId}/raid-settings`, {
       manager_role_ids: [...chosen], default_channel_id: channel.value || null,
       card_cleanup_series: cleanupSeries.value, card_cleanup_single: cleanupSingle.value,
+      ...(realm ? realm.values() : {}),
     }).catch(() => null);
     save.disabled = false;
     if (saved) {
       state.raidSettings = { ...saved, guild_id: state.guildId };
+      realm?.saved(saved);
       toast("Raid settings saved.");
       renderMessages();
     }
@@ -115,6 +118,7 @@ async function drawRaidSettings(page) {
       el("label", { class: "field" }, "Repeating raids", cleanupSeries),
       el("label", { class: "field" }, "One-off raids", cleanupSingle)),
     el("p", { class: "muted small", style: "margin:0" }, "This is what Plan a raid starts with. Each raid can still choose for itself under \u201cRemove the chat card after the raid\u201d."),
+    realm?.node,
     el("div", { class: "settings-actions" }, el("span"), save),
   );
 }

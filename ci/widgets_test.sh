@@ -86,7 +86,9 @@ ok "$T2" PUT "/api/events/$E1/signup" '{"status":"tentative","role":"healer","cl
 ok "$T2" PUT "/api/events/$E2/signup" '{"status":"no","role":""}' >/dev/null
 ok "$T2" PUT "/api/events/$E4/signup" '{"status":"bench","role":"dps","class":"Mage","spec":"Frost"}' >/dev/null
 FROM=$(iso '-7 days'); TO=$(iso '+20 days')
-ok "$T2" GET "/api/users/@me/raids?from=$FROM&to=$TO" > /tmp/myraids.json
+ok "$T2" GET "/api/users/@me/raids?from=$FROM&to=$TO" > /tmp/myraids-all.json
+jq -e --arg r "$RAIDS" --arg f "$FCHAN" '[.channels[] | [.id, .name]] | sort == ([[$r, "raids"], [$f, "family"]] | sort)' /tmp/myraids-all.json >/dev/null
+jq .events /tmp/myraids-all.json > /tmp/myraids.json
 jq -e --arg e1 "$E1" --arg e2 "$E2" --arg e4 "$E4" --arg e5 "$E5" --arg g1 "$G1" --arg g2 "$G2" '
   [.[].id] == [$e5, $e1, $e2, $e4]
   and (.[] | select(.id == $e4) | .guild_id == $g2)
@@ -97,19 +99,19 @@ jq -e --arg u "$U2" --arg e1 "$E1" --arg e2 "$E2" --arg e4 "$E4" --arg e5 "$E5" 
   mine($e1) == ["tentative"] and mine($e2) == ["no"] and mine($e4) == ["bench"] and mine($e5) == []' /tmp/myraids.json >/dev/null
 # The officers' raid is hidden from members; its owner sees it.
 jq -e --arg e3 "$E3" 'all(.[]; .id != $e3)' /tmp/myraids.json >/dev/null
-ok "$T1" GET "/api/users/@me/raids?from=$FROM&to=$TO" | jq -e --arg e3 "$E3" 'any(.[]; .id == $e3) and length == 5' >/dev/null
+ok "$T1" GET "/api/users/@me/raids?from=$FROM&to=$TO" | jq -e --arg e3 "$E3" '.events | any(.[]; .id == $e3) and length == 5' >/dev/null
 # Crow isn't in the family outhouse.
-ok "$T3" GET "/api/users/@me/raids?from=$FROM&to=$TO" | jq -e --arg e4 "$E4" 'length == 3 and all(.[]; .id != $e4)' >/dev/null
+ok "$T3" GET "/api/users/@me/raids?from=$FROM&to=$TO" | jq -e --arg e4 "$E4" '.events | length == 3 and all(.[]; .id != $e4)' >/dev/null
 # One outhouse only (the mini calendar), and the range.
-ok "$T2" GET "/api/users/@me/raids?from=$FROM&to=$TO&guild=$G2" | jq -e --arg e4 "$E4" '[.[].id] == [$e4]' >/dev/null
-ok "$T2" GET "/api/users/@me/raids?from=$(iso now)&to=$(iso '+30 hours')" | jq -e --arg e1 "$E1" --arg e2 "$E2" '[.[].id] == [$e1, $e2]' >/dev/null
-ok "$T3" GET "/api/users/@me/raids?from=$FROM&to=$TO&guild=$G2" | jq -e 'length == 0' >/dev/null
+ok "$T2" GET "/api/users/@me/raids?from=$FROM&to=$TO&guild=$G2" | jq -e --arg e4 "$E4" '[.events[].id] == [$e4]' >/dev/null
+ok "$T2" GET "/api/users/@me/raids?from=$(iso now)&to=$(iso '+30 hours')" | jq -e --arg e1 "$E1" --arg e2 "$E2" '[.events[].id] == [$e1, $e2]' >/dev/null
+ok "$T3" GET "/api/users/@me/raids?from=$FROM&to=$TO&guild=$G2" | jq -e '.events == [] and .channels == []' >/dev/null
 no 400 "$T2" GET "/api/users/@me/raids?from=$FROM&to=$(iso '+90 days')"
 no 400 "$T2" GET "/api/users/@me/raids?from=$TO&to=$FROM"
 no 400 "$T2" GET "/api/users/@me/raids?from=$FROM&to=$TO&guild=abc"
 # Lose access to a channel: its raids go.
 ok "$T1" PUT "/api/channels/$RAIDS/permissions/$U3" '{"kind":"member","allow":"0","deny":"1"}' >/dev/null
-ok "$T3" GET "/api/users/@me/raids?from=$FROM&to=$TO" | jq -e 'length == 0' >/dev/null
+ok "$T3" GET "/api/users/@me/raids?from=$FROM&to=$TO" | jq -e '.events == []' >/dev/null
 ok "$T1" DELETE "/api/channels/$RAIDS/permissions/$U3" >/dev/null
 
 # ---------------------------------------------------------------------------

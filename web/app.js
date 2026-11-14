@@ -2448,6 +2448,7 @@ async function openUserSettings(tab = "account", opts = {}) {
     typeof drawNotificationsPage === "function" ? ["notifications", "Notifications"] : null,
     typeof drawPrivacyPage === "function" ? ["privacy", "Privacy & friends"] : null,
     typeof drawFoldersPage === "function" ? ["folders", "Folders"] : null,
+    typeof drawWidgetsPage === "function" ? ["widgets", "Sidebar widgets"] : null,
   ].filter(Boolean);
   const owner = typeof siteOwnerTabs === "function" && (state.siteOwner || state.safety?.owner);
   const ownerTabs = owner ? siteOwnerTabs() : [];
@@ -2476,6 +2477,7 @@ async function openUserSettings(tab = "account", opts = {}) {
     if (active === "notifications") return drawNotificationsPage(page);
     if (active === "privacy") return drawPrivacyPage(page);
     if (active === "folders") return drawFoldersPage(page);
+    if (active === "widgets") return drawWidgetsPage(page);
     return drawAccount(page);
   };
   dialog._draw = draw;

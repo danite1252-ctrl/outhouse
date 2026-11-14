@@ -142,6 +142,9 @@ jobs:
           node --check web/outhouses.js
           node --check web/timetags.js
           node ci/timetags_check.mjs
+          node --check web/myraids.js
+          node --check web/mentions.js
+          node --check web/widgets.js
           node --check web/bots/dice-bot.mjs
       - name: Deploy scripts check (bash -n + shellcheck)
         run: |

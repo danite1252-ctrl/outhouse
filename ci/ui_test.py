@@ -1319,6 +1319,13 @@ with sync_playwright() as p:
     print("built-in sounds (seconds, peak, rms):", decoded)
     for k, (secs, peak, rms) in decoded.items():
         assert 0.3 < secs <= 10 and 0.3 < peak <= 1.0 and rms > 0.03, (k, secs, peak, rms)
+    # The soundboard widget: only while you're in voice (off by default).
+    api("PUT", "/api/users/@me/widgets", {"widgets": [{"id": "soundboard", "on": True}, {"id": "clock", "on": True}, {"id": "calendar", "on": True}, {"id": "mentions", "on": True}]}, TOKEN)
+    carolv.wait_for_selector("#widget-stack .widget.w-soundboard .w-sound", timeout=15000)
+    carolv.wait_for_timeout(300)
+    carolv.screenshot(path=f"{SHOTS}/4009-desktop-soundboard-widget-in-voice.png")
+    api("PUT", "/api/users/@me/widgets", {"widgets": [{"id": "clock", "on": True}, {"id": "calendar", "on": True}, {"id": "mentions", "on": True}, {"id": "soundboard", "on": False}]}, TOKEN)
+    carolv.wait_for_selector("#widget-stack .widget.w-soundboard", state="detached", timeout=10000)
     # Soundboard: Discord-style popover above the voice panel.
     # Erin (on her phone, in Raid comms) listens; count the clips her client is told to play.
     erinv.evaluate("window.__plays = []; playSound = (url, volume) => window.__plays.push(String(url));")
@@ -4828,6 +4835,183 @@ with sync_playwright() as p:
         so.wait_for_selector(".dir-shut-btn", timeout=10000)
         assert any(g["id"] == den["id"] for g in api("GET", "/api/guilds", None, dave["token"]))
         so.close()
+
+    # ---- My raids (rail calendar), sidebar widgets, realm time, Mentions inbox ----
+    import datetime as _dt
+    wg_g = api("POST", "/api/guilds", {"name": "Guild Night"}, dave["token"])
+    wg_ch = api("POST", f"/api/guilds/{wg_g['id']}/channels", {"name": "raid-signups"}, dave["token"])
+    wg_off = api("POST", f"/api/guilds/{wg_g['id']}/channels", {"name": "officers"}, dave["token"])
+    api("PUT", f"/api/channels/{wg_off['id']}/permissions/{wg_g['id']}", {"kind": "role", "allow": "0", "deny": "1"}, dave["token"])
+    wg_code = api("POST", f"/api/guilds/{wg_g['id']}/invites", None, dave["token"])["code"]
+    api("POST", f"/api/invites/{wg_code}", None, TOKEN)
+    api("PUT", f"/api/guilds/{wg_g['id']}/raid-settings", {"realm_time_zone": "America/Los_Angeles", "realm_region": "us"}, dave["token"])
+    _now = _dt.datetime.now(_dt.timezone.utc)
+    wg_iso = lambda hours: (_now + _dt.timedelta(hours=hours)).replace(minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
+    wg_soon = api("POST", f"/api/channels/{wg_ch['id']}/events", {"title": "Soon raid", "starts_at": wg_iso(5), "duration_minutes": 120}, dave["token"])
+    wg_in = api("POST", f"/api/channels/{wg_ch['id']}/events", {"title": "Signed-up raid", "starts_at": wg_iso(50), "duration_minutes": 120}, dave["token"])
+    wg_out = api("POST", f"/api/channels/{wg_ch['id']}/events", {"title": "Absent raid", "starts_at": wg_iso(74), "duration_minutes": 120}, dave["token"])
+    api("POST", f"/api/channels/{wg_off['id']}/events", {"title": "Officers only raid", "starts_at": wg_iso(26)}, dave["token"])
+    api("PUT", f"/api/events/{wg_in['event']['id']}/signup", {"status": "yes", "role": "healer", "class": "Priest", "spec": "Holy"}, TOKEN)
+    api("PUT", f"/api/events/{wg_out['event']['id']}/signup", {"status": "no", "role": ""}, TOKEN)
+    api("POST", f"/api/channels/{wg_ch['id']}/messages", {"content": f"<@{CAROL}> can you bring the healing flasks tonight?"}, dave["token"])
+    api("POST", f"/api/channels/{wg_ch['id']}/messages", {"content": "@everyone summons at the stone in 10"}, dave["token"])
+
+    # (The month view, so raids a day or two away are on it whatever day this runs.)
+    api("PUT", "/api/users/@me/widgets", {"widgets": [{"id": "clock", "on": True}, {"id": "calendar", "on": True, "mode": "month"}, {"id": "mentions", "on": True}, {"id": "soundboard", "on": False}]}, TOKEN)
+    wg = fresh(TOKEN, "widgets-desktop", viewport={"width": 1280, "height": 800})
+    wg.evaluate(f"selectGuild({json.dumps(wg_g['id'])})")
+    wg.wait_for_selector(f".guild.active[data-id='{wg_g['id']}']", timeout=15000)
+    # The rail button counts raids in the next 24 hours you haven't answered.
+    wg.wait_for_selector("#myraids-btn .mr-badge", timeout=15000)
+    assert int(wg.text_content("#myraids-btn .mr-badge")) >= 1
+    # The widget stack: clock with realm time and the weekly reset, mini calendar, mentions.
+    wg.wait_for_selector(".widget.w-clock .w-clock-row.realm .w-clock-sub:has-text('US Pacific')", timeout=15000)
+    wg.wait_for_selector(".widget.w-clock .w-reset")
+    wg.wait_for_selector(".widget.w-calendar .w-day .mr-dot.st-open", timeout=15000)
+    wg.wait_for_selector(".widget.w-calendar .w-day .mr-dot.st-yes")
+    wg.wait_for_selector(".widget.w-mentions .mn-card.unread:has-text('healing flasks')", timeout=15000)
+    order = wg.eval_on_selector_all("#widget-stack .widget", "els => els.map((e) => e.dataset.widget)")
+    assert order == ["clock", "calendar", "mentions"], order
+    wg.wait_for_selector("#mentions-btn .mention-badge")
+    wg.wait_for_timeout(300)
+    wg.screenshot(path=f"{SHOTS}/4001-desktop-rail-calendar-and-widgets.png")
+    # Collapse and expand a widget (saved on the server).
+    wg.click(".widget.w-clock .w-toggle")
+    wg.wait_for_selector(".widget.w-clock.collapsed")
+    for _ in range(20):
+        if next(w for w in api("GET", "/api/users/@me/widgets", None, TOKEN)["widgets"] if w["id"] == "clock")["collapsed"]:
+            break
+        time.sleep(0.25)
+    else:
+        raise AssertionError("collapsing the clock wasn't saved")
+    wg.click(".widget.w-clock .w-toggle")
+    wg.wait_for_selector(".widget.w-clock:not(.collapsed) .w-clock-time")
+
+    # My raids: month view, every outhouse, coloured dots; the officers' raid isn't there.
+    wg.click("#myraids-btn")
+    wg.wait_for_selector(".myraids-dialog .mr-cell.busy .mr-dot", timeout=15000)
+    wg.wait_for_function("!myRaids.loading && myRaids.events.length > 0", timeout=15000)
+    titles = wg.evaluate("myRaids.events.map((e) => e.title)")
+    assert "Soon raid" in titles and "Signed-up raid" in titles and "Officers only raid" not in titles, titles
+    wg.click(f".mr-chip[title='Guild Night']")
+    soon_day = wg.evaluate(f"dayKey(new Date({json.dumps(wg_soon['event']['starts_at'])}))")
+    wg.click(f".mr-cell[data-day='{soon_day}']")
+    wg.wait_for_selector(".mr-raid.st-open:has-text('Soon raid') .mr-signup")
+    wg.wait_for_timeout(200)
+    wg.screenshot(path=f"{SHOTS}/4002-desktop-myraids-month.png")
+    # Can't make it, then sign up after all (the usual sign-up popover).
+    wg.click(".mr-raid:has-text('Soon raid') .mr-absent")
+    wg.wait_for_selector(".mr-raid.st-no:has-text('Soon raid') .mr-absent-on", timeout=10000)
+    wg.click(".mr-raid:has-text('Soon raid') .mr-signup")
+    wg.wait_for_selector(".myraids-dialog .signup-pop")
+    wg.click(".signup-pop .su-class:has-text('Priest')")
+    wg.click(".signup-pop .su-spec:has-text('Holy')")
+    wg.screenshot(path=f"{SHOTS}/4003-desktop-myraids-day-signup.png")
+    wg.click(".signup-pop button.primary")
+    wg.wait_for_selector(".mr-raid.st-yes:has-text('Soon raid')", timeout=10000)
+    mine = [x for x in api("GET", f"/api/events/{wg_soon['event']['id']}", None, TOKEN)["signups"] if x["user_id"] == CAROL]
+    assert mine and mine[0]["status"] == "yes", mine
+    # Week view.
+    wg.click(".mr-view:has-text('Week')")
+    wg.wait_for_selector(".mr-week .mr-wcol .mr-wraid", timeout=10000)
+    wg.wait_for_timeout(200)
+    wg.screenshot(path=f"{SHOTS}/4004-desktop-myraids-week.png")
+    wg.click(".mr-view:has-text('Month')")
+    # Open in #channel jumps to the raid's card.
+    wg.wait_for_selector(f".mr-raid:has-text('Soon raid') .mr-open:has-text('#raid-signups')", timeout=10000)
+    wg.click(".mr-raid:has-text('Soon raid') .mr-open")
+    wg.wait_for_selector(".myraids-dialog", state="detached")
+    wg.wait_for_selector(f"#msg-{wg_soon['id']} .event-card", timeout=15000)
+
+    # Mentions inbox: grouped by day, unread highlighted, mark all read.
+    wg.click("#mentions-btn")
+    wg.wait_for_selector(".mentions-panel .mn-card.unread:has-text('healing flasks')", timeout=10000)
+    wg.wait_for_selector(".mentions-panel .mn-day")
+    wg.screenshot(path=f"{SHOTS}/4005-desktop-mentions-inbox.png")
+    wg.click(".mentions-panel .mn-seg-btn:has-text('Unread')")
+    wg.wait_for_selector(".mentions-panel .mn-seg-btn.on:has-text('Unread')")
+    wg.click(".mentions-panel .mn-all")
+    wg.wait_for_selector(".mentions-panel .mn-card.unread", state="detached", timeout=10000)
+    wg.wait_for_selector("#mentions-btn .mention-badge", state="detached", timeout=10000)
+    assert api("GET", "/api/users/@me/mentions/count", None, TOKEN)["unread"] == 0
+    wg.click("#mentions-btn")
+    wg.wait_for_selector(".mentions-panel", state="detached")
+
+    # User settings → Sidebar widgets: move, hide, show.
+    wg.evaluate("openUserSettings('widgets')")
+    wg.wait_for_selector(".wg-row[data-widget='soundboard']")
+    wg.click(".wg-row[data-widget='mentions'] .wg-btn[aria-label='Move Mentions up']")
+    wg.wait_for_function("[...document.querySelectorAll('#widget-stack .widget')].map((e) => e.dataset.widget).join() === 'clock,mentions,calendar'", timeout=10000)
+    wg.screenshot(path=f"{SHOTS}/4006-desktop-widget-settings.png")
+    for _ in range(20):
+        if [w["id"] for w in api("GET", "/api/users/@me/widgets", None, TOKEN)["widgets"]][:3] == ["clock", "mentions", "calendar"]:
+            break
+        time.sleep(0.25)
+    else:
+        raise AssertionError("moving a widget wasn't saved")
+    wg.click(".wg-row[data-widget='clock'] input[type=checkbox]")
+    wg.wait_for_selector("#widget-stack .widget.w-clock", state="detached")
+    wg.click(".wg-row[data-widget='clock'] input[type=checkbox]")
+    wg.wait_for_selector("#widget-stack .widget.w-clock")
+    wg.keyboard.press("Escape")
+
+    # Outhouse settings → Raids: realm time (Carol's own outhouse).
+    wg.evaluate(f"selectGuild({json.dumps(guild['id'])})")
+    wg.wait_for_selector(f".guild.active[data-id='{guild['id']}']")
+    wg.evaluate("openSettings('raids')")
+    wg.wait_for_selector(".realm-settings .realm-chip", timeout=10000)
+    wg.click(".realm-settings .realm-chip:has-text('Oceanic (Sydney)')")
+    wg.wait_for_selector(".realm-preview:has-text('Oceanic (Sydney)')")
+    wg.evaluate("document.querySelector('.realm-settings').scrollIntoView()")
+    wg.wait_for_timeout(200)
+    wg.screenshot(path=f"{SHOTS}/4007-desktop-realm-time-settings.png")
+    wg.click("dialog.settings .settings-actions button.primary")
+    for _ in range(20):
+        if api("GET", f"/api/guilds/{guild['id']}/raid-settings", None, TOKEN).get("realm_time_zone") == "Australia/Sydney":
+            break
+        time.sleep(0.25)
+    else:
+        raise AssertionError("the realm time zone wasn't saved")
+    wg.keyboard.press("Escape")
+    wg.wait_for_selector(".widget.w-clock .w-clock-sub:has-text('Oceanic (Sydney)')", timeout=10000)
+    wg.close()
+
+    # Phones: widgets at the top of the members drawer, My raids full screen.
+    api("POST", f"/api/channels/{wg_ch['id']}/messages", {"content": f"<@{CAROL}> phone ping"}, dave["token"])
+    for label, kw, base in (("phone", {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True}, 4010),
+                            ("android", {"viewport": {"width": 393, "height": 852}, "is_mobile": True, "has_touch": True}, 4020)):
+        wp = fresh(TOKEN, f"{label}-widgets", **kw)
+        wp.evaluate(f"selectGuild({json.dumps(wg_g['id'])})")
+        wp.wait_for_selector(f".guild.active[data-id='{wg_g['id']}']", state="attached", timeout=15000)
+        wp.wait_for_selector("#members-toggle", timeout=15000)
+        wp.click("#members-toggle")
+        wp.wait_for_selector(".members .widget.w-mentions .mn-card:has-text('phone ping')", timeout=15000)
+        wp.wait_for_selector(".members .widget.w-clock .w-clock-row.realm")
+        wp.wait_for_timeout(400)
+        wp.screenshot(path=f"{SHOTS}/{base}-{label}-widgets-drawer.png")
+        wp.evaluate("document.getElementById('app').classList.remove('show-members')")
+        wp.click("#nav-toggle")
+        wp.wait_for_timeout(400)
+        wp.click("#myraids-btn")
+        wp.wait_for_selector(".myraids-dialog .mr-cell.busy", timeout=15000)
+        wp.wait_for_function("!myRaids.loading", timeout=15000)
+        wp.wait_for_timeout(300)
+        wp.screenshot(path=f"{SHOTS}/{base + 1}-{label}-myraids-month.png")
+        wp.click(".mr-view:has-text('Week')")
+        wp.wait_for_selector(".mr-week .mr-wcol", timeout=10000)
+        wp.wait_for_timeout(300)
+        wp.screenshot(path=f"{SHOTS}/{base + 2}-{label}-myraids-week.png")
+        wp.click(".myraids-dialog .raid-close")
+        wp.wait_for_selector(".myraids-dialog", state="detached")
+        wp.click("#mentions-btn")
+        wp.wait_for_selector(".mentions-panel .mn-card:has-text('phone ping')", timeout=10000)
+        wp.wait_for_timeout(200)
+        wp.screenshot(path=f"{SHOTS}/{base + 3}-{label}-mentions-inbox.png")
+        wp.evaluate("openUserSettings('widgets')")
+        wp.wait_for_selector(".wg-row[data-widget='soundboard']")
+        wp.screenshot(path=f"{SHOTS}/{base + 4}-{label}-widget-settings.png")
+        wp.close()
+    api("PUT", "/api/users/@me/widgets", {"widgets": [{"id": "clock", "on": True}, {"id": "calendar", "on": True}, {"id": "mentions", "on": True}, {"id": "soundboard", "on": False}]}, TOKEN)
 
     browser.close()
 

@@ -1,10 +1,11 @@
 //! "My raids": every raid you can see, in all your outhouses, for the
 //! calendar on the rail (and the mini calendar widget).
 //!
-//! `GET /api/users/@me/raids?from=…&to=…[&guild=…]`: raids overlapping
-//! `from`..`to` (up to 62 days) in text channels you can see (age-restricted
-//! ones you haven't accepted stay out), soonest first, with their sign-ups
-//! (yours included) so the client can colour each day and sign you up.
+//! `GET /api/users/@me/raids?from=…&to=…[&guild=…]`: `{"events": […],
+//! "channels": [{id, guild_id, name}]}`, the raids overlapping `from`..`to`
+//! (up to 62 days) in text channels you can see (age-restricted ones you
+//! haven't accepted stay out), soonest first, with their sign-ups (yours
+//! included) so the client can colour each day and sign you up.
 //! The channels you can see are worked out per outhouse from its overwrites
 //! (two small queries each); the raids then come in one indexed query
 //! (`events(channel_id, starts_at)`).
@@ -13,7 +14,8 @@ use axum::extract::{Query, State};
 use axum::Json;
 use chrono::{DateTime, Utc};
 use outhouse_common::models::RaidEvent;
-use serde::Deserialize;
+use outhouse_common::id::as_string;
+use serde::{Deserialize, Serialize};
 
 use super::events::{build, EventRow, EVENT_COLUMNS};
 use crate::auth::AuthUser;
@@ -61,11 +63,27 @@ pub(crate) async fn visible_channels(
     Ok(channels)
 }
 
+#[derive(Serialize, sqlx::FromRow)]
+pub struct RaidChannel {
+    #[serde(with = "as_string")]
+    pub id: i64,
+    #[serde(with = "as_string")]
+    pub guild_id: i64,
+    pub name: String,
+}
+
+#[derive(Serialize)]
+pub struct MyRaids {
+    pub events: Vec<RaidEvent>,
+    /// The channels those raids are in (for "Open in #channel").
+    pub channels: Vec<RaidChannel>,
+}
+
 pub async fn list(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
     Query(q): Query<MyRaidsQuery>,
-) -> AppResult<Json<Vec<RaidEvent>>> {
+) -> AppResult<Json<MyRaids>> {
     if q.to <= q.from || q.to - q.from > chrono::Duration::days(MAX_DAYS) {
         return Err(AppError::BadRequest(format!(
             "Pick a range of up to {MAX_DAYS} days."
@@ -80,7 +98,10 @@ pub async fn list(
     };
     let channels = visible_channels(&st, user.id, only_guild).await?;
     if channels.is_empty() {
-        return Ok(Json(Vec::new()));
+        return Ok(Json(MyRaids {
+            events: Vec::new(),
+            channels: Vec::new(),
+        }));
     }
     let sql = format!(
         "SELECT {EVENT_COLUMNS} FROM events
@@ -94,5 +115,17 @@ pub async fn list(
         .bind(q.to)
         .fetch_all(&st.db)
         .await?;
-    Ok(Json(build(&st.db, rows).await?))
+    let mut used: Vec<i64> = rows.iter().map(|r| r.channel_id).collect();
+    used.sort_unstable();
+    used.dedup();
+    let raid_channels = sqlx::query_as::<_, RaidChannel>(
+        "SELECT id, guild_id, name FROM channels WHERE id = ANY($1) ORDER BY id",
+    )
+    .bind(&used)
+    .fetch_all(&st.db)
+    .await?;
+    Ok(Json(MyRaids {
+        events: build(&st.db, rows).await?,
+        channels: raid_channels,
+    }))
 }
