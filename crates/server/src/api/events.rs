@@ -485,6 +485,11 @@ fn check_card_cleanup(raw: Option<&str>, repeating: bool) -> AppResult<Option<St
     }
 }
 
+/// A known IANA time zone (also used for an outhouse's realm time).
+pub(crate) async fn check_time_zone(db: &PgPool, raw: &str) -> AppResult<String> {
+    check_tz(db, raw).await
+}
+
 async fn check_tz(db: &PgPool, raw: &str) -> AppResult<String> {
     let tz = raw.trim().to_string();
     let known: bool =

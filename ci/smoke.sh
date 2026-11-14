@@ -4782,6 +4782,13 @@ tok "$TOKEN_A" call POST "/api/safety/outhouses/$DXB/actions" '{"action":"delete
 [ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM safety_log WHERE guild_id = $DXB AND action IN ('outhouse_shut_down','outhouse_restore','outhouse_delete','outhouse_view','outhouse_members_removed')")" -ge 8 ]
 
 # ---------------------------------------------------------------------------
+# "My raids", sidebar widgets, realm time and the Mentions inbox
+# (feat-widgets): its own script, so it can also run on its own.
+# ---------------------------------------------------------------------------
+step "my raids, widgets, realm time, mentions (ci/widgets_test.sh)"
+BASE=$BASE DATABASE_URL=$DATABASE_URL bash ci/widgets_test.sh
+
+# ---------------------------------------------------------------------------
 # Email, password resets and two-factor sign-in (feat-auth): its own script,
 # so it can also run on its own against a local server.
 # ---------------------------------------------------------------------------

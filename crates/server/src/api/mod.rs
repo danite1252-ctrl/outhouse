@@ -24,7 +24,9 @@ mod ipblocks;
 pub mod lfg;
 mod loot;
 pub mod members;
+pub mod mentions;
 pub mod messages;
+mod myraids;
 mod notifications;
 pub mod outhouses;
 pub mod police;
@@ -44,6 +46,7 @@ pub mod threads;
 pub mod twofactor;
 pub mod voice;
 mod webhooks;
+mod widgets;
 pub mod wow;
 
 use axum::extract::DefaultBodyLimit;
@@ -103,6 +106,18 @@ pub fn router(state: AppState) -> Router {
         .route("/api/safety/email-test", post(recovery::email_test))
         .route("/api/users/@me", get(account::me).patch(account::update_me))
         .route("/api/users/@me/unread", get(search::unread))
+        .route("/api/users/@me/raids", get(myraids::list))
+        .route(
+            "/api/users/@me/widgets",
+            get(widgets::get).put(widgets::set),
+        )
+        .route("/api/users/@me/mentions", get(mentions::list))
+        .route("/api/users/@me/mentions/count", get(mentions::count))
+        .route("/api/users/@me/mentions/read", post(mentions::mark_read))
+        .route(
+            "/api/users/@me/mentions/cleanup",
+            post(mentions::cleanup_now),
+        )
         // Outhouses
         .route("/api/guilds", get(guilds::list).post(guilds::create))
         .route(

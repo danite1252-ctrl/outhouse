@@ -405,7 +405,7 @@ pub fn mentions(message: &Message, user_id: i64, role_ids: &[i64]) -> bool {
 }
 
 /// IDs inside `<@123>` / `<@&123>` tokens.
-fn mention_ids(content: &str, prefix: &str) -> Vec<i64> {
+pub(crate) fn mention_ids(content: &str, prefix: &str) -> Vec<i64> {
     let mut out = Vec::new();
     let mut rest = content;
     while let Some(start) = rest.find(prefix) {

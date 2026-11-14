@@ -601,6 +601,7 @@ pub async fn post_bot_message_with(st: &AppState, post: BotPost) -> AppResult<Me
         ServerEvent::MessageCreate(message.clone()),
     );
     crate::push::spawn_message_push(st, guild_id, &message);
+    crate::api::mentions::spawn_record(st, guild_id, &message, false);
     if let Some(thread_id) = thread_id {
         announce_thread(st, guild_id, channel_id, thread_id).await?;
     }
@@ -1016,6 +1017,7 @@ pub(crate) async fn create_message_ex(
         ServerEvent::MessageCreate(message.clone()),
     );
     crate::push::spawn_message_push(st, guild_id, &message);
+    crate::api::mentions::spawn_record(st, guild_id, &message, false);
     if let Some(request_id) = request {
         crate::api::requests::after_send(st, request_id).await;
     }
@@ -1438,6 +1440,9 @@ pub async fn edit(
         },
         ServerEvent::MessageUpdate(message.clone()),
     );
+    if text_changed {
+        crate::api::mentions::spawn_record(&st, guild_id, &message, true);
+    }
     if text_changed && access.perms & p::EMBED_LINKS != 0 {
         embeds::spawn_previews(st.clone(), guild_id, channel_id, message_id, content);
     }

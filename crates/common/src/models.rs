@@ -917,6 +917,23 @@ pub struct RaidSettings {
     /// The same for one-off raids ("off" or "after").
     #[serde(default)]
     pub card_cleanup_single: Option<String>,
+    /// The realm's time zone, as set ("" = worked out from the region;
+    /// left out when saving: unchanged).
+    #[serde(default)]
+    pub realm_time_zone: Option<String>,
+    /// The realm's region as set: "us", "eu", "kr", "tw" or "" (the
+    /// server's Armory region; left out when saving: unchanged).
+    #[serde(default)]
+    pub realm_region: Option<String>,
+    /// What the clock widget uses (read only): the zone (null: no realm
+    /// time to show), the region (picks the weekly reset) and whether the
+    /// zone was worked out from the region rather than set.
+    #[serde(default)]
+    pub realm_effective_time_zone: Option<String>,
+    #[serde(default)]
+    pub realm_effective_region: Option<String>,
+    #[serde(default)]
+    pub realm_time_zone_derived: bool,
 }
 
 /// `GET /api/events/{id}/export`: who to invite, for raid leaders.

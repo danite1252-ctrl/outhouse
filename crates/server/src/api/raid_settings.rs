@@ -1,6 +1,7 @@
 //! Outhouse settings → Raids: which roles are raid managers, the channel
-//! "Plan a raid" starts on, and whether old sign-up cards are removed from
-//! chat by default.
+//! "Plan a raid" starts on, whether old sign-up cards are removed from
+//! chat by default, and the realm's time zone and region (the clock widget's
+//! "Realm time" and weekly reset).
 //!
 //! A raid manager runs every raid in the outhouse (moves people between
 //! roster and bench, removes sign-ups, takes attendance, edits and cancels
@@ -21,7 +22,46 @@ use crate::state::{AppState, Audience};
 /// Most roles that can be raid managers at once.
 const MAX_MANAGER_ROLES: usize = 25;
 
-pub async fn load(db: &PgPool, guild_id: i64) -> AppResult<RaidSettings> {
+/// The zone a region's realms are usually on when the outhouse hasn't
+/// picked one: US realms show Pacific time (Oceanic realms are in the US
+/// region too, so Oceanic outhouses should pick Australia/Sydney), EU realms
+/// Central European time.
+pub fn region_time_zone(region: &str) -> Option<&'static str> {
+    match region {
+        "us" => Some("America/Los_Angeles"),
+        "eu" => Some("Europe/Paris"),
+        "kr" => Some("Asia/Seoul"),
+        "tw" => Some("Asia/Taipei"),
+        _ => None,
+    }
+}
+
+/// The zone and region the clock widget uses: the outhouse's own choices,
+/// else its region's usual zone, else (Armory switched on) the server's
+/// Armory region. `None` zone: no realm time to show.
+fn effective_realm(
+    st: &AppState,
+    tz: &str,
+    region: &str,
+) -> (Option<String>, Option<String>, bool) {
+    let region = if !region.is_empty() {
+        Some(region.to_string())
+    } else if st.config.bnet.is_some() {
+        Some(st.config.armory_region.clone())
+    } else {
+        None
+    };
+    if !tz.is_empty() {
+        return (Some(tz.to_string()), region, false);
+    }
+    match region.as_deref().and_then(region_time_zone) {
+        Some(zone) => (Some(zone.to_string()), region, true),
+        None => (None, region, false),
+    }
+}
+
+pub async fn load(st: &AppState, guild_id: i64) -> AppResult<RaidSettings> {
+    let db = &st.db;
     let manager_role_ids: Vec<i64> = sqlx::query_scalar(
         "SELECT m.role_id FROM raid_manager_roles m JOIN roles r ON r.id = m.role_id
          WHERE m.guild_id = $1 ORDER BY r.position DESC, r.id",
@@ -29,18 +69,27 @@ pub async fn load(db: &PgPool, guild_id: i64) -> AppResult<RaidSettings> {
     .bind(guild_id)
     .fetch_all(db)
     .await?;
-    let default_channel_id: Option<i64> =
-        sqlx::query_scalar("SELECT default_channel_id FROM raid_settings WHERE guild_id = $1")
-            .bind(guild_id)
-            .fetch_optional(db)
-            .await?
-            .flatten();
+    let row: Option<(Option<i64>, String, String)> = sqlx::query_as(
+        "SELECT default_channel_id, realm_time_zone, realm_region
+         FROM raid_settings WHERE guild_id = $1",
+    )
+    .bind(guild_id)
+    .fetch_optional(db)
+    .await?;
+    let (default_channel_id, realm_tz, realm_region) =
+        row.unwrap_or((None, String::new(), String::new()));
+    let (effective_tz, effective_region, derived) = effective_realm(st, &realm_tz, &realm_region);
     let (series, single) = super::events::card_cleanup_defaults(db, guild_id).await?;
     Ok(RaidSettings {
         manager_role_ids,
         default_channel_id,
         card_cleanup_series: Some(series),
         card_cleanup_single: Some(single),
+        realm_time_zone: Some(realm_tz),
+        realm_region: Some(realm_region),
+        realm_effective_time_zone: effective_tz,
+        realm_effective_region: effective_region,
+        realm_time_zone_derived: derived,
     })
 }
 
@@ -67,7 +116,7 @@ pub async fn get(
     Path(guild_id): Path<i64>,
 ) -> AppResult<Json<RaidSettings>> {
     member_ctx(&st.db, guild_id, user.id).await?;
-    Ok(Json(load(&st.db, guild_id).await?))
+    Ok(Json(load(&st, guild_id).await?))
 }
 
 async fn role_names(db: &PgPool, ids: &[i64]) -> AppResult<String> {
@@ -155,7 +204,7 @@ pub async fn set(
         }
     }
 
-    let before = load(&st.db, guild_id).await?;
+    let before = load(&st, guild_id).await?;
     // Left out: unchanged.
     let series_cleanup = match req.card_cleanup_series.as_deref().map(str::trim) {
         None => before
@@ -182,6 +231,30 @@ pub async fn set(
             ))
         }
     };
+    let realm_tz = match req.realm_time_zone.as_deref().map(str::trim) {
+        None => before.realm_time_zone.clone().unwrap_or_default(),
+        Some("") => String::new(),
+        Some(raw) => super::events::check_time_zone(&st.db, raw)
+            .await
+            .map_err(|_| {
+                AppError::BadRequest(
+                    "Pick a time zone from the list (like Australia/Sydney).".into(),
+                )
+            })?,
+    };
+    let realm_region = match req
+        .realm_region
+        .as_deref()
+        .map(|r| r.trim().to_ascii_lowercase())
+    {
+        None => before.realm_region.clone().unwrap_or_default(),
+        Some(r) if r.is_empty() || outhouse_common::wow::REGIONS.contains(&r.as_str()) => r,
+        Some(_) => {
+            return Err(AppError::BadRequest(
+                "The realm region is US, EU, KR or TW (or automatic).".into(),
+            ))
+        }
+    };
     let mut tx = st.db.begin().await?;
     sqlx::query("DELETE FROM raid_manager_roles WHERE guild_id = $1")
         .bind(guild_id)
@@ -196,21 +269,25 @@ pub async fn set(
     .await?;
     sqlx::query(
         "INSERT INTO raid_settings (guild_id, default_channel_id, card_cleanup_series,
-                                    card_cleanup_single)
-         VALUES ($1, $2, $3, $4)
+                                    card_cleanup_single, realm_time_zone, realm_region)
+         VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (guild_id) DO UPDATE
              SET default_channel_id = EXCLUDED.default_channel_id,
                  card_cleanup_series = EXCLUDED.card_cleanup_series,
-                 card_cleanup_single = EXCLUDED.card_cleanup_single",
+                 card_cleanup_single = EXCLUDED.card_cleanup_single,
+                 realm_time_zone = EXCLUDED.realm_time_zone,
+                 realm_region = EXCLUDED.realm_region",
     )
     .bind(guild_id)
     .bind(req.default_channel_id)
     .bind(&series_cleanup)
     .bind(&single_cleanup)
+    .bind(&realm_tz)
+    .bind(&realm_region)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    let after = load(&st.db, guild_id).await?;
+    let after = load(&st, guild_id).await?;
 
     let mut details = Vec::new();
     let (mut old_roles, mut new_roles) = (
@@ -252,6 +329,28 @@ pub async fn set(
                 cleanup_label(new.as_deref().unwrap_or(""))
             ));
         }
+    }
+    let region_label = |v: &Option<String>| match v.as_deref() {
+        None | Some("") => "automatic".to_string(),
+        Some(x) => x.to_uppercase(),
+    };
+    let auto = |v: &Option<String>| match v.as_deref() {
+        None | Some("") => "automatic".to_string(),
+        Some(x) => x.to_string(),
+    };
+    if before.realm_time_zone != after.realm_time_zone {
+        details.push(format!(
+            "Realm time zone: {} → {}",
+            auto(&before.realm_time_zone),
+            auto(&after.realm_time_zone)
+        ));
+    }
+    if before.realm_region != after.realm_region {
+        details.push(format!(
+            "Realm region: {} → {}",
+            region_label(&before.realm_region),
+            region_label(&after.realm_region)
+        ));
     }
     if !details.is_empty() {
         crate::audit::Entry::new(guild_id, user.id, "raid_settings_update")

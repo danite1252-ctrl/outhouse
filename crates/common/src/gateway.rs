@@ -60,6 +60,12 @@ pub enum ServerEvent {
     /// Your rail folders or outhouse order changed on another device:
     /// re-fetch them (sent to you only).
     GuildLayoutChanged,
+    /// Your sidebar widgets (which, order, collapsed) changed on another
+    /// device: re-fetch them (sent to you only).
+    WidgetsChanged,
+    /// Your mentions changed (a new one, or some were read): re-fetch the
+    /// count and any open inbox (sent to you only).
+    MentionsChanged,
     /// Roles, member roles or channel permissions changed: re-fetch
     /// channels, roles, members and your permissions.
     GuildRefresh {

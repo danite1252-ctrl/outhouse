@@ -92,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
     }
     feeds::spawn_poller(state.clone());
     api::events::spawn_reminders(state.clone());
+    api::mentions::spawn_cleaner(state.clone());
     api::polls::spawn_closer(state.clone());
     api::lfg::spawn_expirer(state.clone());
     api::scheduled::spawn_sender(state.clone());
