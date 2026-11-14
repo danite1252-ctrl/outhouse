@@ -141,7 +141,17 @@ if [ "$ASK_OFFSITE" = 1 ] || ! grep -q '^OFFSITE_DIR=' .env; then
   } >> .env
 fi
 
-set -a; . ./.env; set +a
+# Read .env as plain KEY=VALUE lines rather than running it as a script, so
+# values with spaces or <...> (e.g. MAIL_FROM=Outhouse <no-reply@...>) are fine.
+while IFS= read -r line || [ -n "$line" ]; do
+  line=${line%$'\r'}
+  [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+  key=${line%%=*}
+  value=${line#*=}
+  value=${value#\"}; value=${value%\"}
+  value=${value#\'}; value=${value%\'}
+  export "$key=$value"
+done < .env
 mkdir -p updates status
 # The server reads backup status from here; make sure backup.sh can write it.
 [ -w status ] || sudo chown "$USER" status
