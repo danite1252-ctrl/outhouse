@@ -18,7 +18,7 @@ j() { # j METHOD PATH [JSON] [TOKEN]
   curl -fsS -X "$1" -H "Content-Type: application/json" ${4:+-H "Authorization: Bearer $4"} ${3:+-d "$3"} "$BASE$2"
 }
 echo "== test data for the scan"
-USER_JSON=$(j POST /api/auth/register '{"username":"zapper","password":"zap-password-123","display_name":"Zap","birth_date":"1990-01-01"}' "")
+USER_JSON=$(j POST /api/auth/register '{"username":"zapper","email":"zapper@example.test","password":"zap-password-123","display_name":"Zap","birth_date":"1990-01-01"}' "")
 TOKEN=$(jq -r .token <<<"$USER_JSON"); ME=$(jq -r .user.id <<<"$USER_JSON")
 GUILD=$(j POST /api/guilds '{"name":"ZAP test"}' "$TOKEN" | jq -r .id)
 CHANNEL=$(j GET "/api/guilds/$GUILD/channels" "" "$TOKEN" | jq -r '[.[] | select(.kind == 0)][0].id')

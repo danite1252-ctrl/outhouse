@@ -2801,8 +2801,8 @@ for mode in invite closed; do
   R="http://127.0.0.1:$PORT"
   curl -fsS "$R/api/auth/registration" | jq -e --arg m "$mode" '.mode == $m' >/dev/null
   reg() { curl -sS -o /tmp/body -w "%{http_code}" -H "Content-Type: application/json" -d "$1" "$R/api/auth/register"; }
-  [ "$(reg '{"username":"reg'"$mode"'1","password":"password123","birth_date":"1990-01-01"}')" = 403 ] || { echo "$mode: signed up without an invite"; cat /tmp/body; exit 1; }
-  [ "$(reg '{"username":"reg'"$mode"'2","password":"password123","birth_date":"1990-01-01","invite":"nope1234"}')" = 403 ]
+  [ "$(reg '{"username":"reg'"$mode"'1","email":"reg'"$mode"'1@example.test","password":"password123","birth_date":"1990-01-01"}')" = 403 ] || { echo "$mode: signed up without an invite"; cat /tmp/body; exit 1; }
+  [ "$(reg '{"username":"reg'"$mode"'2","email":"reg'"$mode"'2@example.test","password":"password123","birth_date":"1990-01-01","invite":"nope1234"}')" = 403 ]
   if [ "$mode" = invite ]; then
     grep -q "need an invite" /tmp/body
     [ "$(reg '{"username":"reginvite3","email":"reginvite3@example.test","password":"password123","birth_date":"1990-01-01","invite":"'"$REG_INV"'"}')" = 200 ] || { cat /tmp/body; exit 1; }
