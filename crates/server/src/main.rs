@@ -21,6 +21,7 @@ mod perms;
 mod push;
 mod security;
 mod state;
+mod timetag;
 mod twofa;
 mod wowhead;
 mod wowhead_loot;

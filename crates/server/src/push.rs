@@ -476,6 +476,8 @@ async fn plain_text(db: &PgPool, guild_id: i64, content: &str) -> String {
         }
     }
     out.push_str(rest);
+    // <t:…> time tags: the server can't know the reader's zone, so UTC.
+    let out = crate::timetag::plain(&out);
     let out = out.replace("**", "").replace("__", "");
     let out = out.split_whitespace().collect::<Vec<_>>().join(" ");
     if out.chars().count() > MAX_BODY_CHARS {

@@ -350,7 +350,10 @@ async fn fail(st: &AppState, row: &Row, why: String) -> AppResult<()> {
         ServerEvent::ScheduledUpdate(updated.into()),
     );
     if st.vapid.is_some() && st.is_away(row.user_id) {
-        let preview: String = row.content.chars().take(80).collect();
+        let preview: String = crate::timetag::plain(&row.content)
+            .chars()
+            .take(80)
+            .collect();
         let payload = json!({
             "title": "Your scheduled message wasn't sent",
             "body": format!("{why} It said: {preview}"),

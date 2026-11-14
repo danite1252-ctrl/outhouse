@@ -508,7 +508,7 @@ function requestRow(r) {
         el("button", { type: "button", class: "mr-name link", onclick: (e) => openProfile(u.id, e.currentTarget) }, u.display_name),
         el("span", { class: "muted small" }, `@${u.username} · ${relTime(r.sent_at || r.created_at)}`))),
     el("div", { class: "mr-preview" }, r.messages.map((m) => el("div", { class: "mr-msg" },
-      m.content ? el("p", {}, m.content) : null,
+      m.content ? el("p", {}, plainTimeTags(m.content)) : null,
       m.sticker ? el("p", { class: "muted small" }, "🏷️ A sticker") : null,
       attachmentLabel(m) ? el("p", { class: "mr-files muted small" }, attachmentLabel(m)) : null))),
     el("p", { class: "muted small mr-note" }, "Pictures and files show once you accept."),

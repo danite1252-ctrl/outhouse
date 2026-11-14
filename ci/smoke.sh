@@ -616,7 +616,7 @@ psql "$DATABASE_URL" -qc "DELETE FROM event_attendance WHERE event_id = $P0; UPD
 for who in "$TOKEN_B" "$TOKEN_C"; do
   TOKEN=$who
   HD=$(call GET /api/dms | jq -r '[.[] | select(any(.recipients[]; .bot))][0].id')
-  call GET "/api/channels/$HD/messages" | jq -e '.[-1].content | contains("Pattern raid") and contains("moved or cancelled") and contains("every 2 weeks")' >/dev/null || { echo "no DM about the moved raid"; exit 1; }
+  call GET "/api/channels/$HD/messages" | jq -e '.[-1].content | contains("Pattern raid") and contains("moved or cancelled") and contains("every 2 weeks") and test("<t:[0-9]+:F>")' >/dev/null || { echo "no DM about the moved raid (with a <t:…:F> time tag)"; exit 1; }
 done
 TOKEN=$TOKEN_A
 call GET "/api/guilds/$GUILD/audit-log?action=raid_repeat_update" | jq -e '.entries[0] | .target_name == "Pattern raid" and (.details | contains("Weekly on") and contains("→ Every 2 weeks on") and contains("2 sign-ups dropped"))' >/dev/null
@@ -1931,6 +1931,7 @@ TOKEN=$TOKEN_B
 call PUT "/api/users/@me/notifications/guilds/0" '{"level":"all"}' >/dev/null
 call PUT "/api/users/@me/notifications/guilds/$GUILD" '{"level":"mentions"}' >/dev/null
 TOKEN=$TOKEN_A
+call POST "/api/channels/$DMID/messages" '{"content":"raid at <t:1767259800:t> on <t:1767259800:D>"}' >/dev/null
 call POST "/api/channels/$DMID/messages" '{"content":"last dm for bob"}' >/dev/null
 # A push service saying "gone" drops that device.
 call POST /api/push/subscriptions '{"endpoint":"'"$PUSH"'/push/gone","keys":'"$(jq -c .keys <<<"$SUB_A")"'}' >/dev/null
@@ -1998,6 +1999,8 @@ for i in $(seq 1 75); do
   sleep 1
 done
 call GET "/api/channels/$CHAN/messages" | jq -e '[.[] | select(.content | startswith("⏰"))] | length == 1' >/dev/null || { echo "no raid reminder"; exit 1; }
+# "starts <t:…:R> (<t:…:t>)": each reader sees their own clock time, counting down.
+call GET "/api/channels/$CHAN/messages" | jq -e '[.[] | select(.content | startswith("⏰"))][0].content | test("starts <t:[0-9]+:R> \\(<t:[0-9]+:t>\\)") or contains("is starting now")' >/dev/null || { echo "raid reminder has no time tag"; exit 1; }
 
 step "poll closes at its end time"
 for i in $(seq 1 90); do
@@ -2032,6 +2035,7 @@ check_push "$RB" 'any(.[]; .payload.kind == "test")' "bob: test notification"
 check_push "$RB" 'any(.[]; .payload.kind == "mention" and .payload.body == "hello @Bob" and (.payload.title | contains("#general")))' "bob: mention"
 check_push "$RB" 'any(.[]; .payload.kind == "mention" and (.payload.body | contains("@Core raider") or contains("@Raider")))' "bob: role mention"
 check_push "$RB" 'any(.[]; .payload.kind == "dm" and .payload.body == "psst bob" and .payload.guild_id == "0")' "bob: DM"
+check_push "$RB" 'any(.[]; .payload.kind == "dm" and .payload.body == "raid at 09:30 UTC on 1 January 2026")' "bob: DM with time tags spelled out in UTC"
 check_push "$RB" 'any(.[]; .payload.kind == "raid" and (.payload.title | contains("off the bench")))' "bob: bench promotion"
 check_push "$RB" 'any(.[]; .payload.kind == "message" and .payload.body == "plain chatter for level all")' "bob: level all"
 check_push "$RB" 'all(.[]; (.payload.body // "") | contains("muted channel") | not)' "bob: nothing from a muted channel"

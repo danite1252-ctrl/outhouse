@@ -424,6 +424,8 @@ function renderEventCard(m) {
       series ? { label: "Edit this and future raids", onClick: () => openRaidDialog(ev, { scope: "future" }) } : null,
       typeof openAddToRaid === "function" && !when.over ? { label: "Add someone…", onClick: () => openAddToRaid(ev) } : null,
       { label: "Copy roster", onClick: () => copy(rosterText(ev), "Roster copied") },
+      // <t:…:F> shows in each reader's own time zone when pasted into chat.
+      { label: "Copy time tag", onClick: () => copy(`<t:${Math.floor(new Date(ev.starts_at).getTime() / 1000)}:F>`, "Time tag copied") },
       typeof openRaidExport === "function" ? { label: "Export / invite list", onClick: () => openRaidExport(ev) } : null,
       when.started ? { label: "Take attendance", onClick: () => openAttendanceDialog(ev) } : null,
       "sep",

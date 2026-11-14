@@ -2245,13 +2245,14 @@ async fn dm_moved(
     .bind(row.channel_id)
     .fetch_one(&st.db)
     .await?;
-    let local = local_time_in(&st.db, row.starts_at, tz).await?;
     let bot = helper_bot(st, row.guild_id).await?;
     let dm = super::dms::open_direct(st, bot, user_id).await?;
+    // The raid's time as a tag (each reader sees it in their own zone); the
+    // repeat days are the planner's, so their zone is named.
     let content = format!(
-        "📅 Heads up: **{}** on {} ({tz}) has been moved or cancelled. The raid now repeats {}, so your sign-up for that day was dropped. Check the calendar in #{channel} ({guild}) for the new dates and sign up again.",
+        "📅 Heads up: **{}** on {} has been moved or cancelled. The raid now repeats {} ({tz} time), so your sign-up for that day was dropped. Check the calendar in #{channel} ({guild}) for the new dates and sign up again.",
         row.title,
-        local.format("%a %-d %b, %-I:%M %p"),
+        crate::timetag::tag(row.starts_at, 'F'),
         lower_first(label),
     );
     post_bot_message(
@@ -2447,8 +2448,9 @@ async fn dm_promoted(st: &AppState, row: &EventRow, user_id: i64, role: &str) ->
     let bot = helper_bot(st, row.guild_id).await?;
     let dm = super::dms::open_direct(st, bot, user_id).await?;
     let content = format!(
-        "🎉 Good news! A spot opened up in **{}** (#{channel} in {guild}), so you're off the bench and on the roster as {}. See you there!",
+        "🎉 Good news! A spot opened up in **{}** on {} (#{channel} in {guild}), so you're off the bench and on the roster as {}. See you there!",
         row.title,
+        crate::timetag::tag(row.starts_at, 'F'),
         role_name(role)
     );
     post_bot_message(
@@ -2883,10 +2885,16 @@ async fn send_due_reminders(st: &AppState) -> AppResult<()> {
         .fetch_all(&st.db)
         .await?;
         let minutes = (row.starts_at - Utc::now()).num_minutes().max(0);
+        // A relative time tag keeps counting down in chat ("in 12 minutes",
+        // then "3 minutes ago"), with the clock time in each reader's zone.
         let when = if minutes <= 1 {
             "is starting now".to_string()
         } else {
-            format!("starts in {minutes} minutes")
+            format!(
+                "starts {} ({})",
+                crate::timetag::tag(row.starts_at, 'R'),
+                crate::timetag::tag(row.starts_at, 't')
+            )
         };
         let mentions: Vec<String> = people.iter().map(|id| format!("<@{id}>")).collect();
         let content = if mentions.is_empty() {

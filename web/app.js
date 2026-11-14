@@ -328,7 +328,8 @@ window.addEventListener("resize", () => {
   closeMenus();
   // The soundboard's bottom sheet on phones survives the on-screen keyboard.
   // So does a profile card's (it has a message box).
-  if (!((popover?.classList.contains("sb-pop") || popover?.classList.contains("pc-sheet")) && window.innerWidth <= 760)) closePopover();
+  // And the time picker's (native date and time pickers can resize the page).
+  if (!((popover?.classList.contains("sb-pop") || popover?.classList.contains("pc-sheet") || popover?.classList.contains("tt-sheet")) && window.innerWidth <= 760)) closePopover();
 });
 window.addEventListener("blur", () => closeMenus());
 
@@ -1204,7 +1205,7 @@ function renderMessages() {
     }
     if (m.reply_to) {
       nodes.push(el("div", { class: "reply-ref", onclick: () => jumpTo(m.reply_to.id) },
-        "↱ ", el("strong", {}, m.reply_to.author_display_name), " ", plainMentions(m.reply_to.content).replace(/\*\*(.+?)\*\*/g, "$1") || "(attachment)"));
+        "↱ ", el("strong", {}, m.reply_to.author_display_name), " ", plainTimeTags(plainMentions(m.reply_to.content)).replace(/\*\*(.+?)\*\*/g, "$1") || "(attachment)"));
     }
     nodes.push(article);
     prev = m;
@@ -2415,7 +2416,7 @@ function mentionsMe(m) {
 function desktopNotifyMessage(m, ch) {
   if (!desktop || document.hasFocus() || !mentionsMe(m)) return;
   const where = ch ? ` in #${ch.name}` : "";
-  const text = plainMentions(m.content).trim() || (m.attachments?.length ? "Sent an attachment" : "");
+  const text = plainTimeTags(plainMentions(m.content)).trim() || (m.attachments?.length ? "Sent an attachment" : "");
   desktopInvoke("notify", { title: `${m.author_display_name}${where}`, body: text.slice(0, 200) });
 }
 

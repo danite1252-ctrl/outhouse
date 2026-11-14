@@ -130,7 +130,7 @@ function paintThreadArchive() {
 
 async function startThread(m) {
   if (m.thread) return openThread(m.thread);
-  const suggested = plainMentions(m.content).replace(/https?:\/\/\S+/g, "").replace(/\s+/g, " ").trim().slice(0, 40) || (m.poll ? m.poll.question.slice(0, 40) : "");
+  const suggested = plainTimeTags(plainMentions(m.content)).replace(/https?:\/\/\S+/g, "").replace(/\s+/g, " ").trim().slice(0, 40) || (m.poll ? m.poll.question.slice(0, 40) : "");
   const picked = await askThreadName("Start a thread", {
     value: suggested,
     placeholder: "What's it about?",
@@ -232,7 +232,7 @@ function threadMessage(m, prev) {
         el("span", { class: "msg-author", style: colour ? `color:${colour}` : "", onclick: (e) => openProfile(m.author_id, e.currentTarget) }, authorName(m)),
         m.author_bot ? el("span", { class: "bot-tag" }, "BOT") : null,
         el("time", { class: "msg-time", datetime: m.created_at, title: new Date(m.created_at).toLocaleString() }, timeLabel(m.created_at))),
-      m.reply_to ? el("div", { class: "tmsg-reply" }, "↱ ", el("strong", {}, m.reply_to.author_display_name), " ", plainMentions(m.reply_to.content) || "(attachment)") : null,
+      m.reply_to ? el("div", { class: "tmsg-reply" }, "↱ ", el("strong", {}, m.reply_to.author_display_name), " ", plainTimeTags(plainMentions(m.reply_to.content)) || "(attachment)") : null,
       hidden ? filteredCover(m) : null,
       m.content && !imageOnly && !hidden ? el("p", { class: "msg-text" }, renderText(m.content), m.edited_at ? el("span", { class: "edited", title: new Date(m.edited_at).toLocaleString() }, "(edited)") : null) : null,
       hidden ? null : renderAttachments(m),

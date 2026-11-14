@@ -243,7 +243,7 @@ async function openForwardDialog(m) {
   const preview = el("div", { class: "fwd-preview" },
     el("div", { class: "fwd-preview-head" }, avatarFor(m.author_id, authorName(m), 20, m.author_avatar_url || undefined), el("strong", {}, authorName(m))),
     el("div", { class: "fwd-preview-text" },
-      m.forward ? `↪ ${plainMentions(m.forward.content || "")}` : plainMentions(m.content || ""),
+      m.forward ? `↪ ${plainTimeTags(plainMentions(m.forward.content || ""))}` : plainTimeTags(plainMentions(m.content || "")),
       m.sticker || m.forward?.sticker ? " 🏷 Sticker" : "",
       hasFiles ? ` 📎 ${m.attachments.length} attachment${m.attachments.length === 1 ? "" : "s"}` : ""));
   let targets = [];

@@ -415,7 +415,7 @@ handleEvent = function (ev) {
         if (state.home) syncDmChannels();
         if (desktop && d.author_id !== state.me?.id && !document.hasFocus() && !mentionsMe(d)
             && (typeof notifyAllowsDm !== "function" || notifyAllowsDm(d))) {
-          const text = plainMentions(d.content).trim() || (d.attachments?.length ? "Sent an attachment" : d.poll ? `📊 ${d.poll.question}` : "");
+          const text = plainTimeTags(plainMentions(d.content)).trim() || (d.attachments?.length ? "Sent an attachment" : d.poll ? `📊 ${d.poll.question}` : "");
           desktopInvoke("notify", { title: dm.kind === DM ? d.author_display_name : `${d.author_display_name} in ${dmName(dm)}`, body: text.slice(0, 200) });
         }
       } else if (!dm && !state.channels.some((c) => c.id === d.channel_id) && !state.unread.has(d.channel_id)) {

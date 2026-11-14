@@ -125,7 +125,7 @@ desktopNotifyMessage = function (m, ch) {
   const level = notifyLevel(ch.guild_id);
   if (level === "nothing") return;
   if (level === "all" && !mentionsMe(m)) {
-    const text = plainMentions(m.content).trim() || (m.attachments?.length ? "Sent an attachment" : "");
+    const text = plainTimeTags(plainMentions(m.content)).trim() || (m.attachments?.length ? "Sent an attachment" : "");
     desktopInvoke("notify", { title: `${m.author_display_name} in #${ch.name}`, body: text.slice(0, 200) });
     return;
   }

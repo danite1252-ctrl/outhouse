@@ -140,6 +140,8 @@ jobs:
           node --check web/guild-info.js
           node --check web/role-preview.js
           node --check web/outhouses.js
+          node --check web/timetags.js
+          node ci/timetags_check.mjs
           node --check web/bots/dice-bot.mjs
       - name: Deploy scripts check (bash -n + shellcheck)
         run: |
@@ -262,6 +264,7 @@ jobs:
           python ci/landing_test.py
           python ci/invite_test.py
           python ci/ui_test.py
+          python ci/timetag_test.py
           python ci/auth_ui_test.py
           python ci/csp_test.py
       - name: Screenshots (base64, for review)

@@ -664,7 +664,7 @@ pub async fn action(
                     format!(
                         "**{}** has been shut down by the server owner. Its channels can't be used any more, and it will be removed from your list on {}. You can leave it before then.",
                         r.name,
-                        day_label(remove_at)
+                        crate::timetag::tag(remove_at, 'D')
                     ),
                 )
                 .await

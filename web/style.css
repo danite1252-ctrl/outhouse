@@ -2986,3 +2986,37 @@ dialog.settings .settings-nav button.so-tab.active { box-shadow: inset 3px 0 0 v
 .sidebar-head.has-banner > * { position: relative; }
 .sidebar-head.has-banner #guild-name { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9); color: #fff; }
 .sidebar-head.has-banner .icon-btn { color: #fff; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.8)); }
+
+/* Time tags (<t:…>): a subtle chip in the reader's own time zone. */
+.timetag { display: inline; padding: 0 4px; border-radius: 4px; background: #ffffff12; border-bottom: 1px dotted #ffb34799; color: var(--text); font-variant-numeric: tabular-nums; cursor: help; white-space: nowrap; outline: none; }
+.timetag:hover, .timetag:focus-visible { background: #ff6b3526; border-bottom-color: var(--glow); }
+.timetag:focus-visible { box-shadow: 0 0 0 2px #ff6b3566; }
+.tt-tip { position: fixed; z-index: 80; max-width: min(320px, calc(100vw - 16px)); padding: 8px 10px; border-radius: 10px; background: #18181b; border: 1px solid color-mix(in srgb, var(--ember) 40%, var(--line)); box-shadow: 0 10px 28px #000a; font-size: 13px; line-height: 1.4; pointer-events: none; }
+.tt-tip-local { font-weight: 600; }
+.tt-tip-zone, .tt-tip-utc, .tt-tip-rel { color: var(--muted); font-size: 12px; }
+.tt-tip-rel { color: var(--glow); }
+
+/* The composer's time picker. */
+.popover.tt-pop { width: min(340px, calc(100vw - 16px)); padding: 14px; }
+.tt-form { display: flex; flex-direction: column; gap: 10px; }
+.tt-grab { display: none; }
+.tt-head { display: flex; flex-direction: column; gap: 2px; }
+.tt-head strong { font: 700 15px/1.2 Montserrat, sans-serif; }
+.tt-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.tt-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; color: var(--muted); min-width: 0; }
+.tt-form input, .tt-form select { height: 38px; width: 100%; min-width: 0; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--night); color: var(--text); font: inherit; font-size: 14px; outline: none; color-scheme: dark; }
+.tt-form input:focus, .tt-form select:focus { border-color: var(--ember); }
+.tt-show { display: flex; flex-direction: column; gap: 6px; padding: 10px; border-radius: 8px; background: var(--panel); border: 1px dashed var(--line); }
+.tt-preview { font-size: 15px; min-height: 1.4em; }
+.tt-raw { font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--muted); word-break: break-all; }
+.tt-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.tt-actions .primary { height: 36px; padding: 0 18px; }
+.tt-actions .primary:disabled { opacity: .5; cursor: default; }
+@media (max-width: 760px) {
+  .popover.tt-pop.tt-sheet { left: 0 !important; right: 0; top: auto !important; bottom: 0; width: 100%; max-width: 100%; border-radius: 16px 16px 0 0; border-bottom: 0; padding: 10px 16px calc(16px + var(--safe-bottom, 0px)); animation: pc-sheet-in .18s ease-out; }
+  .tt-sheet .tt-grab { display: block; align-self: center; width: 40px; height: 4px; border-radius: 2px; background: #ffffff40; }
+  .tt-sheet input, .tt-sheet select { height: 44px; font-size: 16px; }
+  .tt-sheet .tt-actions > * { flex: 1; height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) { .popover.tt-pop.tt-sheet { animation: none; } }
+.tt-hint { margin: 0; font-size: 11px; }
