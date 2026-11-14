@@ -3020,3 +3020,12 @@ dialog.settings .settings-nav button.so-tab.active { box-shadow: inset 3px 0 0 v
 }
 @media (prefers-reduced-motion: reduce) { .popover.tt-pop.tt-sheet { animation: none; } }
 .tt-hint { margin: 0; font-size: 11px; }
+
+/* Phones: the ＋ button's menu holds these, so the message box keeps its room. */
+@media (max-width: 520px) {
+  #composer #time-btn,
+  #composer #raid-btn,
+  #composer #gif-btn { display: none; }
+  /* Shown even where uploads aren't allowed: its menu has the other tools. */
+  #composer #attach-btn[hidden] { display: inline-flex; }
+}

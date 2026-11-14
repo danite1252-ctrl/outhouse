@@ -330,6 +330,36 @@ if (typeof document !== "undefined" && typeof renderText === "function") {
     emoji.before(b);
   })();
 
+  // On phones the composer row is too narrow for every tool button: there,
+  // the ＋ button opens a small menu (Upload files, Insert a time, Plan a
+  // raid, GIFs) and those buttons are hidden from the row (CSS).
+  (function phoneComposerMenu() {
+    const plus = document.getElementById("attach-btn");
+    if (!plus || typeof openMenu !== "function") return;
+    const narrow = matchMedia("(max-width: 520px)");
+    plus.addEventListener("click", (e) => {
+      if (!narrow.matches) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const ta = document.getElementById("composer-input");
+      const btn = (id) => {
+        const b = document.getElementById(id);
+        return b && !b.hidden ? b : null;
+      };
+      const r = plus.getBoundingClientRect();
+      const raid = btn("raid-btn");
+      const gif = btn("gif-btn");
+      const time = btn("time-btn");
+      openMenu(r.left, r.top - 8, [
+        typeof can === "function" && can("attach_files", state.channelId)
+          ? { label: "Upload files", onClick: () => document.getElementById("file-input")?.click() } : null,
+        time ? { label: "Insert a time", onClick: () => { if (ta && !ta.disabled) openTimeTagPicker(plus, ta); } } : null,
+        raid ? { label: "Plan a raid", onClick: () => raid.click() } : null,
+        gif ? { label: "GIFs", onClick: () => gif.click() } : null,
+      ]);
+    }, true);
+  })();
+
   // The thread composer.
   if (typeof threadComposer === "function") {
     const baseThreadComposer = threadComposer;

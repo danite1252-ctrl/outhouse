@@ -268,7 +268,10 @@ with sync_playwright() as p:
     shot(ph, "30-timetags-phone-tip")
     pchip.tap()
     ph.wait_for_selector(".tt-tip", state="detached", timeout=5000)
-    ph.locator("#time-btn").tap()
+    # On phones the clock lives in the ＋ menu so the message box keeps its room.
+    assert not ph.locator("#time-btn").is_visible()
+    ph.locator("#attach-btn").tap()
+    ph.locator(".menu [role=menuitem]:has-text('Insert a time')").tap()
     ph.wait_for_selector(".popover.tt-pop.tt-sheet", timeout=5000)
     ph.wait_for_timeout(400)  # the sheet slides up
     box = ph.locator(".popover.tt-pop").bounding_box()
