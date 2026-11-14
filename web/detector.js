@@ -288,6 +288,21 @@ function dtSelect(value, options, title, desc, save) {
   return el("div", { class: "sc-toggle-row" }, el("div", {}, el("div", { class: "sc-toggle-title" }, title), el("div", { class: "muted small" }, desc)), sel);
 }
 
+// Workers: busy / total (the detector's own count when it's up), and a
+// note when the server and the detector disagree on DETECTOR_WORKERS.
+function dtWorkersItem(h, item) {
+  const w = h.workers;
+  if (!w || !h.configured) return null;
+  const total = w.total ?? w.server;
+  const busy = w.busy ?? w.scanning ?? 0;
+  let text = `${busy} busy of ${total}`;
+  if (w.memory_mb?.per_worker != null) text += ` · about ${Math.round(w.memory_mb.per_worker)} MB each`;
+  if (w.waiting) text += ` · ${w.waiting} waiting for a worker`;
+  const mismatch = w.total != null && w.total !== w.server;
+  if (mismatch) text += ` (the server is set to ${w.server}: set DETECTOR_WORKERS the same for both)`;
+  return item("Detector workers", text, mismatch ? "warn" : "");
+}
+
 function dtHealthGrid(h) {
   const item = (label, value, cls = "") => el("div", { class: `status-item ${cls}` }, el("div", { class: "status-label" }, label), el("div", { class: "status-value" }, value));
   const now = !h.configured ? ["Not set up (DETECTOR_URL isn't set)", "warn"]
@@ -298,7 +313,10 @@ function dtHealthGrid(h) {
     item("Models", h.models ? [h.models.nudity, h.models.faces, h.models.age].filter(Boolean).join(" · ") : (h.model || "unknown")),
     item("Waiting to be checked", String(h.queue ?? 0), h.queue > 20 ? "warn" : ""),
     item("Held now", String(h.held ?? 0)),
+    dtWorkersItem(h, item),
+    h.avg_scan_ms != null ? item("Average scan", `${h.avg_scan_ms} ms (last ${h.avg_scan_count} scan${h.avg_scan_count === 1 ? "" : "s"})`) : null,
     h.last_scan_ms != null ? item("Last scan took", `${h.last_scan_ms} ms`) : null,
+    h.backlog_hint ? item("Busy", "More than 50 pictures have been waiting for over 10 minutes: consider more detector workers (DETECTOR_WORKERS, see deploy/README.md → Image detector). Chat isn't slowed down by it.", "warn") : null,
     h.timeouts ? item("Ran out of time", `${h.timeouts} since the server started (each is tried 3 times)`) : null,
     h.threshold_override != null ? item("Test threshold", `DETECTOR_THRESHOLD=${h.threshold_override} is set: remove it from .env when you're done`, "bad") : null,
     h.escalation_age_override != null ? item("Test age rule", `DETECTOR_ESCALATION_AGE=${h.escalation_age_override} is set: remove it from .env when you're done`, "bad") : null,

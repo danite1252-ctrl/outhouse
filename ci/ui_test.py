@@ -4246,6 +4246,7 @@ with sync_playwright() as p:
     op.keyboard.press("Escape")
     op.evaluate("openSettings('status')")
     op.wait_for_selector("dialog.settings .dt-status .dt-health", timeout=10000)
+    op.wait_for_selector("dialog.settings .dt-status .status-label:text-is('Detector workers')", timeout=10000)
     op.evaluate("document.querySelector('dialog.settings .dt-status').scrollIntoView({block: 'center'})")
     op.wait_for_timeout(300)
     op.screenshot(path=f"{SHOTS}/3611-detector-server-status.png")

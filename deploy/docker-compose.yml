@@ -113,6 +113,8 @@ services:
       # nearly any picture as explicit, e.g. 99 and 0.001.
       DETECTOR_ESCALATION_AGE: ${DETECTOR_ESCALATION_AGE:-}
       DETECTOR_ESCALATION_SCORE: ${DETECTOR_ESCALATION_SCORE:-}
+      # Pictures checked at once (1-8); the detector below gets the same.
+      DETECTOR_WORKERS: ${DETECTOR_WORKERS:-1}
     networks:
       - default
       - detector
@@ -127,17 +129,21 @@ services:
 
   # The image detector: a small nudity model (NudeNet 320n) plus a face
   # detector and age estimator (YuNet + a FairFace age model), on
-  # onnxruntime, CPU only, that the server asks about uploaded pictures, one
-  # at a time.
+  # onnxruntime, CPU only, that the server asks about uploaded pictures,
+  # DETECTOR_WORKERS at a time (default 1; about one CPU core and 300 MB
+  # each, see README "Image detector").
   # Pictures never leave this machine: it's on an internal network with no
-  # way out and no published port. Capped at 1 CPU and 1 GB so chat always
-  # comes first; if it's down, uploads still work and pictures wait.
+  # way out and no published port. Capped (DETECTOR_CPUS, default 1 CPU;
+  # DETECTOR_MEMORY, default 1 GB) so chat always comes first; if it's down,
+  # uploads still work and pictures wait.
   detector:
     build: ./detector
     image: outhouse-detector:local
     restart: unless-stopped
-    cpus: "1.0"
-    mem_limit: 1g
+    cpus: ${DETECTOR_CPUS:-1.0}
+    mem_limit: ${DETECTOR_MEMORY:-1g}
+    environment:
+      DETECTOR_WORKERS: ${DETECTOR_WORKERS:-1}
     networks:
       - detector
     read_only: true

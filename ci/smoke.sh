@@ -4364,6 +4364,37 @@ tok "$TOKEN_A" call GET "/api/guilds/$DG/server-status" | jq -e '.detector.onlin
 # Leave it as the UI test expects: on, medium, hold for approval.
 tok "$TOKEN_A" call PUT /api/safety/detector '{"enabled":true,"sensitivity":"medium","action":"hold","hold_teens":true}' >/dev/null
 
+step "detector: several workers (DETECTOR_WORKERS=2) -> a burst of 10 uploads is scanned exactly once each"
+if [ "${DETECTOR_WORKERS:-1}" -ge 2 ]; then
+  tok "$TOKEN_A" call GET "/api/guilds/$DG/server-status" | jq -e --argjson n "$DETECTOR_WORKERS" '.detector.workers.server == $n and .detector.workers.total == $n
+    and .detector.workers.busy >= 0 and (.detector.workers.memory_mb.per_worker > 0) and (.detector.backlog_hint | not)' >/dev/null
+fi
+BPIDS=""
+for i in $(seq 0 9); do
+  curl -sS -o "/tmp/burst-$i.json" -H "Authorization: Bearer $TOKEN_B" -F "content=burst $i" -F "files=@$DT/burst-$i.png;type=image/png" \
+    "$BASE/api/channels/$DCH/messages/upload" & BPIDS="$BPIDS $!"
+done
+# shellcheck disable=SC2086
+wait $BPIDS
+BKEYS=""
+for i in $(seq 0 9); do BKEYS="$BKEYS'$(dtkey "$(jq -r .id "/tmp/burst-$i.json")")',"; done
+BKEYS="${BKEYS%,}"
+for _ in $(seq 1 120); do
+  [ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM file_scans WHERE storage_key IN ($BKEYS) AND status IN ('clean', 'flagged') AND claimed_at IS NULL")" = 10 ] && break; sleep 0.25
+done
+# Each scanned once (attempts = 1), nothing left claimed, 8 clean + 2 flagged and held.
+psql "$DATABASE_URL" -tAc "SELECT count(*) FILTER (WHERE status = 'clean' AND hold = 'none') || ',' || count(*) FILTER (WHERE status = 'flagged' AND hold = 'held')
+  || ',' || count(*) FILTER (WHERE attempts = 1 AND claimed_at IS NULL) FROM file_scans WHERE storage_key IN ($BKEYS)" | grep -qx "8,2,10" \
+  || { psql "$DATABASE_URL" -c "SELECT storage_key, status, hold, attempts, claimed_at FROM file_scans WHERE storage_key IN ($BKEYS)"; tail -20 "$LOG"; exit 1; }
+# Exactly one detector report per flagged picture (no duplicates; a claim is
+# only released once its scan, hold and report are all done).
+psql "$DATABASE_URL" -tAc "SELECT count(*) || ',' || count(DISTINCT r.target_id) FROM reports r JOIN file_scans f ON f.id = r.target_id
+  WHERE r.target_kind = 'file' AND f.storage_key IN ($BKEYS)" | grep -qx "2,2"
+tok "$TOKEN_A" call GET "/api/guilds/$DG/server-status" | jq -e '.detector.avg_scan_ms >= 0 and .detector.avg_scan_count >= 10 and .detector.workers.busy == 0' >/dev/null
+for r in $(psql "$DATABASE_URL" -tAc "SELECT r.id FROM reports r JOIN file_scans f ON f.id = r.target_id WHERE r.target_kind = 'file' AND r.status <> 'closed' AND f.storage_key IN ($BKEYS)"); do
+  act "$r" '{"action":"remove_file"}' >/dev/null
+done
+
 # ---------------------------------------------------------------------------
 # The age check (feat-age): faces and age estimates from the same sidecar.
 # Test-mode markers simulate them: young-flag (0.97 + a face ~8), young (a

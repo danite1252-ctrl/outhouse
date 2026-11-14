@@ -33,7 +33,7 @@
 //! hidden and the owner alerted, exactly like a child-safety report someone
 //! made. A young face without nudity does nothing. See [`AgeRule`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -257,6 +257,63 @@ struct Health {
     last_ms: Option<i64>,
     /// Scans that ran out of time since the server started.
     timeouts: u64,
+    /// How long the last RECENT_SCANS scans took (the sidecar's ms).
+    recent_ms: VecDeque<i64>,
+    /// Pictures being scanned right now (by this server's workers).
+    busy: usize,
+    /// Since when the queue has been above BACKLOG_QUEUE (sampled).
+    backlog_since: Option<DateTime<Utc>>,
+}
+
+/// The average scan time on Server status covers this many scans.
+const RECENT_SCANS: usize = 100;
+/// A queue longer than this for BACKLOG_MINUTES suggests more workers.
+const BACKLOG_QUEUE: i64 = 50;
+const BACKLOG_MINUTES: i64 = 10;
+
+impl Health {
+    fn record_ms(&mut self, ms: Option<i64>) {
+        self.last_ms = ms;
+        if let Some(ms) = ms {
+            if self.recent_ms.len() >= RECENT_SCANS {
+                self.recent_ms.pop_front();
+            }
+            self.recent_ms.push_back(ms.max(0));
+        }
+    }
+
+    fn avg_ms(&self) -> Option<i64> {
+        let n = self.recent_ms.len() as i64;
+        (n > 0).then(|| self.recent_ms.iter().sum::<i64>() / n)
+    }
+}
+
+/// The queue was sampled at `now` with `queue` pictures waiting: since when
+/// it has been long (None: it isn't).
+fn backlog_since(
+    prev: Option<DateTime<Utc>>,
+    queue: i64,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    (queue > BACKLOG_QUEUE).then(|| prev.unwrap_or(now))
+}
+
+/// Long for BACKLOG_MINUTES or more: worth suggesting more workers.
+fn backlog_hint(since: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+    since.is_some_and(|s| now - s >= chrono::Duration::minutes(BACKLOG_MINUTES))
+}
+
+/// DETECTOR_WORKERS: how many pictures are scanned at once (1-8, default 1).
+/// Set the same on the detector container (it starts that many model
+/// processes); see deploy/README.md.
+pub fn workers() -> usize {
+    parse_workers(std::env::var("DETECTOR_WORKERS").ok().as_deref())
+}
+
+fn parse_workers(v: Option<&str>) -> usize {
+    v.and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, 8)
 }
 
 static HEALTH: Mutex<Option<Health>> = Mutex::new(None);
@@ -803,10 +860,53 @@ struct ScanRow {
     hold: String,
     attempts: i32,
     age_cleared_at: Option<DateTime<Utc>>,
+    /// The claim on this row while a worker scans it (also its token).
+    claimed_at: Option<DateTime<Utc>>,
 }
 
 const SCAN_COLUMNS: &str = "id, storage_key, kind, uploader_id, guild_id, message_id, teen,
-    adult_only, review, apply_hold, hold, attempts, age_cleared_at";
+    adult_only, review, apply_hold, hold, attempts, age_cleared_at, claimed_at";
+
+/// A claimed row is someone else's for this long; if the server dies
+/// mid-scan the claim simply runs out (longer than any one scan can take:
+/// the HTTP client gives up after 150 s).
+const CLAIM_LEASE_SECS: i32 = 300;
+
+/// Claims the next picture to scan, atomically: two workers never get the
+/// same row (a row another worker is claiming right now is skipped, and a
+/// claimed one is left alone until its lease runs out). Report scans
+/// (apply_hold = false) first, then oldest first.
+fn claim_sql() -> String {
+    format!(
+        "UPDATE file_scans SET claimed_at = clock_timestamp()
+         WHERE id = (
+             SELECT id FROM file_scans
+             WHERE status = 'pending' AND next_attempt_at <= now()
+               AND (claimed_at IS NULL OR claimed_at < now() - make_interval(secs => {CLAIM_LEASE_SECS}))
+             ORDER BY apply_hold, next_attempt_at, id
+             LIMIT 1
+             FOR UPDATE SKIP LOCKED)
+         RETURNING {SCAN_COLUMNS}"
+    )
+}
+
+async fn claim_next(db: &PgPool) -> sqlx::Result<Option<ScanRow>> {
+    sqlx::query_as::<_, ScanRow>(&claim_sql())
+        .fetch_optional(db)
+        .await
+}
+
+/// Done with a claimed row (whatever happened to it). Only our own claim is
+/// cleared: if the row was queued again and claimed by another worker
+/// meanwhile, that claim stays.
+async fn release_claim(db: &PgPool, row: &ScanRow) {
+    let _ =
+        sqlx::query("UPDATE file_scans SET claimed_at = NULL WHERE id = $1 AND claimed_at = $2")
+            .bind(row.id)
+            .bind(row.claimed_at)
+            .execute(db)
+            .await;
+}
 
 #[derive(Deserialize)]
 struct ScanReply {
@@ -841,8 +941,10 @@ enum Outcome {
 /// marked as couldn't-be-checked.
 const SLOW_TRIES: i32 = 3;
 
-/// Starts the background scanner (one picture at a time). Pictures still
-/// waiting from before a restart are picked up again.
+/// Starts the background scanners: DETECTOR_WORKERS of them, each scanning
+/// one picture at a time (the detector container runs as many model
+/// processes). Pictures still waiting from before a restart are picked up
+/// again.
 pub fn spawn_worker(st: AppState) {
     tokio::spawn(async move {
         if service_url().is_none() {
@@ -869,33 +971,59 @@ pub fn spawn_worker(st: AppState) {
         )
         .execute(&st.db)
         .await;
-        loop {
-            let next = sqlx::query_as::<_, ScanRow>(&format!(
-                "SELECT {SCAN_COLUMNS} FROM file_scans
-                 WHERE status = 'pending' AND next_attempt_at <= now()
-                 ORDER BY apply_hold, next_attempt_at, id LIMIT 1"
-            ))
-            .fetch_optional(&st.db)
+        // One server: claims left by the last run (it stopped mid-scan) are
+        // stale, so they're picked up straight away rather than after the lease.
+        let _ = sqlx::query("UPDATE file_scans SET claimed_at = NULL WHERE claimed_at IS NOT NULL")
+            .execute(&st.db)
             .await;
-            match next {
-                Ok(Some(row)) => {
-                    let offline = process(&st, &client, row).await;
-                    if offline {
-                        // Don't hammer a sidecar that's down.
-                        tokio::time::sleep(Duration::from_secs(3)).await;
-                    }
-                }
-                Ok(None) => {
-                    let notify = WAKE.get_or_init(Notify::new);
-                    let _ = tokio::time::timeout(Duration::from_secs(20), notify.notified()).await;
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "image detector: couldn't read the queue");
-                    tokio::time::sleep(Duration::from_secs(10)).await;
-                }
-            }
+        let n = workers();
+        tracing::info!(
+            workers = n,
+            "image detector: scanning up to {n} picture(s) at a time"
+        );
+        for _ in 0..n {
+            tokio::spawn(scan_loop(st.clone(), client.clone()));
+        }
+        // Keep an eye on the queue's length for Server status's hint.
+        loop {
+            let queue: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM file_scans WHERE status = 'pending'")
+                    .fetch_one(&st.db)
+                    .await
+                    .unwrap_or(0);
+            let now = Utc::now();
+            health_update(|h| h.backlog_since = backlog_since(h.backlog_since, queue, now));
+            tokio::time::sleep(Duration::from_secs(30)).await;
         }
     });
+}
+
+/// One worker: claim a picture, scan it, repeat; sleep when there's nothing.
+async fn scan_loop(st: AppState, client: reqwest::Client) {
+    loop {
+        match claim_next(&st.db).await {
+            Ok(Some(row)) => {
+                // There may be more: let a sleeping worker look too.
+                wake();
+                health_update(|h| h.busy += 1);
+                let offline = process(&st, &client, row.clone()).await;
+                health_update(|h| h.busy = h.busy.saturating_sub(1));
+                release_claim(&st.db, &row).await;
+                if offline {
+                    // Don't hammer a sidecar that's down.
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                }
+            }
+            Ok(None) => {
+                let notify = WAKE.get_or_init(Notify::new);
+                let _ = tokio::time::timeout(Duration::from_secs(20), notify.notified()).await;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "image detector: couldn't read the queue");
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
+        }
+    }
 }
 
 async fn release_all_pending(st: &AppState) {
@@ -994,7 +1122,7 @@ async fn process(st: &AppState, client: &reqwest::Client, row: ScanRow) -> bool 
                 h.last_ok_at = Some(Utc::now());
                 h.model = reply.model.clone().or(h.model.take());
                 h.scans += 1;
-                h.last_ms = reply.ms;
+                h.record_ms(reply.ms);
             });
             let limit = threshold(&settings.sensitivity);
             let status = if reply.score >= limit {
@@ -1802,7 +1930,7 @@ pub async fn health(st: &AppState) -> Value {
         "configured": url.is_some(),
         "enabled": site.enabled,
         "online": live.is_some(),
-        "model": live.as_ref().and_then(|v| v["model"].as_str().map(String::from)).or(h.model),
+        "model": live.as_ref().and_then(|v| v["model"].as_str().map(String::from)).or(h.model.clone()),
         "test_mode": live.as_ref().and_then(|v| v["test_mode"].as_bool()).unwrap_or(false),
         // Every model the sidecar runs (nudity, faces, age).
         "models": live.as_ref().map(|v| v["models"].clone()).filter(|m| m.is_object()),
@@ -1811,6 +1939,23 @@ pub async fn health(st: &AppState) -> Value {
         "held": held,
         "scans_since_start": h.scans,
         "last_scan_ms": h.last_ms,
+        // The average over the last RECENT_SCANS scans (since the server started).
+        "avg_scan_ms": h.avg_ms(),
+        "avg_scan_count": h.recent_ms.len(),
+        // DETECTOR_WORKERS here, and what the detector itself runs.
+        "workers": {
+            "server": workers(),
+            "total": live.as_ref().and_then(|v| v["workers"]["total"].as_u64()),
+            "busy": live.as_ref().and_then(|v| v["workers"]["busy"].as_u64()),
+            "waiting": live.as_ref().and_then(|v| v["workers"]["waiting"].as_u64()),
+            "scanning": h.busy,
+            "memory_mb": live.as_ref().map(|v| v["workers"]["memory_mb"].clone()).filter(|m| m.is_object()),
+            "cpu_limit": live.as_ref().and_then(|v| v["cpu_limit"].as_f64()),
+        },
+        // The queue has stayed long (above BACKLOG_QUEUE for BACKLOG_MINUTES)
+        // while the detector is up: more workers would help.
+        "backlog_since": h.backlog_since,
+        "backlog_hint": live.is_some() && backlog_hint(h.backlog_since, Utc::now()),
         "timeouts": h.timeouts,
         "last_ok_at": h.last_ok_at,
         "last_error": if h.offline || live.is_none() { h.last_error } else { None },
@@ -2292,5 +2437,154 @@ mod tests {
         );
         assert_eq!(age_line(Some(0.5), None, None), None);
         assert!(scannable("image/webp") && !scannable("image/svg+xml") && !scannable("video/mp4"));
+    }
+
+    #[test]
+    fn workers_setting() {
+        assert_eq!(parse_workers(None), 1);
+        assert_eq!(parse_workers(Some("")), 1);
+        assert_eq!(parse_workers(Some("nope")), 1);
+        assert_eq!(parse_workers(Some("0")), 1);
+        assert_eq!(parse_workers(Some(" 3 ")), 3);
+        assert_eq!(parse_workers(Some("8")), 8);
+        assert_eq!(parse_workers(Some("64")), 8);
+        assert_eq!(parse_workers(Some("-2")), 1);
+    }
+
+    #[test]
+    fn average_scan_time_and_backlog_hint() {
+        let mut h = Health::default();
+        assert_eq!(h.avg_ms(), None);
+        h.record_ms(None);
+        assert_eq!(h.avg_ms(), None);
+        for ms in 0..250 {
+            h.record_ms(Some(ms));
+        }
+        // Only the last 100 (150..=249) count.
+        assert_eq!(h.recent_ms.len(), RECENT_SCANS);
+        assert_eq!(h.avg_ms(), Some(199));
+        assert_eq!(h.last_ms, Some(249));
+
+        let t0 = Utc::now();
+        let mins = |m: i64| t0 + chrono::Duration::minutes(m);
+        assert_eq!(backlog_since(None, 50, t0), None);
+        let since = backlog_since(None, 51, t0);
+        assert_eq!(since, Some(t0));
+        // Stays long: the start is kept; dips: forgotten.
+        assert_eq!(backlog_since(since, 400, mins(5)), Some(t0));
+        assert!(!backlog_hint(since, mins(9)));
+        assert!(backlog_hint(since, mins(10)));
+        assert_eq!(backlog_since(since, 3, mins(11)), None);
+        assert!(!backlog_hint(None, mins(30)));
+    }
+
+    /// Several workers claiming from the same queue: each row exactly once,
+    /// report scans first, claims expire, and a worker only clears its own
+    /// claim. Needs Postgres: runs when DETECTOR_CLAIM_TEST_DB is set (CI
+    /// sets it), in a throwaway schema.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn claims_are_exclusive() {
+        let Ok(url) = std::env::var("DETECTOR_CLAIM_TEST_DB") else {
+            eprintln!("DETECTOR_CLAIM_TEST_DB not set: skipping the claim test");
+            return;
+        };
+        let schema = format!("claim_test_{}", std::process::id());
+        let admin = PgPool::connect(&url).await.expect("connect");
+        sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let path = schema.clone();
+        let db = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(10)
+            .after_connect(move |conn, _| {
+                let path = path.clone();
+                Box::pin(async move {
+                    sqlx::query(&format!("SET search_path TO {path}"))
+                        .execute(conn)
+                        .await
+                        .map(|_| ())
+                })
+            })
+            .connect(&url)
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+
+        // 60 waiting pictures; every tenth is a report scan (apply_hold = false).
+        for i in 1..=60i64 {
+            sqlx::query(
+                "INSERT INTO file_scans (id, storage_key, kind, content_type, apply_hold, next_attempt_at)
+                 VALUES ($1, $2, 'attachment', 'image/png', $3, now() - make_interval(secs => $4::INT))",
+            )
+            .bind(i)
+            .bind(format!("k{i}"))
+            .bind(i % 10 != 0)
+            .bind((100 - i) as i32)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        // Report scans come first.
+        let first = claim_next(&db).await.unwrap().unwrap();
+        assert!(!first.apply_hold && first.id == 10);
+        // 8 workers race for the rest.
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let db = db.clone();
+            tasks.push(tokio::spawn(async move {
+                let mut got = Vec::new();
+                while let Some(row) = claim_next(&db).await.unwrap() {
+                    assert!(row.claimed_at.is_some());
+                    got.push(row.id);
+                    tokio::task::yield_now().await;
+                }
+                got
+            }));
+        }
+        let mut all = vec![first.id];
+        for t in tasks {
+            all.extend(t.await.unwrap());
+        }
+        all.sort();
+        assert_eq!(
+            all,
+            (1..=60).collect::<Vec<i64>>(),
+            "every row claimed exactly once"
+        );
+        assert!(claim_next(&db).await.unwrap().is_none());
+
+        // Releasing: only our own claim.
+        let mut stale = first.clone();
+        stale.claimed_at = Some(Utc::now() - chrono::Duration::hours(1));
+        release_claim(&db, &stale).await;
+        assert!(claim_next(&db).await.unwrap().is_none());
+        release_claim(&db, &first).await;
+        let again = claim_next(&db).await.unwrap().unwrap();
+        assert_eq!(again.id, first.id);
+        // Not waiting any more (scanned): never claimed, even unclaimed.
+        sqlx::query("UPDATE file_scans SET status = 'clean', claimed_at = NULL WHERE id = 10")
+            .execute(&db)
+            .await
+            .unwrap();
+        assert!(claim_next(&db).await.unwrap().is_none());
+        // A claim older than the lease (the server died mid-scan) runs out.
+        sqlx::query("UPDATE file_scans SET claimed_at = now() - make_interval(secs => $1 + 5) WHERE id = 42")
+            .bind(CLAIM_LEASE_SECS)
+            .execute(&db)
+            .await
+            .unwrap();
+        assert_eq!(claim_next(&db).await.unwrap().unwrap().id, 42);
+        assert!(claim_next(&db).await.unwrap().is_none());
+
+        db.close().await;
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(&admin)
+            .await
+            .unwrap();
     }
 }

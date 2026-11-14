@@ -95,6 +95,9 @@ jobs:
       - name: Build
         run: cargo build -p outhouse-server
       - name: Unit tests
+        env:
+          # The detector's queue-claim test (several workers, one Postgres) runs in a throwaway schema.
+          DETECTOR_CLAIM_TEST_DB: postgres://outhouse:outhouse@localhost:5432/outhouse
         run: cargo test --workspace
       - name: Desktop app update-state tests (plain Rust, no Tauri needed)
         run: |
@@ -161,7 +164,9 @@ jobs:
       - name: Image detector sidecar (build the image, start it in test mode)
         run: |
           # The same image deploy/docker-compose.yml builds (the model is downloaded and
-          # checked against its SHA-256 while it builds), with the same 1 CPU / 1 GB caps.
+          # checked against its SHA-256 while it builds), with 2 workers (DETECTOR_WORKERS=2,
+          # 2 CPUs / 2 GB like a VPS-2 setup; 1 CPU on a 1-core runner). The smoke test's
+          # server runs 2 scans at once; the UI test's server keeps the default (1).
           for i in 1 2 3; do
             docker build -t outhouse-detector:ci deploy/detector && break
             [ "$i" = 3 ] && exit 1
@@ -169,8 +174,9 @@ jobs:
           done
           docker image ls outhouse-detector:ci --format 'Detector image: {{.Repository}}:{{.Tag}} {{.Size}}'
           docker rm -f outhouse-detector >/dev/null 2>&1 || true
-          docker run -d --name outhouse-detector --network host --cpus 1 --memory 1g \
-            -e DETECTOR_TEST_MODE=1 -e DETECTOR_BIND=127.0.0.1 -e DETECTOR_PORT=8095 -e DETECTOR_TEST_SLOW_SECS=4 \
+          DCPUS=2; [ "$(nproc)" -lt 2 ] && DCPUS=1
+          docker run -d --name outhouse-detector --network host --cpus "$DCPUS" --memory 2g \
+            -e DETECTOR_WORKERS=2 -e DETECTOR_TEST_MODE=1 -e DETECTOR_BIND=127.0.0.1 -e DETECTOR_PORT=8095 -e DETECTOR_TEST_SLOW_SECS=4 \
             outhouse-detector:ci >/dev/null
           for i in $(seq 1 90); do curl -fsS http://127.0.0.1:8095/health >/dev/null 2>&1 && break; sleep 1; done
           curl -fsS http://127.0.0.1:8095/health || { docker logs outhouse-detector; exit 1; }
@@ -180,6 +186,7 @@ jobs:
         env:
           DATABASE_URL: postgres://outhouse:outhouse@localhost:5432/outhouse
           DETECTOR_URL: http://127.0.0.1:8095
+          DETECTOR_WORKERS: "2"
           BIND_ADDR: 127.0.0.1:8080
           WEB_DIR: web
           UPLOAD_DIR: /tmp/outhouse-uploads

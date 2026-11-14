@@ -9,7 +9,8 @@ this answers with a score, labels and age estimates (numbers only), and
 keeps nothing (no files, no face crops, no embeddings, no logs of the
 picture). It listens on the compose network only.
 
-  GET  /health  -> {"ok": true, "model": "...", "models": {...}, "test_mode": false}
+  GET  /health  -> {"ok": true, "model": "...", "models": {...}, "test_mode": false,
+                    "workers": {"total", "busy", "alive", "waiting", "memory_mb": {...}}}
   POST /scan    (body: the picture's bytes)
                 -> 200 {"score": 0.0-1.0, "labels": [{"label", "score"}],
                         "faces": n, "min_age": years or null,
@@ -22,9 +23,12 @@ Age estimates are a preliminary automated estimate (an age group's
 probabilities turned into a number of years), not evidence: the server only
 uses them to escalate explicit pictures with a face estimated clearly young.
 
-One picture at a time: inference runs in a child process (low priority, one
-thread). A scan that runs over the time limit kills that process and a new
-one starts, so a bad file can't wedge the service.
+DETECTOR_WORKERS (1-8, default 1) pictures at a time: inference runs in that
+many child processes (low priority, one thread each, so about one CPU core
+each), and a scan goes to whichever is free (or waits for one). A scan that
+runs over the time limit kills its process and a new one starts, so a bad
+file can't wedge the service. /health also reports the workers (total, busy,
+waiting) and their memory.
 
 DETECTOR_TEST_MODE=1 (CI only): a PNG with a tEXt chunk
 "OuthouseDetectorTest" = "flag" scores 0.97, "slow" waits a few seconds
@@ -38,6 +42,7 @@ import io
 import json
 import multiprocessing as mp
 import os
+import queue
 import struct
 import sys
 import threading
@@ -60,6 +65,39 @@ BIND = os.environ.get("DETECTOR_BIND", "0.0.0.0")
 TEST_MODE = os.environ.get("DETECTOR_TEST_MODE", "") == "1"
 MAX_BYTES = int(os.environ.get("DETECTOR_MAX_BYTES", str(32 * 1024 * 1024)))
 SCAN_TIMEOUT = float(os.environ.get("DETECTOR_SCAN_TIMEOUT", "60"))
+
+
+def _workers():
+    """DETECTOR_WORKERS: how many pictures are checked at once (1-8; each
+    worker is a process with its own copy of the models and one thread, so
+    about one CPU core each)."""
+    try:
+        n = int(os.environ.get("DETECTOR_WORKERS", "1") or "1")
+    except ValueError:
+        n = 1
+    return max(1, min(8, n))
+
+
+WORKERS = _workers()
+
+
+def _cpu_limit():
+    """The container's CPU cap (cgroup v2 cpu.max, e.g. "100000 100000" =
+    1.0, or cgroup v1's CFS quota), or None when there isn't one."""
+    try:
+        with open("/sys/fs/cgroup/cpu.max") as f:
+            quota, period = f.read().split()[:2]
+        return None if quota == "max" else round(int(quota) / int(period), 2)
+    except (OSError, ValueError):
+        pass
+    try:
+        with open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us") as f:
+            quota = int(f.read())
+        with open("/sys/fs/cgroup/cpu/cpu.cfs_period_us") as f:
+            period = int(f.read())
+        return None if quota <= 0 else round(quota / period, 2)
+    except (OSError, ValueError):
+        return None
 MAX_PIXELS = 50_000_000
 SIZE = 320
 
@@ -328,6 +366,18 @@ def _worker(conn):
             conn.send({"error": f"couldn't read the picture ({type(e).__name__})"})
 
 
+def _rss_mb(pid):
+    """A process's resident memory in MB (Linux), or None."""
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return round(int(line.split()[1]) / 1024, 1)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 class Scanner:
     """One child process, one picture at a time, killed on a timeout."""
 
@@ -355,15 +405,97 @@ class Scanner:
             pass
         self._start()
 
+    def alive(self):
+        return self.proc is not None and self.proc.is_alive()
+
+    def rss_mb(self):
+        return _rss_mb(self.proc.pid) if self.alive() else None
+
     def scan(self, data, age_min=0.0):
         with self.lock:
             if not self.proc.is_alive():
                 self._restart()
             self.conn.send((data, age_min))
             if not self.conn.poll(SCAN_TIMEOUT):
+                # Stuck (or a bomb): kill this worker only and start a fresh one.
                 self._restart()
                 return {"timeout": True}
             return self.conn.recv()
+
+
+class Pool:
+    """DETECTOR_WORKERS scanners (each its own process with its own copy of
+    the models, one thread each, so N workers use up to N cores). A scan
+    waits for a free worker; each worker keeps its own time limit and is
+    killed and restarted on its own if a picture wedges it."""
+
+    def __init__(self, n):
+        self.free = queue.Queue()
+        self.workers = []
+        self.busy = 0
+        self.waiting = 0
+        self.busy_lock = threading.Lock()
+        errors = []
+
+        # Load them side by side (start-up takes as long as one).
+        def start():
+            try:
+                w = Scanner()
+                with self.busy_lock:
+                    self.workers.append(w)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=start) for _ in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        if errors:
+            for w in self.workers:
+                w.proc.kill()
+            raise errors[0]
+        for w in self.workers:
+            self.free.put(w)
+
+    def scan(self, data, age_min=0.0):
+        with self.busy_lock:
+            self.waiting += 1
+        w = self.free.get()
+        with self.busy_lock:
+            self.waiting -= 1
+            self.busy += 1
+        try:
+            return w.scan(data, age_min)
+        except Exception as e:  # the worker couldn't be (re)started
+            return {"error": f"the detector worker failed ({type(e).__name__})", "worker_failed": True}
+        finally:
+            with self.busy_lock:
+                self.busy -= 1
+            self.free.put(w)
+
+    def alive(self):
+        return sum(1 for w in self.workers if w.alive())
+
+    def stats(self):
+        mem = [w.rss_mb() for w in self.workers]
+        known = [m for m in mem if m is not None]
+        return {
+            "total": len(self.workers),
+            "busy": self.busy,
+            "alive": self.alive(),
+            "waiting": self.waiting,
+            "memory_mb": {
+                "workers": mem,
+                "per_worker": round(sum(known) / len(known), 1) if known else None,
+                "total": round(sum(known) + (_rss_mb(os.getpid()) or 0), 1),
+                "main": _rss_mb(os.getpid()),
+            },
+        }
+
+    def kill(self):
+        for w in self.workers:
+            w.proc.kill()
 
 
 SCANNER = None
@@ -386,9 +518,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            alive = SCANNER is not None and SCANNER.proc.is_alive()
+            alive = SCANNER is not None and SCANNER.alive() > 0
             return self._json(200 if alive else 503, {
                 "ok": alive, "model": MODEL_NAME, "models": MODELS, "age": AGE_ON, "test_mode": TEST_MODE,
+                "workers": SCANNER.stats() if SCANNER is not None else None,
+                "scan_timeout_s": SCAN_TIMEOUT,
+                "cpu_limit": _cpu_limit(),
             })
         self._json(404, {"error": "not found"})
 
@@ -426,6 +561,8 @@ class Handler(BaseHTTPRequestHandler):
         ms = int((time.monotonic() - started) * 1000)
         if result.get("timeout"):
             return self._json(504, {"error": "took too long"})
+        if result.get("worker_failed"):
+            return self._json(503, {"error": result["error"]})
         if "error" in result:
             return self._json(422, {"error": result["error"]})
         if TEST_MODE:
@@ -488,10 +625,13 @@ def main():
             print(json.dumps(fa))
             ok = ok and fa["faces"] >= 1 and 0 <= fa["min_age"] <= 80
         sys.exit(0 if ok else 1)
-    SCANNER = Scanner()
+    SCANNER = Pool(WORKERS)
+    cpus = _cpu_limit()
+    if cpus is not None and WORKERS > cpus + 0.01:
+        print(f"note: {WORKERS} workers but only {cpus} CPUs (DETECTOR_CPUS): they'll share them, so more workers won't check pictures any faster", flush=True)
     httpd = ThreadingHTTPServer((BIND, PORT), Handler)
     httpd.daemon_threads = True
-    print(f"outhouse detector listening on {BIND}:{PORT} ({MODEL_NAME}{', faces + ages' if AGE_ON else ''}{', TEST MODE' if TEST_MODE else ''})", flush=True)
+    print(f"outhouse detector listening on {BIND}:{PORT} ({MODEL_NAME}{', faces + ages' if AGE_ON else ''}{', TEST MODE' if TEST_MODE else ''}, {WORKERS} worker{'s' if WORKERS != 1 else ''})", flush=True)
     httpd.serve_forever()
 
 

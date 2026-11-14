@@ -43,6 +43,9 @@ def main():
         "young.png": png(96, 64, (120, 200, 255), "young"),
         "adult-flag.png": png(96, 64, (150, 60, 200), "adult-flag"),
     }
+    # A burst of different pictures (several detector workers): 2 of 10 flagged.
+    for i in range(10):
+        files[f"burst-{i}.png"] = png(72 + i, 48, (20 * i, 200 - 15 * i, 90), "flag" if i in (3, 7) else None)
     for name, data in files.items():
         with open(os.path.join(out, name), "wb") as f:
             f.write(data)

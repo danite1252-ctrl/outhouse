@@ -29,6 +29,8 @@ record follows your IP.
 | 7881 | TCP | Voice (fallback) |
 | 7882 | UDP | Voice |
 
+Moving voice to its own server: see [LIVEKIT-SERVER.md](LIVEKIT-SERVER.md).
+
 ## Already have Apache (or another web server) on ports 80/443?
 Your router can only send 80/443 to one machine, so let Apache handle HTTPS
 and pass the Outhouse subdomain through to this server:
@@ -459,20 +461,60 @@ young-looking people to child safety (see **Age check** below).
 
 **How it runs.** A separate container, `detector` (built from
 `deploy/detector`), on an internal Docker network with no way out to the
-internet and no port opened on the server. It's capped at **1 CPU and
-1 GB of memory** (`cpus: "1.0"`, `mem_limit: 1g`), runs at low priority with
-one thread, and checks **one picture at a time**. Checking happens in the
+internet and no port opened on the server. By default it's capped at **1 CPU
+and 1 GB of memory** (`DETECTOR_CPUS`, `DETECTOR_MEMORY`), runs at low
+priority with one thread, and checks **one picture at a time** (more on a
+bigger server: see **More than one core** below). Checking happens in the
 background *after* the upload is saved, so chat never waits for it. On a
 small VM it uses about 170 MB idle and 260–360 MB once it has checked a few
 pictures with faces (the age model is the big part), well inside the 1 GB
 cap, and takes roughly 0.05–0.3 s of one CPU per picture for nudity, plus
 about 0.02 s per frame to look for faces and about 0.25 s per face found
 for its age (at most 10 faces: a group photo can take 2–3 s). Big photos
-are shrunk before the models see them, and every scan has a hard 20-second
-limit. If it's down (restarting, out of memory, being
+are shrunk before the models see them, and every scan has a hard 60-second
+limit (a scan that runs out of time is tried 3 times). If it's down (restarting, out of memory, being
 rebuilt) uploads still work: pictures wait in the queue, Outhouse retries
 with growing gaps (up to 5 minutes), carries on where it left off after a
 restart, and **Server status** shows *Detector offline* and the queue length.
+
+**More than one core.** On a server with cores to spare, the detector can
+check several pictures at once. Set these in `deploy/.env` and run
+`docker compose up -d` (both the server and the detector read
+`DETECTOR_WORKERS`):
+
+| Setting | Default | What it does |
+|---|---|---|
+| `DETECTOR_WORKERS` | `1` | Pictures checked at once (1–8). Each worker is its own process with its own copy of the models and one thread, so it uses up to one CPU core. |
+| `DETECTOR_CPUS` | `1.0` | The detector container's CPU cap. Give it about one per worker; more workers than CPUs just share them. |
+| `DETECTOR_MEMORY` | `1g` | The detector container's memory cap. |
+
+Measured (onnxruntime 1.31, 1600×1200 JPEGs, a fifth of them with a face
+that gets an age estimate): each worker is about **230 MB idle and
+300–320 MB once it has checked pictures with faces**, so each extra worker
+needs **about 300 MB more** (the container: ~230 MB → ~315 MB with one
+worker, ~445 MB → ~595 MB with two). One worker on one CPU checked about
+**380 pictures a minute** of that mix (~150 ms each); two workers on two CPUs
+about **760 a minute**; two workers squeezed onto one CPU no more than one.
+Real photos with several faces are slower (about 0.25 s per face).
+
+| Server | Settings |
+|---|---|
+| Home VM, 2 vCPU | the defaults (1 worker, 1 CPU, 1 GB) |
+| VPS-2, 4 vCPU / 8 GB | `DETECTOR_WORKERS=2`, `DETECTOR_CPUS=2`, `DETECTOR_MEMORY=2g` |
+| Bigger (8+ vCPU) | `DETECTOR_WORKERS=3` or `4`, `DETECTOR_CPUS` the same, `DETECTOR_MEMORY=3g` |
+
+For scale: 10,000 people posting 10–15k pictures a day is about 10 a minute
+on average and 50–100 a minute at peaks; one worker keeps up with that on
+ordinary pictures, and a second gives headroom for bursts and group photos.
+Leave the server's other cores for chat, the database and voice. **Chat
+never waits for the detector either way**: pictures are posted (or shown
+as *Checking…* to teens) straight away and checked in the background.
+**Server status → Image detector** shows the workers (busy / total, and
+memory each), the queue, the average scan time over the last 100 scans,
+and a hint to consider more workers if more than 50 pictures have been
+waiting for over 10 minutes. Each queued picture is claimed by one worker
+at a time (a claim that's left behind by a crash runs out after 5 minutes),
+so nothing is checked twice.
 
 **The model.** [NudeNet](https://github.com/notAI-tech/NudeNet) 3.4.2's
 `320n` detector (a YOLOv8n trained to spot exposed and covered body parts;
