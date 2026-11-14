@@ -1802,8 +1802,11 @@ with sync_playwright() as p:
         if rs["manager_role_ids"] == [raid_leader["id"]]:
             break
         rm.wait_for_timeout(200)
-    assert rs == {"manager_role_ids": [raid_leader["id"]], "default_channel_id": chan["id"],
-                  "card_cleanup_series": "next", "card_cleanup_single": "off"}, rs
+    assert {k: rs.get(k) for k in ("manager_role_ids", "default_channel_id", "card_cleanup_series", "card_cleanup_single")} == {
+        "manager_role_ids": [raid_leader["id"]], "default_channel_id": chan["id"],
+        "card_cleanup_series": "next", "card_cleanup_single": "off"}, rs
+    # Saving the Raids page leaves the realm time alone (automatic).
+    assert rs.get("realm_time_zone") == "" and rs.get("realm_region") == "", rs
     rm.keyboard.press("Escape")
     rm.wait_for_selector("dialog.settings", state="detached")
     # Plan a raid starts on the sign-up channel even from another channel.
