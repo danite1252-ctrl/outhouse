@@ -90,6 +90,12 @@ services:
       ALERT_NTFY_URL: ${ALERT_NTFY_URL:-}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
       REPORTS_PER_HOUR: ${REPORTS_PER_HOUR:-}
+      # Site staff hourly caps, and outhouse ownership transfers (README
+      # "Site staff" and "Handing an outhouse to someone else").
+      STAFF_ACTIONS_PER_HOUR: ${STAFF_ACTIONS_PER_HOUR:-30}
+      STAFF_HEAVY_ACTIONS_PER_HOUR: ${STAFF_HEAVY_ACTIONS_PER_HOUR:-5}
+      OWNER_INACTIVE_DAYS: ${OWNER_INACTIVE_DAYS:-90}
+      OWNER_OBJECTION_DAYS: ${OWNER_OBJECTION_DAYS:-14}
       # Email (password resets, confirmation links) and two-factor sign-in.
       # See README "Email & sign-in". Without SMTP_HOST, resets go through the
       # site owner (People → Create password reset link).

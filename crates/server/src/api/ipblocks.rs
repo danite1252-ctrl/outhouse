@@ -19,6 +19,7 @@ use sqlx::PgPool;
 
 use super::audit::is_site_owner;
 use super::safety::{log_action, require_owner};
+use super::staff::{Actor, StaffActor};
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::ipblock;
@@ -125,11 +126,12 @@ async fn permanently_suspended(db: &PgPool, user_id: i64) -> AppResult<bool> {
 /// would cover (each look is written to the safety log, like IP addresses).
 pub async fn preview(
     State(st): State<AppState>,
-    AuthUser(user): AuthUser,
+    StaffActor(a): StaffActor,
     ClientIp(my_ip): ClientIp,
     Path(id): Path<i64>,
 ) -> AppResult<Json<Value>> {
-    require_owner(&st, &user).await?;
+    a.require("ips")?;
+    let user = &a.user;
     let username: String = sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
         .bind(id)
         .fetch_optional(&st.db)
@@ -152,6 +154,8 @@ pub async fn preview(
         "child_safety_report_id": child.map(|r| r.to_string()),
         "permanent": permanently_suspended(&st.db, id).await?,
         "site_owner": is_site_owner(&st.db, id).await?,
+        // Staff: does blocking wait for a second person's approval?
+        "needs_approval": super::staff::needs_approval(&st, &a, "suspend_permanent_ip", 0).await,
         "note": BLOCK_NOTE,
         "networks": list.iter().map(|c| json!({
             "network": c.network,
@@ -179,6 +183,12 @@ pub struct NewBlocks {
     include_own: bool,
     #[serde(default, with = "outhouse_common::id::option_as_string")]
     report_id: Option<i64>,
+    /// Make their suspension permanent first, in the same step (one
+    /// approval request for staff under the two-person rule).
+    #[serde(default)]
+    make_permanent: bool,
+    #[serde(default)]
+    permanent_reason: Option<String>,
 }
 
 /// `POST /api/safety/users/{id}/ip-blocks`: blocks a permanently suspended
@@ -186,39 +196,140 @@ pub struct NewBlocks {
 /// site owner and accounts he allowed).
 pub async fn create(
     State(st): State<AppState>,
-    AuthUser(user): AuthUser,
+    StaffActor(a): StaffActor,
     ClientIp(my_ip): ClientIp,
     Path(id): Path<i64>,
     Json(req): Json<NewBlocks>,
 ) -> AppResult<Json<Value>> {
-    require_owner(&st, &user).await?;
+    a.require("ips")?;
+    if req.make_permanent {
+        a.require("suspend_permanent")?;
+    }
+    super::staff::guard_target(&st, &a, id).await?;
     if is_site_owner(&st.db, id).await? {
         return Err(AppError::BadRequest(
             "A site owner's networks can't be blocked.".into(),
         ));
+    }
+    let suspended: bool = sqlx::query_scalar(
+        "SELECT COALESCE(suspended_until > now(), false) FROM users WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    if !permanently_suspended(&st.db, id).await? && !(req.make_permanent && suspended) {
+        return Err(AppError::BadRequest(
+            "Make their suspension permanent first.".into(),
+        ));
+    }
+    super::staff::charge(&st, &a, true).await?;
+    a.require("ips")?;
+    let payload = json!({
+        "networks": req.networks,
+        "days": req.days,
+        "reason": req.reason,
+        "include_own": req.include_own,
+        "report_id": req.report_id.map(|r| r.to_string()),
+        "make_permanent": req.make_permanent,
+        "permanent_reason": req.permanent_reason,
+        "ip": my_ip.to_string(),
+    });
+    if super::staff::needs_approval(&st, &a, "suspend_permanent_ip", 0).await {
+        let username: String = sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
+            .bind(id)
+            .fetch_one(&st.db)
+            .await?;
+        let summary = if req.make_permanent {
+            format!("permanently suspend @{username} and block their IP addresses")
+        } else {
+            format!("block @{username}'s IP addresses")
+        };
+        let pending = super::staff::request_approval(
+            &st,
+            &a,
+            "suspend_permanent_ip",
+            Some(id),
+            None,
+            req.report_id,
+            payload,
+            summary,
+        )
+        .await?;
+        return Ok(Json(pending));
+    }
+    Ok(Json(make_blocks(&st, &a, id, &payload).await?))
+}
+
+/// An approved request: carry out the permanent suspension and the block.
+pub(crate) async fn carry_out(
+    st: &AppState,
+    a: &Actor,
+    id: i64,
+    payload: &Value,
+) -> AppResult<String> {
+    let v = make_blocks(st, a, id, payload).await?;
+    Ok(format!(
+        "{}Blocked {} network(s); {} account(s) signed out.",
+        if payload["make_permanent"].as_bool() == Some(true) {
+            "Suspension made permanent. "
+        } else {
+            ""
+        },
+        v["blocked"].as_array().map(|x| x.len()).unwrap_or(0),
+        v["signed_out"]
+    ))
+}
+
+async fn make_blocks(st: &AppState, a: &Actor, id: i64, payload: &Value) -> AppResult<Value> {
+    let networks: Option<Vec<String>> = payload["networks"].as_array().map(|l| {
+        l.iter()
+            .filter_map(|n| n.as_str().map(str::to_string))
+            .collect()
+    });
+    let report_id: Option<i64> = payload["report_id"].as_str().and_then(|r| r.parse().ok());
+    let include_own = payload["include_own"].as_bool().unwrap_or(false);
+    let my_ip: std::net::IpAddr = payload["ip"]
+        .as_str()
+        .and_then(|i| i.parse().ok())
+        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+    if payload["make_permanent"].as_bool() == Some(true)
+        && !permanently_suspended(&st.db, id).await?
+    {
+        super::safety::make_permanent(
+            st,
+            a,
+            id,
+            payload["permanent_reason"].as_str().unwrap_or(""),
+            report_id,
+        )
+        .await?;
     }
     if !permanently_suspended(&st.db, id).await? {
         return Err(AppError::BadRequest(
             "Make their suspension permanent first.".into(),
         ));
     }
-    let days = req.days.filter(|d| *d > 0).map(|d| d.min(3650) as i32);
-    let reason: String = req
-        .reason
+    let days = payload["days"]
+        .as_i64()
+        .filter(|d| *d > 0)
+        .map(|d| d.min(3650) as i32);
+    let reason: String = payload["reason"]
+        .as_str()
         .unwrap_or_default()
         .trim()
         .chars()
         .take(300)
         .collect();
-    let report = match req.report_id {
+    let report = match report_id {
         Some(r) => Some(r),
         None => has_child_safety_report(&st.db, id).await?,
     };
-    let list = candidates(&st, id, my_ip).await?;
+    let list = candidates(st, id, my_ip).await?;
     let mut made = Vec::new();
     let mut skipped = Vec::new();
     for c in &list {
-        if let Some(wanted) = &req.networks {
+        if let Some(wanted) = &networks {
             if !wanted.iter().any(|w| w.trim() == c.network) {
                 continue;
             }
@@ -227,8 +338,11 @@ pub async fn create(
             skipped.push(format!("{} ({why})", c.network));
             continue;
         }
-        if c.own && !req.include_own {
-            skipped.push(format!("{} (one of your own addresses)", c.network));
+        if c.own && !include_own {
+            skipped.push(format!(
+                "{} (one of your own addresses)",
+                c.network
+            ));
             continue;
         }
         let inserted: Option<i64> = sqlx::query_scalar(
@@ -244,7 +358,7 @@ pub async fn create(
         .bind(report)
         .bind(&reason)
         .bind(days)
-        .bind(user.id)
+        .bind(a.id())
         .fetch_optional(&st.db)
         .await?;
         if inserted.is_some() {
@@ -254,11 +368,11 @@ pub async fn create(
         }
     }
     ipblock::reload(&st.db).await?;
-    let signed_out = sign_out_blocked(&st, &made).await?;
+    let signed_out = sign_out_blocked(st, &made).await?;
     if !made.is_empty() {
         log_action(
-            &st,
-            Some(user.id),
+            st,
+            Some(a.id()),
             "ip_block",
             report,
             Some(id),
@@ -285,11 +399,11 @@ pub async fn create(
         )
         .await;
     }
-    Ok(Json(json!({
+    Ok(json!({
         "blocked": made,
         "skipped": skipped,
         "signed_out": signed_out,
-    })))
+    }))
 }
 
 /// Ends every session of accounts seen on these networks (the site owner and
@@ -391,8 +505,8 @@ pub async fn attempts_for_user(db: &PgPool, user_id: i64) -> AppResult<Vec<Value
 
 /// `GET /api/safety/ip-blocks`: blocks (active and expired, not removed)
 /// and the latest refused attempts.
-pub async fn list(State(st): State<AppState>, AuthUser(user): AuthUser) -> AppResult<Json<Value>> {
-    require_owner(&st, &user).await?;
+pub async fn list(State(st): State<AppState>, StaffActor(a): StaffActor) -> AppResult<Json<Value>> {
+    a.require("ips")?;
     let blocks = sqlx::query_as::<_, BlockRow>(
         "SELECT b.id, b.ip::TEXT AS network, b.source_user_id, u.username, u.display_name,
                 b.report_id, b.reason, b.created_at, b.expires_at, c.display_name AS created_by_name,
@@ -445,10 +559,11 @@ async fn block_label(db: &PgPool, id: i64) -> AppResult<(String, Option<i64>, Op
 /// `POST /api/safety/ip-blocks/{id}/remove`
 pub async fn remove(
     State(st): State<AppState>,
-    AuthUser(user): AuthUser,
+    StaffActor(a): StaffActor,
     Path(id): Path<i64>,
 ) -> AppResult<Json<Value>> {
-    require_owner(&st, &user).await?;
+    a.require("ips")?;
+    let user = &a.user;
     let (network, source, report) = block_label(&st.db, id).await?;
     sqlx::query("UPDATE ip_blocks SET removed_at = now(), removed_by = $2 WHERE id = $1")
         .bind(id)
@@ -478,11 +593,13 @@ pub struct Extend {
 /// `POST /api/safety/ip-blocks/{id}/extend` `{days}` (none = until removed)
 pub async fn extend(
     State(st): State<AppState>,
-    AuthUser(user): AuthUser,
+    StaffActor(a): StaffActor,
     Path(id): Path<i64>,
     Json(req): Json<Extend>,
 ) -> AppResult<Json<Value>> {
-    require_owner(&st, &user).await?;
+    a.require("ips")?;
+    super::staff::charge(&st, &a, true).await?;
+    let user = &a.user;
     let (network, source, report) = block_label(&st.db, id).await?;
     let days = req.days.filter(|d| *d > 0).map(|d| d.min(3650) as i32);
     sqlx::query(

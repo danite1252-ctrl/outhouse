@@ -72,6 +72,8 @@ python3 ci/detector_images.py /tmp/dt >/dev/null
 export OUTHOUSE_TEST_HOOKS=1
 # Message requests: a small daily limit so the test can reach it (the default is 10).
 export MESSAGE_REQUESTS_PER_DAY=4 MESSAGE_REQUEST_MAX_MESSAGES=3
+# Staff hourly caps small enough for ci/staff_test.sh to reach (defaults 30 and 5).
+export STAFF_ACTIONS_PER_HOUR=8 STAFF_HEAVY_ACTIONS_PER_HOUR=10
 # Gateway probe files from an earlier run would satisfy "wait for READY" before the new probe starts.
 rm -f /tmp/gw-*.jsonl
 ./target/debug/outhouse-server >"$LOG" 2>&1 &
@@ -4794,5 +4796,12 @@ BASE=$BASE DATABASE_URL=$DATABASE_URL bash ci/widgets_test.sh
 # ---------------------------------------------------------------------------
 step "email, password resets, two-factor (ci/auth_test.sh)"
 BASE=$BASE MAIL_DIR=$MAIL_DIR OWNER_TOKEN=$TOKEN_A bash ci/auth_test.sh
+
+# ---------------------------------------------------------------------------
+# Site staff and outhouse ownership transfers (feat-staff): its own script,
+# so it can also run on its own against a local server.
+# ---------------------------------------------------------------------------
+step "site staff and ownership transfers (ci/staff_test.sh)"
+BASE=$BASE MAIL_DIR=$MAIL_DIR OWNER_TOKEN=$TOKEN_A PUSH=$PUSH bash ci/staff_test.sh
 
 echo "Smoke test passed."

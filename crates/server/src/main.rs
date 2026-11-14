@@ -109,6 +109,8 @@ async fn main() -> anyhow::Result<()> {
     }
     ipblock::spawn_refresher(state.clone());
     api::twofactor::spawn_tidier(state.clone());
+    api::staff::spawn_sweeper(state.clone());
+    api::transfers::spawn_sweeper(state.clone());
     // `/` is the welcome page (it sends signed-in people and the apps on to
     // `/app`); `/app` and `/login` are the web client. Everything else is a
     // plain file from the web folder.
@@ -123,6 +125,10 @@ async fn main() -> anyhow::Result<()> {
         .route_service("/reset", ServeFile::new(web_path.join("email-link.html")))
         .route_service(
             "/verify-email",
+            ServeFile::new(web_path.join("email-link.html")),
+        )
+        .route_service(
+            "/confirm-transfer",
             ServeFile::new(web_path.join("email-link.html")),
         )
         .fallback_service(ServeDir::new(&web_dir))

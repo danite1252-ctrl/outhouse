@@ -437,6 +437,8 @@ pub async fn change_email(
         .bind(&email)
         .execute(&st.db)
         .await?;
+        // Staff need a confirmed email: their powers pause until it's confirmed.
+        super::staff::recheck(&st, user.id).await;
     }
     sqlx::query("DELETE FROM email_tokens WHERE user_id = $1 AND purpose = 'verify'")
         .bind(user.id)
@@ -578,6 +580,7 @@ pub async fn verify_email(
         format!("Confirmed their email ({})", mask_email(&email)),
     )
     .await;
+    super::staff::recheck(&st, link.user_id).await;
     Ok(Json(json!({ "ok": true, "email": mask_email(&email) })))
 }
 
@@ -857,10 +860,27 @@ pub async fn password_changed_notice(
 /// hours) for someone who lost their email. Shown once; logged.
 pub async fn owner_reset_link(
     State(st): State<AppState>,
-    AuthUser(me): AuthUser,
+    super::staff::StaffActor(a): super::staff::StaffActor,
     Path(target): Path<i64>,
+    body: axum::body::Bytes,
 ) -> AppResult<Json<Value>> {
-    super::safety::require_owner(&st, &me).await?;
+    a.require("account_help")?;
+    super::staff::guard_target(&st, &a, target).await?;
+    let me = &a.user;
+    // Staff say why (it goes in the safety log); the owner may.
+    let reason: String = serde_json::from_slice::<Value>(&body)
+        .ok()
+        .and_then(|v| v["reason"].as_str().map(str::to_string))
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(300)
+        .collect();
+    if reason.is_empty() && !a.owner {
+        return Err(AppError::BadRequest(
+            "Say why (it goes in the safety log).".into(),
+        ));
+    }
     let bot: Option<bool> = sqlx::query_scalar("SELECT is_bot FROM users WHERE id = $1")
         .bind(target)
         .fetch_optional(&st.db)
@@ -886,7 +906,11 @@ pub async fn owner_reset_link(
         "reset_link",
         None,
         Some(target),
-        "Made a one-time password reset link (works for 24 hours; any older link stopped working)",
+        if reason.is_empty() {
+            "Made a one-time password reset link (works for 24 hours; any older link stopped working)".to_string()
+        } else {
+            format!("Made a one-time password reset link (works for 24 hours; any older link stopped working). Reason: {reason}")
+        },
     )
     .await;
     Ok(Json(json!({

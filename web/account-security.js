@@ -379,16 +379,30 @@ if (typeof drawServerStatus === "function") {
 function acctOwnerSection(u, ctx) {
   const si = u.sign_in;
   if (!si || u.bot) return null;
+  // Staff: Support and up with "account_help" (never on protected accounts).
+  const owner = typeof sOwner !== "function" || sOwner();
+  const help = (owner || (typeof sCan === "function" && sCan("account_help"))) && !u.protected;
   const item = (label, value, cls = "") => el("div", { class: `status-item ${cls}` }, el("div", { class: "status-label" }, label), el("div", { class: "status-value" }, value));
   return el("section", { class: "acct-section acct-owner-section" },
     el("h3", {}, "Sign-in & recovery"),
     el("div", { class: "status-grid" },
       item("Email", si.email ? `${si.email} · ${si.email_verified ? "confirmed" : "not confirmed"}${si.email_pending ? ` (changing to ${si.email_pending})` : ""}` : "None", si.email && si.email_verified ? "good" : "warn"),
       item("Two-factor", si.enabled ? `On since ${new Date(si.enabled_at).toLocaleDateString()} · ${si.recovery_codes_left} recovery codes left · ${si.trusted_devices} trusted device${si.trusted_devices === 1 ? "" : "s"}` : "Off", si.enabled ? "good" : "")),
-    el("div", { class: "acct-actions" },
+    !help ? null : el("div", { class: "acct-actions" },
       el("button", { type: "button", class: "ghost acct-reset-link-btn", onclick: async () => {
-        if (!(await confirmBox(`Make a password reset link for ${u.display_name}?`, "For someone who can't use their email. It works once, for 24 hours, and any older reset link stops working. You'll see it once: send it to them privately. It's written to the safety log.", "Make link"))) return;
-        const r = await tryApi("POST", `/api/safety/users/${u.id}/reset-link`).catch(() => null);
+        const why = el("input", { type: "text", maxlength: 300, class: "acct-reset-reason", placeholder: "Lost access to their email; checked it's them on voice" });
+        const r = await new Promise((resolve) => {
+          let made = null;
+          const d = acctDialog(`Make a password reset link for ${u.display_name}?`, [
+            el("p", { class: "muted small acct-tight" }, "For someone who can't use their email. It works once, for 24 hours, and any older reset link stops working. You'll see it once: send it to them privately. It's written to the safety log."),
+            el("label", { class: "field" }, owner ? "Why (optional, for the safety log)" : "Why (required, for the safety log)", why),
+          ], "Make link", async () => {
+            if (!owner && !why.value.trim()) throw new Error("Say why: it goes in the safety log.");
+            made = await api("POST", `/api/safety/users/${u.id}/reset-link`, { reason: why.value.trim() });
+            return true;
+          });
+          d.addEventListener("close", () => resolve(made));
+        });
         if (!r) return;
         const link = r.url || `${location.origin}${r.path}`;
         const field = el("input", { type: "text", readonly: true, value: link, class: "acct-link-field", "aria-label": "Reset link" });

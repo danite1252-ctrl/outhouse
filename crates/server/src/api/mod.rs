@@ -41,8 +41,10 @@ pub mod scheduled;
 mod search;
 mod softres;
 pub mod sounds;
+pub mod staff;
 mod stickers;
 pub mod threads;
+pub mod transfers;
 pub mod twofactor;
 pub mod voice;
 mod webhooks;
@@ -578,6 +580,53 @@ pub fn router(state: AppState) -> Router {
         .route("/api/safety/users", get(safety::find_users))
         .route("/api/safety/users/{id}", get(safety::get_user))
         .route("/api/safety/users/{id}/ips", get(safety::user_ips))
+        .route("/api/safety/users/{id}/same-ip", get(safety::same_ip))
+        // Site staff (staff.rs): the owner's Staff page, staff activity,
+        // two-person approvals
+        .route("/api/safety/staff", get(staff::list).post(staff::add))
+        .route("/api/safety/staff/candidate", get(staff::candidate))
+        .route("/api/safety/staff/activity", get(staff::activity))
+        .route(
+            "/api/safety/staff/{id}",
+            put(staff::update).delete(staff::remove),
+        )
+        .route("/api/safety/staff-settings", put(staff::set_settings))
+        .route("/api/safety/staff-requests", get(staff::list_requests))
+        .route(
+            "/api/safety/staff-requests/{id}/approve",
+            post(staff::approve),
+        )
+        .route(
+            "/api/safety/staff-requests/{id}/decline",
+            post(staff::decline),
+        )
+        .route(
+            "/api/safety/staff-requests/{id}/cancel",
+            post(staff::cancel),
+        )
+        // Outhouse ownership transfers (transfers.rs)
+        .route("/api/guilds/{id}/transfer", post(transfers::owner_start))
+        .route("/api/users/@me/transfers", get(transfers::mine))
+        .route("/api/transfers/{id}/accept", post(transfers::accept))
+        .route("/api/transfers/{id}/decline", post(transfers::decline))
+        .route("/api/transfers/{id}/cancel", post(transfers::cancel))
+        .route(
+            "/api/transfers/{id}/still-here",
+            post(transfers::still_here),
+        )
+        .route(
+            "/api/transfers/confirm-owner/check",
+            post(transfers::confirm_check),
+        )
+        .route(
+            "/api/transfers/confirm-owner",
+            post(transfers::confirm_owner),
+        )
+        .route("/api/transfers/sweep", post(transfers::sweep_now))
+        .route(
+            "/api/safety/outhouses/{id}/transfer",
+            post(transfers::staff_start),
+        )
         .route("/api/safety/ips/purge", post(safety::purge_ips_now))
         .route(
             "/api/safety/users/{id}/actions",
@@ -629,5 +678,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/gifs", get(gifs::search))
         .route("/files/{key}/{name}", get(files::serve))
         .route("/api/gateway", get(gateway::gateway))
+        // Each request gets its own staff context (for the safety log).
+        .layer(axum::middleware::from_fn(staff::scope_ctx))
         .with_state(state)
 }

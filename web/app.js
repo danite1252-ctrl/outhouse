@@ -2450,7 +2450,8 @@ async function openUserSettings(tab = "account", opts = {}) {
     typeof drawFoldersPage === "function" ? ["folders", "Folders"] : null,
     typeof drawWidgetsPage === "function" ? ["widgets", "Sidebar widgets"] : null,
   ].filter(Boolean);
-  const owner = typeof siteOwnerTabs === "function" && (state.siteOwner || state.safety?.owner);
+  // The site owner, or site staff (safety.js decides which pages they get).
+  const owner = typeof siteOwnerTabs === "function" && (state.siteOwner || state.safety?.owner || !!state.safety?.staff);
   const ownerTabs = owner ? siteOwnerTabs() : [];
   if (owner) dialog.classList.add("safety-console");
   let drawing = 0;
@@ -2462,7 +2463,7 @@ async function openUserSettings(tab = "account", opts = {}) {
     nav.replaceChildren(
       el("h3", {}, "USER SETTINGS"),
       ...pages.map(([id, label]) => el("button", { class: navActive === id ? "active" : "", "data-tab": id, onclick: () => draw(id) }, label)),
-      ownerTabs.length ? el("h3", { class: "so-head" }, "SITE OWNER") : null,
+      ownerTabs.length ? el("h3", { class: "so-head" }, typeof siteSectionTitle === "function" ? siteSectionTitle() : "SITE OWNER") : null,
       ...ownerTabs.map(([id, label]) => el("button", { class: `so-tab${navActive === id ? " active" : ""}`, "data-tab": id, onclick: () => draw(id) }, label)),
       el("div", { style: "flex:1" }),
       el("button", { onclick: () => { dialog.close(); signOut(); } }, "Sign out"),

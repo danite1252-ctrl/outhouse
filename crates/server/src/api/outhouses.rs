@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::safety::{guild_log, log_for_guild, require_owner};
+use super::staff::{Actor, StaffActor};
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::state::{AppState, Audience};
@@ -133,12 +134,16 @@ async fn online_in(st: &AppState, guild_id: i64) -> AppResult<usize> {
 }
 
 /// `GET /api/safety/outhouses?q=&sort=name|members|created|activity|reports&page=`
+/// Who sees the directory: the owner, and staff who look inside, shut
+/// down, mark family outhouses or transfer ownership.
+const DIRECTORY_PERMS: &[&str] = &["outhouse_look", "shut_down", "family", "transfers"];
+
 pub async fn list(
     State(st): State<AppState>,
-    AuthUser(user): AuthUser,
+    StaffActor(a): StaffActor,
     Query(q): Query<ListQuery>,
 ) -> AppResult<Json<Value>> {
-    require_owner(&st, &user).await?;
+    a.require_any(DIRECTORY_PERMS)?;
     let term = q.q.trim().chars().take(100).collect::<String>();
     let page = q.page.unwrap_or(1).clamp(1, 100_000);
     let sql = format!(
@@ -289,7 +294,46 @@ async fn detail_json(st: &AppState, guild_id: i64) -> AppResult<Value> {
     out["member_snapshot"] = r.member_snapshot.clone().unwrap_or_else(|| json!([]));
     out["log"] = json!(guild_log(st, guild_id, 50).await?);
     out["live_police_links"] = json!(police_links);
+    // Ownership: when the owner was last active, and any transfer under way.
+    let owner_active: Option<DateTime<Utc>> =
+        sqlx::query_scalar("SELECT last_active_at FROM users WHERE id = $1")
+            .bind(r.owner_id)
+            .fetch_one(&st.db)
+            .await?;
+    out["owner"]["last_active_at"] = json!(owner_active);
+    out["owner"]["inactive_days"] = json!(if st.is_online(r.owner_id) {
+        0
+    } else {
+        owner_active
+            .map(|t| (Utc::now() - t).num_days())
+            .unwrap_or(0)
+    });
+    out["owner"]["email_confirmed"] = json!(super::recovery::confirmed_email(&st.db, r.owner_id)
+        .await
+        .is_some());
+    out["transfer"] = super::transfers::pending_for_guild(st, guild_id).await?;
+    out["transfer_rules"] = json!({
+        "inactive_days": super::transfers::owner_inactive_days(),
+        "objection_days": super::transfers::objection_days(),
+    });
     Ok(out)
+}
+
+/// The directory entry for this actor (no police-link count for staff;
+/// whether it's a conflict of interest for them).
+async fn detail_for(st: &AppState, guild_id: i64, a: &Actor) -> AppResult<Value> {
+    let mut d = detail_json(st, guild_id).await?;
+    if !a.owner {
+        d["live_police_links"] = json!(0);
+        let conflict = super::staff::moderated_guilds(&st.db, a.id())
+            .await?
+            .contains(&guild_id);
+        d["conflict"] = json!(conflict);
+        if conflict {
+            d["conflict_reason"] = json!(super::staff::SOMEONE_ELSE);
+        }
+    }
+    Ok(d)
 }
 
 async fn live_police_links(st: &AppState, guild_id: i64) -> AppResult<i64> {
@@ -306,11 +350,11 @@ async fn live_police_links(st: &AppState, guild_id: i64) -> AppResult<i64> {
 /// `GET /api/safety/outhouses/{id}`
 pub async fn get(
     State(st): State<AppState>,
-    AuthUser(user): AuthUser,
+    StaffActor(a): StaffActor,
     Path(guild_id): Path<i64>,
 ) -> AppResult<Json<Value>> {
-    require_owner(&st, &user).await?;
-    Ok(Json(detail_json(&st, guild_id).await?))
+    a.require_any(DIRECTORY_PERMS)?;
+    Ok(Json(detail_for(&st, guild_id, &a).await?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -337,11 +381,27 @@ struct MessageRow {
 /// (the file server still refuses quarantined and held ones).
 pub async fn channel_history(
     State(st): State<AppState>,
-    AuthUser(user): AuthUser,
+    StaffActor(a): StaffActor,
     Path((guild_id, channel_id)): Path<(i64, i64)>,
     Query(q): Query<HistoryQuery>,
 ) -> AppResult<Json<Value>> {
-    require_owner(&st, &user).await?;
+    a.require("outhouse_look")?;
+    if !a.owner {
+        super::staff::guard_guild(&st, &a, guild_id).await?;
+        // Staff look inside only while a report about it is open.
+        let open: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM reports WHERE guild_id = $1 AND status <> 'closed')",
+        )
+        .bind(guild_id)
+        .fetch_one(&st.db)
+        .await?;
+        if !open {
+            return Err(AppError::Refused(
+                "Staff can only look inside an outhouse while a report about it is open.".into(),
+            ));
+        }
+    }
+    let user = &a.user;
     let (name, guild_name): (String, String) = sqlx::query_as(
         "SELECT c.name, g.name FROM channels c JOIN guilds g ON g.id = c.guild_id
          WHERE c.id = $1 AND c.guild_id = $2",
@@ -383,7 +443,14 @@ pub async fn channel_history(
             "outhouse_view",
             guild_id,
             None,
-            format!("Looked at #{name} in {guild_name} (read-only, as the site owner)"),
+            format!(
+                "Looked at #{name} in {guild_name} (read-only, as {})",
+                if a.owner {
+                    "the site owner"
+                } else {
+                    "staff, because of an open report"
+                }
+            ),
         )
         .await;
     }
@@ -564,13 +631,62 @@ async fn member_ids(st: &AppState, guild_id: i64) -> AppResult<Vec<(i64, bool)>>
 /// `{action: "delete", confirm_name}` · `{action: "family", family}`
 pub async fn action(
     State(st): State<AppState>,
-    AuthUser(user): AuthUser,
+    StaffActor(a): StaffActor,
     Path(guild_id): Path<i64>,
     Json(req): Json<ActionRequest>,
 ) -> AppResult<Json<Value>> {
-    require_owner(&st, &user).await?;
+    match req.action.as_str() {
+        "family" => a.require("family")?,
+        "shut_down" | "restore" => a.require("shut_down")?,
+        _ => a.require_owner()?,
+    }
+    super::staff::guard_guild(&st, &a, guild_id).await?;
     let r = load_row(&st, guild_id).await?;
-    let me = user.id;
+    let me = a.id();
+    if req.action == "shut_down" {
+        if r.shut_down_at.is_some() {
+            return Err(AppError::BadRequest("It's already shut down.".into()));
+        }
+        if !a.owner {
+            super::staff::guard_target(&st, &a, r.owner_id).await?;
+        }
+        if req.suspend_owner {
+            // "Suspend now" is a child-safety power; it never waits for approval.
+            a.require("child_safety")?;
+        }
+        super::staff::charge(&st, &a, true).await?;
+        a.require("shut_down")?;
+        let payload = json!({
+            "reason": req.reason.clone().unwrap_or_default(),
+            "suspend_owner": req.suspend_owner,
+        });
+        if super::staff::needs_approval(&st, &a, "shut_down", r.members).await {
+            if req.reason.as_deref().unwrap_or("").trim().is_empty() {
+                return Err(AppError::BadRequest(
+                    "Write why it's being shut down (only staff see this).".into(),
+                ));
+            }
+            if req.suspend_owner && r.owner_id != me {
+                super::safety::suspend_pending_from_outhouses(&st, &a, r.owner_id).await?;
+            }
+            let pending = super::staff::request_approval(
+                &st,
+                &a,
+                "shut_down",
+                Some(r.owner_id),
+                Some(guild_id),
+                None,
+                json!({ "reason": req.reason.clone().unwrap_or_default(), "suspend_owner": false }),
+                format!("shut down {} ({} members)", r.name, r.members),
+            )
+            .await?;
+            let mut d = detail_for(&st, guild_id, &a).await?;
+            d["pending_approval"] = pending;
+            return Ok(Json(d));
+        }
+        carry_out_shut_down(&st, &a, guild_id, &payload).await?;
+        return Ok(Json(detail_for(&st, guild_id, &a).await?));
+    }
     match req.action.as_str() {
         "family" => {
             let family = req.family.ok_or_else(|| {
@@ -594,87 +710,6 @@ pub async fn action(
                 ),
             )
             .await;
-        }
-        "shut_down" => {
-            if r.shut_down_at.is_some() {
-                return Err(AppError::BadRequest("It's already shut down.".into()));
-            }
-            let reason: String = req
-                .reason
-                .as_deref()
-                .unwrap_or("")
-                .trim()
-                .chars()
-                .take(MAX_REASON)
-                .collect();
-            if reason.is_empty() {
-                return Err(AppError::BadRequest(
-                    "Write why it's being shut down (only you see this).".into(),
-                ));
-            }
-            if req.suspend_owner && r.owner_id == me {
-                return Err(AppError::BadRequest("You own this outhouse.".into()));
-            }
-            let remove_at: DateTime<Utc> = sqlx::query_scalar(
-                "UPDATE guilds SET shut_down_at = now(), shut_down_by = $2, shut_down_reason = $3,
-                        members_remove_at = now() + make_interval(secs => $4::FLOAT8),
-                        members_removed_at = NULL
-                 WHERE id = $1 RETURNING members_remove_at",
-            )
-            .bind(guild_id)
-            .bind(me)
-            .bind(&reason)
-            .bind(grace_days() * 86400.0)
-            .fetch_one(&st.db)
-            .await?;
-            let members = member_ids(&st, guild_id).await?;
-            for (id, _) in &members {
-                super::voice::clear_voice(&st, *id, Some(guild_id));
-            }
-            st.dispatch(
-                Audience::Guild(guild_id),
-                ServerEvent::GuildShutDown {
-                    guild_id,
-                    name: r.name.clone(),
-                    remove_at,
-                },
-            );
-            log_for_guild(
-                &st,
-                Some(me),
-                "outhouse_shut_down",
-                guild_id,
-                Some(r.owner_id),
-                format!(
-                    "Shut down {} ({} members; they're removed on {}). Reason: {reason}",
-                    r.name,
-                    members.len(),
-                    day_label(remove_at)
-                ),
-            )
-            .await;
-            // A neutral note to everyone in it.
-            for (id, bot) in &members {
-                if *bot || *id == me {
-                    continue;
-                }
-                if let Err(e) = super::safety::safety_note(
-                    &st,
-                    *id,
-                    format!(
-                        "**{}** has been shut down by the server owner. Its channels can't be used any more, and it will be removed from your list on {}. You can leave it before then.",
-                        r.name,
-                        crate::timetag::tag(remove_at, 'D')
-                    ),
-                )
-                .await
-                {
-                    tracing::warn!(error = %e, "couldn't tell a member about a shut-down outhouse");
-                }
-            }
-            if req.suspend_owner {
-                super::safety::suspend_pending_from_outhouses(&st, me, r.owner_id).await?;
-            }
         }
         "restore" => {
             if r.shut_down_at.is_none() {
@@ -820,7 +855,108 @@ pub async fn action(
         }
         _ => return Err(AppError::BadRequest("Unknown action.".into())),
     }
-    Ok(Json(detail_json(&st, guild_id).await?))
+    Ok(Json(detail_for(&st, guild_id, &a).await?))
+}
+
+/// Shuts an outhouse down: frozen, members told (neutrally), removed after
+/// the grace period. Returns what happened (for approval requests).
+pub(crate) async fn carry_out_shut_down(
+    st: &AppState,
+    a: &Actor,
+    guild_id: i64,
+    payload: &Value,
+) -> AppResult<String> {
+    let r = load_row(st, guild_id).await?;
+    let me = a.id();
+    let req = ActionRequest {
+        action: "shut_down".into(),
+        reason: payload["reason"].as_str().map(str::to_string),
+        suspend_owner: payload["suspend_owner"].as_bool().unwrap_or(false),
+        confirm_name: None,
+        family: None,
+        readd: None,
+    };
+    if r.shut_down_at.is_some() {
+        return Err(AppError::BadRequest("It's already shut down.".into()));
+    }
+    let reason: String = req
+        .reason
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(MAX_REASON)
+        .collect();
+    if reason.is_empty() {
+        return Err(AppError::BadRequest(
+            "Write why it's being shut down (only the site owner and staff see this).".into(),
+        ));
+    }
+    if req.suspend_owner && r.owner_id == me {
+        return Err(AppError::BadRequest("You own this outhouse.".into()));
+    }
+    let remove_at: DateTime<Utc> = sqlx::query_scalar(
+        "UPDATE guilds SET shut_down_at = now(), shut_down_by = $2, shut_down_reason = $3,
+                    members_remove_at = now() + make_interval(secs => $4::FLOAT8),
+                    members_removed_at = NULL
+             WHERE id = $1 RETURNING members_remove_at",
+    )
+    .bind(guild_id)
+    .bind(me)
+    .bind(&reason)
+    .bind(grace_days() * 86400.0)
+    .fetch_one(&st.db)
+    .await?;
+    let members = member_ids(st, guild_id).await?;
+    for (id, _) in &members {
+        super::voice::clear_voice(st, *id, Some(guild_id));
+    }
+    st.dispatch(
+        Audience::Guild(guild_id),
+        ServerEvent::GuildShutDown {
+            guild_id,
+            name: r.name.clone(),
+            remove_at,
+        },
+    );
+    log_for_guild(
+        st,
+        Some(me),
+        "outhouse_shut_down",
+        guild_id,
+        Some(r.owner_id),
+        format!(
+            "Shut down {} ({} members; they're removed on {}). Reason: {reason}",
+            r.name,
+            members.len(),
+            day_label(remove_at)
+        ),
+    )
+    .await;
+    // A neutral note to everyone in it.
+    for (id, bot) in &members {
+        if *bot || *id == me {
+            continue;
+        }
+        if let Err(e) = super::safety::safety_note(
+                st,
+                *id,
+                format!(
+                    "**{}** has been shut down by {}. Its channels can't be used any more, and it will be removed from your list on {}. You can leave it before then.",
+                    r.name,
+                    if a.owner { "the server owner" } else { "Outhouse staff" },
+                    crate::timetag::tag(remove_at, 'D')
+                ),
+            )
+            .await
+            {
+                tracing::warn!(error = %e, "couldn't tell a member about a shut-down outhouse");
+            }
+    }
+    if req.suspend_owner {
+        super::safety::suspend_pending_from_outhouses(st, a, r.owner_id).await?;
+    }
+    Ok(format!("{} is shut down.", r.name))
 }
 
 /// `GET /api/safety/server-status`: Server status, without an outhouse.

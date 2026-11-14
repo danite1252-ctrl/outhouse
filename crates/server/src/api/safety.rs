@@ -30,6 +30,7 @@ use sqlx::types::Json as SqlJson;
 use sqlx::PgPool;
 
 use super::audit::is_site_owner;
+use super::staff::{Actor, ConflictCtx, StaffActor};
 use crate::auth::{self, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::state::{AppState, Audience};
@@ -346,14 +347,14 @@ fn until_label(until: DateTime<Utc>) -> String {
 
 /// Why this account can't sign in (None = not suspended).
 pub async fn suspension_message(db: &PgPool, user_id: i64) -> AppResult<Option<String>> {
-    let row: Option<(DateTime<Utc>, Option<String>, bool)> = sqlx::query_as(
-        "SELECT suspended_until, suspended_reason, suspension_pending FROM users
+    let row: Option<(DateTime<Utc>, Option<String>, bool, bool)> = sqlx::query_as(
+        "SELECT suspended_until, suspended_reason, suspension_pending, suspended_by_staff FROM users
          WHERE id = $1 AND suspended_until > now()",
     )
     .bind(user_id)
     .fetch_optional(db)
     .await?;
-    Ok(row.map(|(until, reason, pending)| {
+    Ok(row.map(|(until, reason, pending, by_staff)| {
         // "Suspend now" (child-safety reports): only the neutral line, never
         // the category or who reported them.
         if pending {
@@ -364,7 +365,8 @@ pub async fn suspension_message(db: &PgPool, user_id: i64) -> AppResult<Option<S
             .map(|r| format!(" Reason: {r}"))
             .unwrap_or_default();
         format!(
-            "This account has been suspended {}.{reason}",
+            "This account has been suspended{} {}.{reason}",
+            if by_staff { " by Outhouse staff" } else { "" },
             until_label(until)
         )
     }))
@@ -419,9 +421,11 @@ async fn log(
     details: impl Into<String>,
 ) {
     let details: String = details.into().chars().take(MAX_NOTE).collect();
+    // A staff member's action: which tier, which permission (staff.rs).
+    let (tier, perm) = super::staff::log_ctx(actor).unzip();
     let result = sqlx::query(
-        "INSERT INTO safety_log (id, actor_id, action, report_id, target_user_id, details)
-         VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO safety_log (id, actor_id, action, report_id, target_user_id, details, staff_tier, staff_perm)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(st.ids.next_id())
     .bind(actor)
@@ -429,6 +433,8 @@ async fn log(
     .bind(report_id)
     .bind(target_user)
     .bind(&details)
+    .bind(tier)
+    .bind(perm)
     .execute(&st.db)
     .await;
     if let Err(e) = result {
@@ -458,9 +464,10 @@ pub(crate) async fn log_for_guild(
     details: impl Into<String>,
 ) {
     let details: String = details.into().chars().take(MAX_NOTE).collect();
+    let (tier, perm) = super::staff::log_ctx(actor).unzip();
     let result = sqlx::query(
-        "INSERT INTO safety_log (id, actor_id, action, target_user_id, details, guild_id)
-         VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO safety_log (id, actor_id, action, target_user_id, details, guild_id, staff_tier, staff_perm)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(st.ids.next_id())
     .bind(actor)
@@ -468,6 +475,8 @@ pub(crate) async fn log_for_guild(
     .bind(target_user)
     .bind(&details)
     .bind(guild_id)
+    .bind(tier)
+    .bind(perm)
     .execute(&st.db)
     .await;
     if let Err(e) = result {
@@ -491,19 +500,12 @@ pub(crate) async fn guild_log(st: &AppState, guild_id: i64, limit: i64) -> AppRe
 /// "Suspend now" on a report (until reviewed).
 pub(crate) async fn suspend_pending_from_outhouses(
     st: &AppState,
-    me: i64,
+    me: &Actor,
     target: i64,
 ) -> AppResult<()> {
     let req = ActionRequest {
         action: "suspend_pending".into(),
-        text: None,
-        guild_id: None,
-        minutes: None,
-        days: None,
-        hide_messages: false,
-        attachment_id: None,
-        bracket: None,
-        exempt: None,
+        ..Default::default()
     };
     user_action(st, me, target, None, None, &req).await
 }
@@ -547,6 +549,58 @@ pub(crate) async fn require_owner(st: &AppState, user: &User) -> AppResult<()> {
     Ok(())
 }
 
+/// Can this actor open a report like this (see its snapshot)?
+fn can_open(a: &Actor, category: &str, source: &str) -> bool {
+    a.owner
+        || (a.can("reports")
+            && (category != CHILD_SAFETY || a.can("child_safety"))
+            && (source != IP_MATCH_SOURCE || a.can("same_ip")))
+}
+
+/// Does this report show in this actor's list at all?
+fn can_list(a: &Actor, source: &str) -> bool {
+    a.owner
+        || ((a.can("reports") || a.can("report_status"))
+            && (source != IP_MATCH_SOURCE || a.can("same_ip")))
+}
+
+/// The badge counts for a staff member: what they can act on.
+pub(crate) async fn counts_for(st: &AppState, a: &Actor) -> AppResult<Counts> {
+    if a.owner {
+        return counts(&st.db).await;
+    }
+    let rows: Vec<(i64, String, String, Option<i64>, Option<i64>, String)> = sqlx::query_as(
+        "SELECT id, status, category, reported_user_id, guild_id, source FROM reports WHERE status <> 'closed'",
+    )
+    .fetch_all(&st.db)
+    .await?;
+    let cc = ConflictCtx::load(&st.db, a).await?;
+    let mut c = Counts {
+        open: 0,
+        in_review: 0,
+        urgent: 0,
+        ip_matches: 0,
+    };
+    for (id, status, category, who, guild, source) in rows {
+        if !can_open(a, &category, &source) || cc.report(id, who, guild) {
+            continue;
+        }
+        if source == IP_MATCH_SOURCE {
+            c.ip_matches += 1;
+            continue;
+        }
+        if category == CHILD_SAFETY {
+            c.urgent += 1;
+        }
+        if status == "open" {
+            c.open += 1;
+        } else {
+            c.in_review += 1;
+        }
+    }
+    Ok(c)
+}
+
 #[derive(Serialize, sqlx::FromRow)]
 pub struct Counts {
     /// Reports nobody has looked at yet.
@@ -582,6 +636,37 @@ fn notify_owners(st: &AppState, alert: Option<i64>) {
         let (Ok(c), Ok(owners)) = (counts(&st.db).await, site_owner_ids(&st.db).await) else {
             return;
         };
+        // Staff with Reports see what they can act on (their own counts).
+        let mut urgent_staff = Vec::new();
+        let staff: Vec<i64> = sqlx::query_scalar("SELECT user_id FROM staff")
+            .fetch_all(&st.db)
+            .await
+            .unwrap_or_default();
+        for id in staff {
+            let Ok(user) = auth::fetch_user(&st.db, id).await else {
+                continue;
+            };
+            let Ok(Some(a)) = super::staff::actor_quiet(&st, user).await else {
+                continue;
+            };
+            if !(a.can("reports") || a.can("report_status")) {
+                continue;
+            }
+            if let Ok(sc) = counts_for(&st, &a).await {
+                st.dispatch(
+                    Audience::User(id),
+                    ServerEvent::ReportsChanged {
+                        open: sc.open,
+                        urgent: sc.urgent,
+                        alert: alert.is_some() && a.can("child_safety"),
+                        report_id: alert.filter(|_| a.can("child_safety")),
+                    },
+                );
+            }
+            if a.can("child_safety") {
+                urgent_staff.push(id);
+            }
+        }
         for &owner in &owners {
             st.dispatch(
                 Audience::User(owner),
@@ -606,7 +691,7 @@ fn notify_owners(st: &AppState, alert: Option<i64>) {
             "tag": "safety-report",
             "url": format!("/app?reports=1&report={report_id}"),
         });
-        for &owner in &owners {
+        for &owner in owners.iter().chain(urgent_staff.iter()) {
             if let Err(e) = crate::push::send_to_user(&st, owner, &payload).await {
                 tracing::warn!(error = %e, "safety push failed");
             }
@@ -625,7 +710,7 @@ pub const SUSPEND_NUDGE: &str = "Review and suspend the account now if in doubt.
 
 /// The deploy kit's alert settings (`ALERT_NTFY_URL`, `ALERT_WEBHOOK_URL`),
 /// if the server was given them.
-async fn external_alert(st: &AppState, title: &str, message: &str) {
+pub(crate) async fn external_alert(st: &AppState, title: &str, message: &str) {
     let get = |name: &str| {
         std::env::var(name)
             .ok()
@@ -1699,10 +1784,10 @@ pub async fn note_deleted(st: &AppState, message_id: i64, by: i64) {
 /// `GET /api/safety/summary`: counts for the owner's badge.
 pub async fn summary(
     State(st): State<AppState>,
-    AuthUser(user): AuthUser,
+    StaffActor(a): StaffActor,
 ) -> AppResult<Json<Counts>> {
-    require_owner(&st, &user).await?;
-    Ok(Json(counts(&st.db).await?))
+    a.require_any(&["reports", "report_status"])?;
+    Ok(Json(counts_for(&st, &a).await?))
 }
 
 #[derive(sqlx::FromRow)]
@@ -1841,6 +1926,127 @@ fn report_json(r: &ReportRow) -> Value {
     })
 }
 
+/// A report in a staff member's list: locked (status and category only)
+/// when they can't open it, or when it's a conflict of interest.
+fn report_json_for(r: &ReportRow, a: &Actor, cc: &ConflictCtx) -> Value {
+    let mut j = report_json(r);
+    let conflict = cc.report(r.id, r.reported_user_id, r.guild_id);
+    let open = can_open(a, &r.category, &r.source);
+    j["conflict"] = json!(conflict);
+    j["locked"] = json!(!open || conflict);
+    if !open || conflict {
+        for k in [
+            "preview",
+            "place",
+            "reported_user",
+            "message_id",
+            "guild_id",
+            "resolution",
+            "closed_by_name",
+        ] {
+            j[k] = Value::Null;
+        }
+        j["locked_reason"] = json!(if conflict {
+            super::staff::SOMEONE_ELSE
+        } else if r.category == CHILD_SAFETY && a.can("reports") {
+            "A child-safety report: a senior moderator or the site owner handles these."
+        } else {
+            "You can see that it exists and its status, not what was reported."
+        });
+    }
+    j
+}
+
+/// Refuses a report this actor can't open (or has a conflict with).
+async fn guard_report(st: &AppState, a: &Actor, r: &ReportRow) -> AppResult<()> {
+    if a.owner {
+        return Ok(());
+    }
+    if !can_open(a, &r.category, &r.source) {
+        return Err(AppError::Refused(
+            if r.category == CHILD_SAFETY && a.can("reports") {
+                "Child-safety reports are handled by a senior moderator or the site owner.".into()
+            } else {
+                "You don't have access to this report.".to_string()
+            },
+        ));
+    }
+    if ConflictCtx::load(&st.db, a)
+        .await?
+        .report(r.id, r.reported_user_id, r.guild_id)
+    {
+        return Err(AppError::Refused(super::staff::SOMEONE_ELSE.into()));
+    }
+    if let Some(who) = r.reported_user_id {
+        super::staff::guard_target(st, a, who).await?;
+    }
+    Ok(())
+}
+
+/// What a staff member may see of the report's details.
+async fn detail_for(st: &AppState, id: i64, a: &Actor) -> AppResult<Value> {
+    let mut d = detail_json(st, id).await?;
+    if a.owner {
+        return Ok(d);
+    }
+    d["police_links"] = json!([]);
+    if let Some(uid) = d["subject"]["id"]
+        .as_str()
+        .and_then(|x| x.parse::<i64>().ok())
+    {
+        d["subject"] = subject_for(st, uid, a).await?;
+    }
+    Ok(d)
+}
+
+/// Someone's history, trimmed to what this staff member may see.
+async fn subject_for(st: &AppState, user_id: i64, a: &Actor) -> AppResult<Value> {
+    let mut v = subject_json(st, user_id).await?;
+    if a.owner {
+        return Ok(v);
+    }
+    if let Some(o) = v.as_object_mut() {
+        if !a.can("reports") {
+            for k in [
+                "messages_30d",
+                "hidden_messages",
+                "bots",
+                "reports",
+                "reports_made",
+                "log",
+                "names",
+                "message_requests",
+                "suspended_reason",
+                "suspended_by",
+                "suspended_by_name",
+            ] {
+                o.remove(k);
+            }
+        }
+        if !a.can("ips") {
+            for k in [
+                "ip_block_exempt",
+                "ip_blocks",
+                "blocked_attempts",
+                "ip_note",
+            ] {
+                o.remove(k);
+            }
+        }
+        if let Some(s) = o.get_mut("sign_in").and_then(|s| s.as_object_mut()) {
+            s.remove("email_pending");
+        }
+        o.insert(
+            "protected".into(),
+            match super::staff::guard_target(st, a, user_id).await {
+                Ok(()) => Value::Null,
+                Err(e) => json!(e.to_string()),
+            },
+        );
+    }
+    Ok(v)
+}
+
 #[derive(Deserialize)]
 pub struct ListQuery {
     status: Option<String>,
@@ -1850,10 +2056,10 @@ pub struct ListQuery {
 /// then newest.
 pub async fn list(
     State(st): State<AppState>,
-    AuthUser(user): AuthUser,
+    StaffActor(a): StaffActor,
     Query(q): Query<ListQuery>,
 ) -> AppResult<Json<Value>> {
-    require_owner(&st, &user).await?;
+    a.require_any(&["reports", "report_status"])?;
     let status = match q.status.as_deref().unwrap_or("open") {
         s @ ("open" | "review" | "closed") => s.to_string(),
         _ => return Err(AppError::BadRequest("Unknown status.".into())),
@@ -1868,9 +2074,14 @@ pub async fn list(
         .bind(&status)
         .fetch_all(&st.db)
         .await?;
-    let c = counts(&st.db).await?;
+    let c = counts_for(&st, &a).await?;
+    let cc = ConflictCtx::load(&st.db, &a).await?;
     Ok(Json(json!({
-        "reports": rows.iter().map(report_json).collect::<Vec<_>>(),
+        "reports": rows
+            .iter()
+            .filter(|r| can_list(&a, &r.source))
+            .map(|r| report_json_for(r, &a, &cc))
+            .collect::<Vec<_>>(),
         "counts": c,
         "categories": CATEGORIES.iter().map(|(k, l)| json!({ "key": k, "label": l })).collect::<Vec<_>>(),
     })))
@@ -2191,10 +2402,11 @@ async fn detail_json(st: &AppState, id: i64) -> AppResult<Value> {
 /// `GET /api/safety/reports/{id}`
 pub async fn get(
     State(st): State<AppState>,
-    AuthUser(user): AuthUser,
+    StaffActor(a): StaffActor,
     Path(id): Path<i64>,
 ) -> AppResult<Json<Value>> {
-    require_owner(&st, &user).await?;
+    a.require("reports")?;
+    guard_report(&st, &a, &load_report(&st, id).await?).await?;
     // Opening it: the files' age estimates (and the age rule) are checked.
     let open: Option<bool> =
         sqlx::query_scalar("SELECT status <> 'closed' FROM reports WHERE id = $1")
@@ -2204,18 +2416,19 @@ pub async fn get(
     if open == Some(true) {
         super::detector::check_report(&st, id).await;
     }
-    Ok(Json(detail_json(&st, id).await?))
+    Ok(Json(detail_for(&st, id, &a).await?))
 }
 
 /// `GET /api/safety/reports/{id}/files/{key}`: a reported file, for the
 /// owner, unless it's child-safety evidence (never shown) or quarantined.
 pub async fn report_file(
     State(st): State<AppState>,
-    AuthUser(user): AuthUser,
+    StaffActor(a): StaffActor,
     Path((id, key)): Path<(i64, String)>,
 ) -> AppResult<Response> {
-    require_owner(&st, &user).await?;
+    a.require("reports")?;
     let r = load_report(&st, id).await?;
+    guard_report(&st, &a, &r).await?;
     if r.category == CHILD_SAFETY {
         return Err(AppError::Removed);
     }
@@ -2257,6 +2470,27 @@ pub struct ActionRequest {
     /// "Allow from blocked networks"
     #[serde(default)]
     exempt: Option<bool>,
+    /// Already counted towards the staff member's hourly cap (an approved request).
+    #[serde(skip)]
+    precharged: bool,
+}
+
+/// Makes a suspension permanent (an approved staff request, or the owner's
+/// "Make permanent and block" in one go).
+pub(crate) async fn make_permanent(
+    st: &AppState,
+    a: &Actor,
+    target: i64,
+    reason: &str,
+    report: Option<i64>,
+) -> AppResult<()> {
+    let req = ActionRequest {
+        action: "make_permanent".into(),
+        text: Some(reason.to_string()),
+        precharged: true,
+        ..Default::default()
+    };
+    user_action(st, a, target, report, None, &req).await
 }
 
 fn clean_text(text: &Option<String>, max: usize) -> String {
@@ -2271,13 +2505,37 @@ fn clean_text(text: &Option<String>, max: usize) -> String {
 /// `POST /api/safety/reports/{id}/actions`
 pub async fn report_action(
     State(st): State<AppState>,
-    AuthUser(user): AuthUser,
+    StaffActor(a): StaffActor,
     Path(id): Path<i64>,
     Json(req): Json<ActionRequest>,
 ) -> AppResult<Json<Value>> {
-    require_owner(&st, &user).await?;
     let r = load_report(&st, id).await?;
-    let me = user.id;
+    let me = a.id();
+    // Staff: the permission each action needs, then conflicts of interest.
+    match req.action.as_str() {
+        "review" | "reopen" | "dismiss" | "close" | "note" => {
+            a.require(if r.category == CHILD_SAFETY {
+                "child_safety"
+            } else {
+                "reports"
+            })?
+        }
+        "delete_message" | "remove_attachment" => {
+            a.require("hide_messages")?;
+            super::staff::charge(&st, &a, false).await?;
+        }
+        "approve_file" | "keep_blurred" | "remove_file" => {
+            if r.category == CHILD_SAFETY && !a.owner {
+                return Err(AppError::Refused(
+                    "Child-safety files are never shown or released by staff.".into(),
+                ));
+            }
+            a.require("detector")?;
+        }
+        "delete_evidence" => a.require_owner()?,
+        _ => a.require("reports")?,
+    }
+    guard_report(&st, &a, &r).await?;
     match req.action.as_str() {
         "review" => {
             sqlx::query("UPDATE reports SET status = 'review', updated_at = now() WHERE id = $1 AND status = 'open'")
@@ -2467,7 +2725,7 @@ pub async fn report_action(
                 )
             })?;
             let guild = req.guild_id.or(r.guild_id);
-            user_action(&st, me, target, Some(id), guild, &req).await?;
+            user_action(&st, &a, target, Some(id), guild, &req).await?;
         }
     }
     // Doing something about an open report puts it in review.
@@ -2481,29 +2739,90 @@ pub async fn report_action(
             .await?;
     }
     notify_owners(&st, None);
-    Ok(Json(detail_json(&st, id).await?))
+    Ok(Json(detail_for(&st, id, &a).await?))
 }
 
 /// `POST /api/safety/users/{id}/actions`: the same account actions without a report.
 pub async fn user_action_route(
     State(st): State<AppState>,
-    AuthUser(user): AuthUser,
+    StaffActor(a): StaffActor,
     Path(target): Path<i64>,
     Json(req): Json<ActionRequest>,
 ) -> AppResult<Json<Value>> {
-    require_owner(&st, &user).await?;
-    user_action(&st, user.id, target, None, req.guild_id, &req).await?;
-    Ok(Json(subject_json(&st, target).await?))
+    user_action(&st, &a, target, None, req.guild_id, &req).await?;
+    Ok(Json(subject_for(&st, target, &a).await?))
+}
+
+/// The permission an account action needs, and whether it counts as a
+/// "heavy" action for the hourly caps (None: not capped).
+async fn action_perm(
+    st: &AppState,
+    req: &ActionRequest,
+    target: i64,
+) -> AppResult<(&'static str, Option<bool>)> {
+    Ok(match req.action.as_str() {
+        "note" => ("people", None),
+        "warn" => ("warn", Some(false)),
+        "timeout" | "kick" => ("timeout", Some(false)),
+        "ban" => ("suspend_7d", Some(false)),
+        "suspend" => match req.days.filter(|d| *d > 0) {
+            Some(d) if d <= 7 => ("suspend_7d", Some(false)),
+            _ => ("suspend_permanent", Some(true)),
+        },
+        "suspend_pending" => ("child_safety", Some(false)),
+        "make_permanent" => ("suspend_permanent", Some(true)),
+        "unsuspend" => {
+            // Lifting a permanent or "until reviewed" suspension is a senior's job.
+            let big: bool = sqlx::query_scalar(
+                "SELECT COALESCE(suspension_pending OR suspended_until >= '9999-01-01', false) FROM users WHERE id = $1",
+            )
+            .bind(target)
+            .fetch_optional(&st.db)
+            .await?
+            .unwrap_or(false);
+            (
+                if big {
+                    "suspend_permanent"
+                } else {
+                    "suspend_7d"
+                },
+                Some(false),
+            )
+        }
+        "hide_messages" | "unhide_messages" => ("hide_messages", Some(false)),
+        "set_ip_exempt" => ("ips", None),
+        _ => ("owner", None),
+    })
 }
 
 async fn user_action(
     st: &AppState,
-    me: i64,
+    a: &Actor,
     target: i64,
     report: Option<i64>,
     guild: Option<i64>,
     req: &ActionRequest,
 ) -> AppResult<()> {
+    let me = a.id();
+    let (perm, capped) = action_perm(st, req, target).await?;
+    if perm == "owner" {
+        a.require_owner()?;
+    } else {
+        a.require(perm)?;
+    }
+    super::staff::guard_target(st, a, target).await?;
+    // Outhouse actions: not in an outhouse they own or moderate.
+    if matches!(req.action.as_str(), "timeout" | "kick" | "ban") {
+        if let Some(g) = guild {
+            super::staff::guard_guild(st, a, g).await?;
+        }
+    }
+    if let Some(heavy) = capped.filter(|_| !req.precharged) {
+        super::staff::charge(st, a, heavy).await?;
+    }
+    // In outhouse audit logs, staff show as Outhouse Safety (not by name).
+    let audit_actor = if a.owner { me } else { safety_bot(st).await? };
+    let by_staff = !a.owner;
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
         .bind(target)
         .fetch_one(&st.db)
@@ -2537,7 +2856,8 @@ async fn user_action(
                 st,
                 target,
                 format!(
-                    "⚠️ **A warning from Outhouse Safety**\n{text}\n\nPlease help keep Outhouse safe and friendly for everyone. Breaking the rules again can get your account suspended."
+                    "⚠️ **A warning from Outhouse Safety**{}\n{text}\n\nPlease help keep Outhouse safe and friendly for everyone. Breaking the rules again can get your account suspended.",
+                    if by_staff { " (by Outhouse staff)" } else { "" }
                 ),
             )
             .await?;
@@ -2582,7 +2902,7 @@ async fn user_action(
                         Audience::Guild(guild_id),
                         ServerEvent::GuildRefresh { guild_id },
                     );
-                    crate::audit::Entry::new(guild_id, me, "member_timeout")
+                    crate::audit::Entry::new(guild_id, audit_actor, "member_timeout")
                         .target("member", target, name)
                         .details(format!("For {minutes} minutes (Outhouse Safety)"))
                         .save(st)
@@ -2599,7 +2919,7 @@ async fn user_action(
                 }
                 "kick" => {
                     super::guilds::remove_member(st, guild_id, target).await?;
-                    crate::audit::Entry::new(guild_id, me, "member_kick")
+                    crate::audit::Entry::new(guild_id, audit_actor, "member_kick")
                         .target("member", target, name)
                         .details("Outhouse Safety")
                         .save(st)
@@ -2627,11 +2947,11 @@ async fn user_action(
                     .bind(guild_id)
                     .bind(target)
                     .bind(&stored)
-                    .bind(me)
+                    .bind(audit_actor)
                     .execute(&st.db)
                     .await?;
                     super::guilds::remove_member(st, guild_id, target).await?;
-                    crate::audit::Entry::new(guild_id, me, "member_ban")
+                    crate::audit::Entry::new(guild_id, audit_actor, "member_ban")
                         .target("member", target, name)
                         .details(format!("Reason: {stored}"))
                         .save(st)
@@ -2657,7 +2977,17 @@ async fn user_action(
             }
             let days = req.days.filter(|d| *d > 0).map(|d| d.min(3650) as i32);
             let reason = clean_text(&req.text, 500);
-            suspend(st, me, target, days, &reason, req.hide_messages, false).await?;
+            suspend(
+                st,
+                me,
+                target,
+                days,
+                &reason,
+                req.hide_messages,
+                false,
+                by_staff,
+            )
+            .await?;
             let how = match days {
                 Some(d) => format!("for {d} day{}", if d == 1 { "" } else { "s" }),
                 None => "permanently".into(),
@@ -2703,7 +3033,7 @@ async fn user_action(
             if already {
                 return Err(AppError::BadRequest("They're already suspended.".into()));
             }
-            suspend(st, me, target, None, PENDING_REASON, false, true).await?;
+            suspend(st, me, target, None, PENDING_REASON, false, true, by_staff).await?;
             log(
                 st,
                 Some(me),
@@ -2718,12 +3048,13 @@ async fn user_action(
             let reason = clean_text(&req.text, 500);
             let changed = sqlx::query(
                 "UPDATE users SET suspended_until = $2::TIMESTAMPTZ, suspension_pending = false,
-                        suspended_reason = NULLIF($3, '')
+                        suspended_reason = NULLIF($3, ''), suspended_by_staff = $4
                  WHERE id = $1 AND suspended_until > now()",
             )
             .bind(target)
             .bind(FOREVER)
             .bind(&reason)
+            .bind(by_staff)
             .execute(&st.db)
             .await?
             .rows_affected();
@@ -2747,7 +3078,8 @@ async fn user_action(
         "unsuspend" => {
             sqlx::query(
                 "UPDATE users SET suspended_until = NULL, suspended_reason = NULL,
-                        suspended_at = NULL, suspended_by = NULL, suspension_pending = false
+                        suspended_at = NULL, suspended_by = NULL, suspension_pending = false,
+                        suspended_by_staff = false
                  WHERE id = $1",
             )
             .bind(target)
@@ -2853,12 +3185,14 @@ async fn suspend(
     reason: &str,
     hide: bool,
     pending: bool,
+    by_staff: bool,
 ) -> AppResult<()> {
     sqlx::query(
         "UPDATE users SET suspended_until = CASE WHEN $2::INT IS NULL THEN $4::TIMESTAMPTZ
                                                  ELSE now() + make_interval(days => $2::INT) END,
                 suspended_reason = NULLIF($3, ''),
-                suspended_at = now(), suspended_by = $5, suspension_pending = $6
+                suspended_at = now(), suspended_by = $5, suspension_pending = $6,
+                suspended_by_staff = $7
          WHERE id = $1",
     )
     .bind(target)
@@ -2867,6 +3201,7 @@ async fn suspend(
     .bind(FOREVER)
     .bind(by)
     .bind(pending)
+    .bind(by_staff)
     .execute(&st.db)
     .await?;
     sqlx::query("DELETE FROM sessions WHERE user_id = $1")
@@ -3194,10 +3529,10 @@ pub struct UserQuery {
 /// `GET /api/safety/users?q=`: find someone by name.
 pub async fn find_users(
     State(st): State<AppState>,
-    AuthUser(user): AuthUser,
+    StaffActor(a): StaffActor,
     Query(q): Query<UserQuery>,
 ) -> AppResult<Json<Value>> {
-    require_owner(&st, &user).await?;
+    a.require("people")?;
     let text = q.q.unwrap_or_default().trim().to_lowercase();
     let pattern = format!(
         "%{}%",
@@ -3226,11 +3561,59 @@ pub async fn find_users(
 /// `GET /api/safety/users/{id}`
 pub async fn get_user(
     State(st): State<AppState>,
-    AuthUser(user): AuthUser,
+    StaffActor(a): StaffActor,
     Path(id): Path<i64>,
 ) -> AppResult<Json<Value>> {
-    require_owner(&st, &user).await?;
-    Ok(Json(subject_json(&st, id).await?))
+    a.require("people")?;
+    Ok(Json(subject_for(&st, id, &a).await?))
+}
+
+/// `GET /api/safety/users/{id}/same-ip`: accounts seen on the same IP
+/// addresses as this one, without the addresses (moderators). Logged.
+pub async fn same_ip(
+    State(st): State<AppState>,
+    StaffActor(a): StaffActor,
+    Path(id): Path<i64>,
+) -> AppResult<Json<Value>> {
+    a.require("same_ip")?;
+    let username: String = sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&st.db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let rows: Vec<(i64, String, String, bool, Vec<String>, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT u.id, u.username, u.display_name, COALESCE(u.suspended_until > now(), false),
+                ARRAY(SELECT g.name FROM bans b JOIN guilds g ON g.id = b.guild_id
+                      WHERE b.user_id = u.id ORDER BY lower(g.name)),
+                max(o.last_seen)
+         FROM user_ips mine
+         JOIN user_ips o ON o.ip = mine.ip AND o.user_id <> mine.user_id
+         JOIN users u ON u.id = o.user_id
+         WHERE mine.user_id = $1 AND NOT u.is_bot
+         GROUP BY u.id ORDER BY max(o.last_seen) DESC LIMIT 100",
+    )
+    .bind(id)
+    .fetch_all(&st.db)
+    .await?;
+    log(
+        &st,
+        Some(a.id()),
+        "view_same_ip",
+        None,
+        Some(id),
+        format!("Looked at same-IP hints for @{username} (accounts only, no addresses)"),
+    )
+    .await;
+    Ok(Json(json!({
+        "user_id": id.to_string(),
+        "match": !rows.is_empty(),
+        "note": "Shared IP addresses are common (households, mobile networks and VPNs), so a match is a hint, not proof.",
+        "accounts": rows.iter().map(|(uid, username, name, suspended, banned, seen)| json!({
+            "id": uid.to_string(), "username": username, "display_name": name,
+            "suspended": suspended, "banned_in": banned, "flagged": *suspended || !banned.is_empty(),
+            "last_seen": seen,
+        })).collect::<Vec<_>>(),
+    })))
 }
 
 #[derive(sqlx::FromRow)]
@@ -3260,10 +3643,11 @@ struct SameIpRow {
 /// the safety log).
 pub async fn user_ips(
     State(st): State<AppState>,
-    AuthUser(user): AuthUser,
+    StaffActor(a): StaffActor,
     Path(id): Path<i64>,
 ) -> AppResult<Json<Value>> {
-    require_owner(&st, &user).await?;
+    a.require("ips")?;
+    let user = &a.user;
     let (username, is_bot): (String, bool) =
         sqlx::query_as("SELECT username, is_bot FROM users WHERE id = $1")
             .bind(id)
@@ -3461,11 +3845,13 @@ pub struct FamilyUpdate {
 /// `PUT /api/safety/guilds/{id}/family` `{"family": true}`
 pub async fn set_family(
     State(st): State<AppState>,
-    AuthUser(user): AuthUser,
+    StaffActor(a): StaffActor,
     Path(guild_id): Path<i64>,
     Json(req): Json<FamilyUpdate>,
 ) -> AppResult<StatusCode> {
-    require_owner(&st, &user).await?;
+    a.require("family")?;
+    super::staff::guard_guild(&st, &a, guild_id).await?;
+    let user = &a.user;
     let name: String =
         sqlx::query_scalar("UPDATE guilds SET family = $2 WHERE id = $1 RETURNING name")
             .bind(guild_id)
@@ -3516,8 +3902,10 @@ async fn digest_json(db: &PgPool) -> AppResult<Value> {
     )
     .fetch_all(db)
     .await?;
+    let staff = super::staff::week_summary(db).await?;
     Ok(json!({
         "days": 7,
+        "staff_activity": staff,
         "outhouses_shut_down": shut,
         "new_accounts": accounts.iter().map(|(id, username, name, bracket, at)| json!({
             "id": id.to_string(), "username": username, "display_name": name,
@@ -3624,6 +4012,33 @@ async fn send_digest_if_due(st: &AppState) -> AppResult<()> {
             n => format!("\n• Outhouses shut down: {n}"),
         },
     );
+    let staff: Vec<String> = d["staff_activity"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|s| {
+            format!(
+                "@{} ({}): {} action{}{}",
+                s["username"].as_str().unwrap_or(""),
+                s["tier_label"].as_str().unwrap_or(""),
+                s["actions"],
+                if s["actions"] == 1 { "" } else { "s" },
+                match s["big_actions"].as_i64().unwrap_or(0) {
+                    0 => String::new(),
+                    n => format!(", {n} big"),
+                }
+            )
+        })
+        .collect();
+    let content = if staff.is_empty() {
+        content
+    } else {
+        format!(
+            "{content}\n• Staff activity: {}. Details: User settings → Staff activity.",
+            staff.join("; ")
+        )
+    };
     for owner in site_owner_ids(&st.db).await? {
         if let Err(e) = safety_dm(st, owner, content.clone()).await {
             tracing::warn!(error = %e, "couldn't send the safety digest");

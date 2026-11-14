@@ -66,6 +66,12 @@ pub enum ServerEvent {
     /// Your mentions changed (a new one, or some were read): re-fetch the
     /// count and any open inbox (sent to you only).
     MentionsChanged,
+    /// Your staff powers (or the staff list, or a request waiting for
+    /// approval) changed: re-fetch `/api/users/@me/site-owner` (sent to you only).
+    StaffChanged,
+    /// An outhouse ownership transfer involving you changed: re-fetch
+    /// `/api/users/@me/transfers` (sent to you only).
+    TransfersChanged,
     /// Roles, member roles or channel permissions changed: re-fetch
     /// channels, roles, members and your permissions.
     GuildRefresh {

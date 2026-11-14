@@ -134,7 +134,7 @@ fn too_many_codes() -> AppError {
 
 /// Checks a code for an action on your own account (turning two-factor
 /// off, new recovery codes), with the same per-account limit as sign-in.
-async fn require_code(st: &AppState, user_id: i64, code: &str) -> AppResult<Factor> {
+pub(crate) async fn require_code(st: &AppState, user_id: i64, code: &str) -> AppResult<Factor> {
     let limits = security::get().rate_limits;
     let lim = security::limiter();
     if limits && lim.is_limited(&account_key(user_id), ACCOUNT_FAILS, security::LOGIN_WINDOW) {
@@ -153,7 +153,7 @@ async fn require_code(st: &AppState, user_id: i64, code: &str) -> AppResult<Fact
     }
 }
 
-async fn require_password(db: &PgPool, user_id: i64, password: &str) -> AppResult<()> {
+pub(crate) async fn require_password(db: &PgPool, user_id: i64, password: &str) -> AppResult<()> {
     let hash: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
         .bind(user_id)
         .fetch_one(db)
@@ -412,6 +412,7 @@ pub async fn login_code(
     }
     let user = auth::fetch_user(&st.db, user_id).await?;
     let token = auth::create_session(&st.db, user.id).await?;
+    super::staff::mark_session_mfa(&st.db, &token).await?;
     crate::ips::signed_in(&st, user.id, &token, ip, crate::ips::Kind::Login).await;
     let mut res = Json(AuthResponse { token, user }).into_response();
     if let Some(days) = req.trust_days.filter(|d| TRUST_DAYS.contains(d)) {
@@ -601,6 +602,11 @@ pub async fn confirm(
         return Err(AppError::BadRequest("Two-factor is already on.".into()));
     }
     let codes = store_recovery_codes(&st.db, user.id).await?;
+    // This sign-in just gave a right code: it counts as a two-factor session.
+    if let Some(token) = auth::bearer_token(&headers) {
+        super::staff::mark_session_mfa(&st.db, token).await?;
+    }
+    super::staff::recheck(&st, user.id).await;
     super::safety::log_action(
         &st,
         Some(user.id),
@@ -626,7 +632,6 @@ pub async fn confirm(
         ],
     )
     .await;
-    let _ = headers;
     Ok(Json(json!({ "enabled": true, "recovery_codes": codes })))
 }
 
@@ -694,6 +699,7 @@ pub async fn disable(
     require_password(&st.db, user.id, &req.password).await?;
     require_code(&st, user.id, &req.code).await?;
     turn_off(&st.db, user.id).await?;
+    super::staff::recheck(&st, user.id).await;
     super::safety::log_action(
         &st,
         Some(user.id),
@@ -763,11 +769,13 @@ pub struct RemoveBody {
 /// their phone and their recovery codes. Logged, and they get an email.
 pub async fn owner_remove(
     State(st): State<AppState>,
-    AuthUser(me): AuthUser,
+    super::staff::StaffActor(a): super::staff::StaffActor,
     Path(target): Path<i64>,
     Json(req): Json<RemoveBody>,
 ) -> AppResult<Json<Value>> {
-    super::safety::require_owner(&st, &me).await?;
+    a.require("account_help")?;
+    super::staff::guard_target(&st, &a, target).await?;
+    let me = &a.user;
     let reason: String = req.reason.trim().chars().take(300).collect();
     if reason.is_empty() {
         return Err(AppError::BadRequest(
@@ -800,11 +808,15 @@ pub async fn owner_remove(
         "Two-factor sign-in was removed from your account",
         vec![
             format!("Hi {display_name},"),
-            format!("The site owner turned off two-factor sign-in for @{username}. Their note: \"{reason}\""),
+            format!(
+                "{} turned off two-factor sign-in for @{username}. Their note: \"{reason}\"",
+                if a.owner { "The site owner" } else { "Outhouse staff" }
+            ),
             "You can sign in with just your password now. Please turn two-factor back on in Settings → My account. If you didn't ask for this, reset your password and contact the server owner.".into(),
         ],
     )
     .await;
+    super::staff::recheck(&st, target).await;
     Ok(Json(json!({ "ok": true })))
 }
 

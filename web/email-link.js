@@ -2,6 +2,8 @@
 //   /reset?token=…         choose a new password (and, with two-factor on,
 //                          give a code from the app or a recovery code)
 //   /verify-email?token=…  confirm an email address
+//   /confirm-transfer?token=…  an outhouse owner confirms handing it over
+//                          (staff-assisted transfer, api/transfers.rs)
 // It works in any browser and in the Windows/Android apps' webview. The
 // token is taken out of the address bar straight away (so it isn't left in
 // history), and the page sends no Referer anywhere.
@@ -11,6 +13,7 @@
   const params = new URLSearchParams(location.search);
   const token = (params.get("token") || "").trim();
   const reset = location.pathname.replace(/\/+$/, "") === "/reset";
+  const transfer = location.pathname.replace(/\/+$/, "") === "/confirm-transfer";
   history.replaceState(null, "", location.pathname);
 
   const card = document.getElementById("card");
@@ -108,6 +111,39 @@
 
   if (!/^[0-9a-f]{64}$/i.test(token)) {
     failed("The link is incomplete. Open it straight from the email, or copy the whole link.");
+    return;
+  }
+
+  // ---------- confirming an outhouse transfer ----------
+  if (transfer) {
+    document.title = "Confirm the transfer · Outhouse";
+    status.textContent = "Checking the link…";
+    post("/api/transfers/confirm-owner/check", { token })
+      .then((info) => {
+        const yes = el("button", { type: "button", class: "primary" }, `Yes, transfer it to @${info.to_username}`);
+        const error = el("p", { class: "error", role: "alert" });
+        yes.addEventListener("click", async () => {
+          yes.disabled = true;
+          error.textContent = "";
+          try {
+            const r = await post("/api/transfers/confirm-owner", { token });
+            document.title = "Transfer confirmed · Outhouse";
+            show(el("div", { class: "done-icon", "aria-hidden": "true" }, "🔑"),
+              el("h2", { class: "auth-step-title" }, "Transfer confirmed"),
+              el("p", { class: "muted" }, `Thanks. @${r.to_username} now has 7 days to accept ownership of ${r.guild_name}. Until they do, it's still yours.`),
+              openLink());
+          } catch (err) {
+            error.textContent = err.message;
+            yes.disabled = false;
+          }
+        });
+        show(el("h2", { class: "auth-step-title" }, "Confirm the transfer"),
+          el("p", {}, `Confirm you want to transfer ${info.guild_name} to @${info.to_username}${info.to_display_name ? ` (${info.to_display_name})` : ""}.`),
+          el("p", { class: "muted small" }, "They get full control of it: settings, roles, channels and members. You lose your owner powers. This link works once."),
+          error, yes,
+          el("p", { class: "muted small" }, "Didn't ask for this? Just close this page: nothing changes. Please tell the site owner."));
+      })
+      .catch((err) => failed(err.message));
     return;
   }
 

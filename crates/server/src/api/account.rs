@@ -276,6 +276,10 @@ pub async fn login(
     }
     let user = auth::fetch_user(&st.db, row.id).await?;
     let token = auth::create_session(&st.db, user.id).await?;
+    // Two-factor on and no code step: a trusted device (that counts).
+    if super::twofactor::is_enabled(&st.db, user.id).await? {
+        super::staff::mark_session_mfa(&st.db, &token).await?;
+    }
     crate::ips::signed_in(&st, user.id, &token, ip, crate::ips::Kind::Login).await;
     Ok(Json(AuthResponse { token, user }).into_response())
 }

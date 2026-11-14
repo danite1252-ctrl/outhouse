@@ -447,6 +447,8 @@ pub async fn full(
         "bot": row.is_bot,
         "self": is_self,
         "site_owner_view": owner && !is_self,
+        // The owner can choose to show a small "Staff" badge (off by default).
+        "staff_badge": super::staff::public_badge(db, user_id).await,
         "relationship": relationship,
     });
     let obj = out.as_object_mut().expect("an object");

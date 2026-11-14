@@ -336,16 +336,28 @@ pub async fn is_site_owner(db: &sqlx::PgPool, user_id: i64) -> AppResult<bool> {
 #[derive(Serialize)]
 pub struct SiteOwner {
     pub site_owner: bool,
+    /// Site staff: tier, permissions, whether they work in this session.
+    pub staff: Option<serde_json::Value>,
 }
 
 /// `GET /api/users/@me/site-owner`: lets the app decide whether to show the
-/// Server status page.
+/// SITE OWNER (or STAFF) pages.
 pub async fn site_owner(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
+    headers: axum::http::HeaderMap,
 ) -> AppResult<Json<SiteOwner>> {
+    let token = crate::auth::bearer_token(&headers)
+        .unwrap_or("")
+        .to_string();
+    let owner = is_site_owner(&st.db, user.id).await?;
     Ok(Json(SiteOwner {
-        site_owner: is_site_owner(&st.db, user.id).await?,
+        site_owner: owner,
+        staff: if owner || user.bot {
+            None
+        } else {
+            super::staff::my_staff_json(&st, user.id, &token).await?
+        },
     }))
 }
 

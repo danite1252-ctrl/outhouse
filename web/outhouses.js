@@ -87,8 +87,8 @@ async function drawOuthouseDetail(page, id, ctx) {
   const item = (label, value, cls = "") => el("div", { class: `status-item ${cls}` }, el("div", { class: "status-label" }, label), el("div", { class: "status-value" }, value));
   const shutDown = async () => {
     const out = await formDialog(`Shut down ${d.name}?`, [
-      { name: "reason", label: "Why (only you see this; it's kept in the safety log)", type: "textarea", max: 500, placeholder: "e.g. Spam outhouse, reported by several people" },
-      d.owner.id !== state.me.id ? { name: "suspend", label: `Also suspend the owner, @${d.owner.username} (until you review it)`, type: "checkbox" } : null,
+      { name: "reason", label: sOwner() ? "Why (only you see this; it's kept in the safety log)" : "Why (only the site owner and staff see this; it's kept in the safety log)", type: "textarea", max: 500, placeholder: "e.g. Spam outhouse, reported by several people" },
+      d.owner.id !== state.me.id && sCan("child_safety") ? { name: "suspend", label: `Also suspend the owner, @${d.owner.username} (until you review it)`, type: "checkbox" } : null,
     ].filter(Boolean), "Shut down", {
       danger: true,
       intro: `Nobody can post, join, talk or make invites in it. It disappears from the outhouse list of everyone in it (${scPlural(d.members, "member")}), and they're told “${SHUT_DOWN_TEXT}” Everything in it is kept as evidence until you delete it for good. You can restore it.`,
@@ -96,6 +96,7 @@ async function drawOuthouseDetail(page, id, ctx) {
     if (!out) return;
     if (!out.reason) return toast("Write why it's being shut down.");
     const r = await outhouseAction(id, { action: "shut_down", reason: out.reason, suspend_owner: !!out.suspend });
+    if (r && pendingToast(r.pending_approval)) { redraw(); return; }
     if (r) { toast(`${d.name} is shut down.`); redraw(); }
   };
   const deleteForGood = async () => {
@@ -110,10 +111,15 @@ async function drawOuthouseDetail(page, id, ctx) {
     if (r?.deleted) { toast(`${d.name} was deleted.`); ctx.draw("outhouses"); }
   };
   const blockers = d.open_reports || d.live_police_links;
-  const actions = el("div", { class: "fp-actions dir-actions" },
-    el("button", { type: "button", class: "primary", onclick: () => page.querySelector("#dir-channels")?.scrollIntoView({ behavior: "smooth", block: "start" }) }, "Open as owner"),
-    el("button", { type: "button", class: "ghost", onclick: async () => { if (await outhouseAction(id, { action: "family", family: !d.family })) redraw(); } }, d.family ? "Unmark family" : "Mark as family"),
-    d.shut_down
+  // Staff: only what their permissions allow, never for an outhouse they
+  // own or moderate; looking inside only while a report is open.
+  const look = sCan("outhouse_look") && (sOwner() || d.open_reports > 0);
+  const actions = d.conflict ? null : el("div", { class: "fp-actions dir-actions" },
+    look ? el("button", { type: "button", class: "primary", onclick: () => page.querySelector("#dir-channels")?.scrollIntoView({ behavior: "smooth", block: "start" }) }, sOwner() ? "Open as owner" : "Look inside") : null,
+    sCan("family") ? el("button", { type: "button", class: "ghost", onclick: async () => { if (await outhouseAction(id, { action: "family", family: !d.family })) redraw(); } }, d.family ? "Unmark family" : "Mark as family") : null,
+    sCan("transfers") && !d.shut_down && typeof openStaffTransferDialog === "function"
+      ? el("button", { type: "button", class: "ghost dir-transfer-btn", disabled: !!d.transfer, title: d.transfer ? "A transfer is already under way" : "", onclick: () => openStaffTransferDialog(d, redraw) }, "Transfer ownership…") : null,
+    !sCan("shut_down") ? null : d.shut_down
       ? [el("button", { type: "button", class: "ghost", onclick: async () => {
         let body = { action: "restore" };
         if (d.members_removed_at) {
@@ -126,7 +132,7 @@ async function drawOuthouseDetail(page, id, ctx) {
         }
         if (await outhouseAction(id, body)) { toast(`${d.name} is open again.`); redraw(); }
       } }, "Restore"),
-        el("button", { type: "button", class: "danger-btn", disabled: !!blockers, title: blockers ? "Close its open reports (and wait for police links) first" : "", onclick: deleteForGood }, "Delete permanently")]
+        sOwner() ? el("button", { type: "button", class: "danger-btn", disabled: !!blockers, title: blockers ? "Close its open reports (and wait for police links) first" : "", onclick: deleteForGood }, "Delete permanently") : null]
       : el("button", { type: "button", class: "danger-btn dir-shut-btn", onclick: shutDown }, "Shut down outhouse"));
   page.replaceChildren(
     back,
@@ -142,22 +148,26 @@ async function drawOuthouseDetail(page, id, ctx) {
         ? `Members removed on ${scWhen(d.members_removed_at)} (who they were is listed below).`
         : `Members keep it on their list (closed) until ${scWhen(d.members_remove_at)}, then they're removed.`),
       blockers ? el("div", { class: "small" }, `Can't be deleted yet: ${d.open_reports ? scPlural(d.open_reports, "open report") : ""}${d.open_reports && d.live_police_links ? " and " : ""}${d.live_police_links ? "a live police download link" : ""}.`) : null) : null,
+    d.conflict ? el("div", { class: "sc-urgent-banner dir-conflict", role: "status" }, el("strong", {}, "Someone else needs to handle this."), " You own or moderate this outhouse, so staff actions on it are for someone else.") : null,
     actions,
+    d.transfer && typeof transferStatusPanel === "function" ? transferStatusPanel(d.transfer, redraw) : null,
     el("div", { class: "status-grid" },
-      item("Owner", el("button", { type: "button", class: "link dir-owner", onclick: () => ctx.openUser(d.owner.id) }, `${d.owner.display_name} (@${d.owner.username})`), d.owner.suspended ? "bad" : ""),
+      item("Owner", el("button", { type: "button", class: "link dir-owner", onclick: () => (sCan("people") ? ctx.openUser(d.owner.id) : null) }, `${d.owner.display_name} (@${d.owner.username})`), d.owner.suspended ? "bad" : ""),
+      item("Owner last active", d.owner.online ? "Online now" : d.owner.last_active_at ? `${scWhen(d.owner.last_active_at)} (${scPlural(d.owner.inactive_days, "day")} ago)` : "Unknown",
+        d.owner.inactive_days >= (d.transfer_rules?.inactive_days ?? 90) ? "warn" : ""),
       item("Members", `${d.members} · ${d.online} online now`),
       item("Messages", `${d.messages_7d} this week · ${d.messages_30d} in 30 days`),
       item("Channels", String(d.channels)),
       item("Open reports", String(d.open_reports), d.open_reports ? "warn" : "good"),
       item("Image detector", d.detector_enabled ? "On" : "Off", d.detector_enabled ? "good" : "warn")),
-    scSection("Channels (read-only, as the site owner)",
+    !look ? null : scSection(sOwner() ? "Channels (read-only, as the site owner)" : "Channels (read-only, because a report is open)",
       el("p", { class: "muted small", style: "margin:0" }, "Look without joining. Every look goes in the safety log. Messages held for a safety review stay hidden, and quarantined files are never shown."),
       el("div", { class: "sc-list", id: "dir-channels" }, d.channels_list.map((c) => c.kind === 2
         ? el("div", { class: "sc-row static dir-ch" }, el("span", {}, `🔈 ${c.name}`), el("span", { class: "muted small" }, "voice"))
         : el("button", { type: "button", class: "sc-row dir-ch", "data-channel": c.id, onclick: () => drawOwnerChannel(page, d, c, ctx) },
           el("span", {}, `# ${c.name}`), el("span", { class: "muted small" }, `${scPlural(c.messages, "message")}${c.last_message_at ? ` · last ${scWhen(c.last_message_at)}` : ""}`))))),
     scSection(`Members (${d.members_list.length})`,
-      el("div", { class: "sc-list" }, d.members_list.map((m) => el("button", { type: "button", class: "sc-row dir-member", onclick: () => (m.bot ? null : ctx.openUser(m.id)) },
+      el("div", { class: "sc-list" }, d.members_list.map((m) => el("button", { type: "button", class: "sc-row dir-member", onclick: () => (m.bot || !sCan("people") ? null : ctx.openUser(m.id)) },
         el("div", { class: "sc-row-who" },
           el("strong", {}, m.display_name), el("span", { class: "muted" }, ` @${m.username}`),
           m.owner ? el("span", { class: "rp-chip" }, "Owner") : null,
@@ -171,7 +181,7 @@ async function drawOuthouseDetail(page, id, ctx) {
           m.bot ? el("span", { class: "rp-chip" }, "Bot") : m.age_bracket === "teen" ? el("span", { class: "rp-chip dir-teen" }, "Teen") : el("span", { class: "rp-chip dir-adult" }, "Adult")),
         el("div", { class: "muted small" }, [`Joined ${dirDate(m.joined_at)}`, m.roles?.length ? m.roles.join(", ") : null].filter(Boolean).join(" · ")))))) : null,
     scSection("Reports involving it",
-      d.reports.length ? el("div", { class: "sc-list" }, d.reports.map((r) => el("button", { type: "button", class: "sc-row", onclick: () => ctx.openReport(r.id) },
+      d.reports.length ? el("div", { class: "sc-list" }, d.reports.map((r) => el("button", { type: "button", class: "sc-row", onclick: () => (sCan("reports") ? ctx.openReport(r.id) : null) },
         el("div", { class: "sc-row-top" }, catChip(r), el("span", { class: "rp-chip" }, SC_STATUS[r.status] || r.status), el("span", { class: "sc-when" }, scWhen(r.created_at)))))) : el("p", { class: "muted small", style: "margin:0" }, "None.")),
     scSection("Safety log", logView(d.log)));
 }
@@ -183,7 +193,7 @@ async function drawOwnerChannel(page, d, c, ctx) {
   page.replaceChildren(
     el("div", { class: "sc-back" }, el("button", { type: "button", class: "link", onclick: () => ctx.draw("outhouses", { outhouseId: d.id }) }, `← ${d.name}`)),
     el("h2", {}, `#${c.name}`),
-    el("p", { class: "muted small dir-ro-note", style: "margin:0" }, `Read-only, as the site owner. You aren't a member of ${d.name}; this look is in the safety log.`),
+    el("p", { class: "muted small dir-ro-note", style: "margin:0" }, `Read-only, as ${sOwner() ? "the site owner" : "staff"}. You aren't a member of ${d.name}; this look is in the safety log.`),
     more, list);
   let oldest = null;
   const msgRow = (m) => el("div", { class: `dir-msg${m.held ? " held" : ""}` },

@@ -212,7 +212,8 @@ it's general information, not legal advice.
 
 **Who's the site owner?** The first account made on the server, unless
 `SITE_OWNER` in `.env` names others (usernames or IDs, comma-separated).
-Only site owners see reports. Outhouse admins don't (you stay the final say).
+Only site owners (and staff you choose, see **Site staff** below) see
+reports. Outhouse admins don't (you stay the final say).
 
 **Reporting.** Anyone can report a message (channels, DMs, group DMs,
 threads: right-click or ⋯ → **Report message**, ⚑ in threads), a file, a
@@ -446,6 +447,110 @@ anyone's age group in the console (People). For teens, by default:
 
 Each of these can be switched off under **Teen protections** (as can asking
 for a date of birth at sign-up).
+
+### Site staff
+
+You can share the safety work with people you trust: **User settings → SITE
+OWNER → Staff → Add staff…**. Staff are separate from outhouse roles.
+
+**Who can be staff.** Someone with a confirmed email *and* two-factor sign-in
+on (the dialog shows both and refuses otherwise). If a staff member later
+turns two-factor off or their email stops being confirmed, their powers pause
+on their own (you get a DM, a push and the ntfy/webhook alert) until it's
+fixed. Staff powers only work in a sign-in that used their code (or a
+trusted device): an older sign-in from before two-factor was on can't use
+them.
+
+**Tiers** are presets; pick **Custom** to tick single permissions.
+- **Support:** People (username, created, age group, outhouses, masked
+  email, two-factor on/off); password-reset links and removing two-factor
+  for someone locked out (a reason is required); report status (open or
+  closed, category, never evidence). No bans, suspensions or IPs.
+- **Moderator:** everything Support has, plus the Reports inbox with the
+  snapshot and the 10 messages either side; deleting/hiding messages;
+  warnings; timeouts and kicks; suspensions up to 7 days (and bans from an
+  outhouse); a read-only look inside an outhouse *only while it has an open
+  report* (logged); approving or removing image-detector holds (never
+  child-safety files); same-IP hints (which accounts, never the addresses).
+  Child-safety reports show to moderators as "exists, and its status" only.
+- **Senior moderator:** everything a Moderator has, plus permanent
+  suspensions, IP addresses and Blocked networks, shutting down and
+  restoring outhouses, child-safety reports (Suspend now, details and
+  hashes; files are never shown to anyone), family outhouses and
+  staff-assisted ownership transfers.
+- **Yours alone:** police hand-over links and downloads, exporting and
+  deleting evidence, deleting outhouses for good, managing staff, Server
+  status (email test, backups), the image detector's settings, Teen
+  protections, age groups, the weekly digest and the whole safety log.
+
+Staff get a **STAFF** section in User settings with just the pages their
+permissions allow, and the rail shield if they have Reports (its badge
+counts what they can act on). Every check is made on the server.
+
+**Safeguards.**
+- Every staff action is in the safety log with their name, tier and the
+  permission used; those entries can't be changed or deleted (a database
+  trigger). **Staff activity** shows them per person (filterable), and the
+  weekly digest has a staff section.
+- Staff never browse DMs: they only see reported snapshots.
+- Conflicts of interest: staff can't handle reports about themselves,
+  reports they made, or anything about an outhouse they own or moderate
+  (Administrator, Manage outhouse, Ban or Kick members). Those show as
+  "Someone else needs to handle this". You're exempt.
+- Staff can't act on your account, or on staff at their own tier or above.
+- Hourly caps per staff member: `STAFF_ACTIONS_PER_HOUR` (default 30) for
+  warnings, timeouts, kicks, bans, suspensions up to 7 days and hiding
+  messages; `STAFF_HEAVY_ACTIONS_PER_HOUR` (default 5) for permanent
+  suspensions, IP blocks, shut-downs and transfers. At the cap further
+  actions are refused and you get a push and the ntfy/webhook alert (no
+  content).
+- Two-person rule (Staff page settings, both on by default): a senior's
+  **permanent suspension with an IP block**, and **shutting down an outhouse
+  with 25+ members** (the number is a setting), become a request under
+  **Approvals** that another senior moderator (with the same permissions) or
+  you approve or decline within 72 hours. Nobody approves their own. Your
+  own actions never wait, and a child-safety **Suspend now** never waits.
+- What users see says "Outhouse staff", never the person: warning DMs
+  ("A warning from Outhouse Safety (by Outhouse staff)"), the sign-in
+  message ("suspended by Outhouse staff until …"), shut-down notices, and
+  outhouse audit logs (the action shows as Outhouse Safety). Staff get no
+  public badge unless you turn on **Show a "Staff" badge** (off by default).
+- Removing someone from staff is immediate; they stay signed in as a normal
+  member and get an email. It's logged.
+
+### Handing an outhouse to someone else
+
+**The owner does it.** In their outhouse, right-click a member (or the ⋯ on
+their profile card) → **Transfer ownership…**, optionally tick **Keep me as an
+admin** (an Administrator role, made if there isn't one), type the
+recipient's username exactly, their password, and a two-factor code if they
+use it. The recipient must be a member, not a bot, not suspended, have a
+confirmed email, and not be a teen (unless it's a family outhouse). They get
+an in-app banner, a note from Outhouse Safety and an email, and have 7 days
+to accept. The owner can cancel until then and hears if they decline. One
+transfer at a time per outhouse, and never while it's shut down or has an
+open child-safety report about it. When it completes both people get an
+email and a note, and it goes in the outhouse's audit log and the safety log.
+
+**Staff help** (a senior moderator with "transfers", or you), from
+**Outhouses → the outhouse → Transfer ownership…**, with a reason:
+- *The owner has been inactive:* only when the owner hasn't used Outhouse
+  for `OWNER_INACTIVE_DAYS` days (default 90; "last active" is noted at
+  most once an hour whenever someone uses the app) and the new owner is one
+  of its admins (Administrator or Manage outhouse) who asked. The owner gets
+  an email and a banner with **I'm still here**, and has
+  `OWNER_OBJECTION_DAYS` days (default 14) to press it. The new owner
+  confirms their request by accepting (any time from the start); it
+  completes automatically when the window ends if they've accepted, or as
+  soon as they accept after that (7 more days).
+- *The owner asked, checked by email:* a single-use link (24 hours; only
+  its hash is kept) goes to the owner's **confirmed** email: "Confirm you
+  want to transfer *outhouse* to @newowner". After that the new owner
+  accepts as above. No confirmed email: use the inactive route.
+
+Staff transfers count towards the heavy hourly cap and follow the conflict
+rules. Only you can let a teen own a non-family outhouse (a tick in the
+dialog).
 
 ### Image detector
 

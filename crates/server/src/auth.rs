@@ -199,6 +199,8 @@ impl FromRequestParts<AppState> for AuthUser {
         // per session (see ips.rs; bots are skipped).
         if !user.bot {
             crate::ips::note_session(state, &token, user.id, user.bot, ip);
+            // "Last active" (at most once an hour), for ownership transfers.
+            crate::api::staff::touch(state, user.id);
         }
         Ok(AuthUser(user))
     }
