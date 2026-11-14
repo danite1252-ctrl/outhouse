@@ -385,6 +385,7 @@ function mrRaidRow(ev) {
       el("span", { class: `mr-pill st-${st}` }, raidStatusText(ev))),
     el("div", { class: "mr-raid-meta muted small" },
       el("span", {}, `${hm(start)} – ${hm(end)}`),
+      (() => { const r = typeof realmTimeFor === "function" ? realmTimeFor(ev) : null; return r ? el("span", { class: "mr-realm", title: r.title }, r.text) : null; })(),
       el("span", {}, `${active}/${slots} signed up${bench ? ` (+${bench} bench)` : ""}`),
       !over && !mine && signupsLocked(ev) ? el("span", {}, "🔒 Sign-ups closed") : null),
     el("div", { class: "mr-raid-actions" }, buttons));

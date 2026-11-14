@@ -157,6 +157,36 @@ ok "$T1" GET "/api/guilds/$G1/audit-log" | jq -e '[.. | strings | select(test("R
 ok "$T1" PUT "/api/guilds/$G1/raid-settings" '{"realm_time_zone":"America/New_York"}' >/dev/null
 
 # ---------------------------------------------------------------------------
+wstep "realm time per game: Forever, TBC and Era each optional, on top of the all-games default"
+# Nothing per game yet: one clock for all games.
+ok "$T2" GET "/api/guilds/$G1/raid-settings" \
+  | jq -e '.realm_games == {} and .realm_clocks == [{"game": null, "time_zone": "America/New_York", "region": null, "derived": false}]' >/dev/null
+# Forever's realm (the zone WoW: Forever realms report) and TBC's; an empty Era entry is dropped.
+ok "$T1" PUT "/api/guilds/$G1/raid-settings" '{"realm_games":{"forever":{"time_zone":"America/North_Dakota/Center","region":"us"},"TBC":{"time_zone":" Europe/London ","region":"EU"},"era":{"time_zone":"","region":""}}}' \
+  | jq -e '.realm_time_zone == "America/New_York"
+    and .realm_games == {"forever": {"time_zone": "America/North_Dakota/Center", "region": "us"}, "tbc": {"time_zone": "Europe/London", "region": "eu"}}
+    and ([.realm_clocks[] | [.game, .time_zone, .region]] == [["forever", "America/North_Dakota/Center", "us"], ["tbc", "Europe/London", "eu"], [null, "America/New_York", null]])' >/dev/null
+# Members see them; other settings leave them alone; only Manage Outhouse changes them.
+ok "$T1" PUT "/api/guilds/$G1/raid-settings" '{"card_cleanup_single":"off"}' | jq -e '.realm_games | keys == ["forever", "tbc"]' >/dev/null
+ok "$T2" GET "/api/guilds/$G1/raid-settings" | jq -e '.realm_clocks | length == 3' >/dev/null
+no 403 "$T2" PUT "/api/guilds/$G1/raid-settings" '{"realm_games":{"era":{"time_zone":"Europe/Paris"}}}'
+# Refused: an unknown zone, a game that isn't one, a region that isn't one.
+no 400 "$T1" PUT "/api/guilds/$G1/raid-settings" '{"realm_games":{"tbc":{"time_zone":"Mars/Olympus_Mons"}}}'
+no 400 "$T1" PUT "/api/guilds/$G1/raid-settings" '{"realm_games":{"retail":{"time_zone":"Europe/Paris"}}}'
+no 400 "$T1" PUT "/api/guilds/$G1/raid-settings" '{"realm_games":{"era":{"region":"oce"}}}'
+ok "$T2" GET "/api/guilds/$G1/raid-settings" | jq -e '.realm_games.tbc.time_zone == "Europe/London" and (.realm_games | has("era") | not)' >/dev/null
+ok "$T1" GET "/api/guilds/$G1/audit-log" | jq -e '[.. | strings | select(test("Realm time \\(WoW: Forever\\): default → America/North_Dakota/Center, US"))] | length >= 1' >/dev/null
+# A game with only a region: that region's zone. A game the outhouse plans raids in
+# without its own realm runs on the default (and the default needs no line of its own).
+ok "$T1" PUT "/api/guilds/$G2/raid-settings" '{"realm_time_zone":"America/Chicago","realm_games":{"tbc":{"region":"eu"}}}' \
+  | jq -e '[.realm_clocks[] | [.game, .time_zone, .region, .derived]] == [["tbc", "Europe/Paris", "eu", true], [null, "America/Chicago", "eu", false]]' >/dev/null
+ok "$T1" POST "/api/channels/$FCHAN/events" '{"title":"Era night","starts_at":"'"$(iso '+4 days')"'","game":"era"}' >/dev/null
+ok "$T2" GET "/api/guilds/$G2/raid-settings" \
+  | jq -e '[.realm_clocks[] | [.game, .time_zone]] == [["tbc", "Europe/Paris"], ["era", "America/Chicago"]]' >/dev/null
+# Cleared: back to the one default clock.
+ok "$T1" PUT "/api/guilds/$G1/raid-settings" '{"realm_games":{}}' | jq -e '.realm_games == {} and (.realm_clocks | length == 1) and .realm_time_zone == "America/New_York"' >/dev/null
+
+# ---------------------------------------------------------------------------
 wstep "mentions: direct, role, @everyone and replies are recorded (DMs too)"
 no 401 "" GET /api/users/@me/mentions
 ROLE=$(ok "$T1" POST "/api/guilds/$G1/roles" '{"name":"Healers"}' | jq -r .id)

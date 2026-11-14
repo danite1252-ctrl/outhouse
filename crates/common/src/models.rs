@@ -934,6 +934,38 @@ pub struct RaidSettings {
     pub realm_effective_region: Option<String>,
     #[serde(default)]
     pub realm_time_zone_derived: bool,
+    /// Each game's own realm (keys "forever", "tbc", "era"), overriding the
+    /// zone and region above (which are the "all games" default). Only games
+    /// with something set are listed; left out when saving: unchanged, `{}`
+    /// clears them all.
+    #[serde(default)]
+    pub realm_games: Option<std::collections::BTreeMap<String, RealmGame>>,
+    /// The realm clocks the clock widget shows (read only): one per game the
+    /// outhouse has a realm for or plans raids in, else one for all games.
+    #[serde(default)]
+    pub realm_clocks: Vec<RealmClock>,
+}
+
+/// One game's realm in Outhouse settings → Raids ("" = use the default).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct RealmGame {
+    #[serde(default)]
+    pub time_zone: String,
+    #[serde(default)]
+    pub region: String,
+}
+
+/// A realm clock: the game (null: all games), its IANA zone, its region
+/// (picks the weekly reset) and whether the zone came from the region.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct RealmClock {
+    #[serde(default)]
+    pub game: Option<String>,
+    pub time_zone: String,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub derived: bool,
 }
 
 /// `GET /api/events/{id}/export`: who to invite, for raid leaders.

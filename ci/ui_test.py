@@ -4896,6 +4896,19 @@ with sync_playwright() as p:
         raise AssertionError("collapsing the clock wasn't saved")
     wg.click(".widget.w-clock .w-toggle")
     wg.wait_for_selector(".widget.w-clock:not(.collapsed) .w-clock-time")
+    # Realm time per game: Forever's realm (America/North_Dakota/Center: US Central's
+    # clock) and TBC's (London, EU reset). A line each, the next raid's game first,
+    # a weekly reset per region; the all-games default folds under "more".
+    api("PUT", f"/api/guilds/{wg_g['id']}/raid-settings", {"realm_games": {"forever": {"time_zone": "America/North_Dakota/Center"}, "tbc": {"time_zone": "Europe/London", "region": "eu"}}}, dave["token"])
+    api("POST", f"/api/channels/{wg_ch['id']}/events", {"title": "Kara (TBC)", "starts_at": wg_iso(4), "duration_minutes": 120, "game": "tbc"}, dave["token"])
+    wg.wait_for_selector(".widget.w-clock .w-clock-row.realm[data-game='forever'] .w-clock-sub:has-text('US Central')", timeout=15000)
+    wg.wait_for_function("document.querySelector('.widget.w-clock .w-clock-row.realm')?.dataset.game === 'tbc'", timeout=15000)
+    assert wg.text_content(".widget.w-clock .w-clock-row.realm[data-game='tbc'] .w-clock-label") == "TBC realm"
+    wg.wait_for_selector(".widget.w-clock .w-clock-more summary:has-text('1 more')")
+    resets = wg.eval_on_selector_all(".widget.w-clock .w-reset-label", "els => els.map((e) => e.textContent)")
+    assert resets == ["Weekly reset US", "Weekly reset EU"], resets
+    wg.wait_for_timeout(300)
+    wg.locator(".widget.w-clock").screenshot(path=f"{SHOTS}/4008-desktop-clock-realm-per-game.png")
 
     # My raids: month view, every outhouse, coloured dots; the officers' raid isn't there.
     wg.click("#myraids-btn")
@@ -4932,6 +4945,8 @@ with sync_playwright() as p:
     wg.click(".mr-raid:has-text('Soon raid') .mr-open")
     wg.wait_for_selector(".myraids-dialog", state="detached")
     wg.wait_for_selector(f"#msg-{wg_soon['id']} .event-card", timeout=15000)
+    # The raid card shows the realm's clock for the raid's start (the default realm: US Pacific).
+    wg.wait_for_selector(f"#msg-{wg_soon['id']} .event-card .rc-realm:has-text('Realm')", timeout=10000)
 
     # Mentions inbox: grouped by day, unread highlighted, mark all read.
     wg.click("#mentions-btn")
@@ -4972,18 +4987,37 @@ with sync_playwright() as p:
     wg.wait_for_selector(".realm-settings .realm-chip", timeout=10000)
     wg.click(".realm-settings .realm-chip:has-text('Oceanic (Sydney)')")
     wg.wait_for_selector(".realm-preview:has-text('Oceanic (Sydney)')")
+    # Presets show their offset now and whether they move for daylight saving.
+    wg.wait_for_selector(".realm-chip[data-tz='America/Chicago'] .realm-chip-meta:has-text('UTC−')")
+    wg.wait_for_selector(".realm-chip[data-tz='Asia/Seoul'] .realm-chip-meta:has-text('UTC+9')")
+    assert "DST" not in wg.text_content(".realm-chip[data-tz='Asia/Seoul']")
+    assert "DST" in wg.text_content(".realm-chip[data-tz='America/Chicago']")
+    wg.wait_for_selector(".realm-hint:has-text('/time')")
+    # WoW: Forever's own realm: any zone can be typed (America/North_Dakota/Center is US Central's clock).
+    wg.click(".realm-tab[data-game='forever']")
+    wg.wait_for_selector(".realm-preview:has-text('same as all games')")
+    wg.fill(".realm-settings .realm-zone", "America/North_Dakota/Center")
+    wg.wait_for_selector(".realm-chip.on[data-tz='America/Chicago']")
+    wg.wait_for_selector(".realm-preview:has-text('WoW: Forever realm time now'):has-text('US Central')")
+    wg.click(".realm-tab[data-game='tbc']")
+    wg.click(".realm-settings .realm-chip:has-text('US Eastern')")
+    wg.wait_for_selector(".realm-tab.set[data-game='forever'] .realm-tab-dot")
+    wg.fill(".realm-settings .realm-zone", "Nowhere/Special")
+    wg.wait_for_selector(".realm-zone.bad")
+    wg.click(".realm-settings .realm-chip:has-text('US Eastern')")
     wg.evaluate("document.querySelector('.realm-settings').scrollIntoView()")
     wg.wait_for_timeout(200)
     wg.screenshot(path=f"{SHOTS}/4007-desktop-realm-time-settings.png")
     wg.click("dialog.settings .settings-actions button.primary")
     for _ in range(20):
-        if api("GET", f"/api/guilds/{guild['id']}/raid-settings", None, TOKEN).get("realm_time_zone") == "Australia/Sydney":
+        rs_saved = api("GET", f"/api/guilds/{guild['id']}/raid-settings", None, TOKEN)
+        if rs_saved.get("realm_time_zone") == "Australia/Sydney" and rs_saved.get("realm_games") == {"forever": {"time_zone": "America/North_Dakota/Center", "region": ""}, "tbc": {"time_zone": "America/New_York", "region": ""}}:
             break
         time.sleep(0.25)
     else:
-        raise AssertionError("the realm time zone wasn't saved")
+        raise AssertionError(f"the realm time zones weren't saved: {rs_saved}")
     wg.keyboard.press("Escape")
-    wg.wait_for_selector(".widget.w-clock .w-clock-sub:has-text('Oceanic (Sydney)')", timeout=10000)
+    wg.wait_for_selector(".widget.w-clock .w-clock-row.realm[data-game='forever'] .w-clock-sub:has-text('US Central')", timeout=10000)
     wg.close()
 
     # Phones: widgets at the top of the members drawer, My raids full screen.
@@ -4996,7 +5030,7 @@ with sync_playwright() as p:
         wp.wait_for_selector("#members-toggle", timeout=15000)
         wp.click("#members-toggle")
         wp.wait_for_selector(".members .widget.w-mentions .mn-card:has-text('phone ping')", timeout=15000)
-        wp.wait_for_selector(".members .widget.w-clock .w-clock-row.realm")
+        wp.wait_for_selector(".members .widget.w-clock .w-clock-row.realm[data-game='tbc']")
         wp.wait_for_timeout(400)
         wp.screenshot(path=f"{SHOTS}/{base}-{label}-widgets-drawer.png")
         wp.evaluate("document.getElementById('app').classList.remove('show-members')")

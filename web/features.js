@@ -364,6 +364,7 @@ function renderEventCard(m) {
     leader ? meta("leader", leader, { title: "Raid leader" }) : null,
     meta("date", start.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }), { title: start.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long", year: "numeric" }) }),
     meta("time", `${hm(start)} – ${hm(end)}`, { title: `Your time (${Intl.DateTimeFormat().resolvedOptions().timeZone || "local"})` }),
+    (() => { const r = typeof realmTimeFor === "function" ? realmTimeFor(ev) : null; return r ? el("span", { class: "rc-meta-item rc-realm muted", title: r.title }, r.text) : null; })(),
     meta("soon", when.status, { class: `rc-meta-item ev-rel${when.live ? " live" : ""}${when.over ? " over" : ""}` }),
     meta("people", `${active.length}/${slots}${bench.length ? ` (+${bench.length})` : ""}`, {
       class: "rc-meta-item rc-count",

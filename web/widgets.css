@@ -248,3 +248,27 @@ dialog .wg-btn { height: 32px; width: 32px; padding: 0; font-size: 15px; }
 .realm-chip.on { border-color: var(--ember); background: #ff6b3518; color: var(--text); }
 .realm-region-field .select { max-width: 260px; }
 .realm-preview { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--night); border: 1px dashed var(--line); }
+
+/* Realm time per game: tabs, presets with their offset, extra clock lines. */
+.realm-tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+.realm-tab { position: relative; padding: 6px 12px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); font-size: 13px; font-weight: 600; }
+.realm-tab:hover { color: var(--text); }
+.realm-tab.on { color: var(--text); border-bottom-color: var(--ember); }
+.realm-tab-dot { display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--glow); vertical-align: middle; }
+.realm-presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; }
+.realm-settings .realm-chip { height: auto; min-height: 30px; padding: 6px 10px; border-radius: 10px; display: grid; grid-template-columns: 1fr auto; gap: 1px 8px; text-align: left; align-content: start; }
+.realm-chip-name { font-weight: 700; color: var(--text); }
+.realm-chip-now { font-variant-numeric: tabular-nums; color: var(--glow); font-weight: 700; }
+.realm-chip-meta { grid-column: 1 / -1; font-size: 11px; font-weight: 500; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.realm-hint { font-style: italic; }
+.w-clock-more > summary { cursor: pointer; font-size: 11px; color: var(--muted); list-style: none; padding: 2px 0; }
+.w-clock-more > summary::-webkit-details-marker { display: none; }
+.w-clock-more > summary::before { content: "▸ "; }
+.w-clock-more[open] > summary::before { content: "▾ "; }
+.w-clock-more { display: grid; gap: 8px; }
+.rc-realm { font-size: 12px; }
+.mr-realm { color: var(--glow); }
+@media (max-width: 760px) {
+  .realm-presets { grid-template-columns: 1fr 1fr; }
+  .realm-chip-meta { white-space: normal; }
+}

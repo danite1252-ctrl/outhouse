@@ -19,13 +19,22 @@ const WIDGET_DEFAULTS = [
   { id: "mentions", on: true, collapsed: false },
   { id: "soundboard", on: false, collapsed: false },
 ];
-// Realm time zones offered first (any IANA zone can be typed).
+// The zones WoW realms run on, offered first (any IANA zone can be typed).
+// `same`: other zone names on the same clock (shown with the preset's label).
 const REALM_ZONES = [
-  ["America/Los_Angeles", "US Pacific"],
-  ["America/New_York", "US Eastern"],
-  ["Europe/Paris", "Europe (EU realms)"],
-  ["Australia/Sydney", "Oceanic (Sydney)"],
+  { tz: "America/Chicago", label: "US Central", same: ["America/North_Dakota/Center"] },
+  { tz: "America/Denver", label: "US Mountain" },
+  { tz: "America/Los_Angeles", label: "US Pacific" },
+  { tz: "America/New_York", label: "US Eastern" },
+  { tz: "Australia/Sydney", label: "Oceanic (Sydney)" },
+  { tz: "America/Sao_Paulo", label: "Brazil" },
+  { tz: "Europe/Paris", label: "EU Central" },
+  { tz: "Europe/London", label: "EU UK" },
+  { tz: "Asia/Seoul", label: "Korea" },
+  { tz: "Asia/Taipei", label: "Taiwan" },
 ];
+// Realm time can differ per game (Forever, TBC and Era realms aren't all on one clock).
+const REALM_GAMES = [["forever", "WoW: Forever", "Forever"], ["tbc", "TBC", "TBC"], ["era", "Classic Era", "Era"]];
 const REGION_LABEL = { us: "US", eu: "EU", kr: "Korea", tw: "Taiwan" };
 // Weekly reset, by region: US (and Oceanic realms, which are in the US
 // region) on Tuesdays at 15:00 UTC, EU on Wednesdays at 04:00 UTC.
@@ -99,7 +108,7 @@ const inVoice = () => !!state.voice?.room;
 // What the widgets depend on, so they're only redrawn when it changes.
 function widgetContext() {
   const rs = state.raidSettings?.guild_id === state.guildId ? state.raidSettings : null;
-  return [state.home ? "home" : state.guildId, inVoice(), rs?.realm_effective_time_zone, rs?.realm_effective_region, rs?.realm_time_zone_derived, state.me?.id].join("|");
+  return [state.home ? "home" : state.guildId, inVoice(), JSON.stringify(realmClocks().map((c) => [c.game, c.time_zone, c.region, c.derived])), state.me?.id].join("|");
 }
 let widgetCtx = null;
 
@@ -170,13 +179,82 @@ function untilText(ms) {
   return `${m}m`;
 }
 
-const zoneLabel = (tz) => REALM_ZONES.find(([z]) => z === tz)?.[1] ?? tz.replace(/_/g, " ");
+const zonePreset = (tz) => REALM_ZONES.find((z) => z.tz === tz || z.same?.includes(tz));
+const zoneLabel = (tz) => zonePreset(tz)?.label ?? tz.replace(/_/g, " ");
+const realmGameShort = (g) => REALM_GAMES.find(([id]) => id === g)?.[2] ?? "";
 
-function realmInfo() {
-  if (state.home || !state.guildId) return null;
+// "UTC+10" now, and whether the zone moves its clocks during the year.
+function zoneOffset(tz, at = new Date()) {
+  try {
+    const part = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "shortOffset" }).formatToParts(at).find((p) => p.type === "timeZoneName")?.value ?? "";
+    const m = part.match(/GMT([+-])(\d+)(?::(\d+))?/);
+    return m ? (Number(m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3] || 0))) : 0;
+  } catch { return null; }
+}
+function offsetText(mins) {
+  if (mins == null) return "";
+  const sign = mins < 0 ? "−" : "+";
+  const a = Math.abs(mins);
+  return `UTC${sign}${Math.floor(a / 60)}${a % 60 ? `:${String(a % 60).padStart(2, "0")}` : ""}`;
+}
+function zoneHasDst(tz) {
+  const y = new Date().getUTCFullYear();
+  return zoneOffset(tz, new Date(Date.UTC(y, 0, 15))) !== zoneOffset(tz, new Date(Date.UTC(y, 6, 15)));
+}
+
+// The outhouse's realm clocks (one per game with its own realm, or one for
+// all games), the game of the next raid first.
+function realmClocks() {
+  if (state.home || !state.guildId) return [];
   const rs = state.raidSettings?.guild_id === state.guildId ? state.raidSettings : null;
-  if (!rs?.realm_effective_time_zone) return null;
-  return { tz: rs.realm_effective_time_zone, region: rs.realm_effective_region || "", derived: !!rs.realm_time_zone_derived };
+  if (!rs) return [];
+  let clocks = rs.realm_clocks?.length ? rs.realm_clocks.map((c) => ({ ...c }))
+    : rs.realm_effective_time_zone ? [{ game: null, time_zone: rs.realm_effective_time_zone, region: rs.realm_effective_region || "", derived: !!rs.realm_time_zone_derived }] : [];
+  const next = nextRaidGame();
+  if (next) clocks = [...clocks.filter((c) => c.game === next), ...clocks.filter((c) => c.game !== next)];
+  return clocks;
+}
+
+// The game of the outhouse's next raid (from the calendar widget or the chat).
+function nextRaidGame() {
+  const now = Date.now();
+  const evs = [...(wcal.guild === state.guildId ? wcal.events : []), ...(state.messages ?? []).map((m) => m.event).filter(Boolean)]
+    .filter((ev) => ev.game && ev.guild_id === state.guildId && new Date(ev.starts_at).getTime() > now)
+    .sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at));
+  return evs[0]?.game ?? null;
+}
+
+// The realm clock for a raid in the current outhouse (null: none set).
+function realmClockFor(ev) {
+  const rs = state.raidSettings?.guild_id === ev.guild_id ? state.raidSettings : realmSettingsCache.get(ev.guild_id);
+  if (!rs) { if (ev.guild_id !== state.guildId) realmSettingsLoad(ev.guild_id); return null; }
+  const clocks = rs.realm_clocks ?? [];
+  return clocks.find((c) => c.game && c.game === ev.game) ?? clocks.find((c) => !c.game)
+    ?? (clocks.length && clocks.every((c) => c.time_zone === clocks[0].time_zone) ? clocks[0] : null);
+}
+
+// "Realm 7:30 pm" for a raid card when the realm's clock reads differently
+// from the reader's (null otherwise).
+function realmTimeFor(ev) {
+  const c = realmClockFor(ev);
+  if (!c) return null;
+  const start = new Date(ev.starts_at);
+  const realm = safeTime(start, { hour: "numeric", minute: "2-digit", timeZone: c.time_zone });
+  if (realm === safeTime(start, { hour: "numeric", minute: "2-digit" })) return null;
+  const game = c.game ? `${realmGameShort(c.game)} realm` : "Realm";
+  return { text: `Realm ${realm}`, title: `${game} time: ${realm} ${safeDay(start, { weekday: "short", timeZone: c.time_zone })} (${zoneLabel(c.time_zone)})` };
+}
+
+// Other outhouses' realm settings, for My raids (fetched once each).
+const realmSettingsCache = new Map();
+const realmSettingsLoading = new Set();
+function realmSettingsLoad(guildId) {
+  if (!guildId || realmSettingsCache.has(guildId) || realmSettingsLoading.has(guildId)) return;
+  realmSettingsLoading.add(guildId);
+  api("GET", `/api/guilds/${guildId}/raid-settings`).then((s) => {
+    realmSettingsCache.set(guildId, s || {});
+    if (s?.realm_clocks?.length && typeof drawMyRaids === "function" && document.querySelector(".myraids-dialog")) drawMyRaids();
+  }).catch(() => realmSettingsCache.set(guildId, {})).finally(() => realmSettingsLoading.delete(guildId));
 }
 
 function safeTime(date, opts) {
@@ -192,19 +270,34 @@ function drawClock(body) {
     el("span", { class: "w-clock-label" }, "Your time"),
     el("span", { class: "w-clock-time", "data-clock": "me" }, safeTime(now, { hour: "numeric", minute: "2-digit" })),
     el("span", { class: "w-clock-sub muted", "data-clock": "me-day" }, `${safeDay(now, { weekday: "short", day: "numeric", month: "short" })}`));
-  const realm = realmInfo();
+  let clocks = realmClocks();
+  // Every game on one clock: one line, as before.
+  const oneClock = clocks.length > 1 && clocks.every((c) => c.time_zone === clocks[0].time_zone);
+  const games = clocks.filter((c) => c.game).map((c) => realmGameShort(c.game));
+  if (oneClock) clocks = [{ ...clocks[0], game: null, games }];
   const rows = [mine];
-  if (realm) {
-    rows.push(el("div", { class: "w-clock-row realm", title: realm.derived ? `Worked out from the ${REGION_LABEL[realm.region] ?? ""} region. Change it in Outhouse settings → Raids.` : realm.tz },
-      el("span", { class: "w-clock-label" }, "Realm time"),
-      el("span", { class: "w-clock-time", "data-clock": "realm" }, safeTime(now, { hour: "numeric", minute: "2-digit", timeZone: realm.tz })),
-      el("span", { class: "w-clock-sub muted", "data-clock": "realm-day" }, `${safeDay(now, { weekday: "short", timeZone: realm.tz })} · ${zoneLabel(realm.tz)}${realm.derived ? " (from region)" : ""}`)));
-    const reset = nextWeeklyReset(realm.region, now);
-    if (reset) {
-      rows.push(el("div", { class: "w-reset", title: `About ${reset.toLocaleString([], { weekday: "long", hour: "numeric", minute: "2-digit" })} your time (${REGION_LABEL[realm.region]} region; approximate)` },
+  const realmRow = (c) => {
+    const label = clocks.length < 2 ? "Realm time" : c.game ? `${realmGameShort(c.game)} realm` : "Other games";
+    const how = c.derived ? `Worked out from the ${REGION_LABEL[c.region] ?? ""} region. Change it in Outhouse settings → Raids.` : c.time_zone;
+    return el("div", { class: "w-clock-row realm", "data-game": c.game || "", title: `${label}: ${how}` },
+      el("span", { class: "w-clock-label" }, label),
+      el("span", { class: "w-clock-time", "data-tz": c.time_zone }, safeTime(now, { hour: "numeric", minute: "2-digit", timeZone: c.time_zone })),
+      el("span", { class: "w-clock-sub muted", "data-tz-day": c.time_zone, "data-tz-tail": `${zoneLabel(c.time_zone)}${c.games?.length > 1 ? ` · ${c.games.join(", ")}` : ""}${c.derived ? " (from region)" : ""}` },
+        `${safeDay(now, { weekday: "short", timeZone: c.time_zone })} · ${zoneLabel(c.time_zone)}${c.games?.length > 1 ? ` · ${c.games.join(", ")}` : ""}${c.derived ? " (from region)" : ""}`));
+  };
+  if (clocks.length) {
+    const lines = clocks.map(realmRow);
+    rows.push(...lines.slice(0, 2));
+    if (lines.length > 2) {
+      rows.push(el("details", { class: "w-clock-more" }, el("summary", {}, `${lines.length - 2} more`), ...lines.slice(2)));
+    }
+    const regions = [...new Set(clocks.map((c) => c.region).filter((r) => WEEKLY_RESET[r]))];
+    for (const region of regions) {
+      const reset = nextWeeklyReset(region, now);
+      rows.push(el("div", { class: "w-reset", title: `About ${reset.toLocaleString([], { weekday: "long", hour: "numeric", minute: "2-digit" })} your time (${REGION_LABEL[region]} region; approximate)` },
         el("span", { class: "w-reset-ic", "aria-hidden": "true" }, "↻"),
-        el("span", { class: "w-reset-label" }, "Weekly reset"),
-        el("strong", { class: "w-reset-in" }, "≈ ", el("span", { "data-clock": "reset" }, untilText(reset - now)))));
+        el("span", { class: "w-reset-label" }, regions.length > 1 ? `Weekly reset ${REGION_LABEL[region]}` : "Weekly reset"),
+        el("strong", { class: "w-reset-in" }, "≈ ", el("span", { "data-reset": region }, untilText(reset - now)))));
     }
   } else if (!state.home && state.guildId && typeof can === "function" && can("manage_guild")) {
     rows.push(el("button", { type: "button", class: "link w-clock-set", onclick: () => openSettings("raids") }, "Set the realm's time zone…"));
@@ -215,16 +308,13 @@ function drawClock(body) {
 // Ticks the clocks without redrawing anything else.
 setInterval(() => {
   const now = new Date();
-  const set = (k, v) => { const n = widgetStack.querySelector(`[data-clock="${k}"]`); if (n && n.textContent !== v) n.textContent = v; };
   if (!widgetStack.querySelector("[data-clock]")) return;
-  set("me", safeTime(now, { hour: "numeric", minute: "2-digit" }));
-  set("me-day", safeDay(now, { weekday: "short", day: "numeric", month: "short" }));
-  const realm = realmInfo();
-  if (realm) {
-    set("realm", safeTime(now, { hour: "numeric", minute: "2-digit", timeZone: realm.tz }));
-    const reset = nextWeeklyReset(realm.region, now);
-    if (reset) set("reset", untilText(reset - now));
-  }
+  const put = (n, v) => { if (n.textContent !== v) n.textContent = v; };
+  widgetStack.querySelectorAll('[data-clock="me"]').forEach((n) => put(n, safeTime(now, { hour: "numeric", minute: "2-digit" })));
+  widgetStack.querySelectorAll('[data-clock="me-day"]').forEach((n) => put(n, safeDay(now, { weekday: "short", day: "numeric", month: "short" })));
+  widgetStack.querySelectorAll("[data-tz]").forEach((n) => put(n, safeTime(now, { hour: "numeric", minute: "2-digit", timeZone: n.dataset.tz })));
+  widgetStack.querySelectorAll("[data-tz-day]").forEach((n) => put(n, `${safeDay(now, { weekday: "short", timeZone: n.dataset.tzDay })} · ${n.dataset.tzTail}`));
+  widgetStack.querySelectorAll("[data-reset]").forEach((n) => { const r = nextWeeklyReset(n.dataset.reset, now); if (r) put(n, untilText(r - now)); });
 }, 5000);
 
 // ---------- Mini raid calendar ----------
@@ -391,46 +481,108 @@ const validZone = (tz) => { try { new Intl.DateTimeFormat([], { timeZone: tz });
 const REGION_ZONE = { us: "America/Los_Angeles", eu: "Europe/Paris", kr: "Asia/Seoul", tw: "Asia/Taipei" };
 
 // The "Realm time" part of the Raids page: {node, values(), saved(settings)}.
+// Tabs: All games (the default) and each game's own realm on top of it.
 function realmTimeFields(settings) {
   let serverRegion = settings.realm_region ? null : settings.realm_effective_region || null;
-  const allZones = typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : REALM_ZONES.map(([z]) => z);
+  // What's being edited: "" (all games) or a game id → { tz, region }.
+  const vals = { "": { tz: settings.realm_time_zone || "", region: settings.realm_region || "" } };
+  for (const [g] of REALM_GAMES) {
+    const own = settings.realm_games?.[g];
+    vals[g] = { tz: own?.time_zone || "", region: own?.region || "" };
+  }
+  let tab = "";
+  const allZones = typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : REALM_ZONES.map((z) => z.tz);
+  for (const z of REALM_ZONES) for (const t of [z.tz, ...(z.same ?? [])]) if (!allZones.includes(t)) allZones.push(t);
   const list = el("datalist", { id: "realm-zone-list" }, allZones.map((z) => el("option", { value: z })));
-  const zone = el("input", { type: "text", class: "realm-zone", list: "realm-zone-list", value: settings.realm_time_zone || "", placeholder: "Automatic", autocomplete: "off", spellcheck: "false", "aria-label": "Realm time zone" });
-  const region = el("select", { class: "select realm-region", "aria-label": "Realm region" },
-    el("option", { value: "" }, "Automatic"),
-    [["us", "US & Oceanic"], ["eu", "Europe"], ["kr", "Korea"], ["tw", "Taiwan"]].map(([v, t]) => el("option", { value: v, selected: settings.realm_region === v }, t)));
+  const tabs = el("div", { class: "realm-tabs", role: "tablist", "aria-label": "Realm time for" });
+  const zone = el("input", { type: "text", class: "realm-zone", list: "realm-zone-list", placeholder: "Automatic", autocomplete: "off", spellcheck: "false", "aria-label": "Realm time zone" });
+  const region = el("select", { class: "select realm-region", "aria-label": "Realm region" });
   const presets = el("div", { class: "realm-presets", role: "group", "aria-label": "Common realm time zones" });
   const preview = el("p", { class: "muted small realm-preview" });
+  const tabNote = el("p", { class: "muted small realm-tab-note", style: "margin:0" });
+  // The zone and region the tab ends up with (a game falls back to all games).
+  const effectiveOf = (key) => {
+    const v = vals[key];
+    const base = key ? effectiveOf("") : null;
+    const reg = v.region || (key ? base.region : serverRegion) || "";
+    const tz = v.tz || (v.region ? REGION_ZONE[v.region] : key ? base.tz : (reg ? REGION_ZONE[reg] : null));
+    return { tz: tz && validZone(tz) ? tz : null, region: reg, derived: !v.tz };
+  };
+  const paintTabs = () => tabs.replaceChildren(...[["", "All games"], ...REALM_GAMES].map(([key, label]) => {
+    const set = key ? !!(vals[key].tz || vals[key].region) : !!(vals[""].tz || vals[""].region);
+    return el("button", {
+      type: "button", role: "tab", class: `realm-tab${tab === key ? " on" : ""}${set ? " set" : ""}`, "data-game": key, "aria-selected": tab === key ? "true" : "false",
+      onclick: () => { tab = key; load(); },
+    }, label, set && key ? el("span", { class: "realm-tab-dot", "aria-label": "(own realm time)" }) : null);
+  }));
+  const chip = (z) => {
+    const off = zoneOffset(z.tz);
+    const dst = zoneHasDst(z.tz);
+    const now = new Date();
+    return el("button", {
+      type: "button", class: `realm-chip${zone.value.trim() === z.tz || z.same?.includes(zone.value.trim()) ? " on" : ""}`, "data-tz": z.tz,
+      title: `${z.tz}${z.same ? ` (same clock as ${z.same.join(", ")})` : ""}${dst ? " · moves for daylight saving" : " · no daylight saving"}`,
+      onclick: () => { zone.value = z.tz; vals[tab].tz = z.tz; paint(); },
+    },
+    el("span", { class: "realm-chip-name" }, z.label),
+    el("span", { class: "realm-chip-now" }, safeTime(now, { hour: "numeric", minute: "2-digit", timeZone: z.tz })),
+    el("span", { class: "realm-chip-meta" }, `${z.tz.replace(/_/g, " ")} · ${offsetText(off)}${dst ? " · DST" : ""}`),
+    z.same ? el("span", { class: "realm-chip-meta" }, `same clock as ${z.same.map((t) => t.replace(/_/g, " ")).join(", ")}`) : null);
+  };
   const paint = () => {
     const tz = zone.value.trim();
+    vals[tab].tz = tz;
+    vals[tab].region = region.value;
+    paintTabs();
     presets.replaceChildren(
-      el("button", { type: "button", class: `realm-chip${tz ? "" : " on"}`, onclick: () => { zone.value = ""; paint(); } }, "Automatic"),
-      ...REALM_ZONES.map(([z, label]) => el("button", { type: "button", class: `realm-chip${tz === z ? " on" : ""}`, title: z, onclick: () => { zone.value = z; paint(); } }, label)));
-    const reg = region.value || serverRegion;
-    const effective = tz || (reg ? REGION_ZONE[reg] : null);
+      el("button", { type: "button", class: `realm-chip auto${tz ? "" : " on"}`, onclick: () => { zone.value = ""; paint(); } },
+        el("span", { class: "realm-chip-name" }, tab ? "Same as all games" : "Automatic"),
+        el("span", { class: "realm-chip-meta" }, tab ? "uses the All games tab" : "from the region")),
+      ...REALM_ZONES.map(chip));
     zone.classList.toggle("bad", !!tz && !validZone(tz));
-    if (tz && !validZone(tz)) { preview.textContent = "That isn't a time zone we know. Pick one from the list (like Australia/Sydney)."; return; }
-    if (!effective) { preview.textContent = "Realm time is hidden: pick a time zone or a region."; return; }
+    if (tz && !validZone(tz)) { preview.textContent = "That isn't a time zone we know. Pick one from the list (like America/Chicago)."; return; }
+    const eff = effectiveOf(tab);
+    const name = tab ? `${REALM_GAMES.find(([g]) => g === tab)[1]} realm` : "Realm";
+    if (!eff.tz) { preview.textContent = `${name} time is hidden: pick a time zone or a region.`; return; }
     const now = new Date();
-    const reset = nextWeeklyReset(reg, now);
-    preview.textContent = `Realm time now: ${safeTime(now, { hour: "numeric", minute: "2-digit", timeZone: effective })} ${safeDay(now, { weekday: "short", timeZone: effective })} (${zoneLabel(effective)}${tz ? "" : `, from the ${REGION_LABEL[reg]} region`})`
+    const reset = nextWeeklyReset(eff.region, now);
+    const how = tz ? "" : vals[tab].region ? `, from the ${REGION_LABEL[eff.region]} region` : tab ? ", same as all games" : `, from the ${REGION_LABEL[eff.region]} region`;
+    preview.textContent = `${name} time now: ${safeTime(now, { hour: "numeric", minute: "2-digit", timeZone: eff.tz })} ${safeDay(now, { weekday: "short", timeZone: eff.tz })} (${zoneLabel(eff.tz)}, ${offsetText(zoneOffset(eff.tz))}${zoneHasDst(eff.tz) ? ", moves for daylight saving" : ""}${how})`
       + (reset ? ` · weekly reset in about ${untilText(reset - now)}` : " · no weekly reset shown for this region");
+  };
+  const load = () => {
+    const v = vals[tab];
+    zone.value = v.tz;
+    zone.placeholder = tab ? "Same as all games" : "Automatic";
+    region.replaceChildren(
+      el("option", { value: "" }, tab ? "Same as all games" : "Automatic"),
+      ...[["us", "US & Oceanic"], ["eu", "Europe"], ["kr", "Korea"], ["tw", "Taiwan"]].map(([r, t]) => el("option", { value: r, selected: v.region === r }, t)));
+    tabNote.textContent = tab
+      ? `Only if ${REALM_GAMES.find(([g]) => g === tab)[1]} realms run on a different clock. Left on “Same as all games”, it uses the All games tab.`
+      : "Used by every game that doesn't have its own realm time.";
+    paint();
   };
   zone.addEventListener("input", paint);
   region.addEventListener("change", paint);
-  paint();
+  load();
   const node = el("div", { class: "realm-settings" },
     el("h3", { class: "rs-head" }, "Realm time"),
-    el("p", { class: "muted", style: "margin:0" }, "The clock widget shows everyone the realm's time next to their own, and when the weekly reset is. Oceanic realms are in the US region but run on Sydney time."),
+    el("p", { class: "muted", style: "margin:0" }, "The clock widget shows everyone the realm's time next to their own, and when the weekly reset is. Forever, TBC and Era realms can each have their own. Time zones move for daylight saving by themselves."),
     list,
+    tabs,
+    tabNote,
     el("label", { class: "field" }, "Time zone", zone),
+    el("p", { class: "muted small realm-hint", style: "margin:0" }, "Not sure? In game, compare /time (server time) with these."),
     presets,
     el("label", { class: "field realm-region-field" }, "Region (for the weekly reset)", region),
-    el("p", { class: "muted small", style: "margin:0" }, `Automatic uses the region's usual time zone (US: Pacific, EU: Paris)${serverRegion ? `; this server's Armory region is ${REGION_LABEL[serverRegion] ?? serverRegion.toUpperCase()}` : ""}. Reset times are approximate: US Tuesday 15:00 UTC, EU Wednesday 04:00 UTC.`),
+    el("p", { class: "muted small", style: "margin:0" }, `Automatic uses the region's usual time zone (US: Pacific, EU: Paris)${serverRegion ? `; this server's Armory region is ${REGION_LABEL[serverRegion] ?? serverRegion.toUpperCase()}` : ""}. Reset times are approximate: US Tuesday 15:00 UTC, EU Wednesday 04:00 UTC. Oceanic realms are in the US region.`),
     preview);
   return {
     node,
-    values: () => ({ realm_time_zone: zone.value.trim(), realm_region: region.value }),
+    values: () => ({
+      realm_time_zone: vals[""].tz.trim(), realm_region: vals[""].region,
+      realm_games: Object.fromEntries(REALM_GAMES.map(([g]) => [g, { time_zone: vals[g].tz.trim(), region: vals[g].region }]).filter(([, v]) => v.time_zone || v.region)),
+    }),
     saved: (s) => { serverRegion = s.realm_region ? serverRegion : s.realm_effective_region || serverRegion; widgetCtx = null; renderWidgets(); },
   };
 }
