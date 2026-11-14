@@ -4578,6 +4578,8 @@ with sync_playwright() as p:
     fp.click("dialog[open] button.primary")
     wait_lay(lambda it: folder_named(it, "Raid nights") is not None, "renamed")
     # Drag and drop: Rail 05 above Rail 04, then Rail 06 into "Raid nights", then a folder below another.
+    # (The My raids button at the top of the rail is set aside meanwhile, so each pair still fits on screen.)
+    fp.evaluate("document.getElementById('myraids-btn').hidden = true")
     fp.drag_and_drop(".guild[title='Rail 05']", ".guild[title='Rail 04']", target_position={"x": 24, "y": 6})
     def order(items):
         return [it.get("id") if it["type"] == "guild" else f"folder:{it['name']}" for it in items]
@@ -4588,6 +4590,7 @@ with sync_playwright() as p:
     # (Both on screen: a drag can't start if the rail scrolls under the pointer.)
     fp.drag_and_drop(".folder-head[title='Main']", ".folder-tile[title^='Hobbies']", target_position={"x": 24, "y": 42})
     wait_lay(lambda it: order(it).index("folder:Main") == order(it).index("folder:Hobbies") + 1, "Main after Hobbies")
+    fp.evaluate("document.getElementById('myraids-btn').hidden = false")
     fp.wait_for_timeout(300)
     fp.screenshot(path=f"{SHOTS}/3807-desktop-rail-after-drag.png")
     # Settings → Folders: the same, as buttons.
