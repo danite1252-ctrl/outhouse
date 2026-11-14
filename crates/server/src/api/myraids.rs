@@ -13,8 +13,8 @@
 use axum::extract::{Query, State};
 use axum::Json;
 use chrono::{DateTime, Utc};
-use outhouse_common::models::RaidEvent;
 use outhouse_common::id::as_string;
+use outhouse_common::models::RaidEvent;
 use serde::{Deserialize, Serialize};
 
 use super::events::{build, EventRow, EVENT_COLUMNS};
