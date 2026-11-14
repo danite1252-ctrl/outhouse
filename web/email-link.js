@@ -50,7 +50,53 @@
   }
 
   const signInLink = (label = "Sign in") => el("a", { class: "primary", href: "/login" }, label);
-  const appNote = () => el("p", { class: "muted small" }, "Using the Outhouse app? Go back to it and sign in there.");
+
+  // "Open Outhouse": the installed app if there is one (the Windows app via
+  // its outhouse:// link, the Android app by its package), otherwise the
+  // web app here. Already inside an app's window: just go to the app page.
+  const ua = navigator.userAgent;
+  const inApp = !!(window.__OUTHOUSE_DESKTOP__ || window.__OUTHOUSE_PLATFORM__);
+  const device = /Android/i.test(ua) ? "android" : /Windows NT/i.test(ua) ? "windows" : "";
+  let androidPackage = "";
+  fetch("/api/auth/registration", { credentials: "same-origin" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => { androidPackage = (d && d.android_package) || ""; })
+    .catch(() => {});
+
+  function openOuthouse(e) {
+    const web = `${location.origin}/app`;
+    if (inApp || !device) return; // the plain link to /app does it
+    if (device === "android") {
+      if (!androidPackage) return;
+      e.preventDefault();
+      location.href = `intent:#Intent;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;`
+        + `package=${androidPackage};S.browser_fallback_url=${encodeURIComponent(web)};end`;
+      return;
+    }
+    // Windows: try the app; if nothing takes the link, carry on in the browser.
+    e.preventDefault();
+    const scheme = "outhouse://open";
+    let left = false;
+    const away = () => { left = true; };
+    addEventListener("blur", away, { once: true });
+    addEventListener("pagehide", away, { once: true });
+    document.addEventListener("visibilitychange", () => { if (document.hidden) left = true; }, { once: true });
+    if (/Firefox\//.test(ua)) {
+      // Firefox shows an error page for a link nothing handles; try it out of sight.
+      const frame = document.createElement("iframe");
+      frame.hidden = true;
+      frame.src = scheme;
+      document.body.appendChild(frame);
+      setTimeout(() => frame.remove(), 3000);
+    } else {
+      location.href = scheme;
+    }
+    setTimeout(() => {
+      removeEventListener("blur", away);
+      if (!left && !document.hidden) location.href = web;
+    }, 1500);
+  }
+  const openLink = (label = "Open Outhouse") => el("a", { class: "primary", href: "/app", onclick: openOuthouse }, label);
 
   function failed(message) {
     document.title = "Link not working · Outhouse";
@@ -75,8 +121,8 @@
         show(el("div", { class: "done-icon", "aria-hidden": "true" }, "✉️"),
           el("h2", { class: "auth-step-title" }, "Email confirmed"),
           el("p", { class: "muted" }, `Thanks! ${r.email} is confirmed. If you ever forget your password, we can send you a reset link there.`),
-          el("a", { class: "primary", href: "/app" }, "Open Outhouse"),
-          appNote());
+          openLink(),
+          inApp ? null : el("p", { class: "muted small" }, "Opens the Outhouse app if it's installed on this device, otherwise Outhouse in your browser."));
       })
       .catch((err) => failed(err.message));
     return;
@@ -118,8 +164,8 @@
           el("h2", { class: "auth-step-title" }, "Password changed"),
           el("p", { class: "muted" }, `You're signed out everywhere. Sign in as @${r.username} with your new password.`),
           r.suspended ? el("p", { class: "error" }, "This account is suspended, so signing in still won't work until the suspension ends.") : null,
-          signInLink(),
-          appNote());
+          openLink("Sign in"),
+          inApp ? null : el("p", { class: "muted small" }, "Opens the Outhouse app if it's installed on this device, otherwise Outhouse in your browser."));
       } catch (err) {
         error.textContent = err.message;
         if (/expired|already used|new reset link/i.test(err.message)) setTimeout(() => failed(err.message), 1200);

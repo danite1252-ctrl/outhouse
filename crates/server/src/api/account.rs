@@ -32,8 +32,11 @@ pub fn check_new_password(password: &str) -> AppResult<()> {
 
 /// `GET /api/auth/registration`: how sign-ups work here (`open`, `invite`
 /// or `closed`), so the sign-in page can say so.
-pub async fn registration_mode() -> Json<serde_json::Value> {
+pub async fn registration_mode(State(st): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
+        // For "Open Outhouse" buttons on pages opened from emails: the
+        // Android app to start (Windows uses the outhouse:// link).
+        "android_package": st.config.android_package,
         "mode": security::get().registration.as_str(),
         // For the "sign-in IP addresses are kept for N days" line.
         "ip_retention_days": crate::ips::retention_days(),
