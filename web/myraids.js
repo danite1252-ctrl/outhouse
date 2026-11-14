@@ -267,7 +267,9 @@ function drawMyRaids() {
       el("button", { type: "button", class: "icon-btn", title: `Next ${step}`, "aria-label": `Next ${step}`, onclick: () => mrMove(1) }, "›"),
       el("button", { type: "button", class: "cal-today", onclick: mrToday }, "Today")));
   head.querySelector(".mr-logo").innerHTML = MR_ICON;
-  const guildIds = [...new Set([...state.guilds.map((g) => g.id)])];
+  // Outhouses with raids in view (and the one picked), in rail order.
+  const withRaids = new Set(myRaids.events.map((ev) => ev.guild_id));
+  const guildIds = state.guilds.map((g) => g.id).filter((id) => withRaids.has(id) || id === myRaids.guild);
   const chips = el("div", { class: "mr-chips", role: "group", "aria-label": "Outhouses" },
     el("button", { type: "button", class: `mr-chip${myRaids.guild ? "" : " on"}`, "aria-pressed": myRaids.guild ? "false" : "true", onclick: () => { myRaids.guild = null; drawMyRaids(); } }, "All outhouses"),
     guildIds.map((id) => {
