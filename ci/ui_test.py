@@ -4906,7 +4906,8 @@ with sync_playwright() as p:
     assert wg.text_content(".widget.w-clock .w-clock-row.realm[data-game='tbc'] .w-clock-label") == "TBC realm"
     wg.wait_for_selector(".widget.w-clock .w-clock-more summary:has-text('1 more')")
     resets = wg.eval_on_selector_all(".widget.w-clock .w-reset-label", "els => els.map((e) => e.textContent)")
-    assert resets == ["Weekly reset US", "Weekly reset EU"], resets
+    # The resets follow the clocks: the next raid's game (TBC, EU) first.
+    assert resets == ["Weekly reset EU", "Weekly reset US"], resets
     wg.wait_for_timeout(300)
     wg.locator(".widget.w-clock").screenshot(path=f"{SHOTS}/4008-desktop-clock-realm-per-game.png")
 
