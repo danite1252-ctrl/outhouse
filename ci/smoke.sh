@@ -5053,4 +5053,11 @@ BASE=$BASE MAIL_DIR=$MAIL_DIR OWNER_TOKEN=$TOKEN_A PUSH=$PUSH bash ci/staff_test
 step "channel categories, channel order, permission sync (ci/categories_test.sh)"
 BASE=$BASE DATABASE_URL=$DATABASE_URL bash ci/categories_test.sh
 
+# ---------------------------------------------------------------------------
+# Join and leave messages (feat-joinmsg): its own script, so it can also run
+# on its own against a local server.
+# ---------------------------------------------------------------------------
+step "join and leave messages (ci/joinmsg_test.sh)"
+BASE=$BASE DATABASE_URL=$DATABASE_URL bash ci/joinmsg_test.sh
+
 echo "Smoke test passed."

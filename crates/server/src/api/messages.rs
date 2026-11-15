@@ -50,6 +50,7 @@ pub(crate) struct MessageRow {
     filtered: bool,
     sticker: Option<SqlJson<StickerRef>>,
     forward: Option<SqlJson<ForwardInfo>>,
+    system: Option<SqlJson<crate::api::welcome::StoredSystem>>,
 }
 
 pub(crate) const MESSAGE_SELECT: &str = "
@@ -61,7 +62,7 @@ pub(crate) const MESSAGE_SELECT: &str = "
                AS author_avatar_url,
            u.is_bot AS author_bot,
            m.content, m.created_at, m.edited_at, m.reply_to_id, m.interaction, m.pinned_at,
-           m.thread_id, m.components, m.filtered, m.sticker, m.forward
+           m.thread_id, m.components, m.filtered, m.sticker, m.forward, m.system
     FROM messages m
     JOIN users u ON u.id = m.author_id
     JOIN channels ch ON ch.id = m.channel_id
@@ -361,6 +362,7 @@ pub(crate) async fn hydrate(db: &PgPool, rows: Vec<MessageRow>) -> AppResult<Vec
             filtered: r.filtered,
             sticker: r.sticker.map(|s| s.0),
             forward: r.forward.map(|f| f.0),
+            system: r.system.map(|s| s.0.to_message()),
         })
         .collect())
 }
@@ -1426,6 +1428,11 @@ pub async fn edit(
     if original.author_id != user.id {
         return Err(AppError::Forbidden);
     }
+    if original.system.is_some() {
+        return Err(AppError::BadRequest(
+            "Join and leave messages can't be edited.".into(),
+        ));
+    }
     let components = match req.components {
         None => None,
         Some(_) if !user.bot => {
@@ -1516,7 +1523,8 @@ pub async fn delete(
 ) -> AppResult<StatusCode> {
     let access = channel_access(&st.db, channel_id, user.id).await?;
     let msg = message_in_channel(&st.db, channel_id, message_id).await?;
-    if msg.author_id != user.id {
+    // Join and leave lines are the outhouse's, not the member's: moderators only.
+    if msg.author_id != user.id || msg.system.is_some() {
         access.require(p::MANAGE_MESSAGES)?;
     }
     let keys: Vec<String> =

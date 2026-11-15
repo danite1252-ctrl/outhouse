@@ -167,6 +167,7 @@ pub const ACTIONS: &[(&str, &str)] = &[
     ("automod_block", "Had a message blocked by automod"),
     ("automod_timeout", "Was timed out by automod"),
     ("automod_update", "Changed automod settings"),
+    ("welcome_update", "Changed join messages"),
 ];
 
 /// "Kick members, Ban members" for a set of permission bits.

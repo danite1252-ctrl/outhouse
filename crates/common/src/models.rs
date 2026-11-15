@@ -368,6 +368,24 @@ pub struct Message {
     /// this message's `attachments`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forward: Option<ForwardInfo>,
+    /// A line the server posted itself (someone joined or left): shown as a
+    /// one-liner without an author header, and can't be edited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<SystemMessage>,
+}
+
+/// What a system message says. `text` is the template that was picked when it
+/// was posted, with `{name}` where the person's name goes (the message's author).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SystemMessage {
+    /// `member_join`, `member_leave` or `bot_join`.
+    pub kind: String,
+    /// Which template it was (stays the same on reload).
+    pub template: i16,
+    pub text: String,
+    /// Show a "Wave 👋" button under it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub wave: bool,
 }
 
 fn is_false(b: &bool) -> bool {

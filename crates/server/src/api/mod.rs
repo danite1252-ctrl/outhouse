@@ -51,6 +51,7 @@ pub mod transfers;
 pub mod twofactor;
 pub mod voice;
 mod webhooks;
+pub mod welcome;
 mod widgets;
 pub mod wow;
 
@@ -391,6 +392,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/events/{id}/signup", put(events::signup))
         .route("/api/events/{id}/export", get(events::export))
+        .route(
+            "/api/guilds/{id}/welcome",
+            get(welcome::get).put(welcome::set),
+        )
         .route(
             "/api/guilds/{id}/raid-settings",
             get(raid_settings::get).put(raid_settings::set),

@@ -450,6 +450,8 @@ pub async fn join(
             Audience::User(user.id),
             ServerEvent::GuildCreate(guild.clone()),
         );
+        // "Knock knock — {name} just took the last free stall."
+        crate::api::welcome::member_joined(&st, guild.id, user.id, user.bot).await;
     }
     Ok(Json(guild))
 }

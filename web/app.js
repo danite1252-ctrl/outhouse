@@ -1099,6 +1099,7 @@ function renderText(text) {
 }
 
 function mentionsMe(m) {
+  if (m.system) return false; // join and leave lines never ping
   const c = m.content.toLowerCase();
   const myRoles = memberById(state.me.id)?.role_ids ?? [];
   return c.includes(`<@${state.me.id}>`) || myRoles.some((r) => c.includes(`<@&${r}>`)) ||
@@ -1185,13 +1186,14 @@ function renderReactions(m) {
 }
 
 function messageActions(m) {
-  const mine = m.author_id === state.me.id;
+  // Join and leave lines aren't the member's to edit or delete.
+  const mine = m.author_id === state.me.id && !m.system;
   const bar = el("div", { class: "msg-actions" },
     can("add_reactions", state.channelId)
       ? el("button", { title: "Add reaction", onclick: (e) => emojiPicker(e.currentTarget, (emoji) => toggleReaction(m, emoji)) }, "😀")
       : null,
     can("send_messages", state.channelId) ? el("button", { title: "Reply", onclick: () => startReply(m) }, "↩") : null,
-    can("send_messages", state.channelId) && !m.thread_id ? el("button", { class: "thread-btn", title: m.thread ? "Open thread" : "Start a thread", onclick: () => startThread(m) }, "🧵") : null,
+    can("send_messages", state.channelId) && !m.thread_id && !m.system ? el("button", { class: "thread-btn", title: m.thread ? "Open thread" : "Start a thread", onclick: () => startThread(m) }, "🧵") : null,
     mine ? el("button", { title: "Edit", onclick: () => startEdit(m.id) }, "✎") : null,
     can("manage_messages", state.channelId)
       ? el("button", { class: `pin${m.pinned_at ? " on" : ""}`, title: m.pinned_at ? "Unpin" : "Pin", onclick: () => togglePin(m) }, "📌")
@@ -1254,6 +1256,12 @@ function renderMessages() {
       nodes.push(el("div", { class: "new-divider", id: "new-divider", role: "separator" }, el("span", {}, "New messages")));
       markerShown = true;
       prev = null; // start a fresh group under the line
+    }
+    // Join and leave lines (joinmsg.js): a one-liner, and the next message starts a new group.
+    if (m.system && typeof renderSystemMessage === "function") {
+      nodes.push(renderSystemMessage(m));
+      prev = null;
+      continue;
     }
     const grouped = prev && !m.reply_to && !m.ephemeral && !prev.ephemeral && !m.interaction && !m.event && !prev.event && !m.poll && !prev.poll && !m.lfg && !prev.lfg && !prev.thread && prev.author_id === m.author_id && prev.author_display_name === m.author_display_name &&
       new Date(m.created_at) - new Date(prev.created_at) < 5 * 60 * 1000;
@@ -1532,7 +1540,7 @@ input.addEventListener("keydown", (e) => {
     e.preventDefault();
     $("composer").requestSubmit();
   } else if (e.key === "ArrowUp" && !input.value) {
-    const mine = [...state.messages].reverse().find((m) => m.author_id === state.me.id);
+    const mine = [...state.messages].reverse().find((m) => m.author_id === state.me.id && !m.system);
     if (mine) { e.preventDefault(); startEdit(mine.id); }
   } else if (e.key === "Escape" && state.replyTo) {
     cancelReply();
@@ -2754,7 +2762,7 @@ window.outhouseDesktopPtt = (down) => {
 };
 
 function mentionsMe(m) {
-  if (m.author_id === state.me.id) return false;
+  if (m.author_id === state.me.id || m.system) return false;
   if (m.reply_to?.author_id === state.me.id) return true;
   if (m.content.includes(`<@${state.me.id}>`) || /(^|\s)@(everyone|here)\b/.test(m.content)) return true;
   const myRoles = memberById(state.me.id)?.role_ids ?? [];
@@ -3162,7 +3170,7 @@ const MENUS = {
   message(e, node) {
     const m = findMessage(node.dataset.id);
     if (!m) return;
-    const mine = m.author_id === state.me.id;
+    const mine = m.author_id === state.me.id && !m.system;
     const selection = window.getSelection()?.toString();
     const link = e.target?.closest?.("a");
     const img = e.target?.closest?.("img");
@@ -3170,7 +3178,7 @@ const MENUS = {
       can("add_reactions", state.channelId) ? { quick: QUICK_REACTIONS, onPick: (emoji) => toggleReaction(m, emoji) } : null,
       can("add_reactions", state.channelId) ? { label: "Add reaction…", onClick: () => emojiPicker(node.querySelector(".msg-body"), (emoji) => toggleReaction(m, emoji)) } : null,
       can("send_messages", state.channelId) ? { label: "Reply", onClick: () => startReply(m) } : null,
-      m.thread ? { label: "Open thread", onClick: () => openThread(m.thread) } : can("send_messages", state.channelId) ? { label: "Start a thread", onClick: () => startThread(m) } : null,
+      m.thread ? { label: "Open thread", onClick: () => openThread(m.thread) } : can("send_messages", state.channelId) && !m.system ? { label: "Start a thread", onClick: () => startThread(m) } : null,
       mine ? { label: "Edit message", onClick: () => startEdit(m.id) } : null,
       can("manage_messages", state.channelId) ? { label: m.pinned_at ? "Unpin message" : "Pin message", onClick: () => togglePin(m) } : null,
       "sep",

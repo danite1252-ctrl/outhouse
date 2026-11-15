@@ -120,7 +120,7 @@ renderChannels = function () {
 
 const notifyBaseDesktop = desktopNotifyMessage;
 desktopNotifyMessage = function (m, ch) {
-  if (!desktop || !ch || document.hasFocus() || m.author_id === state.me?.id) return;
+  if (!desktop || !ch || document.hasFocus() || m.author_id === state.me?.id || m.system) return;
   if (notifyMuted(ch.id)) return;
   const level = notifyLevel(ch.guild_id);
   if (level === "nothing") return;

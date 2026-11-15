@@ -171,6 +171,8 @@ pub async fn leave(
         ));
     }
     remove_member(&st, guild_id, user.id).await?;
+    // "{name} wandered off into the bushes." (if leave messages are on).
+    crate::api::welcome::member_left(&st, guild_id, user.id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

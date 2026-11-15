@@ -5211,6 +5211,10 @@ with sync_playwright() as p:
     import ui_categories
     ui_categories.run(browser, BASE, SHOTS, watch, os.environ["DATABASE_URL"])
 
+    # ---- Join and leave messages (joinmsg.js): ci/ui_joinmsg.py ----
+    import ui_joinmsg
+    ui_joinmsg.run(browser, BASE, SHOTS, watch)
+
     browser.close()
 
     # Scrollbars (headless Chrome hides them unless asked): a long chat at

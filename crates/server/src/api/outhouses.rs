@@ -57,6 +57,7 @@ struct Row {
     total: i64,
 }
 
+// Message counts and the read-only look leave out join and leave lines (messages.system).
 const ROW_SQL: &str = "
     SELECT g.id, g.name, g.icon_key, g.owner_id, u.username AS owner_username,
            u.display_name AS owner_name, COALESCE(u.suspended_until > now(), false) AS owner_suspended,
@@ -65,9 +66,9 @@ const ROW_SQL: &str = "
            (SELECT count(*) FROM guild_members m WHERE m.guild_id = g.id) AS members,
            (SELECT count(*) FROM channels c WHERE c.guild_id = g.id) AS channels,
            (SELECT count(*) FROM messages m JOIN channels c ON c.id = m.channel_id
-             WHERE c.guild_id = g.id AND m.created_at > now() - interval '7 days') AS messages_7d,
+             WHERE c.guild_id = g.id AND m.system IS NULL AND m.created_at > now() - interval '7 days') AS messages_7d,
            (SELECT count(*) FROM messages m JOIN channels c ON c.id = m.channel_id
-             WHERE c.guild_id = g.id AND m.created_at > now() - interval '30 days') AS messages_30d,
+             WHERE c.guild_id = g.id AND m.system IS NULL AND m.created_at > now() - interval '30 days') AS messages_30d,
            (SELECT count(*) FROM reports r WHERE r.guild_id = g.id AND r.status <> 'closed') AS open_reports,
            ARRAY(SELECT h.old_name FROM guild_name_history h WHERE h.guild_id = g.id
                  ORDER BY h.changed_at DESC LIMIT 5) AS previous_names,
@@ -241,8 +242,8 @@ async fn detail_json(st: &AppState, guild_id: i64) -> AppResult<Value> {
     .await?;
     let channels = sqlx::query_as::<_, ChannelRow>(
         "SELECT c.id, c.name, c.kind,
-                (SELECT count(*) FROM messages m WHERE m.channel_id = c.id) AS messages,
-                (SELECT max(m.created_at) FROM messages m WHERE m.channel_id = c.id) AS last_message_at
+                (SELECT count(*) FROM messages m WHERE m.channel_id = c.id AND m.system IS NULL) AS messages,
+                (SELECT max(m.created_at) FROM messages m WHERE m.channel_id = c.id AND m.system IS NULL) AS last_message_at
          FROM channels c WHERE c.guild_id = $1
          ORDER BY c.kind, c.position, c.id",
     )
@@ -417,7 +418,7 @@ pub async fn channel_history(
                 u.username AS author_username, m.content, m.created_at, m.edited_at, m.safety_hidden
          FROM messages m JOIN users u ON u.id = m.author_id
          LEFT JOIN guild_members gm ON gm.guild_id = $2 AND gm.user_id = m.author_id
-         WHERE m.channel_id = $1 AND ($3::BIGINT IS NULL OR m.id < $3)
+         WHERE m.channel_id = $1 AND m.system IS NULL AND ($3::BIGINT IS NULL OR m.id < $3)
          ORDER BY m.id DESC LIMIT 50",
     )
     .bind(channel_id)

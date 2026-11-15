@@ -343,6 +343,7 @@ pub async fn send_ephemeral(st: &AppState, post: EphemeralPost) -> AppResult<Mes
         components: post.components,
         ephemeral: true,
         filtered: false,
+        system: None,
         sticker: None,
         forward: None,
     };

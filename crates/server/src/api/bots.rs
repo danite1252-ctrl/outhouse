@@ -146,6 +146,7 @@ pub async fn create(
         Audience::Guild(guild_id),
         ServerEvent::MemberJoin { guild_id, member },
     );
+    crate::api::welcome::member_joined(&st, guild_id, bot_id, true).await;
     crate::audit::Entry::new(guild_id, user.id, "bot_create")
         .target("bot", bot_id, name.clone())
         .save(&st)

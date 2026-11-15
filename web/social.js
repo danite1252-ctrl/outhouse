@@ -306,7 +306,7 @@ async function openForwardDialog(m) {
   if (dialog.isConnected) draw();
 }
 
-const canForward = (m) => !!(m.content?.trim() || m.attachments?.length || m.embeds?.length || m.sticker || m.forward);
+const canForward = (m) => !m.system && !!(m.content?.trim() || m.attachments?.length || m.embeds?.length || m.sticker || m.forward);
 
 const fwBaseMessageActions = messageActions;
 messageActions = function (m) {

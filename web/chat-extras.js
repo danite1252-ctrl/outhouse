@@ -48,7 +48,7 @@ function loadUnread() {
 }
 
 function mentionsMeIn(m, guildId) {
-  if (m.author_id === state.me.id) return false;
+  if (m.author_id === state.me.id || m.system) return false;
   if (m.reply_to?.author_id === state.me.id) return true;
   if (m.content.includes(`<@${state.me.id}>`) || /(^|\s)@(everyone|here)\b/.test(m.content)) return true;
   const roles = state.myRoles.get(guildId) ?? (guildId === state.guildId ? memberById(state.me.id)?.role_ids : null) ?? [];
@@ -76,7 +76,7 @@ function noteUnreadMessage(m) {
 // An @mention of you, your roles, @everyone/@here, or a reply to you
 // (for thread replies and muted DMs, where mentionsMeIn doesn't apply).
 function pingsMe(m, guildId) {
-  if (m.author_id === state.me.id) return false;
+  if (m.author_id === state.me.id || m.system) return false;
   if (m.reply_to?.author_id === state.me.id) return true;
   if (m.content.includes(`<@${state.me.id}>`) || /(^|\s)@(everyone|here)\b/.test(m.content)) return true;
   const roles = state.myRoles.get(guildId) ?? (guildId === state.guildId ? memberById(state.me.id)?.role_ids : null) ?? [];
