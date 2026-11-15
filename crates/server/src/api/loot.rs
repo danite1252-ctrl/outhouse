@@ -1092,10 +1092,10 @@ pub async fn reserve(
     .bind(target)
     .fetch_all(&mut *tx)
     .await?;
-    let you = if target == user.id {
-        "You've"
+    let (you, your) = if target == user.id {
+        ("You've", "your")
     } else {
-        "They've"
+        ("They've", "their")
     };
     if mine.contains(&item_id) {
         return Err(AppError::BadRequest(format!(
@@ -1104,10 +1104,10 @@ pub async fn reserve(
     }
     if mine.len() as i32 >= row.soft_reserves {
         return Err(AppError::BadRequest(if row.soft_reserves == 1 {
-            format!("{you} used the soft reserve. Remove it to pick something else.")
+            format!("{you} used {your} soft reserve. Remove it to pick something else.")
         } else {
             format!(
-                "{you} used all {} soft reserves. Remove one to pick something else.",
+                "{you} used all {} of {your} soft reserves. Remove one to pick something else.",
                 row.soft_reserves
             )
         }));
