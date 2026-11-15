@@ -10,6 +10,7 @@ mod channels;
 pub mod components;
 pub mod detector;
 mod dms;
+pub mod drafts;
 pub mod emojis;
 pub mod events;
 mod feeds;
@@ -226,6 +227,15 @@ pub fn router(state: AppState) -> Router {
             "/api/channels/{id}/messages/upload",
             post(messages::upload).layer(DefaultBodyLimit::max(upload_limit)),
         )
+        // Files uploaded from the message box before sending (checked first)
+        .route(
+            "/api/channels/{id}/drafts",
+            post(drafts::upload).layer(DefaultBodyLimit::max(
+                messages::MAX_FILE_BYTES + 1024 * 1024,
+            )),
+        )
+        .route("/api/drafts/sweep", post(drafts::sweep_now))
+        .route("/api/drafts/{id}", get(drafts::get).delete(drafts::delete))
         .route(
             "/api/channels/{id}/messages/{message}",
             patch(messages::edit).delete(messages::delete),

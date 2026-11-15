@@ -26,7 +26,7 @@ use crate::state::{AppState, Audience};
 const MAX_MESSAGE_CHARS: usize = 4000;
 pub const MAX_FILES: usize = 10;
 pub const MAX_FILE_BYTES: usize = 25 * 1024 * 1024;
-const KEY_ALPHABET: &[u8] = b"abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+pub(crate) const KEY_ALPHABET: &[u8] = b"abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 // ---- Loading -----------------------------------------------------------
 
@@ -735,6 +735,9 @@ pub(crate) struct MessageExtras {
     pub sticker: Option<StickerRef>,
     pub forward: Option<ForwardInfo>,
     pub reused_files: Vec<ReusedFile>,
+    /// Files uploaded from the message box before sending (api::drafts),
+    /// already checked by the image detector (or being checked).
+    pub drafts: Vec<crate::api::drafts::DraftFile>,
     /// Scheduled messages: slowmode doesn't hold them back.
     pub skip_slowmode: bool,
 }
@@ -749,32 +752,6 @@ fn check_content(content: &str, allow_empty: bool) -> AppResult<()> {
         )));
     }
     Ok(())
-}
-
-async fn create_message(
-    st: &AppState,
-    access: &ChannelAccess,
-    user: &User,
-    content: String,
-    reply_to_id: Option<i64>,
-    thread_id: Option<i64>,
-    files: Vec<PendingFile>,
-    components: Vec<Component>,
-) -> AppResult<Message> {
-    create_message_ex(
-        st,
-        access,
-        user,
-        content,
-        reply_to_id,
-        thread_id,
-        files,
-        MessageExtras {
-            components,
-            ..Default::default()
-        },
-    )
-    .await
 }
 
 /// Refuses a message in a one-to-one DM when either person has blocked
@@ -822,6 +799,7 @@ pub(crate) async fn create_message_ex(
     check_content(
         &content,
         !files.is_empty()
+            || !extras.drafts.is_empty()
             || !extras.components.is_empty()
             || !extras.reused_files.is_empty()
             || extras.sticker.is_some()
@@ -836,6 +814,11 @@ pub(crate) async fn create_message_ex(
     } else {
         crate::api::components::clean(&extras.components)?
     };
+    if files.len() + extras.drafts.len() > MAX_FILES {
+        return Err(AppError::BadRequest(format!(
+            "Up to {MAX_FILES} files per message."
+        )));
+    }
     check_dm_blocks(st, access, user.id).await?;
     let content = crate::api::emojis::expand(&st.db, guild_id, user.id, &content).await?;
     if let Some(thread_id) = thread_id {
@@ -872,7 +855,7 @@ pub(crate) async fn create_message_ex(
         access,
         user,
         &content,
-        files.len(),
+        files.len() + extras.drafts.len(),
         crate::automod::Check::Send,
     )
     .await?;
@@ -896,6 +879,18 @@ pub(crate) async fn create_message_ex(
                 .map_err(|e| anyhow::anyhow!("saving upload: {e}"))?;
         }
     }
+
+    // Drafts' pictures: who's involved here decides their holds (worked out
+    // before the transaction; the holds are set inside it).
+    let draft_ctx = if extras
+        .drafts
+        .iter()
+        .any(|d| crate::api::detector::scannable(&d.content_type))
+    {
+        Some(crate::api::detector::post_context(st, &access.channel, user).await)
+    } else {
+        None
+    };
 
     let id = st.ids.next_id();
     let mut tx = st.db.begin().await?;
@@ -939,6 +934,33 @@ pub(crate) async fn create_message_ex(
         .bind(&f.waveform)
         .execute(&mut *tx)
         .await?;
+    }
+    // Drafts become this message's files, with the detector's result (if
+    // it's in) applied before anyone is told about the message: a flagged
+    // picture is held from the very first moment.
+    crate::api::drafts::take(&mut tx, user.id, &extras.drafts).await?;
+    let mut draft_reports = Vec::new();
+    for d in &extras.drafts {
+        sqlx::query(
+            "INSERT INTO attachments (id, message_id, storage_key, filename, content_type, size)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(st.ids.next_id())
+        .bind(id)
+        .bind(&d.storage_key)
+        .bind(&d.filename)
+        .bind(&d.content_type)
+        .bind(d.size)
+        .execute(&mut *tx)
+        .await?;
+        if let Some(ctx) = &draft_ctx {
+            if let Some(scan_id) =
+                crate::api::detector::adopt_draft_scan(&mut tx, ctx, &d.storage_key, channel_id, id)
+                    .await?
+            {
+                draft_reports.push(scan_id);
+            }
+        }
     }
     for f in &files {
         sqlx::query(
@@ -1016,6 +1038,10 @@ pub(crate) async fn create_message_ex(
         },
         ServerEvent::MessageCreate(message.clone()),
     );
+    // Already flagged when it was sent: the detector report it would have had.
+    for scan_id in draft_reports {
+        crate::api::detector::report_sent_draft(st, scan_id).await;
+    }
     crate::push::spawn_message_push(st, guild_id, &message);
     crate::api::mentions::spawn_record(st, guild_id, &message, false);
     if let Some(request_id) = request {
@@ -1076,7 +1102,14 @@ pub async fn send(
 ) -> AppResult<Json<Message>> {
     let access = channel_access(&st.db, channel_id, user.id).await?;
     access.require(p::SEND_MESSAGES)?;
-    let msg = create_message(
+    let drafts = if req.draft_ids.is_empty() {
+        Vec::new()
+    } else {
+        access.require(p::ATTACH_FILES)?;
+        crate::api::drafts::for_message(&st, user.id, channel_id, req.thread_id, &req.draft_ids)
+            .await?
+    };
+    let msg = create_message_ex(
         &st,
         &access,
         &user,
@@ -1084,14 +1117,18 @@ pub async fn send(
         req.reply_to_id,
         req.thread_id,
         Vec::new(),
-        req.components,
+        MessageExtras {
+            components: req.components,
+            drafts,
+            ..Default::default()
+        },
     )
     .await?;
     Ok(Json(msg))
 }
 
 /// Keeps a safe, readable version of an uploaded file's name.
-fn clean_filename(raw: &str) -> String {
+pub(crate) fn clean_filename(raw: &str) -> String {
     let base = raw.rsplit(['/', '\\']).next().unwrap_or("");
     let cleaned: String = base
         .chars()
@@ -1112,7 +1149,7 @@ fn clean_filename(raw: &str) -> String {
     }
 }
 
-fn guess_content_type(filename: &str) -> &'static str {
+pub(crate) fn guess_content_type(filename: &str) -> &'static str {
     let ext = filename
         .rsplit('.')
         .next()
@@ -1156,6 +1193,7 @@ pub async fn upload(
     let mut thread_id = None;
     let mut files = Vec::new();
     let mut voice: Option<VoiceUpload> = None;
+    let mut draft_ids: Vec<i64> = Vec::new();
     while let Some(field) = form.next_field().await.map_err(upload_error)? {
         let name = field.name().unwrap_or_default().to_string();
         match name.as_str() {
@@ -1204,6 +1242,17 @@ pub async fn upload(
                     voice: None,
                 });
             }
+            // Files already uploaded from the message box (one ID, or several
+            // separated by commas, per field).
+            "draft_ids" => {
+                let text = field.text().await.map_err(upload_error)?;
+                for part in text.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+                    draft_ids.push(
+                        part.parse::<i64>()
+                            .map_err(|_| AppError::BadRequest("Bad draft_ids.".into()))?,
+                    );
+                }
+            }
             // A recorded voice message: `{"duration_ms", "waveform"}`.
             "voice" => {
                 let text = field.text().await.map_err(upload_error)?;
@@ -1215,13 +1264,20 @@ pub async fn upload(
             _ => {}
         }
     }
-    if files.is_empty() && content.trim().is_empty() {
+    if files.is_empty() && draft_ids.is_empty() && content.trim().is_empty() {
         return Err(AppError::BadRequest("Nothing to send.".into()));
     }
     if let Some(v) = voice {
+        if !draft_ids.is_empty() {
+            return Err(AppError::BadRequest(
+                "A voice message is one recording.".into(),
+            ));
+        }
         check_voice_message(&mut files, v)?;
     }
-    let msg = create_message(
+    let drafts =
+        crate::api::drafts::for_message(&st, user.id, channel_id, thread_id, &draft_ids).await?;
+    let msg = create_message_ex(
         &st,
         &access,
         &user,
@@ -1229,7 +1285,10 @@ pub async fn upload(
         reply_to_id,
         thread_id,
         files,
-        Vec::new(),
+        MessageExtras {
+            drafts,
+            ..Default::default()
+        },
     )
     .await?;
     Ok(Json(msg))
@@ -1341,7 +1400,8 @@ pub(crate) async fn remove_unused_files(st: &AppState, keys: Vec<String>) {
                  OR EXISTS(SELECT 1 FROM profile_files WHERE storage_key = $1)
                  OR EXISTS(SELECT 1 FROM emojis WHERE storage_key = $1)
                  OR EXISTS(SELECT 1 FROM stickers WHERE storage_key = $1)
-                 OR EXISTS(SELECT 1 FROM sounds WHERE storage_key = $1)",
+                 OR EXISTS(SELECT 1 FROM sounds WHERE storage_key = $1)
+                 OR EXISTS(SELECT 1 FROM message_drafts WHERE storage_key = $1)",
         )
         .bind(&key)
         .fetch_one(&st.db)

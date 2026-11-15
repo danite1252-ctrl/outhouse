@@ -1015,6 +1015,109 @@ struct SnapUser {
     created_at: DateTime<Utc>,
 }
 
+/// A picture someone put in a message box and never sent (a draft; see
+/// `api::drafts`): about the uploader, with the file and where they were
+/// writing.
+async fn draft_target(st: &AppState, uploader: i64, key: &str) -> AppResult<Target> {
+    let user = user_target(st, None, uploader).await?;
+    let draft: Option<(String, String, i64, i64, Option<i64>, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT filename, content_type, size, channel_id, thread_id, created_at
+         FROM message_drafts WHERE storage_key = $1",
+    )
+    .bind(key)
+    .fetch_optional(&st.db)
+    .await?;
+    let (filename, content_type, size, channel_id, thread_id, uploaded_at) = match draft {
+        Some(d) => d,
+        // Removed (or expired) before its check finished: from the scan.
+        None => {
+            let scan: Option<(String, Option<i64>, DateTime<Utc>)> = sqlx::query_as(
+                "SELECT content_type, channel_id, created_at FROM file_scans WHERE storage_key = $1",
+            )
+            .bind(key)
+            .fetch_optional(&st.db)
+            .await?;
+            let (content_type, channel_id, created_at) = scan.ok_or(AppError::NotFound)?;
+            let size = tokio::fs::metadata(st.config.upload_dir.join(key))
+                .await
+                .map(|m| m.len() as i64)
+                .unwrap_or(0);
+            let ext = content_type.rsplit('/').next().unwrap_or("png").to_string();
+            (
+                format!("picture.{ext}"),
+                content_type,
+                size,
+                channel_id.unwrap_or(0),
+                None,
+                created_at,
+            )
+        }
+    };
+    let place: Option<(String, i64, Option<String>)> = sqlx::query_as(
+        "SELECT c.name, c.guild_id, g.name FROM channels c LEFT JOIN guilds g ON g.id = c.guild_id
+         WHERE c.id = $1",
+    )
+    .bind(channel_id)
+    .fetch_optional(&st.db)
+    .await?;
+    let guild_id = place
+        .as_ref()
+        .and_then(|(_, g, name)| name.as_ref().map(|_| *g));
+    let thread_name: Option<String> = match thread_id {
+        Some(t) => {
+            sqlx::query_scalar("SELECT name FROM threads WHERE id = $1")
+                .bind(t)
+                .fetch_optional(&st.db)
+                .await?
+        }
+        None => None,
+    };
+    let participants: Vec<String> = if place.is_some() && guild_id.is_none() {
+        sqlx::query_scalar(
+            "SELECT u.display_name || ' (@' || u.username || ')' FROM dm_participants p
+             JOIN users u ON u.id = p.user_id WHERE p.channel_id = $1 ORDER BY p.joined_at",
+        )
+        .bind(channel_id)
+        .fetch_all(&st.db)
+        .await?
+    } else {
+        Vec::new()
+    };
+    let snapshot = json!({
+        "kind": "draft",
+        "user": user.snapshot["user"],
+        "draft": {
+            "filename": filename,
+            "content_type": content_type,
+            "size": size,
+            "uploaded_at": uploaded_at,
+            "sent": false,
+        },
+        "place": {
+            "guild_id": guild_id.map(|g| g.to_string()),
+            "guild_name": place.as_ref().and_then(|(_, _, g)| g.clone()),
+            "channel_id": channel_id.to_string(),
+            "channel_name": place.as_ref().map(|(c, _, _)| c.clone()),
+            "thread_name": thread_name,
+            "dm": place.is_some() && guild_id.is_none(),
+            "participants": participants,
+        },
+    });
+    Ok(Target {
+        reported_user_id: Some(uploader),
+        guild_id,
+        channel_id: place.as_ref().map(|_| channel_id),
+        message_id: None,
+        snapshot,
+        files: vec![FileMeta {
+            key: key.to_string(),
+            filename,
+            content_type,
+            size,
+        }],
+    })
+}
+
 async fn user_target(st: &AppState, reporter: Option<i64>, user_id: i64) -> AppResult<Target> {
     if Some(user_id) == reporter {
         return Err(AppError::BadRequest("You can't report yourself.".into()));
@@ -1508,6 +1611,12 @@ pub(crate) async fn detector_report(st: &AppState, t: DetectorTarget) -> AppResu
                 None => user_target(st, None, uploader).await?,
             }
         }
+        super::detector::KIND_DRAFT => {
+            let Some(uploader) = t.uploader_id else {
+                return Ok(());
+            };
+            draft_target(st, uploader, &t.storage_key).await?
+        }
         kind @ (super::detector::KIND_EMOJI | super::detector::KIND_STICKER) => {
             let table = if kind == "emoji" {
                 "emojis"
@@ -1843,6 +1952,10 @@ fn place_label(snap: &Value) -> String {
 
 fn preview(snap: &Value) -> String {
     match snap["kind"].as_str() {
+        Some("draft") => format!(
+            "Picture uploaded but not sent ({})",
+            snap["draft"]["filename"].as_str().unwrap_or("a file")
+        ),
         Some("message") => {
             let m = &snap["message"];
             let text = m["content"].as_str().unwrap_or("").trim();

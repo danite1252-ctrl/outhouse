@@ -102,6 +102,7 @@ async fn main() -> anyhow::Result<()> {
     api::safety::spawn_digest(state.clone());
     api::outhouses::spawn_remover(state.clone());
     api::detector::spawn_worker(state.clone());
+    api::drafts::spawn_sweeper(state.clone());
     ips::spawn_pruner(state.clone());
     api::police::spawn_cleaner(state.clone());
     if let Err(e) = ipblock::reload(&state.db).await {

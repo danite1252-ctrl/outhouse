@@ -619,6 +619,9 @@ const findMessage = (id) => state.messages.find((m) => m.id === id);
 
 function handleEvent({ t, d }) {
   switch (t) {
+    case "DRAFT_SCANNED":
+      onDraftScanned(d);
+      break;
     case "READY": {
       state.reconnectDelay = 1000;
       $("conn-status").classList.add("up");
@@ -1459,18 +1462,197 @@ function addFiles(files) {
     if (f.size > 25 * 1024 * 1024) { toast(`${f.name} is over 25 MB.`); continue; }
     if (state.pendingFiles.length >= 10) { toast("Up to 10 files at a time."); break; }
     state.pendingFiles.push(f);
+    startDraft(f, state.channelId, null, () => renderPendingFiles());
   }
   renderPendingFiles();
   input.focus();
 }
 
+// ---------- drafts: files go up as soon as they're added ----------
+// Each file added to a message box is uploaded straight away (POST
+// /api/channels/{id}/drafts), so the server's image detector can check a
+// picture before it's sent: the card says "Checking…" and then, if it was
+// flagged, "Will be held for review" (sending it is still allowed; it's
+// held from the moment it's sent). Sending passes the drafts' IDs instead
+// of the files. A file whose upload failed is sent the old way, in the
+// message itself. Previews come from the file on this device: drafts are
+// never served back.
+const drafts = new Map();      // File -> draft
+const draftsById = new Map();  // draft ID -> draft
+
+function draftChanged(d) {
+  d.onChange?.();
+  const waiters = d.waiters.splice(0);
+  for (const w of waiters) w();
+}
+
+function startDraft(file, channelId, threadId, onChange) {
+  const d = { file, channelId, threadId, id: null, state: "uploading", progress: 0, xhr: null, sent: false, removed: false, onChange, waiters: [] };
+  drafts.set(file, d);
+  const form = new FormData();
+  form.append("file", file, file.name);
+  if (threadId) form.append("thread_id", threadId);
+  const xhr = new XMLHttpRequest();
+  d.xhr = xhr;
+  xhr.open("POST", `/api/channels/${channelId}/drafts`);
+  if (state.token) xhr.setRequestHeader("Authorization", `Bearer ${state.token}`);
+  xhr.upload.onprogress = (e) => {
+    if (!e.lengthComputable) return;
+    d.progress = e.loaded / e.total;
+    d.onChange?.();
+  };
+  xhr.onload = () => {
+    d.xhr = null;
+    let body = null;
+    try { body = JSON.parse(xhr.responseText); } catch { body = null; }
+    if (xhr.status === 200 && body?.draft_id) {
+      d.id = body.draft_id;
+      draftsById.set(d.id, d);
+      // A scan result may have beaten the reply here.
+      if (d.state === "uploading") d.state = body.state || "clean";
+      if (d.removed) return discardDraft(d);
+    } else {
+      // Sent with the message instead (the old way). Say why if it's
+      // something the person can do something about.
+      d.state = "failed";
+      if (!d.removed && [400, 403, 429].includes(xhr.status) && body?.error) toast(body.error);
+    }
+    draftChanged(d);
+  };
+  xhr.onerror = xhr.onabort = () => { d.xhr = null; d.state = "failed"; draftChanged(d); };
+  xhr.send(form);
+  return d;
+}
+
+function discardDraft(d) {
+  d.removed = true;
+  if (d.xhr) { d.xhr.abort(); return; }
+  if (d.id) {
+    draftsById.delete(d.id);
+    api("DELETE", `/api/drafts/${d.id}`).catch(() => {});
+  }
+}
+
+function onDraftScanned(ev) {
+  const d = draftsById.get(ev.draft_id);
+  if (!d || d.state === "failed") return;
+  d.state = ev.state;
+  draftChanged(d);
+}
+
+// Before sending: every upload finished, and pictures still being checked
+// given up to ~3 seconds (then sent anyway: held as "Checking…" where that
+// applies). `label(text)` shows what it's waiting for on the send button.
+async function settleDrafts(files, label) {
+  const ds = files.map((f) => drafts.get(f)).filter(Boolean);
+  const until = (pred, ms) => new Promise((resolve) => {
+    let timer = null;
+    const check = () => {
+      if (pred()) { clearTimeout(timer); resolve(); return; }
+      for (const d of ds) if (!d.waiters.includes(check)) d.waiters.push(check);
+    };
+    if (ms) timer = setTimeout(() => { for (const d of ds) d.waiters = d.waiters.filter((w) => w !== check); resolve(); }, ms);
+    check();
+  });
+  try {
+    if (ds.some((d) => d.state === "uploading")) {
+      label("Uploading…");
+      await until(() => ds.every((d) => d.state !== "uploading"));
+    }
+    if (ds.some((d) => d.state === "checking")) {
+      label("Checking pictures…");
+      await until(() => ds.every((d) => d.state !== "checking"), 3000);
+    }
+  } finally {
+    label(null);
+  }
+  const drafted = [];
+  const direct = [];
+  for (const f of files) {
+    const d = drafts.get(f);
+    if (d?.id && d.state !== "failed") drafted.push(d);
+    else direct.push(f);
+  }
+  return { drafted, direct };
+}
+
+// Sent: the drafts are the message's files now (not deleted with the cards).
+function draftsSent(drafted) {
+  for (const d of drafted) { d.sent = true; draftsById.delete(d.id); }
+}
+
+// The server says a draft is gone (expired, say): next time, send the files.
+function draftsFailed(drafted, err) {
+  if (!/gone|expired/i.test(err?.message || "")) return;
+  for (const d of drafted) { draftsById.delete(d.id); d.id = null; d.state = "failed"; }
+}
+
+// Shows `text` (or the normal icon, with null) on a send button.
+function sendButtonLabel(btn) {
+  let icon = null;
+  return (text) => {
+    if (!btn) return;
+    if (text) {
+      if (!icon) icon = [...btn.childNodes];
+      btn.classList.add("send-waiting");
+      btn.replaceChildren(el("span", { class: "mc-spinner", "aria-hidden": "true" }), el("span", {}, text));
+    } else if (icon) {
+      btn.classList.remove("send-waiting");
+      btn.replaceChildren(...icon);
+      icon = null;
+    }
+  };
+}
+
+const PF_RING = 2 * Math.PI * 15;
+
+// What a pending file's card shows about its draft.
+function draftBadge(f) {
+  const d = drafts.get(f);
+  if (!d) return null;
+  if (d.state === "uploading") {
+    const done = Math.max(0.04, Math.min(1, d.progress || 0));
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 36 36");
+    svg.setAttribute("class", "pf-ring");
+    for (const [cls, dash] of [["pf-ring-track", null], ["pf-ring-bar", done]]) {
+      const c = document.createElementNS(ns, "circle");
+      c.setAttribute("cx", "18"); c.setAttribute("cy", "18"); c.setAttribute("r", "15");
+      c.setAttribute("class", cls);
+      if (dash != null) c.setAttribute("stroke-dasharray", `${(PF_RING * dash).toFixed(1)} ${PF_RING.toFixed(1)}`);
+      svg.append(c);
+    }
+    return el("div", { class: "pf-status pf-uploading", role: "status", "aria-label": `Uploading ${Math.round(done * 100)}%` }, svg);
+  }
+  if (d.state === "checking") {
+    return el("div", { class: "pf-badge pf-checking", role: "status" }, el("span", { class: "mc-spinner", "aria-hidden": "true" }), "Checking…");
+  }
+  if (d.state === "held") return el("div", { class: "pf-badge pf-held", role: "status" }, "Will be held for review");
+  if (d.state === "blur") return el("div", { class: "pf-badge pf-held", role: "status" }, "Will be blurred");
+  return null;
+}
+
 // Cards for files waiting to be sent: a thumbnail for pictures (and the first
 // frame of videos), an icon and name for anything else, and a ✕ to remove.
-// Each composer gets its own drawer so preview URLs are freed when files go.
+// Each composer gets its own drawer so preview URLs are freed (and drafts
+// deleted) when files go. `draw.redraw()` draws the last list again (a
+// draft's upload or check moved on).
 function pendingFileDrawer() {
   const urls = new Map();
-  return function draw(box, files, onRemove) {
+  const shown = new Set();
+  let last = null;
+  function draw(box, files, onRemove) {
+    last = [box, files, onRemove];
     for (const [f, u] of urls) if (!files.includes(f)) { URL.revokeObjectURL(u); urls.delete(f); }
+    for (const f of [...shown]) {
+      if (files.includes(f)) continue;
+      shown.delete(f);
+      const d = drafts.get(f);
+      if (d && !d.sent) discardDraft(d);
+      drafts.delete(f);
+    }
+    for (const f of files) shown.add(f);
     box.hidden = !files.length;
     box.replaceChildren(...files.map((f, i) => {
       const isImage = f.type.startsWith("image/");
@@ -1485,12 +1667,16 @@ function pendingFileDrawer() {
         const ext = (f.name.split(".").pop() || "").slice(0, 4).toUpperCase();
         thumb = el("div", { class: "pf-icon" }, el("span", {}, "📄"), ext ? el("small", {}, ext) : null);
       }
-      return el("div", { class: `pending-file${isImage || isVideo ? " media" : ""}`, title: `${f.name} · ${fmtSize(f.size)}` },
+      const d = drafts.get(f);
+      return el("div", { class: `pending-file${isImage || isVideo ? " media" : ""}${d ? ` draft-${d.state}` : ""}`, title: `${f.name} · ${fmtSize(f.size)}` },
         thumb,
+        draftBadge(f),
         el("div", { class: "pf-name" }, f.name),
         el("button", { type: "button", class: "pf-remove", "aria-label": `Remove ${f.name}`, onclick: () => onRemove(i) }, "✕"));
     }));
-  };
+  }
+  draw.redraw = () => { if (last) draw(...last); };
+  return draw;
 }
 const drawMainPendingFiles = pendingFileDrawer();
 
@@ -1516,23 +1702,45 @@ window.addEventListener("drop", (e) => {
   if (e.dataTransfer?.files.length) addFiles([...e.dataTransfer.files]);
 });
 
+let sendingFiles = false;
+
 async function sendMessage(content) {
   content = encodeMentions(content);
   const channelId = state.channelId;
   const replyId = state.replyTo?.id;
-  const files = state.pendingFiles;
+  const files = [...state.pendingFiles];
   let msg;
   if (files.length) {
-    const form = new FormData();
-    form.append("content", content);
-    if (replyId) form.append("reply_to_id", replyId);
-    for (const f of files) form.append("files", f, f.name);
-    toast(`Uploading ${files.length} file${files.length > 1 ? "s" : ""}…`);
-    msg = await api("POST", `/api/channels/${channelId}/messages/upload`, form);
+    if (sendingFiles) throw new Error("Still sending the last one…");
+    sendingFiles = true;
+    let drafted = [];
+    try {
+      const settled = await settleDrafts(files, sendButtonLabel($("composer").querySelector("button.send")));
+      drafted = settled.drafted;
+      const draftIds = drafted.map((d) => d.id);
+      if (!settled.direct.length) {
+        msg = await api("POST", `/api/channels/${channelId}/messages`, { content, reply_to_id: replyId || null, draft_ids: draftIds });
+      } else {
+        const form = new FormData();
+        form.append("content", content);
+        if (replyId) form.append("reply_to_id", replyId);
+        if (draftIds.length) form.append("draft_ids", draftIds.join(","));
+        for (const f of settled.direct) form.append("files", f, f.name);
+        toast(`Uploading ${settled.direct.length} file${settled.direct.length > 1 ? "s" : ""}…`);
+        msg = await api("POST", `/api/channels/${channelId}/messages/upload`, form);
+      }
+    } catch (err) {
+      draftsFailed(drafted, err);
+      throw err;
+    } finally {
+      sendingFiles = false;
+    }
+    draftsSent(drafted);
   } else {
     msg = await api("POST", `/api/channels/${channelId}/messages`, { content, reply_to_id: replyId || null });
   }
-  state.pendingFiles = [];
+  // Files added while it was sending stay for the next message.
+  state.pendingFiles = state.pendingFiles.filter((f) => !files.includes(f));
   renderPendingFiles();
   if (state.replyTo) cancelReply();
   if (channelId === state.channelId && !findMessage(msg.id)) {

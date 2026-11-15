@@ -1485,6 +1485,10 @@ pub struct CreateMessageRequest {
     /// Post inside this thread of the channel.
     #[serde(with = "option_as_string", default)]
     pub thread_id: Option<i64>,
+    /// Files already uploaded from the message box (`POST
+    /// /api/channels/{id}/drafts`), to attach to this message.
+    #[serde(with = "vec_as_string", default)]
+    pub draft_ids: Vec<i64>,
 }
 
 /// Start a DM (one other person) or a group DM (2–9 others).

@@ -72,6 +72,14 @@ pub enum ServerEvent {
     /// An outhouse ownership transfer involving you changed: re-fetch
     /// `/api/users/@me/transfers` (sent to you only).
     TransfersChanged,
+    /// The image detector finished checking a file in your message box
+    /// (a draft): `state` is `checking`, `clean`, `held` (will be held for
+    /// review if sent) or `blur` (sent to you only).
+    DraftScanned {
+        #[serde(with = "as_string")]
+        draft_id: i64,
+        state: String,
+    },
     /// Roles, member roles or channel permissions changed: re-fetch
     /// channels, roles, members and your permissions.
     GuildRefresh {

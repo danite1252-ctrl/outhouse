@@ -63,6 +63,10 @@ pub const KIND_EMOJI: &str = "emoji";
 pub const KIND_STICKER: &str = "sticker";
 pub const KIND_GUILD_ICON: &str = "guild_icon";
 pub const KIND_GUILD_BANNER: &str = "guild_banner";
+/// A file in someone's message box, not sent yet (see `api::drafts`):
+/// scanned like an attachment, but nothing is held (nobody else has it).
+/// Sending it turns the scan into an attachment's.
+pub const KIND_DRAFT: &str = "draft";
 /// Scanned only for a report's review screen (nothing is held).
 const KIND_REPORT: &str = "report";
 
@@ -171,6 +175,14 @@ impl AgeRule {
     pub fn line(&self) -> String {
         format!(
             "Automatic: explicit content with a face estimated {} or under",
+            fmt_age(self.age)
+        )
+    }
+
+    /// The same for a picture put in a message box and never sent.
+    pub fn draft_line(&self) -> String {
+        format!(
+            "Automatic: picture uploaded but not sent — explicit content with a face estimated {} or under",
             fmt_age(self.age)
         )
     }
@@ -624,6 +636,30 @@ async fn insert_scan(st: &AppState, s: NewScan<'_>, settings: &Settings) {
     }
 }
 
+/// Who's involved when someone posts pictures in a channel.
+pub struct PostContext {
+    pub guild_id: Option<i64>,
+    pub settings: Settings,
+    pub teen_author: bool,
+    pub teen: bool,
+    pub adult_only: bool,
+}
+
+pub async fn post_context(st: &AppState, channel: &Channel, user: &User) -> PostContext {
+    let guild_id = (channel.guild_id != DM_GUILD).then_some(channel.guild_id);
+    let settings = settings_for(&st.db, guild_id).await;
+    let teen_author = !user.bot && is_teen(&st.db, user.id).await;
+    let teen = teen_author || teen_can_see(&st.db, channel).await;
+    let adult_only = crate::perms::is_age_gated(channel) && !teen;
+    PostContext {
+        guild_id,
+        settings,
+        teen_author,
+        teen,
+        adult_only,
+    }
+}
+
 /// A message's new files were saved: queue its pictures. Called before the
 /// message is sent out, so pictures to or from teens start out held.
 pub async fn track_message_files(
@@ -637,11 +673,7 @@ pub async fn track_message_files(
     if pictures.is_empty() {
         return;
     }
-    let guild = (channel.guild_id != DM_GUILD).then_some(channel.guild_id);
-    let settings = settings_for(&st.db, guild).await;
-    let teen_author = !user.bot && is_teen(&st.db, user.id).await;
-    let teen = teen_author || teen_can_see(&st.db, channel).await;
-    let adult_only = crate::perms::is_age_gated(channel) && !teen;
+    let ctx = post_context(st, channel, user).await;
     for (key, content_type) in pictures {
         insert_scan(
             st,
@@ -650,16 +682,271 @@ pub async fn track_message_files(
                 kind: KIND_ATTACHMENT,
                 content_type,
                 uploader_id: Some(user.id),
-                guild_id: guild,
+                guild_id: ctx.guild_id,
                 channel_id: Some(channel.id),
                 message_id: Some(message_id),
-                teen,
-                teen_author,
-                adult_only,
+                teen: ctx.teen,
+                teen_author: ctx.teen_author,
+                adult_only: ctx.adult_only,
             },
-            &settings,
+            &ctx.settings,
         )
         .await;
+    }
+}
+
+// ---- Drafts: pictures checked before they're sent --------------------------------------
+
+/// What the sender's message box shows on a draft picture:
+/// `checking`, `clean`, `held` (will be held for review) or `blur`.
+pub fn draft_state(
+    status: &str,
+    teen: bool,
+    adult_only: bool,
+    escalated: bool,
+    action: &str,
+    hold_teens: bool,
+) -> &'static str {
+    if escalated {
+        return "held";
+    }
+    if status == "pending" {
+        return "checking";
+    }
+    match decide(
+        status,
+        KIND_ATTACHMENT,
+        teen,
+        adult_only,
+        None,
+        action,
+        hold_teens,
+    ) {
+        "held" | "hidden" | "checking" => "held",
+        "blur" => "blur",
+        _ => "clean",
+    }
+}
+
+/// A draft was saved: queue it straight away (like a message's picture,
+/// same priority). Returns its state for the message box.
+pub async fn track_draft(
+    st: &AppState,
+    channel: &Channel,
+    user: &User,
+    key: &str,
+    content_type: &str,
+) -> &'static str {
+    if !scannable(content_type) {
+        return "clean";
+    }
+    let ctx = post_context(st, channel, user).await;
+    insert_scan(
+        st,
+        NewScan {
+            key,
+            kind: KIND_DRAFT,
+            content_type,
+            uploader_id: Some(user.id),
+            guild_id: ctx.guild_id,
+            channel_id: Some(channel.id),
+            message_id: None,
+            teen: ctx.teen,
+            teen_author: ctx.teen_author,
+            adult_only: ctx.adult_only,
+        },
+        &ctx.settings,
+    )
+    .await;
+    draft_state_of(st, key).await
+}
+
+/// A draft's state for the message box, from its scan.
+pub async fn draft_state_of(st: &AppState, key: &str) -> &'static str {
+    let row: Option<(String, bool, bool, Option<i64>, bool)> = sqlx::query_as(
+        "SELECT s.status, s.teen, s.adult_only, s.guild_id,
+                (s.age_escalated_at IS NOT NULL AND s.age_cleared_at IS NULL)
+                OR EXISTS(SELECT 1 FROM quarantined_files q WHERE q.storage_key = s.storage_key)
+         FROM file_scans s WHERE s.storage_key = $1",
+    )
+    .bind(key)
+    .fetch_optional(&st.db)
+    .await
+    .ok()
+    .flatten();
+    let Some((status, teen, adult_only, guild_id, escalated)) = row else {
+        return "clean";
+    };
+    let settings = settings_for(&st.db, guild_id).await;
+    draft_state(
+        &status,
+        teen,
+        adult_only,
+        escalated,
+        &settings.action,
+        settings.hold_teens,
+    )
+}
+
+/// Tells the uploader's open clients a draft's scan finished.
+async fn notify_draft(st: &AppState, key: &str) {
+    let draft: Option<(i64, i64)> =
+        sqlx::query_as("SELECT id, user_id FROM message_drafts WHERE storage_key = $1")
+            .bind(key)
+            .fetch_optional(&st.db)
+            .await
+            .ok()
+            .flatten();
+    let Some((draft_id, user_id)) = draft else {
+        return;
+    };
+    let state = draft_state_of(st, key).await;
+    st.dispatch(
+        Audience::User(user_id),
+        ServerEvent::DraftScanned {
+            draft_id,
+            state: state.to_string(),
+        },
+    );
+}
+
+/// A sent draft's scan, as the message goes out (inside its transaction, so
+/// the very first MESSAGE_CREATE carries the hold). The scan becomes an
+/// attachment's, with the hold its result (if it's done) calls for in this
+/// channel. Returns the scan's ID if it needs a detector report now (it was
+/// already flagged when it was sent).
+pub(crate) async fn adopt_draft_scan(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ctx: &PostContext,
+    key: &str,
+    channel_id: i64,
+    message_id: i64,
+) -> AppResult<Option<i64>> {
+    let row: Option<(i64, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, status, review FROM file_scans WHERE storage_key = $1 AND kind = 'draft' FOR UPDATE",
+    )
+    .bind(key)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((scan_id, status, review)) = row else {
+        return Ok(None);
+    };
+    let hold = decide(
+        &status,
+        KIND_ATTACHMENT,
+        ctx.teen,
+        ctx.adult_only,
+        review.as_deref(),
+        &ctx.settings.action,
+        ctx.settings.hold_teens,
+    );
+    sqlx::query(
+        "UPDATE file_scans SET kind = 'attachment', message_id = $2, channel_id = $3, guild_id = $4,
+                teen = $5, teen_author = $6, adult_only = $7, hold = $8
+         WHERE id = $1",
+    )
+    .bind(scan_id)
+    .bind(message_id)
+    .bind(channel_id)
+    .bind(ctx.guild_id)
+    .bind(ctx.teen)
+    .bind(ctx.teen_author)
+    .bind(ctx.adult_only)
+    .bind(hold)
+    .execute(&mut **tx)
+    .await?;
+    let report = review.is_none()
+        && matches!(hold, "held" | "blur")
+        && matches!(status.as_str(), "flagged" | "error");
+    Ok(report.then_some(scan_id))
+}
+
+/// A picture that was already flagged when it was sent: its detector report
+/// (the scan finished while it was a draft, when nothing was reported).
+pub(crate) async fn report_sent_draft(st: &AppState, scan_id: i64) {
+    let row = sqlx::query_as::<_, ScanRow>(&format!(
+        "SELECT {SCAN_COLUMNS} FROM file_scans WHERE id = $1"
+    ))
+    .bind(scan_id)
+    .fetch_optional(&st.db)
+    .await
+    .ok()
+    .flatten();
+    let detail: Option<(String, Option<f32>, SqlJson<Vec<Value>>, Option<String>, Option<i32>, Option<f32>)> =
+        sqlx::query_as(
+            "SELECT status, score, labels, error, face_count, min_est_age FROM file_scans WHERE id = $1",
+        )
+        .bind(scan_id)
+        .fetch_optional(&st.db)
+        .await
+        .ok()
+        .flatten();
+    let (Some(row), Some((status, score, labels, error, faces, min_age))) = (row, detail) else {
+        return;
+    };
+    // Escalated to child safety meanwhile: that report covers it.
+    let escalated: bool = sqlx::query_scalar(
+        "SELECT age_escalated_at IS NOT NULL AND age_cleared_at IS NULL FROM file_scans WHERE id = $1",
+    )
+    .bind(scan_id)
+    .fetch_one(&st.db)
+    .await
+    .unwrap_or(false);
+    if escalated {
+        return;
+    }
+    detector_report_for(
+        st,
+        &row,
+        &status,
+        score,
+        &labels.0,
+        error.as_deref(),
+        faces,
+        min_age,
+    )
+    .await;
+}
+
+/// The detector report for a held, hidden or blurred picture.
+#[allow(clippy::too_many_arguments)]
+async fn detector_report_for(
+    st: &AppState,
+    row: &ScanRow,
+    status: &str,
+    score: Option<f32>,
+    labels: &[Value],
+    error: Option<&str>,
+    faces: Option<i32>,
+    min_age: Option<f32>,
+) {
+    let summary = summary_line(status, score, labels, error);
+    let target = super::safety::DetectorTarget {
+        scan_id: row.id,
+        storage_key: row.storage_key.clone(),
+        kind: row.kind.clone(),
+        message_id: row.message_id,
+        uploader_id: row.uploader_id,
+        guild_id: row.guild_id,
+        category: if status == "flagged" {
+            "sexual"
+        } else {
+            "other"
+        },
+        detector: json!({
+            "score": score.map(round2),
+            "labels": labels,
+            "summary": summary,
+            "hold": row.hold,
+            "teen": row.teen,
+            "faces": faces,
+            "min_age": min_age.map(round1),
+            "age_note": AGE_NOTE,
+        }),
+        auto_escalation: None,
+    };
+    if let Err(e) = super::safety::detector_report(st, target).await {
+        tracing::warn!(error = %e, "image detector: couldn't make a report");
     }
 }
 
@@ -1200,13 +1487,43 @@ async fn process(st: &AppState, client: &reqwest::Client, row: ScanRow) -> bool 
 
 async fn finish(
     st: &AppState,
-    row: &ScanRow,
+    claimed: &ScanRow,
     status: &str,
     reply: Option<&ScanReply>,
     error: Option<String>,
     settings: &Settings,
 ) {
-    let new_hold = if row.apply_hold {
+    // The row as it is now, locked while the result is saved: a draft may
+    // have been sent meanwhile (it's an attachment's scan now, with a
+    // message), and sending takes the same lock, so exactly one of the two
+    // sees the result.
+    let mut tx = match st.db.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::warn!(error = %e, "image detector: couldn't save a result");
+            return;
+        }
+    };
+    let fresh = sqlx::query_as::<_, ScanRow>(&format!(
+        "SELECT {SCAN_COLUMNS} FROM file_scans WHERE id = $1 FOR UPDATE"
+    ))
+    .bind(claimed.id)
+    .fetch_optional(&mut *tx)
+    .await;
+    let mut row = match fresh {
+        Ok(Some(r)) => r,
+        // Gone (a draft that was removed): nothing to save.
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!(error = %e, "image detector: couldn't save a result");
+            return;
+        }
+    };
+    let draft = row.kind == KIND_DRAFT;
+    let new_hold = if draft {
+        // Nobody else has a draft: nothing to hold until it's sent.
+        "none"
+    } else if row.apply_hold {
         decide(
             status,
             &row.kind,
@@ -1249,25 +1566,40 @@ async fn finish(
     .bind(min_age)
     .bind(SqlJson(json!(ages)))
     .bind(reply.and_then(|r| r.age_model.clone()))
-    .execute(&st.db)
+    .execute(&mut *tx)
     .await;
     if let Err(e) = updated {
+        tracing::warn!(error = %e, "image detector: couldn't save a result");
+        return;
+    }
+    if let Err(e) = tx.commit().await {
         tracing::warn!(error = %e, "image detector: couldn't save a result");
         return;
     }
     if new_hold != row.hold {
         announce(st, &row.storage_key, &row.kind, row.guild_id).await;
     }
+    row.hold = new_hold.clone();
     // Explicit with a face estimated clearly young: child safety, whatever
-    // else would happen (18+ channels and report-only scans too).
+    // else would happen (18+ channels, report-only scans and pictures that
+    // were never sent too).
     if row.age_cleared_at.is_none() && reply.is_some() {
         let rule = age_rule(&st.db).await;
         if rule.matches(reply.map(|r| r.score), min_age) {
             if let Err(e) = escalate(st, row.id, &rule).await {
                 tracing::warn!(error = %e, "image detector: couldn't escalate to child safety");
             }
+            if draft {
+                notify_draft(st, &row.storage_key).await;
+            }
             return;
         }
+    }
+    if draft {
+        // The sender's message box shows the result (nobody else saw it,
+        // so there's no report unless it's sent).
+        notify_draft(st, &row.storage_key).await;
+        return;
     }
     // Held, hidden or blurred: the site owner gets a detector report.
     let needs_report = row.apply_hold
@@ -1277,34 +1609,17 @@ async fn finish(
     if needs_report {
         let score = reply.map(|r| r.score);
         let labels: Vec<Value> = reply.map(|r| r.labels.clone()).unwrap_or_default();
-        let summary = summary_line(status, score, &labels, error.as_deref());
-        let target = super::safety::DetectorTarget {
-            scan_id: row.id,
-            storage_key: row.storage_key.clone(),
-            kind: row.kind.clone(),
-            message_id: row.message_id,
-            uploader_id: row.uploader_id,
-            guild_id: row.guild_id,
-            category: if status == "flagged" {
-                "sexual"
-            } else {
-                "other"
-            },
-            detector: json!({
-                "score": score.map(round2),
-                "labels": labels,
-                "summary": summary,
-                "hold": new_hold,
-                "teen": row.teen,
-                "faces": faces,
-                "min_age": min_age.map(round1),
-                "age_note": AGE_NOTE,
-            }),
-            auto_escalation: None,
-        };
-        if let Err(e) = super::safety::detector_report(st, target).await {
-            tracing::warn!(error = %e, "image detector: couldn't make a report");
-        }
+        detector_report_for(
+            st,
+            &row,
+            status,
+            score,
+            &labels,
+            error.as_deref(),
+            faces,
+            min_age,
+        )
+        .await;
     }
 }
 
@@ -1335,7 +1650,11 @@ async fn escalate(st: &AppState, scan_id: i64, rule: &AgeRule) -> AppResult<()> 
     .bind(scan_id)
     .fetch_one(&st.db)
     .await?;
-    let line = rule.line();
+    let line = if r.kind == KIND_DRAFT {
+        rule.draft_line()
+    } else {
+        rule.line()
+    };
     let info = json!({
         "line": line,
         "at": Utc::now(),
@@ -2235,6 +2554,59 @@ pub async fn set_guild_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn draft_states() {
+        // Still being checked, anywhere.
+        assert_eq!(
+            draft_state("pending", false, false, false, "hold", true),
+            "checking"
+        );
+        assert_eq!(
+            draft_state("pending", true, false, false, "hold", true),
+            "checking"
+        );
+        // Clean, skipped (detector off): nothing to say.
+        assert_eq!(
+            draft_state("clean", true, false, false, "hold", true),
+            "clean"
+        );
+        assert_eq!(
+            draft_state("skipped", false, false, false, "hold", true),
+            "clean"
+        );
+        // Flagged: will be held (or blurred), except in an adult-only 18+ channel.
+        assert_eq!(
+            draft_state("flagged", false, false, false, "hold", true),
+            "held"
+        );
+        assert_eq!(
+            draft_state("flagged", false, false, false, "blur", true),
+            "blur"
+        );
+        assert_eq!(
+            draft_state("flagged", true, false, false, "blur", true),
+            "held"
+        );
+        assert_eq!(
+            draft_state("flagged", false, true, false, "hold", true),
+            "clean"
+        );
+        // Couldn't be checked: held only to or from a teen.
+        assert_eq!(
+            draft_state("error", true, false, false, "hold", true),
+            "held"
+        );
+        assert_eq!(
+            draft_state("error", false, false, false, "hold", true),
+            "clean"
+        );
+        // Escalated to child safety: held, whatever the scan says.
+        assert_eq!(
+            draft_state("flagged", false, true, true, "hold", true),
+            "held"
+        );
+    }
 
     #[test]
     fn decisions() {

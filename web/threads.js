@@ -183,6 +183,8 @@ async function openThread(t) {
   } }, "⋯");
   const body = showSidePanel("thread", `🧵 ${t.name}`);
   sidePanel.node.querySelector(".sp-head .icon-btn")?.before(more);
+  // Files left in the last thread's message box: their drafts go.
+  for (const f of thread.files) { const d = drafts.get(f); if (d && !d.sent) discardDraft(d); drafts.delete(f); }
   Object.assign(thread, { info: t, messages: [], atStart: false, loadingOlder: false, files: [] });
   body.classList.add("thread-body");
   body.append(el("p", { class: "sp-note" }, "Loading…"));
@@ -273,49 +275,73 @@ function renderThread(forceBottom = false) {
 function threadComposer() {
   const t = thread.info;
   const canSend = can("send_messages", t.channel_id);
+  const sendBtn = el("button", { type: "submit", class: "send", "aria-label": "Send", disabled: !canSend },
+    el("span", { "aria-hidden": "true" }, "➤"));
   const ta = el("textarea", { rows: 1, placeholder: canSend ? `Reply in ${t.name}` : "You can't post here.", "aria-label": "Reply in thread", disabled: !canSend });
   const chips = el("div", { class: "pending-files", hidden: true });
   const fileInput = el("input", { type: "file", multiple: true, hidden: true });
   const drawFiles = pendingFileDrawer();
   const drawChips = () => drawFiles(chips, thread.files, (i) => { thread.files.splice(i, 1); drawChips(); });
-  fileInput.addEventListener("change", () => {
-    for (const f of fileInput.files) {
+  // Added files go up straight away (drafts, see app.js), for this thread.
+  const addThreadFiles = (files) => {
+    for (const f of files) {
       if (f.size > 25 * 1024 * 1024) { toast(`${f.name} is over 25 MB.`); continue; }
-      if (thread.files.length < 10) thread.files.push(f);
+      if (thread.files.length >= 10) { toast("Up to 10 files at a time."); break; }
+      thread.files.push(f);
+      startDraft(f, t.channel_id, t.id, () => drawFiles.redraw());
     }
-    fileInput.value = "";
     drawChips();
+  };
+  fileInput.addEventListener("change", () => {
+    addThreadFiles([...fileInput.files]);
+    fileInput.value = "";
   });
+  let sending = false;
   const resize = () => { ta.style.height = "auto"; ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`; };
   const send = async () => {
     const info = thread.info;
     const raw = ta.value.trim();
     if (!info || (!raw && !thread.files.length)) return;
     const content = encodeMentions(raw);
-    const files = thread.files;
+    const files = [...thread.files];
+    if (files.length && sending) return;
     ta.value = "";
     resize();
+    let drafted = [];
     try {
       let msg;
       if (files.length) {
-        const form = new FormData();
-        form.append("content", content);
-        form.append("thread_id", info.id);
-        for (const f of files) form.append("files", f, f.name);
-        msg = await api("POST", `/api/channels/${info.channel_id}/messages/upload`, form);
+        sending = true;
+        const settled = await settleDrafts(files, sendButtonLabel(sendBtn));
+        drafted = settled.drafted;
+        const draftIds = drafted.map((d) => d.id);
+        if (!settled.direct.length) {
+          msg = await api("POST", `/api/channels/${info.channel_id}/messages`, { content, thread_id: info.id, draft_ids: draftIds });
+        } else {
+          const form = new FormData();
+          form.append("content", content);
+          form.append("thread_id", info.id);
+          if (draftIds.length) form.append("draft_ids", draftIds.join(","));
+          for (const f of settled.direct) form.append("files", f, f.name);
+          msg = await api("POST", `/api/channels/${info.channel_id}/messages/upload`, form);
+        }
+        draftsSent(drafted);
       } else {
         msg = await api("POST", `/api/channels/${info.channel_id}/messages`, { content, thread_id: info.id });
       }
-      thread.files = [];
+      thread.files = thread.files.filter((f) => !files.includes(f));
       drawChips();
       if (thread.info?.id === info.id && !thread.messages.some((x) => x.id === msg.id)) {
         thread.messages.push(msg);
         renderThread(true);
       }
     } catch (err) {
+      draftsFailed(drafted, err);
       ta.value = raw;
       resize();
       toast(err.message);
+    } finally {
+      if (files.length) sending = false;
     }
   };
   ta.addEventListener("input", resize);
@@ -324,14 +350,12 @@ function threadComposer() {
   });
   ta.addEventListener("paste", (e) => {
     const files = [...(e.clipboardData?.files || [])];
-    if (files.length && can("attach_files", t.channel_id)) { e.preventDefault(); thread.files.push(...files.slice(0, 10 - thread.files.length)); drawChips(); }
+    if (files.length && can("attach_files", t.channel_id)) { e.preventDefault(); addThreadFiles(files); }
   });
   return el("div", { class: "thread-composer-wrap" }, chips,
     el("form", { class: "composer thread-composer", onsubmit: (e) => { e.preventDefault(); send(); } },
       can("attach_files", t.channel_id) && canSend ? el("button", { type: "button", class: "tool", title: "Upload files", "aria-label": "Upload files", onclick: () => fileInput.click() }, "+") : null,
-      fileInput, ta,
-      el("button", { type: "submit", class: "send", "aria-label": "Send", disabled: !canSend },
-        el("span", { "aria-hidden": "true" }, "➤"))));
+      fileInput, ta, sendBtn));
 }
 
 async function editThreadMessage(m) {

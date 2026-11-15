@@ -3046,3 +3046,23 @@ dialog.settings .settings-nav button.so-tab.active { box-shadow: inset 3px 0 0 v
   /* Shown even where uploads aren't allowed: its menu has the other tools. */
   #composer #attach-btn[hidden] { display: inline-flex; }
 }
+
+/* Drafts: files in the message box go up straight away and pictures are
+   checked before they're sent (app.js startDraft / draftBadge). */
+.pending-file .pf-status { position: absolute; left: 0; top: 0; width: 112px; height: 112px; display: grid; place-items: center; border-radius: 10px; background: rgba(10, 8, 6, .45); pointer-events: none; }
+.pf-ring { width: 40px; height: 40px; transform: rotate(-90deg); }
+.pf-ring circle { fill: none; stroke-width: 3.5; }
+.pf-ring-track { stroke: rgba(255, 255, 255, .25); }
+.pf-ring-bar { stroke: var(--ember); stroke-linecap: round; transition: stroke-dasharray .2s; }
+.pending-file .pf-badge { position: absolute; left: 6px; right: 6px; bottom: 26px; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 3px 6px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 1.25; text-align: center; pointer-events: none; }
+.pf-checking { background: rgba(10, 8, 6, .78); color: var(--text); }
+.pf-checking .mc-spinner { width: 10px; height: 10px; border-width: 2px; }
+.pf-held { background: #f97316; color: #1a0d03; border-radius: 8px !important; }
+.pending-file.draft-held > img, .pending-file.draft-held > video, .pending-file.draft-blur > img, .pending-file.draft-blur > video { outline: 2px solid #f97316; outline-offset: -2px; }
+.send.send-waiting { width: auto; padding: 0 12px; gap: 6px; display: inline-flex; align-items: center; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.send.send-waiting .mc-spinner { width: 12px; height: 12px; }
+@media (max-width: 520px) {
+  .pending-file .pf-status { width: 84px; height: 84px; }
+  .pf-ring { width: 32px; height: 32px; }
+  .pending-file .pf-badge { left: 3px; right: 3px; font-size: 10px; padding: 2px 4px; }
+}

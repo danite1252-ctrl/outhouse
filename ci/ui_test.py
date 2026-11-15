@@ -4344,6 +4344,126 @@ with sync_playwright() as p:
     op.screenshot(path=f"{SHOTS}/3616-age-settings.png")
     op.close()
 
+    # ---- Drafts (app.js startDraft): files go up as soon as they're added to
+    # the message box, so a picture is checked before it's sent. Cards show
+    # the upload, "Checking…" and "Will be held for review"; a flagged picture
+    # is held from its very first moment in the channel.
+    def draft_page(token, label, vp=None, mobile=False):
+        pg = browser.new_page(viewport=vp or {"width": 1280, "height": 800}, is_mobile=mobile, has_touch=mobile)
+        watch(pg, label)
+        pg.add_init_script(f"localStorage.setItem('outhouse_token', {json.dumps(token)}); localStorage.setItem('outhouse_guild', {json.dumps(dguild['id'])}); localStorage.setItem('outhouse_channel_{dguild['id']}', {json.dumps(dchan['id'])});")
+        pg.goto(BASE + "/")
+        pg.wait_for_selector("#messages .msg", timeout=15000)
+        pg.wait_for_function("state.ws && state.ws.readyState === 1", timeout=10000)
+        return pg
+
+    # Someone else in the channel: never asks for (or gets) the held picture.
+    dview = draft_page(dave["token"], "drafts-viewer")
+    served = []
+    dview.on("response", lambda r: "/files/" in r.url and r.status == 200 and served.append(r.url))
+    es = draft_page(erin["token"], "drafts-sender")
+    es.on("response", lambda r: "/files/" in r.url and "seaside" in r.url and r.status == 200 and served.append(r.url))
+    # Uploading: held back at the network so the ring can be seen.
+    held_uploads = []
+    es.route("**/api/channels/*/drafts", lambda route: held_uploads.append(route))
+    es.set_input_files("#file-input", files=[
+        {"name": "seaside.png", "mimeType": "image/png", "buffer": dt_png(240, 160, (255, 0, 255), "flag")},
+        {"name": "lunch.png", "mimeType": "image/png", "buffer": make_png(80)},
+    ])
+    es.wait_for_selector("#pending-files .pending-file.draft-uploading .pf-ring", timeout=5000)
+    assert es.locator("#pending-files .pending-file.draft-uploading").count() == 2
+    es.wait_for_timeout(200)
+    es.screenshot(path=f"{SHOTS}/4101-draft-uploading.png")
+    for _ in range(40):
+        if len(held_uploads) >= 2:
+            break
+        es.wait_for_timeout(100)
+    for r in held_uploads:
+        r.continue_()
+    es.unroute("**/api/channels/*/drafts")
+    # Checked straight away: the flagged one says so, the clean one says nothing.
+    es.wait_for_selector("#pending-files .pending-file.draft-held .pf-held:has-text('Will be held for review')", timeout=30000)
+    es.wait_for_selector("#pending-files .pending-file.draft-clean", timeout=30000)
+    assert es.query_selector("#pending-files .pending-file.draft-clean .pf-badge") is None
+    # A slow one: "Checking…" while it's being checked.
+    es.set_input_files("#file-input", files=[{"name": "dog.png", "mimeType": "image/png", "buffer": slow_png}])
+    es.wait_for_selector("#pending-files .pending-file.draft-checking .pf-checking:has-text('Checking')", timeout=10000)
+    es.wait_for_timeout(200)
+    es.screenshot(path=f"{SHOTS}/4102-draft-checking-held-clean.png")
+    # Removing a card deletes its draft on the server.
+    dog_draft = es.evaluate("[...drafts.values()].find((d) => d.file.name === 'dog.png').id")
+    assert dog_draft and api("GET", f"/api/drafts/{dog_draft}", None, erin["token"])["state"] in ("checking", "clean")
+    es.click("#pending-files .pending-file:has-text('dog.png') .pf-remove")
+    es.click("#pending-files .pending-file:has-text('lunch.png') .pf-remove")
+    es.wait_for_function("document.querySelectorAll('#pending-files .pending-file').length === 1")
+    for _ in range(40):
+        try:
+            api("GET", f"/api/drafts/{dog_draft}", None, erin["token"])
+        except urllib.error.HTTPError as e:
+            assert e.code == 404, e.code
+            break
+        time.sleep(0.1)
+    else:
+        sys.exit("a removed card's draft wasn't deleted")
+    # Send the flagged one: held from the first moment, for everyone.
+    es.fill("#composer-input", "seaside trip")
+    es.press("#composer-input", "Enter")
+    es.wait_for_selector("#messages article.msg:has-text('seaside trip') .dt-hold .dt-show", timeout=10000)
+    assert es.query_selector("#messages article.msg:has-text('seaside trip') .attachments img") is None, "the sender's held picture was shown"
+    dview.wait_for_selector("#messages article.msg:has-text('seaside trip') .dt-hold:has-text('Held for review')", timeout=10000)
+    assert dview.query_selector("#messages article.msg:has-text('seaside trip') .attachments img") is None, "held picture shown"
+    seaside = next(m for m in api("GET", f"/api/channels/{dchan['id']}/messages?limit=20", None, dave["token"]) if m["content"] == "seaside trip")
+    assert seaside["attachments"][0]["hold"]["state"] == "held" and seaside["attachments"][0]["url"] == "", seaside
+    dview.wait_for_timeout(500)
+    assert not served, f"a held picture was served: {served}"
+    dview.screenshot(path=f"{SHOTS}/4103-draft-sent-held-viewer.png")
+    es.screenshot(path=f"{SHOTS}/4104-draft-sent-held-sender.png")
+    # Sending while a picture is still being checked: "Checking pictures…" on
+    # the send button for up to ~3 s, then it's sent anyway (adults see it).
+    es.set_input_files("#file-input", files=[{"name": "puppy.png", "mimeType": "image/png", "buffer": slow_png}])
+    es.wait_for_selector("#pending-files .pending-file.draft-checking", timeout=10000)
+    es.fill("#composer-input", "puppy pics")
+    es.press("#composer-input", "Enter")
+    es.wait_for_selector("#composer button.send.send-waiting:has-text('Checking pictures')", timeout=5000)
+    es.screenshot(path=f"{SHOTS}/4105-draft-send-waiting.png")
+    es.wait_for_selector("#messages article.msg:has-text('puppy pics')", timeout=15000)
+    es.wait_for_selector("#composer button.send:not(.send-waiting)", timeout=5000)
+    es.wait_for_selector("#pending-files", state="hidden", timeout=5000)
+    es.close()
+
+    # Phone: the same cards, smaller.
+    ph = draft_page(erin["token"], "drafts-phone", vp={"width": 390, "height": 844}, mobile=True)
+    ph.set_input_files("#file-input", files=[
+        {"name": "rockpool.png", "mimeType": "image/png", "buffer": dt_png(240, 160, (255, 0, 255), "flag")},
+        {"name": "sandcastle.png", "mimeType": "image/png", "buffer": make_png(72)},
+    ])
+    ph.wait_for_selector("#pending-files .pending-file.draft-held .pf-held", timeout=30000)
+    ph.wait_for_selector("#pending-files .pending-file.draft-clean", timeout=30000)
+    ph.set_input_files("#file-input", files=[{"name": "cat.png", "mimeType": "image/png", "buffer": slow_png}])
+    ph.wait_for_selector("#pending-files .pending-file.draft-checking .pf-checking", timeout=10000)
+    ph.wait_for_timeout(200)
+    ph.screenshot(path=f"{SHOTS}/4106-phone-draft-cards.png")
+    # Switching channel drops the box's files (and their drafts).
+    ph.evaluate("state.pendingFiles = []; renderPendingFiles()")
+    ph.close()
+
+    # Thread message box: drafts belong to the thread.
+    th_root = api("POST", f"/api/channels/{dchan['id']}/messages", {"content": "Holiday thread starter"}, erin["token"])
+    th = api("POST", f"/api/channels/{dchan['id']}/threads", {"name": "Holiday pics", "message_id": th_root["id"]}, erin["token"])
+    tp_ = draft_page(erin["token"], "drafts-thread")
+    tp_.evaluate(f"openThread({json.dumps(th)})")
+    tp_.wait_for_selector(".thread-panel .thread-composer textarea", timeout=10000)
+    tp_.set_input_files(".thread-panel .thread-composer input[type=file]", files=[
+        {"name": "reef.png", "mimeType": "image/png", "buffer": dt_png(240, 160, (255, 0, 255), "flag")}])
+    tp_.wait_for_selector(".thread-panel .pending-file.draft-held .pf-held", timeout=30000)
+    tp_.fill(".thread-panel .thread-composer textarea", "reef day")
+    tp_.press(".thread-panel .thread-composer textarea", "Enter")
+    tp_.wait_for_selector(".thread-panel article.tmsg:has-text('reef day') .dt-hold", timeout=10000)
+    tp_.wait_for_timeout(200)
+    tp_.screenshot(path=f"{SHOTS}/4107-thread-draft-held.png")
+    tp_.close()
+    dview.close()
+
     # Sign-up asks for a date of birth; under 13s are turned away.
     sp_ = browser.new_page(viewport={"width": 1280, "height": 800})
     watch(sp_, "signup-age")

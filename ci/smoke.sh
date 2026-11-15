@@ -4522,6 +4522,211 @@ tok "$TOKEN_A" call GET "/api/safety/reports/$AR6" | jq -e '(.report.child_safet
 act "$AR6" '{"action":"dismiss"}' >/dev/null
 
 # ---------------------------------------------------------------------------
+# Drafts (feat-prescan): a file goes up as soon as it's added to the message
+# box, so the image detector checks a picture before it's sent. Flagged ->
+# held from the very first MESSAGE_CREATE; never served while a draft.
+# ---------------------------------------------------------------------------
+dfup() { # dfup TOKEN CHANNEL FILE [THREAD] -> HTTP status (draft JSON in /tmp/body)
+  curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $1" -F "file=@$3;type=image/png" ${4:+-F "thread_id=$4"} "$BASE/api/channels/$2/drafts"
+}
+dfnew() { # dfnew TOKEN CHANNEL FILE [THREAD] -> the new draft's ID
+  local c; c=$(dfup "$@"); [ "$c" = 200 ] || { echo "draft upload -> $c"; cat /tmp/body; exit 1; }; jq -r .draft_id /tmp/body
+}
+dfkey() { psql "$DATABASE_URL" -tAc "SELECT storage_key FROM message_drafts WHERE id = $1"; }
+dfstate() { tok "$1" call GET "/api/drafts/$2" | jq -r .state; }
+dfwait() { # dfwait TOKEN DRAFT STATE -> waits up to 30 s
+  for _ in $(seq 1 120); do [ "$(dfstate "$1" "$2")" = "$3" ] && return 0; sleep 0.25; done
+  echo "draft $2 is '$(dfstate "$1" "$2")', wanted '$3'"; tail -20 "$LOG"; return 1
+}
+dfsend() { # dfsend TOKEN CHANNEL JSON -> HTTP status (message JSON in /tmp/body)
+  tok "$1" status POST "/api/channels/$2/messages" "$3"
+}
+
+step "drafts: uploading is checked like a message upload (members, Attach Files, 25 MB, 20 waiting); never served"
+code=$(dfup "$OUT" "$DCH" "$DT/plain.png"); [ "$code" = 404 ] || [ "$code" = 403 ]
+DNA=$(tok "$TOKEN_A" call POST "/api/guilds/$DG/channels" '{"name":"no-files"}' | jq -r .id)
+tok "$TOKEN_A" call PUT "/api/channels/$DNA/permissions/$DG" '{"kind":"role","allow":"0","deny":"16"}' >/dev/null
+[ "$(dfup "$TOKEN_D" "$DNA" "$DT/plain.png")" = 403 ]
+head -c $((25 * 1024 * 1024 + 10)) /dev/zero > /tmp/dt-big.png
+[ "$(dfup "$TOKEN_D" "$DCH" /tmp/dt-big.png)" = 400 ] && grep -q "too big" /tmp/body
+rm -f /tmp/dt-big.png
+[ "$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $TOKEN_D" -F "thread_id=1" "$BASE/api/channels/$DCH/drafts")" = 400 ]
+# A clean picture: checked straight away, before anything is sent.
+DF1=$(dfnew "$TOKEN_D" "$DCH" "$DT/plain.png")
+jq -e '.state == "checking" or .state == "clean"' /tmp/body >/dev/null
+DFK1=$(dfkey "$DF1"); [ -n "$DFK1" ] && [ -f "$UPLOADS/$DFK1" ]
+dtwait "$DFK1" "clean,none"
+psql "$DATABASE_URL" -tAc "SELECT kind = 'draft' AND message_id IS NULL AND uploader_id = $DORA_ID AND channel_id = $DCH FROM file_scans WHERE storage_key = '$DFK1'" | grep -qx t
+dfwait "$TOKEN_D" "$DF1" clean
+# Nobody gets a draft by its key (not even the uploader: the message box previews it locally).
+for who in "" "$TOKEN_D" "$TOKEN_A"; do [ "$(dtfile "/files/$DFK1/plain.png" "$who")" = 404 ]; done
+# Someone else's draft: not found.
+[ "$(tok "$TOKEN_B" status GET "/api/drafts/$DF1")" = 404 ]
+[ "$(tok "$TOKEN_B" status DELETE "/api/drafts/$DF1")" = 404 ]
+# At most 20 waiting at once.
+psql "$DATABASE_URL" -qc "INSERT INTO message_drafts (id, user_id, channel_id, storage_key, filename, content_type, size)
+  SELECT 990000000 + g, $DORA_ID, $DCH, 'dtfiller' || g, 'x.png', 'image/png', 1 FROM generate_series(1, 19) g"
+[ "$(dfup "$TOKEN_D" "$DCH" "$DT/plain.png")" = 429 ] && grep -q "20 files waiting" /tmp/body
+psql "$DATABASE_URL" -qc "DELETE FROM message_drafts WHERE storage_key LIKE 'dtfiller%'"
+
+step "drafts: a clean draft is sent as a normal picture (the scan becomes the attachment's)"
+[ "$(dfsend "$TOKEN_D" "$DCH" '{"content":"","draft_ids":["'"$DF1"'"]}')" = 200 ]
+DFM1=$(jq -r .id /tmp/body)
+jq -e '(.attachments | length) == 1 and .attachments[0].url != "" and .attachments[0].hold == null and .attachments[0].filename == "plain.png"' /tmp/body >/dev/null
+[ "$(dtkey "$DFM1")" = "$DFK1" ]
+psql "$DATABASE_URL" -tAc "SELECT kind = 'attachment' AND message_id = $DFM1 AND status = 'clean' AND hold = 'none' FROM file_scans WHERE storage_key = '$DFK1'" | grep -qx t
+[ -z "$(dfkey "$DF1")" ]
+[ "$(dtfile "/files/$DFK1/plain.png")" = 200 ] && cmp -s /tmp/dtfile "$DT/plain.png"
+# Used: it can't be sent again.
+[ "$(dfsend "$TOKEN_D" "$DCH" '{"content":"again","draft_ids":["'"$DF1"'"]}')" = 400 ] && grep -q "gone" /tmp/body
+
+step "drafts: a flagged draft says so in the message box and is held from the very first moment it's sent"
+rm -f /tmp/gw-df-bob.jsonl; node ci/gateway_probe.mjs "$BASE" "$TOKEN_B" /tmp/gw-df-bob.jsonl 120 & DFP1=$!
+rm -f /tmp/gw-df-dora.jsonl; node ci/gateway_probe.mjs "$BASE" "$TOKEN_D" /tmp/gw-df-dora.jsonl 120 & DFP2=$!
+wait_for /tmp/gw-df-bob.jsonl '.t == "READY"'; wait_for /tmp/gw-df-dora.jsonl '.t == "READY"'
+NREP0=$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM reports WHERE source = 'detector'")
+DF2=$(dfnew "$TOKEN_B" "$DCH" "$DT/flag.png"); DFK2=$(dfkey "$DF2")
+dtwait "$DFK2" "flagged,none"      # a draft itself is never held (nobody else has it)
+dfwait "$TOKEN_B" "$DF2" held
+# The uploader's sessions are told (no polling), and only theirs.
+wait_for /tmp/gw-df-bob.jsonl '.t == "DRAFT_SCANNED" and .d.draft_id == $d and .d.state == "held"' --arg d "$DF2"
+sleep 0.5; ! grep -q "DRAFT_SCANNED" /tmp/gw-df-dora.jsonl || { echo "someone else was told about a draft"; exit 1; }
+# Nobody saw it, so no report yet.
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM reports WHERE source = 'detector'")" = "$NREP0" ]
+[ "$(dfsend "$TOKEN_B" "$DCH" '{"content":"look","draft_ids":["'"$DF2"'"]}')" = 200 ]
+DFM2=$(jq -r .id /tmp/body); DFA2=$(jq -r '.attachments[0].id' /tmp/body)
+jq -e '.attachments[0].url == "" and .attachments[0].hold.state == "held" and .attachments[0].hold.reveal == "sender_owner"' /tmp/body >/dev/null
+# The very first MESSAGE_CREATE anyone got already carries the hold (no window at all).
+wait_for /tmp/gw-df-dora.jsonl '.t == "MESSAGE_CREATE" and .d.id == $m' --arg m "$DFM2"
+jq -e -s --arg m "$DFM2" '[.[] | select((.t == "MESSAGE_CREATE" or .t == "MESSAGE_UPDATE") and .d.id == $m)] | .[0].t == "MESSAGE_CREATE"
+  and .[0].d.attachments[0].hold.state == "held" and .[0].d.attachments[0].url == ""
+  and all(.[]; .d.attachments[0].url == "")' /tmp/gw-df-dora.jsonl >/dev/null
+grep -q "$DFK2" /tmp/gw-df-dora.jsonl && { echo "the held picture's link was sent out"; exit 1; }
+[ "$(dtfile "/files/$DFK2/flag.png")" = 451 ]
+[ "$(dtfile "/api/attachments/$DFA2/reveal" "$TOKEN_B")" = 200 ] && cmp -s /tmp/dtfile "$DT/flag.png"
+[ "$(dtfile "/api/attachments/$DFA2/reveal" "$TOKEN_D")" = 451 ]
+psql "$DATABASE_URL" -tAc "SELECT kind = 'attachment' AND message_id = $DFM2 AND status = 'flagged' AND hold = 'held' FROM file_scans WHERE storage_key = '$DFK2'" | grep -qx t
+# The detector report it would have had, made when it was sent.
+DFR2=$(dtreport "$DFK2"); [ -n "$DFR2" ]
+tok "$TOKEN_A" call GET "/api/safety/reports/$DFR2" | jq -e --arg m "$DFM2" '.report.category == "sexual" and .report.message_id == $m
+  and .detector.hold == "held" and .files[0].viewable and (.report.preview | startswith("Detector: 0.97"))' >/dev/null
+# Forwarding a held picture stays refused.
+[ "$(tok "$TOKEN_B" status POST "/api/channels/$DCH/messages/$DFM2/forward" '{"destinations":["'"$DCH"'"]}')" = 403 ]
+act "$DFR2" '{"action":"remove_file"}' >/dev/null
+kill $DFP1 $DFP2 2>/dev/null || true
+
+step "drafts: still being checked when it's sent -> today's behaviour (adults: shown; teens: Checking…)"
+DF3=$(dfnew "$TOKEN_B" "$DCH" "$DT/slow.png"); DFK3=$(dfkey "$DF3")
+jq -e '.state == "checking"' /tmp/body >/dev/null
+[ "$(dfsend "$TOKEN_B" "$DCH" '{"content":"slow one","draft_ids":["'"$DF3"'"]}')" = 200 ]
+DFM3=$(jq -r .id /tmp/body)
+jq -e '.attachments[0].url != "" and .attachments[0].hold == null' /tmp/body >/dev/null
+dtwait "$DFK3" "clean,none"
+psql "$DATABASE_URL" -tAc "SELECT kind = 'attachment' AND message_id = $DFM3 AND attempts = 1 FROM file_scans WHERE storage_key = '$DFK3'" | grep -qx t
+# To a teen: held as "Checking…" until the check (that finishes after sending) is done.
+DF4=$(dfnew "$TOKEN_AD" "$TDM" "$DT/slow.png"); DFK4=$(dfkey "$DF4")
+[ "$(dfsend "$TOKEN_AD" "$TDM" '{"content":"dinner","draft_ids":["'"$DF4"'"]}')" = 200 ]
+DFM4=$(jq -r .id /tmp/body)
+jq -e '.attachments[0].url == "" and .attachments[0].hold.state == "checking"' /tmp/body >/dev/null
+[ "$(dtfile "/files/$DFK4/slow.png")" = 451 ]
+dtwait "$DFK4" "clean,none"
+tok "$TOKEN_T" call GET "/api/channels/$TDM/messages" | jq -e --arg m "$DFM4" '.[] | select(.id == $m) | .attachments[0].url != "" and .attachments[0].hold == null' >/dev/null
+# Flagged before it's sent to a teen: held for everyone, nobody can look.
+DF5=$(dfnew "$TOKEN_AD" "$TDM" "$DT/flag.png"); DFK5=$(dfkey "$DF5")
+dfwait "$TOKEN_AD" "$DF5" held
+[ "$(dfsend "$TOKEN_AD" "$TDM" '{"content":"for you","draft_ids":["'"$DF5"'"]}')" = 200 ]
+DFA5=$(jq -r '.attachments[0].id' /tmp/body)
+jq -e '.attachments[0].url == "" and .attachments[0].hold.state == "held" and .attachments[0].hold.reveal == "none"' /tmp/body >/dev/null
+for t in "$TOKEN_T" "$TOKEN_AD" "$TOKEN_A"; do [ "$(dtfile "/api/attachments/$DFA5/reveal" "$t")" = 451 ]; done
+psql "$DATABASE_URL" -tAc "SELECT teen AND hold = 'held' FROM file_scans WHERE storage_key = '$DFK5'" | grep -qx t
+DFR5=$(dtreport "$DFK5"); [ -n "$DFR5" ]
+tok "$TOKEN_A" call GET "/api/safety/reports/$DFR5" | jq -e '.detector.teen and (.files[0].viewable | not)' >/dev/null
+act "$DFR5" '{"action":"remove_file"}' >/dev/null
+# In an adult-only 18+ channel a flagged draft is fine.
+DF6=$(dfnew "$TOKEN_B" "$DNS" "$DT/flag.png"); dfwait "$TOKEN_B" "$DF6" clean
+[ "$(dfsend "$TOKEN_B" "$DNS" '{"content":"18+","draft_ids":["'"$DF6"'"]}')" = 200 ]
+jq -e '.attachments[0].url != "" and .attachments[0].hold == null' /tmp/body >/dev/null
+
+step "drafts: only the uploader's, for that channel and thread, before they expire"
+DF7=$(dfnew "$TOKEN_B" "$DCH" "$DT/plain2.png")
+[ "$(dfsend "$TOKEN_D" "$DCH" '{"content":"mine now","draft_ids":["'"$DF7"'"]}')" = 400 ] && grep -q "gone" /tmp/body
+[ "$(dfsend "$TOKEN_B" "$DNS" '{"content":"elsewhere","draft_ids":["'"$DF7"'"]}')" = 400 ]
+[ "$(dfsend "$TOKEN_B" "$DCH" '{"content":"twice","draft_ids":["'"$DF7"'","'"$DF7"'"]}')" = 400 ]
+[ "$(dfsend "$TOKEN_B" "$DCH" '{"content":"nope","draft_ids":["123"]}')" = 400 ]
+# No Attach Files any more: drafts can't be sent either.
+tok "$TOKEN_A" call PUT "/api/channels/$DCH/permissions/$BOB" '{"kind":"member","allow":"0","deny":"16"}' >/dev/null
+[ "$(dfsend "$TOKEN_B" "$DCH" '{"content":"no files","draft_ids":["'"$DF7"'"]}')" = 403 ]
+tok "$TOKEN_A" call DELETE "/api/channels/$DCH/permissions/$BOB" >/dev/null
+psql "$DATABASE_URL" -qc "UPDATE message_drafts SET expires_at = now() - INTERVAL '1 minute' WHERE id = $DF7"
+[ "$(dfsend "$TOKEN_B" "$DCH" '{"content":"too late","draft_ids":["'"$DF7"'"]}')" = 400 ] && grep -q "expired" /tmp/body
+[ "$(tok "$TOKEN_B" status GET "/api/drafts/$DF7")" = 404 ]
+# A draft from a thread's message box goes in that thread only.
+DTM=$(tok "$TOKEN_B" call POST "/api/channels/$DCH/messages" '{"content":"thread for drafts"}' | jq -r .id)
+DTH=$(tok "$TOKEN_B" call POST "/api/channels/$DCH/threads" '{"name":"draft thread","message_id":"'"$DTM"'"}' | jq -r .id)
+[ "$(dfup "$TOKEN_B" "$DCH" "$DT/flag.png" 1)" = 400 ]          # not a thread here
+DF8=$(dfnew "$TOKEN_B" "$DCH" "$DT/flag.png" "$DTH"); DFK8=$(dfkey "$DF8")
+dfwait "$TOKEN_B" "$DF8" held
+[ "$(dfsend "$TOKEN_B" "$DCH" '{"content":"not in the thread","draft_ids":["'"$DF8"'"]}')" = 400 ]
+[ "$(dfsend "$TOKEN_B" "$DCH" '{"content":"in the thread","thread_id":"'"$DTH"'","draft_ids":["'"$DF8"'"]}')" = 200 ]
+jq -e --arg t "$DTH" '.thread_id == $t and .attachments[0].hold.state == "held" and .attachments[0].url == ""' /tmp/body >/dev/null
+act "$(dtreport "$DFK8")" '{"action":"remove_file"}' >/dev/null
+# Uploads with files straight in the form still work (bots, webhooks, old clients), and can carry drafts too.
+DF9=$(dfnew "$TOKEN_B" "$DCH" "$DT/plain.png"); DFK9=$(dfkey "$DF9")
+code=$(curl -sS -o /tmp/body -w "%{http_code}" -H "Authorization: Bearer $TOKEN_B" -F "content=both" -F "draft_ids=$DF9" -F "files=@$DT/plain2.png;type=image/png" "$BASE/api/channels/$DCH/messages/upload")
+[ "$code" = 200 ]
+jq -e '(.attachments | length) == 2 and ([.attachments[].filename] | sort) == ["plain.png", "plain2.png"]' /tmp/body >/dev/null
+[ -z "$(dfkey "$DF9")" ]
+
+step "drafts: removing one deletes it; unsent ones expire after an hour (a flagged one too, with no report)"
+DF10=$(dfnew "$TOKEN_D" "$DCH" "$DT/plain.png"); DFK10=$(dfkey "$DF10"); dtwait "$DFK10" "clean,none"
+tok "$TOKEN_D" call DELETE "/api/drafts/$DF10" >/dev/null
+[ -z "$(dfkey "$DF10")" ] && [ ! -f "$UPLOADS/$DFK10" ]
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM file_scans WHERE storage_key = '$DFK10'")" = 0 ]
+[ "$(dfsend "$TOKEN_D" "$DCH" '{"content":"removed","draft_ids":["'"$DF10"'"]}')" = 400 ]
+# Removed while still being checked: the check finishes first, then the file goes.
+DF11=$(dfnew "$TOKEN_D" "$DCH" "$DT/slow.png"); DFK11=$(dfkey "$DF11")
+tok "$TOKEN_D" call DELETE "/api/drafts/$DF11" >/dev/null
+[ -f "$UPLOADS/$DFK11" ]
+dtwait "$DFK11" "clean,none"
+NREP1=$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM reports WHERE source = 'detector'")
+DF12=$(dfnew "$TOKEN_D" "$DCH" "$DT/flag.png"); DFK12=$(dfkey "$DF12"); dfwait "$TOKEN_D" "$DF12" held
+DF13=$(dfnew "$TOKEN_D" "$DCH" "$DT/plain2.png"); DFK13=$(dfkey "$DF13"); dtwait "$DFK13" "clean,none"
+psql "$DATABASE_URL" -qc "UPDATE message_drafts SET expires_at = now() - INTERVAL '1 minute' WHERE id IN ($DF12, $DF13)"
+TOKEN=""; fail_call POST /api/drafts/sweep; TOKEN=$TOKEN_A
+tok "$TOKEN_D" call POST /api/drafts/sweep | jq -e '.removed >= 3' >/dev/null
+for k in "$DFK11" "$DFK12" "$DFK13"; do
+  [ ! -f "$UPLOADS/$k" ] || { echo "draft file $k wasn't removed"; exit 1; }
+  [ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM file_scans WHERE storage_key = '$k'")" = 0 ]
+done
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM message_drafts WHERE id IN ($DF12, $DF13)")" = 0 ]
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM reports WHERE source = 'detector'")" = "$NREP1" ]
+
+step "drafts: explicit + a young face in a draft that's never sent -> automatic child-safety report, evidence kept"
+NTFY_DF=$(curl -fsS "$PUSH/alerts/safety-ntfy" | jq length)
+DF14=$(dfnew "$TOKEN_B" "$DCH" "$DT/young-flag.png"); DFK14=$(dfkey "$DF14")
+agewait "$DFK14"; DFR14=$(agereport "$DFK14")
+dfwait "$TOKEN_B" "$DF14" held     # the message box only says it'll be held
+psql "$DATABASE_URL" -tAc "SELECT EXISTS(SELECT 1 FROM quarantined_files WHERE storage_key = '$DFK14')" | grep -qx t
+tok "$TOKEN_A" call GET "/api/safety/reports?status=open" | jq -e --arg r "$DFR14" '.reports[] | select(.id == $r) | .child_safety and .source == "detector"
+  and .priority == 0 and (.preview | startswith("Automatic: picture uploaded but not sent")) and .reported_user.username == "bob" and .auto_escalation' >/dev/null
+tok "$TOKEN_A" call GET "/api/safety/reports/$DFR14" | jq -e --arg k "$DFK14" '.report.child_safety and .snapshot.kind == "draft" and (.snapshot.draft.sent | not)
+  and .snapshot.place.channel_name != null and .files[0].key == $k and .files[0].quarantined and (.files[0].viewable | not) and .files[0].sha256 != null
+  and any(.log[]; .action == "quarantine")' >/dev/null
+for _ in $(seq 1 20); do [ "$(curl -fsS "$PUSH/alerts/safety-ntfy" | jq length)" -gt "$NTFY_DF" ] && break; sleep 0.5; done
+[ "$(curl -fsS "$PUSH/alerts/safety-ntfy" | jq length)" -gt "$NTFY_DF" ]
+# It can't be sent now.
+[ "$(dfsend "$TOKEN_B" "$DCH" '{"content":"sneaky","draft_ids":["'"$DF14"'"]}')" = 403 ]
+# Expired: the draft goes, the evidence stays (on disk, with its scan, for the report).
+psql "$DATABASE_URL" -qc "UPDATE message_drafts SET expires_at = now() - INTERVAL '1 minute' WHERE id = $DF14"
+tok "$TOKEN_B" call POST /api/drafts/sweep >/dev/null
+[ -z "$(dfkey "$DF14")" ] && [ -f "$UPLOADS/$DFK14" ]
+[ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM file_scans WHERE storage_key = '$DFK14' AND age_escalated_at IS NOT NULL")" = 1 ]
+for who in "" "$TOKEN_A" "$TOKEN_B"; do [ "$(dtfile "/files/$DFK14/young-flag.png" "$who")" != 200 ]; done
+[ "$(tok "$TOKEN_A" status GET "/api/safety/reports/$DFR14/files/$DFK14")" = 451 ]
+tok "$TOKEN_A" call GET "/api/safety/reports/$DFR14/export" | jq -e '.files[0].detector.min_age == 8' >/dev/null
+act "$DFR14" '{"action":"dismiss","text":"test picture"}' >/dev/null
+
+# ---------------------------------------------------------------------------
 # Outhouse folders on the rail (feat-folders): per person, private, synced.
 # ---------------------------------------------------------------------------
 step "folders: default layout is every outhouse in joined order"
