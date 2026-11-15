@@ -813,6 +813,9 @@ pub struct RaidEvent {
     /// Items in its loot history (logged or imported from Gargul).
     #[serde(default)]
     pub loot_count: i64,
+    /// Boss pulls with imported attendance (Method Raid Tools).
+    #[serde(default)]
+    pub attendance_bosses: i64,
 }
 
 /// When a raid's sign-up card is posted in chat.

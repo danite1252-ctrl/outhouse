@@ -374,49 +374,134 @@ async function openLootLog(filters = {}) {
     }
     moreBtn.hidden = !more;
   };
-  const drawPeople = (list) => {
+  // By character: loot won and raid attendance (MRT imports) side by side.
+  // Attendance % = raids attended out of raids attended or signed up to and
+  // missed, over the picked range (loot uses the same dates).
+  const range = el("select", { class: "select ll-range", "aria-label": "Range" },
+    [["4w", "Last 4 weeks"], ["8w", "Last 8 weeks"], ["phase", "This phase"], ["all", "All time"], ["custom", "Custom (From / To)"]]
+      .map(([v, label]) => el("option", { value: v, selected: v === prefs.get("loot_range", "all") }, label)));
+  const rangeLine = el("span", { class: "muted small ll-range-label" });
+  const P_COLS = [["character", "Character"], ["attendance", "Attendance"], ["noshows", "No-shows"], ["last_raid", "Last raid"],
+    ["ms", "Main spec"], ["os", "Off spec"], ["sr", "SR"], ["total", "Items"], ["per_raid", "Per raid"], ["last_item", "Last item"]];
+  const P_HINT = {
+    attendance: "Raids they were there for (at least one boss) out of raids they attended or signed up to and missed. Only raids with attendance imported from MRT count.",
+    noshows: "Signed up (or late, or tentative) and not there for any boss. “Can't make it” and the bench don't count.",
+    per_raid: "Items won per raid attended",
+  };
+  const pSort = { key: "attendance", dir: "desc" };
+  let people = [];
+  const pValue = (c, key) => ({
+    character: (c.character_name || c.display_name || "").toLowerCase(),
+    attendance: c.att ? c.att.percent * 1000 + c.att.attended : -1,
+    noshows: c.att?.no_shows ?? -1, last_raid: c.att?.last_attended ?? "",
+    ms: c.ms, os: c.os, sr: c.reserved, total: c.total, per_raid: c.per_raid ?? -1, last_item: c.last_on ?? "",
+  })[key];
+  const drawPeople = () => {
     moreBtn.hidden = true;
-    countLine.textContent = `${list.length} character${list.length === 1 ? "" : "s"}`;
-    if (!list.length) return body.replaceChildren(el("p", { class: "muted att-empty" }, "Nobody's won anything that matches."));
+    const list = [...people].sort((a, b) => {
+      const x = pValue(a, pSort.key), y = pValue(b, pSort.key);
+      const cmp = typeof x === "string" ? x.localeCompare(y) : x - y;
+      return (pSort.dir === "asc" ? cmp : -cmp) || b.total - a.total || (a.character_name || "").localeCompare(b.character_name || "");
+    });
+    countLine.textContent = plural(list.length, "character");
+    if (!list.length) return body.replaceChildren(el("p", { class: "muted att-empty" }, "Nobody's won anything or been to a raid with imported attendance in that range."));
+    const head = (key, label) => {
+      const on = pSort.key === key;
+      return el("th", { "data-col": key, title: P_HINT[key] ?? "", "aria-sort": on ? (pSort.dir === "asc" ? "ascending" : "descending") : "none" },
+        el("button", { type: "button", class: `ll-sort${on ? " on" : ""}`, "data-psort": key, onclick: () => {
+          if (pSort.key === key) pSort.dir = pSort.dir === "asc" ? "desc" : "asc";
+          else { pSort.key = key; pSort.dir = key === "character" ? "asc" : "desc"; }
+          drawPeople();
+        } }, label, on ? el("span", { class: "ll-arrow", "aria-hidden": "true" }, pSort.dir === "asc" ? " ▲" : " ▼") : null));
+    };
+    const day = (d) => (d ? lootDay(d, { day: "numeric", month: "short", year: "numeric" }) : "—");
     body.replaceChildren(el("table", { class: "loot-log-table ll-people" },
-      el("thead", {}, el("tr", {}, ["Character", "Main spec", "Off spec", "SR", "Total", "Last item"].map((h) => el("th", {}, h)))),
-      el("tbody", {}, list.map((c) => el("tr", { "data-character": c.character_key },
-        el("td", {}, el("button", { type: "button", class: "loot-who", style: classColour(c.character_class) ? `color:${classColour(c.character_class)}` : "",
+      el("thead", {}, el("tr", {}, P_COLS.map(([k, label]) => head(k, label)))),
+      el("tbody", {}, list.map((c) => el("tr", { "data-character": c.character_key, "data-user": c.user_id ?? "" },
+        el("td", { "data-col": "character" }, el("button", { type: "button", class: "loot-who", style: classColour(c.character_class) ? `color:${classColour(c.character_class)}` : "",
           title: "Show their items", onclick: () => { character.value = c.character_name; setTab("items"); } },
         c.user_id ? null : el("span", { class: "loot-warn", title: "Nobody in this outhouse has a character by that name" }, "⚠"), c.character_name || c.display_name || "?"),
         c.display_name && c.display_name !== c.character_name ? el("span", { class: "muted small" }, ` ${c.display_name}`) : null),
-        el("td", { class: "ll-num" }, c.ms), el("td", { class: "ll-num" }, c.os), el("td", { class: "ll-num" }, c.reserved),
-        el("td", { class: "ll-num" }, el("strong", {}, c.total)),
-        el("td", { class: "muted small" }, lootDay(c.last_on, { day: "numeric", month: "short", year: "numeric" })))))));
+        el("td", { class: "ll-att", "data-col": "attendance" }, c.att ? [
+          el("span", { class: `ll-pct${c.att.percent < 75 ? " low" : ""}` }, `${c.att.percent}%`),
+          el("span", { class: "muted small" }, ` ${c.att.attended} of ${c.att.eligible}`),
+          el("span", { class: "ll-bar-track", "aria-hidden": "true" }, el("span", { class: "ll-bar-fill", style: `width:${c.att.percent}%` }))] : el("span", { class: "muted" }, "—")),
+        el("td", { class: `ll-num${c.att?.no_shows ? " ll-noshow" : ""}`, "data-col": "noshows" }, c.att ? String(c.att.no_shows) : "—"),
+        el("td", { class: "muted small ll-num", "data-col": "last_raid" }, day(c.att?.last_attended)),
+        el("td", { class: "ll-num", "data-col": "ms" }, c.ms), el("td", { class: "ll-num", "data-col": "os" }, c.os), el("td", { class: "ll-num", "data-col": "sr" }, c.reserved),
+        el("td", { class: "ll-num", "data-col": "total" }, el("strong", {}, c.total)),
+        el("td", { class: "ll-num", "data-col": "per_raid" }, c.per_raid == null ? "—" : c.per_raid.toFixed(1)),
+        el("td", { class: "muted small ll-num", "data-col": "last_item" }, day(c.last_on)))))));
   };
-  const drawImports = (list) => {
+  const loadPeople = async (n) => {
+    const r = range.value;
+    const aq = new URLSearchParams({ range: r });
+    if (r === "custom") { if (from.value) aq.set("from", from.value); if (to.value) aq.set("to", to.value); }
+    const att = await tryApi("GET", `/api/guilds/${guild}/attendance/mrt/characters?${aq}`).catch(() => null);
+    if (n !== seq || !dialog.isConnected) return;
+    const q = params();
+    q.delete("from"); q.delete("to");
+    if (r !== "all" && att?.from) q.set("from", att.from);
+    if (r !== "all" && att?.to) q.set("to", att.to);
+    if (r === "custom") { if (from.value) q.set("from", from.value); if (to.value) q.set("to", to.value); }
+    const loot = await tryApi("GET", `/api/guilds/${guild}/loot/summary?${q}`).catch(() => null);
+    if (n !== seq || !dialog.isConnected || !loot) return;
+    rangeLine.textContent = att ? `${att.label} · ${plural(att.raids, "raid")} with attendance` : "";
+    // Attendance only knows players and characters: the loot filters narrow it by hand.
+    const charQ = lootKey(character.value);
+    const keep = (a) => (!player.value || a.user_id === player.value) && (!charQ || a.character_key.includes(charQ));
+    const rows = new Map(loot.map((c) => [`${c.character_key}|${c.user_id ?? ""}`, { ...c }]));
+    for (const a of (att?.characters ?? []).filter(keep)) {
+      const k = `${a.character_key}|${a.user_id ?? ""}`;
+      const row = rows.get(k) ?? { character_key: a.character_key, character_name: a.character_name, user_id: a.user_id, display_name: a.display_name,
+        character_class: a.character_class, ms: 0, os: 0, reserved: 0, total: 0, last_on: null };
+      if (!row.character_class) row.character_class = a.character_class;
+      row.att = a;
+      rows.set(k, row);
+    }
+    people = [...rows.values()].map((c) => ({ ...c, per_raid: c.att?.attended ? c.total / c.att.attended : null }));
+    drawPeople();
+  };
+  range.addEventListener("change", () => { prefs.set("loot_range", range.value); load(); });
+  const drawImports = (list, attList) => {
     moreBtn.hidden = true;
     countLine.textContent = "";
-    if (!list.length) return body.replaceChildren(el("p", { class: "muted att-empty" }, "No imports yet."));
-    body.replaceChildren(el("div", { class: "ll-imports" }, list.map((i) => el("div", { class: `ll-import${i.undone_at ? " undone" : ""}`, "data-import": i.id },
-      el("div", {}, el("strong", {}, `${i.row_count} item${i.row_count === 1 ? "" : "s"}`), ` by ${i.imported_by_name ?? "someone"}`,
-        el("div", { class: "muted small" }, new Date(i.created_at).toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }),
-          i.undone_at ? " · undone" : i.remaining !== i.row_count ? ` · ${i.remaining} still in` : "")),
-      i.can_undo ? el("button", { type: "button", class: "ghost danger-btn", onclick: async () => {
-        if (!(await confirmBox("Undo this import?", `The items it added come out of the loot history again${i.remaining ? ` (${i.remaining})` : ""}.`, "Undo import"))) return;
-        if (await tryApi("DELETE", `/api/loot/imports/${i.id}`).then(() => true, () => false)) { toast("Import undone."); load(); }
-      } }, "Undo") : null))),
-    el("p", { class: "muted small" }, "Whoever imported can undo an import for 24 hours. Single items can be removed from the Items list."));
+    if (!list.length && !attList?.length) return body.replaceChildren(el("p", { class: "muted att-empty" }, "No imports yet."));
+    const when = (i) => new Date(i.created_at).toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+    body.replaceChildren(
+      el("h3", { class: "ll-imports-head" }, "💰 Loot (Gargul)"),
+      list.length ? el("div", { class: "ll-imports" }, list.map((i) => el("div", { class: `ll-import${i.undone_at ? " undone" : ""}`, "data-import": i.id },
+        el("div", {}, el("strong", {}, `${i.row_count} item${i.row_count === 1 ? "" : "s"}`), ` by ${i.imported_by_name ?? "someone"}`,
+          el("div", { class: "muted small" }, when(i),
+            i.undone_at ? " · undone" : i.remaining !== i.row_count ? ` · ${i.remaining} still in` : "")),
+        i.can_undo ? el("button", { type: "button", class: "ghost danger-btn", onclick: async () => {
+          if (!(await confirmBox("Undo this import?", `The items it added come out of the loot history again${i.remaining ? ` (${i.remaining})` : ""}.`, "Undo import"))) return;
+          if (await tryApi("DELETE", `/api/loot/imports/${i.id}`).then(() => true, () => false)) { toast("Import undone."); load(); }
+        } }, "Undo") : null))) : el("p", { class: "muted small ll-imports-none" }, "None yet."),
+      el("h3", { class: "ll-imports-head" }, "📋 Attendance (MRT)"),
+      attList?.length ? el("div", { class: "ll-imports" }, attList.map((i) => el("div", { class: `ll-import${i.undone_at ? " undone" : ""}`, "data-att-import": i.id },
+        el("div", {}, el("strong", {}, plural(i.boss_count, "boss", "bosses")), ` · ${i.player_count} there · by ${i.imported_by_name ?? "someone"}`,
+          el("div", { class: "muted small" }, [when(i), i.raids.join(", "), i.undone_at ? "taken out" : i.remaining !== i.boss_count ? `${i.remaining} still in` : null].filter(Boolean).join(" · "))),
+        i.can_undo || i.can_delete ? el("button", { type: "button", class: "ghost danger-btn", "data-act": i.can_undo ? "undo" : "delete", onclick: async () => {
+          const what = i.can_undo ? "Undo this import?" : "Delete this import?";
+          if (!(await confirmBox(what, `The ${plural(i.remaining, "boss", "bosses")} it added come out of the raids' attendance again. This is noted in the audit log.`, i.can_undo ? "Undo import" : "Delete import"))) return;
+          if (await tryApi("DELETE", `/api/attendance/imports/${i.id}`).then(() => true, () => false)) { toast(i.can_undo ? "Import undone." : "Import deleted."); load(); }
+        } }, i.can_undo ? "Undo" : "Delete") : null))) : el("p", { class: "muted small ll-imports-none" }, "None yet."),
+      el("p", { class: "muted small" }, "Whoever imported can undo an import for 24 hours; raid managers can delete attendance imports any time. Single items can be removed from the Items list."));
   };
   let seq = 0;
   const load = async (append = false) => {
     const n = ++seq;
+    rangeBox.hidden = f.tab !== "people";
     if (f.tab === "imports") {
-      const list = await tryApi("GET", `/api/guilds/${guild}/loot/imports`).catch(() => null);
-      if (n === seq && list && dialog.isConnected) drawImports(list);
+      const [list, attList] = await Promise.all([
+        tryApi("GET", `/api/guilds/${guild}/loot/imports`).catch(() => null),
+        tryApi("GET", `/api/guilds/${guild}/attendance/mrt/imports`).catch(() => null)]);
+      if (n === seq && list && dialog.isConnected) drawImports(list, attList);
       return;
     }
     const q = params();
-    if (f.tab === "people") {
-      const list = await tryApi("GET", `/api/guilds/${guild}/loot/summary?${q}`).catch(() => null);
-      if (n === seq && list && dialog.isConnected) drawPeople(list);
-      return;
-    }
+    if (f.tab === "people") return loadPeople(n);
     q.set("limit", "50");
     q.set("sort", f.sort);
     q.set("dir", f.dir);
@@ -440,7 +525,12 @@ async function openLootLog(filters = {}) {
   };
   let timer = null;
   for (const input of [search, character]) input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => load(), 250); });
-  for (const input of [player, raid, instance, from, to, spec, deBox]) input.addEventListener("change", () => load());
+  for (const input of [player, raid, instance, spec, deBox]) input.addEventListener("change", () => load());
+  // Picking dates on the By character tab makes the range a custom one.
+  for (const input of [from, to]) input.addEventListener("change", () => {
+    if (f.tab === "people" && range.value !== "custom") { range.value = "custom"; prefs.set("loot_range", "custom"); }
+    load();
+  });
   const exportCsv = async () => {
     const data = await tryApi("GET", `/api/guilds/${guild}/loot/export?${params()}`).catch(() => null);
     if (!data) return;
@@ -454,6 +544,7 @@ async function openLootLog(filters = {}) {
     setTimeout(() => URL.revokeObjectURL(url), 5000);
     toast(`${data.rows} item${data.rows === 1 ? "" : "s"} saved as CSV.`);
   };
+  const rangeBox = el("div", { class: "ll-rangebox", hidden: true }, el("label", { class: "ll-range-wrap" }, el("span", { class: "ll-label" }, "Range"), range), rangeLine);
   const extra = (node) => { node.classList.add("ll-extra"); return node; };
   const filterBox = el("div", { class: "loot-log-filters" },
     field("Player", player), field("Character", character), field("Raid", raid), extra(field("Instance", instance)),
@@ -467,12 +558,14 @@ async function openLootLog(filters = {}) {
     } }, "More filters"));
   dialog.append(
     el("div", { class: "att-head" },
-      el("div", {}, el("h2", {}, "📜 Loot"), el("div", { class: "muted small" }, currentGuild()?.name ?? "")),
+      el("div", {}, el("h2", {}, "📜 Loot & attendance"), el("div", { class: "muted small" }, currentGuild()?.name ?? "")),
       el("div", { class: "att-head-tools" },
         manager ? el("button", { type: "button", class: "ghost small-btn", "data-act": "gargul", onclick: () => openGargulImport(null, () => load()) }, "Import", el("span", { class: "ll-long" }, " Gargul export"), "…") : null,
+        manager && typeof openMrtImport === "function" ? el("button", { type: "button", class: "ghost small-btn", "data-act": "mrt", title: "Import attendance from Method Raid Tools", onclick: () => openMrtImport(null, () => load()) },
+          el("span", { class: "ll-long" }, "Import attendance (MRT)"), el("span", { class: "ll-short" }, "MRT"), "…") : null,
         el("button", { type: "button", class: "ghost small-btn", "data-act": "csv", title: "The items shown (all of them, not just this page)", onclick: exportCsv }, "⬇ CSV"),
         closeX(dialog))),
-    el("div", { class: "ll-bar" }, tabs, countLine),
+    el("div", { class: "ll-bar" }, tabs, countLine, rangeBox),
     filterBox,
     el("div", { class: "att-table-wrap" }, body), moreBtn);
   // Raids from the last few months, and the instances.

@@ -67,7 +67,7 @@ pub(crate) fn char_key(raw: &str) -> String {
 }
 
 /// A name with this key: its first name, or "First Last" (WoW: Forever).
-fn name_is(key: &str, name: &str, last: &str) -> bool {
+pub(crate) fn name_is(key: &str, name: &str, last: &str) -> bool {
     if key.is_empty() || name.trim().is_empty() {
         return false;
     }
@@ -427,33 +427,33 @@ pub(crate) fn parse_gargul(text: &str) -> Result<Parsed, String> {
 // ---- Raids, sign-ups and characters to match against -------------------------------
 
 #[derive(sqlx::FromRow)]
-struct RaidRow {
-    id: i64,
-    channel_id: i64,
-    title: String,
-    starts_at: DateTime<Utc>,
-    duration_minutes: i32,
-    loot_instance: String,
-    game: String,
+pub(crate) struct RaidRow {
+    pub(crate) id: i64,
+    pub(crate) channel_id: i64,
+    pub(crate) title: String,
+    pub(crate) starts_at: DateTime<Utc>,
+    pub(crate) duration_minutes: i32,
+    pub(crate) loot_instance: String,
+    pub(crate) game: String,
     series_tz: Option<String>,
 }
 
-struct Raid {
-    row: RaidRow,
-    tz: String,
-    local_start: NaiveDateTime,
-    signups: Vec<Sign>,
+pub(crate) struct Raid {
+    pub(crate) row: RaidRow,
+    pub(crate) tz: String,
+    pub(crate) local_start: NaiveDateTime,
+    pub(crate) signups: Vec<Sign>,
 }
 
 impl Raid {
-    fn local_date(&self) -> NaiveDate {
+    pub(crate) fn local_date(&self) -> NaiveDate {
         self.local_start.date()
     }
-    fn near(&self, d: NaiveDate) -> bool {
+    pub(crate) fn near(&self, d: NaiveDate) -> bool {
         (self.local_date() - d).num_days().abs() <= 1
     }
     /// Within the raid's evening (an hour before to three hours after).
-    fn during(&self, d: NaiveDate, t: NaiveTime) -> bool {
+    pub(crate) fn during(&self, d: NaiveDate, t: NaiveTime) -> bool {
         let at = d.and_time(t);
         let from = self.local_start - chrono::Duration::hours(1);
         let to = self.local_start
@@ -464,19 +464,19 @@ impl Raid {
 }
 
 #[derive(sqlx::FromRow, Clone)]
-struct Sign {
-    event_id: i64,
-    user_id: i64,
-    display_name: String,
-    status: String,
-    class: String,
-    character_name: String,
-    character_last_name: String,
-    character_class: String,
+pub(crate) struct Sign {
+    pub(crate) event_id: i64,
+    pub(crate) user_id: i64,
+    pub(crate) display_name: String,
+    pub(crate) status: String,
+    pub(crate) class: String,
+    pub(crate) character_name: String,
+    pub(crate) character_last_name: String,
+    pub(crate) character_class: String,
 }
 
 #[derive(sqlx::FromRow)]
-struct MemberChar {
+pub(crate) struct MemberChar {
     user_id: i64,
     name: String,
     last_name: String,
@@ -495,7 +495,7 @@ pub struct Matched {
     pub via: &'static str,
 }
 
-fn match_in_raid(raid: &Raid, key: &str) -> Option<Matched> {
+pub(crate) fn match_in_raid(raid: &Raid, key: &str) -> Option<Matched> {
     if key.is_empty() {
         return None;
     }
@@ -522,7 +522,7 @@ fn match_in_raid(raid: &Raid, key: &str) -> Option<Matched> {
     })
 }
 
-fn match_member(chars: &[MemberChar], key: &str) -> Option<Matched> {
+pub(crate) fn match_member(chars: &[MemberChar], key: &str) -> Option<Matched> {
     if key.is_empty() {
         return None;
     }
@@ -665,6 +665,54 @@ async fn context(
         ),
         _ => (Utc::now(), Utc::now()),
     };
+    let (raids, default_tz) = raids_between(st, guild_id, channels, only, from, to).await?;
+    let ids: Vec<i64> = raids.iter().map(|r| r.row.id).collect();
+    let chars = member_chars(db, guild_id).await?;
+    let reserves: HashSet<(i64, i64, i32)> = sqlx::query_as::<_, (i64, i64, i32)>(
+        "SELECT event_id, user_id, item_id FROM loot_reserves WHERE event_id = ANY($1)",
+    )
+    .bind(&ids)
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .collect();
+    let gids: Vec<String> = rows.iter().map(|r| r.gargul_id.clone()).collect();
+    let existing: HashSet<String> = sqlx::query_scalar(
+        "SELECT gargul_id FROM loot_awards WHERE guild_id = $1 AND gargul_id = ANY($2)",
+    )
+    .bind(guild_id)
+    .bind(&gids)
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .collect();
+    let mut item_ids: Vec<i32> = rows.iter().map(|r| r.item_id).collect();
+    item_ids.sort_unstable();
+    item_ids.dedup();
+    let names = known_items(db, guild_id, &item_ids).await?;
+    Ok(Ctx {
+        raids,
+        chars,
+        default_tz,
+        reserves,
+        existing,
+        names,
+    })
+}
+
+/// The outhouse's raids in these channels starting between `from` and `to`
+/// (or just raid `only`), each with its local start (its series' time zone,
+/// else its game's realm zone, else the outhouse's) and its sign-ups; and
+/// the outhouse's own time zone.
+pub(crate) async fn raids_between(
+    st: &AppState,
+    guild_id: i64,
+    channels: &[i64],
+    only: Option<i64>,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> AppResult<(Vec<Raid>, String)> {
+    let db = &st.db;
     let raid_rows = sqlx::query_as::<_, RaidRow>(
         "SELECT e.id, e.channel_id, e.title, e.starts_at, e.duration_minutes, e.loot_instance,
                 e.game, es.time_zone AS series_tz
@@ -745,7 +793,12 @@ async fn context(
             signups: mine,
         });
     }
-    let chars = sqlx::query_as::<_, MemberChar>(
+    Ok((raids, default_tz))
+}
+
+/// Every member's characters (from their profiles).
+pub(crate) async fn member_chars(db: &PgPool, guild_id: i64) -> AppResult<Vec<MemberChar>> {
+    Ok(sqlx::query_as::<_, MemberChar>(
         "SELECT wc.user_id, wc.name, wc.last_name, wc.class,
                 COALESCE(gm.nickname, u.display_name) AS display_name
          FROM wow_characters wc
@@ -754,37 +807,7 @@ async fn context(
     )
     .bind(guild_id)
     .fetch_all(db)
-    .await?;
-    let reserves: HashSet<(i64, i64, i32)> = sqlx::query_as::<_, (i64, i64, i32)>(
-        "SELECT event_id, user_id, item_id FROM loot_reserves WHERE event_id = ANY($1)",
-    )
-    .bind(&ids)
-    .fetch_all(db)
-    .await?
-    .into_iter()
-    .collect();
-    let gids: Vec<String> = rows.iter().map(|r| r.gargul_id.clone()).collect();
-    let existing: HashSet<String> = sqlx::query_scalar(
-        "SELECT gargul_id FROM loot_awards WHERE guild_id = $1 AND gargul_id = ANY($2)",
-    )
-    .bind(guild_id)
-    .bind(&gids)
-    .fetch_all(db)
-    .await?
-    .into_iter()
-    .collect();
-    let mut item_ids: Vec<i32> = rows.iter().map(|r| r.item_id).collect();
-    item_ids.sort_unstable();
-    item_ids.dedup();
-    let names = known_items(db, guild_id, &item_ids).await?;
-    Ok(Ctx {
-        raids,
-        chars,
-        default_tz,
-        reserves,
-        existing,
-        names,
-    })
+    .await?)
 }
 
 /// Picks a raid for each row (the outhouse's Loot page): the raid that day
@@ -950,7 +973,7 @@ fn preview_rows(ctx: &Ctx, rows: &[GRow], event: Option<i64>) -> Vec<PreviewRow>
 
 /// Where a paste can go: one raid (`event`, its leaders) or the whole
 /// outhouse (raid managers). The channels whose raids it can be matched to.
-async fn import_scope(
+pub(crate) async fn import_scope(
     st: &AppState,
     user_id: i64,
     guild_id: Option<i64>,
@@ -1581,7 +1604,7 @@ fn filters(q: &HistoryQuery) -> AppResult<Filters> {
 
 /// Raids in channels they can see; loot without a raid if they can see a
 /// raid channel at all (or run the outhouse's raids).
-async fn history_scope(st: &AppState, ctx: &MemberCtx) -> AppResult<(Vec<i64>, bool)> {
+pub(crate) async fn history_scope(st: &AppState, ctx: &MemberCtx) -> AppResult<(Vec<i64>, bool)> {
     let mut channels = visible_text_channels(&st.db, ctx, p::VIEW_CHANNEL).await?;
     drop_age_gated(&st.db, ctx.user_id, &mut channels).await?;
     let manager = ctx.require(p::MANAGE_EVENTS).is_ok()
@@ -1829,7 +1852,7 @@ pub async fn guild_export(
 // ---- A member's loot, by character (full profile) -------------------------------------
 
 /// Raid tiers ("phases"): (era, phase) of a listed raid.
-fn phase_of(instance: &str) -> Option<(&'static str, u8)> {
+pub(crate) fn phase_of(instance: &str) -> Option<(&'static str, u8)> {
     Some(match raidplan::instance_key(instance).as_str() {
         "mc" | "ony" => ("classic", 1),
         "bwl" => ("classic", 3),

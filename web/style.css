@@ -3208,8 +3208,106 @@ dialog.loot-log-dialog { width: min(1000px, 96vw); }
   .loot-log-table:not(.ll-people) td.ll-raid > div { display: inline; }
   .loot-log-table:not(.ll-people) td.ll-raid > div + div::before { content: " · "; }
   .loot-log-table:not(.ll-people) td:last-child:not(.ll-raid) { grid-area: x; align-self: center; }
-  .ll-people th:nth-child(4), .ll-people td:nth-child(4), .ll-people th:nth-child(6), .ll-people td:nth-child(6) { display: none; }
   .rl-row { grid-template-columns: minmax(0, 1fr) auto auto; }
   .rl-row .rl-who { grid-column: 1 / 2; text-align: left; font-size: 12.5px; }
   .fpl-raid { display: none; }
+}
+
+/* Attendance from Method Raid Tools: the import window */
+dialog.mrt-dialog { width: min(980px, 96vw); }
+dialog.mrt-dialog[open] { display: flex; flex-direction: column; gap: 10px; max-height: 92vh; }
+.mrt-scroll { overflow: auto; min-height: 0; flex: 1; display: grid; gap: 10px; align-content: start; padding-right: 2px; }
+.mrt-h { margin: 4px 0 0; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.mrt-cols { border: 1px solid var(--line); border-radius: 10px; }
+.mrt-col { display: grid; grid-template-columns: 28px 120px minmax(160px, 1.6fr) 48px minmax(170px, 1.1fr); gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.mrt-col:last-child { border-bottom: 0; }
+.mrt-headrow { background: var(--raised); font-size: 12px; color: var(--muted); font-weight: 600; border-radius: 10px 10px 0 0; }
+.mrt-col.dup, .mrt-col.out:not(.picked) { opacity: .55; }
+.mrt-c-when { white-space: nowrap; }
+.mrt-c-boss { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.mrt-c-n { text-align: right; font-variant-numeric: tabular-nums; font-weight: 700; }
+.mrt-c-raid { display: grid; gap: 2px; min-width: 0; }
+.mrt-c-raid .select { height: 30px; font-size: 12.5px; min-width: 0; width: 100%; }
+.mrt-enc { font-size: 11.5px; font-weight: 700; color: #9bf08a; white-space: nowrap; }
+.mrt-diff { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.mrt-grid-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 10px; max-height: 360px; }
+.mrt-grid { border-collapse: collapse; font-size: 12.5px; width: 100%; }
+.mrt-grid th, .mrt-grid td { padding: 4px 8px; border-bottom: 1px solid var(--line); text-align: center; white-space: nowrap; }
+.mrt-grid thead th { position: sticky; top: 0; background: var(--raised); z-index: 1; font-weight: 600; color: var(--muted); }
+.mrt-grid .mrt-g-name { text-align: left; position: sticky; left: 0; background: var(--panel); z-index: 1; }
+.mrt-grid thead .mrt-g-name { z-index: 2; background: var(--raised); }
+.mrt-g-boss span { display: block; max-width: 120px; overflow: hidden; text-overflow: ellipsis; margin: 0 auto; }
+.mrt-g-boss.off, .mrt-cell.off { opacity: .4; }
+.mrt-cell.here { color: #9bf08a; font-weight: 800; }
+.mrt-cell.gone { color: var(--muted); }
+.mrt-compares { display: grid; gap: 8px; }
+.mrt-raid-compare { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--night); display: grid; gap: 6px; }
+.mrt-compare { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; }
+.mrt-group { display: grid; gap: 4px; align-content: start; min-width: 0; }
+.mrt-group-head { font-size: 12px; font-weight: 700; color: var(--muted); cursor: help; }
+.mrt-group.attended .mrt-group-head { color: #9bf08a; }
+.mrt-group.missed .mrt-group-head { color: #f0b37a; }
+.mrt-n { font-variant-numeric: tabular-nums; }
+.mrt-names { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 13px; }
+.mrt-name { font-weight: 600; white-space: nowrap; }
+.mrt-name.unmatched { color: var(--muted); font-weight: 500; }
+.mrt-chip { display: inline-flex; align-items: baseline; gap: 4px; }
+.mrt-tag { font-size: 10.5px; font-weight: 700; padding: 0 5px; margin-left: 4px; border-radius: 999px; color: #f0b37a; border: 1px solid rgba(240, 179, 122, .45); white-space: nowrap; }
+.mrt-tag.excused { color: var(--muted); border-color: var(--line); font-weight: 600; }
+
+/* Raid card: Attendance */
+.mrt-bosses { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12.5px; }
+.mrt-boss { white-space: nowrap; cursor: help; }
+.mrt-boss .mrt-diff { padding: 0 4px; margin-left: 2px; }
+.rc-rely-short { display: none; }
+.rc-rely { font-size: 10.5px; font-weight: 700; padding: 0 5px; border-radius: 999px; color: #f0b37a; border: 1px solid rgba(240, 179, 122, .4); white-space: nowrap; cursor: help; margin-left: 2px; }
+
+/* Loot & attendance window: By character */
+.ll-short { display: none; }
+.ll-rangebox { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+.ll-rangebox[hidden] { display: none; }
+.ll-range-wrap { display: inline-flex; align-items: center; gap: 6px; }
+.ll-range { height: 32px; }
+.ll-people th[title] { cursor: help; }
+.loot-log-table.ll-people th, .loot-log-table.ll-people td.ll-num { text-align: right; }
+.loot-log-table.ll-people [data-col="character"], .loot-log-table.ll-people [data-col="attendance"] { text-align: left; }
+.mrt-name.unmatched .loot-warn, .loot-who .loot-warn { margin-right: 3px; }
+.ll-att { white-space: nowrap; min-width: 120px; }
+.ll-pct { font-weight: 800; }
+.ll-pct.low { color: #f0b37a; }
+.ll-bar-track { display: block; height: 3px; border-radius: 2px; background: var(--line); margin-top: 3px; overflow: hidden; }
+.ll-bar-fill { display: block; height: 100%; background: var(--glow); }
+.ll-noshow { color: #f0b37a; font-weight: 700; }
+.ll-imports-head { margin: 10px 8px 0; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.ll-imports-none { margin: 4px 8px; }
+
+/* Full profile: attendance by character */
+.fp-attendance { display: grid; gap: 6px; margin-top: 12px; }
+.fp-attendance > h4 { margin: 0; font-size: 12px; letter-spacing: .04em; color: var(--muted); }
+.fpa-char { border: 1px solid var(--line); border-left: 4px solid var(--cc, var(--line)); border-radius: 10px; padding: 8px 10px; background: var(--night); display: flex; align-items: baseline; gap: 4px 10px; flex-wrap: wrap; }
+.fpa-pct { font-weight: 800; color: var(--glow); }
+.fp-char-att { color: var(--muted); }
+
+@media (max-width: 760px) {
+  dialog.mrt-dialog { width: 100vw; max-width: none; height: 100dvh; max-height: none; border-radius: 0; padding: calc(var(--safe-top) + 12px) 12px calc(var(--safe-bottom) + 12px); }
+  dialog.mrt-dialog[open] { max-height: none; }
+  .mrt-headrow { display: none; }
+  .mrt-col { grid-template-columns: 24px minmax(0, 1fr) auto; grid-template-areas: "pick boss n" "pick when when" "pick raid raid"; gap: 3px 8px; }
+  .mrt-col > :nth-child(1) { grid-area: pick; align-self: start; padding-top: 2px; }
+  .mrt-c-boss { grid-area: boss; }
+  .mrt-c-when { grid-area: when; font-size: 12px; color: var(--muted); }
+  .mrt-c-n { grid-area: n; }
+  .mrt-c-n::after { content: " there"; font-weight: 400; color: var(--muted); font-size: 11px; }
+  .mrt-c-raid { grid-area: raid; }
+  .mrt-c-raid:empty { display: none; }
+  .mrt-compare { grid-template-columns: 1fr; }
+  .mrt-grid-wrap { max-height: none; }
+  .ll-short { display: inline; }
+  .ll-rangebox { margin-left: 0; width: 100%; }
+  .ll-people [data-col="ms"], .ll-people [data-col="os"], .ll-people [data-col="sr"], .ll-people [data-col="last_item"], .ll-people [data-col="last_raid"], .ll-people [data-col="per_raid"] { display: none; }
+  .ll-people td[data-col="character"] .loot-who { white-space: nowrap; }
+  .ll-people td[data-col="character"] .muted { display: block; }
+  .ll-att { min-width: 0; }
+  .rc-rely-long { display: none; }
+  .rc-rely-short { display: inline; }
 }

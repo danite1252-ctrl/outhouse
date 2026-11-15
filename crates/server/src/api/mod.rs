@@ -28,6 +28,7 @@ mod loot_import;
 pub mod members;
 pub mod mentions;
 pub mod messages;
+mod mrt;
 mod myraids;
 mod notifications;
 pub mod outhouses;
@@ -457,6 +458,38 @@ pub fn router(state: AppState) -> Router {
             "/api/guilds/{id}/attendance/{user}",
             get(attendance::member),
         )
+        // Attendance from Method Raid Tools
+        .route("/api/events/{id}/attendance/mrt", get(mrt::raid_attendance))
+        .route(
+            "/api/events/{id}/attendance/mrt/preview",
+            post(mrt::raid_preview),
+        )
+        .route(
+            "/api/events/{id}/attendance/mrt/import",
+            post(mrt::raid_import),
+        )
+        .route(
+            "/api/events/{id}/attendance/reliability",
+            get(mrt::reliability),
+        )
+        .route(
+            "/api/guilds/{id}/attendance/mrt/preview",
+            post(mrt::guild_preview),
+        )
+        .route(
+            "/api/guilds/{id}/attendance/mrt/import",
+            post(mrt::guild_import),
+        )
+        .route(
+            "/api/guilds/{id}/attendance/mrt/imports",
+            get(mrt::list_imports),
+        )
+        .route(
+            "/api/guilds/{id}/attendance/mrt/characters",
+            get(mrt::guild_characters),
+        )
+        .route("/api/attendance/imports/{id}", delete(mrt::delete_import))
+        .route("/api/users/{id}/attendance", get(mrt::user_attendance))
         // WoW tools: group finder, items, characters, Battle.net
         .route("/api/wow/info", get(wow::info))
         .route("/api/channels/{id}/lfg", post(lfg::create))

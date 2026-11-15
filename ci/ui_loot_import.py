@@ -190,8 +190,8 @@ def run(browser, base, shots, watch, db_url):
     lp.wait_for_selector("dialog.loot-log-dialog .ll-sort.on[data-sort='item']", timeout=10000)
     lp.click("dialog.loot-log-dialog .seg-btn[data-tab='people']")
     lp.wait_for_selector("dialog.loot-log-dialog .ll-people tr[data-character='shamiee']", timeout=10000)
-    cells = lp.eval_on_selector_all("dialog.loot-log-dialog .ll-people tr[data-character='shamiee'] td", "els => els.map(e => e.textContent.trim())")
-    assert cells[1:5] == ["1", "3", "1", "4"], cells
+    cells = lp.eval_on_selector_all("dialog.loot-log-dialog .ll-people tr[data-character='shamiee'] td", "els => Object.fromEntries(els.map(e => [e.dataset.col, e.textContent.trim()]))")
+    assert [cells[k] for k in ("ms", "os", "sr", "total")] == ["1", "3", "1", "4"], cells
     lp.wait_for_timeout(200)
     lp.screenshot(path=f"{shots}/7007-desktop-loot-by-character.png")
     lp.click("dialog.loot-log-dialog .seg-btn[data-tab='imports']")

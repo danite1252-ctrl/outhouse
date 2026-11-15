@@ -430,6 +430,7 @@ function renderEventCard(m) {
       typeof openRaidExport === "function" ? { label: "Export / invite list", onClick: () => openRaidExport(ev) } : null,
       when.started ? { label: "Take attendance", onClick: () => openAttendanceDialog(ev) } : null,
       typeof openGargulImport === "function" ? { label: "Import loot (Gargul)…", onClick: () => openGargulImport(ev) } : null,
+      typeof openMrtImport === "function" ? { label: "Import attendance (MRT)…", onClick: () => openMrtImport(ev) } : null,
       "sep",
       { label: series ? "Cancel this raid" : "Delete raid", danger: true, onClick: () => cancelRaid(ev, "one") },
       series ? { label: "Cancel this and future raids", danger: true, onClick: () => cancelRaid(ev, "future") } : null,
@@ -477,7 +478,8 @@ function renderEventCard(m) {
     s.status === "late" ? el("span", { class: "rc-mark late", title: "Running late" }, rcIcon("late"), el("span", { class: "sr-only" }, " (late)")) : null,
     s.status === "tentative" ? el("span", { class: "rc-mark maybe", title: "Tentative" }, rcIcon("maybe"), el("span", { class: "sr-only" }, " (tentative)")) : null,
     s.note ? el("span", { class: "rc-mark note", title: s.note }, rcIcon("note")) : null,
-    srTag(s));
+    srTag(s),
+    manager && typeof reliabilityTag === "function" ? reliabilityTag(ev, s) : null);
   };
   const listed = ev.signups.filter((s) => isActive(s) || s.status === "tentative")
     .sort((a, b) => order.get(a.user_id) - order.get(b.user_id));
@@ -562,6 +564,7 @@ function renderEventCard(m) {
     line("ev-absent", "Absence", absent, "", false)) : null,
   compSection,
   typeof raidLootSection === "function" ? raidLootSection(ev) : null,
+  typeof raidAttendanceSection === "function" ? raidAttendanceSection(ev) : null,
   foot);
 }
 

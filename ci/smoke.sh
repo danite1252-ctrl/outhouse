@@ -4996,6 +4996,13 @@ step "loot history: Gargul imports, won soft reserves, filters, export (ci/loot_
 BASE=$BASE DATABASE_URL=$DATABASE_URL bash ci/loot_import_test.sh
 
 # ---------------------------------------------------------------------------
+# Raid attendance from Method Raid Tools (feat-attendance): its own script,
+# so it can also run on its own against a local server.
+# ---------------------------------------------------------------------------
+step "raid attendance: MRT imports, no-shows, attendance %, reliability hint (ci/attendance_test.sh)"
+BASE=$BASE DATABASE_URL=$DATABASE_URL bash ci/attendance_test.sh
+
+# ---------------------------------------------------------------------------
 # "My raids", sidebar widgets, realm time and the Mentions inbox
 # (feat-widgets): its own script, so it can also run on its own.
 # ---------------------------------------------------------------------------

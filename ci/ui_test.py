@@ -5195,6 +5195,10 @@ with sync_playwright() as p:
     import ui_loot_import
     ui_loot_import.run(browser, BASE, SHOTS, watch, os.environ["DATABASE_URL"])
 
+    # ---- Raid attendance from MRT (mrt.js): ci/ui_attendance.py ----
+    import ui_attendance
+    ui_attendance.run(browser, BASE, SHOTS, watch, os.environ["DATABASE_URL"])
+
     browser.close()
 
     # Scrollbars (headless Chrome hides them unless asked): a long chat at
