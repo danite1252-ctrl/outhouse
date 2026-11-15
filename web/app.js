@@ -1479,6 +1479,24 @@ function addFiles(files) {
 // never served back.
 const drafts = new Map();      // File -> draft
 const draftsById = new Map();  // draft ID -> draft
+// Scan results that arrived before their upload's reply did (a fast scan can
+// finish while the reply is still on its way): applied when the reply lands.
+const earlyDraftStates = new Map(); // draft ID -> state
+
+// Asks the server for a draft's state while it's still being checked, in
+// case the live "done" message was missed (reconnects, sleeping tabs).
+function pollDraft(d) {
+  clearTimeout(d.poll);
+  if (!d.id || d.removed || d.sent || d.state !== "checking") return;
+  d.poll = setTimeout(async () => {
+    if (!d.id || d.removed || d.sent || d.state !== "checking") return;
+    try {
+      const r = await api("GET", `/api/drafts/${d.id}`);
+      if (r?.state && r.state !== d.state && d.state === "checking") { d.state = r.state; draftChanged(d); }
+    } catch { /* gone or offline: the send path handles it */ }
+    pollDraft(d);
+  }, 2500);
+}
 
 function draftChanged(d) {
   d.onChange?.();
@@ -1509,8 +1527,10 @@ function startDraft(file, channelId, threadId, onChange) {
       d.id = body.draft_id;
       draftsById.set(d.id, d);
       // A scan result may have beaten the reply here.
-      if (d.state === "uploading") d.state = body.state || "clean";
+      if (d.state === "uploading") d.state = earlyDraftStates.get(d.id) || body.state || "clean";
+      earlyDraftStates.delete(d.id);
       if (d.removed) return discardDraft(d);
+      pollDraft(d);
     } else {
       // Sent with the message instead (the old way). Say why if it's
       // something the person can do something about.
@@ -1535,7 +1555,12 @@ function discardDraft(d) {
 
 function onDraftScanned(ev) {
   const d = draftsById.get(ev.draft_id);
-  if (!d || d.state === "failed") return;
+  if (!d) {
+    earlyDraftStates.set(ev.draft_id, ev.state);
+    setTimeout(() => earlyDraftStates.delete(ev.draft_id), 60000);
+    return;
+  }
+  if (d.state === "failed") return;
   d.state = ev.state;
   draftChanged(d);
 }
