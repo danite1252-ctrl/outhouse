@@ -204,6 +204,15 @@ ok "$TE" GET "/api/guilds/$G/attendance/mrt/characters?range=custom&from=$D1&to=
 ok "$TE" GET "/api/guilds/$G/attendance/mrt/characters?range=all" | check '.raids == 3'
 no 400 "$TE" GET "/api/guilds/$G/attendance/mrt/characters?range=custom&from=yesterday"
 
+astep "the outhouse's attendance table (Raid attendance window) reads MRT imports"
+ok "$TE" GET "/api/guilds/$G/attendance?limit=10" | check --arg r1 "$R1" --arg r2 "$R2" --arg r3 "$R3" --arg d "$UD" --arg e "$UE" --arg n "$UN" --arg t "$UT" '
+  [.raids[].id] == [$r3, $r2, $r1]
+  and (.members[] | select(.user_id == $d) | .history == ["absent", "present", "present"] and .present == 2 and .absent == 1 and .total == 3 and .percent == 67)
+  and (.members[] | select(.user_id == $e) | .history == ["absent", "absent", "absent"] and .percent == 0)
+  and (.members[] | select(.user_id == $t) | .history == ["", "absent", ""])
+  and (.members[] | select(.user_id == $n) | .history == ["", "benched", ""] and .benched == 1 and .total == 0)'
+no 404 "$TX" GET "/api/guilds/$G/attendance"
+
 astep "a member's attendance by character (full profile)"
 ok "$TE" GET "/api/users/$UD/attendance" | check --arg g "$G" '
   length == 1 and .[0].guild_id == $g and .[0].guild_name == "Attendance Takers"

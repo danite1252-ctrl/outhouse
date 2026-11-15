@@ -1872,6 +1872,179 @@ pub async fn user_attendance(
     Ok(Json(out))
 }
 
+// ---- The outhouse's attendance table (the "Raid attendance" window) ------------------
+
+#[derive(Deserialize)]
+pub struct LimitQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Serialize)]
+pub struct TableRaid {
+    #[serde(with = "as_string")]
+    pub id: i64,
+    #[serde(with = "as_string")]
+    pub channel_id: i64,
+    pub title: String,
+    pub starts_at: DateTime<Utc>,
+}
+
+#[derive(Serialize, Default)]
+pub struct TableMember {
+    #[serde(with = "as_string")]
+    pub user_id: i64,
+    pub display_name: String,
+    pub present: i64,
+    pub late: i64,
+    pub benched: i64,
+    pub excused: i64,
+    /// No-shows (signed up and not there, or marked absent).
+    pub absent: i64,
+    /// Raids that count: attended + no-shows.
+    pub total: i64,
+    /// Attended out of `total` (100 when nothing counts).
+    pub percent: i64,
+    /// Their cell in each of `raids` (same order): present, late, benched,
+    /// excused, absent (a no-show, or marked absent) or "" (not there).
+    pub history: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct AttendanceTable {
+    /// Newest first.
+    pub raids: Vec<TableRaid>,
+    pub members: Vec<TableMember>,
+}
+
+/// One member's cell on a raid. Hand marks show as marked; otherwise MRT
+/// presence is "present", a no-show "absent", and a bench sign-up "benched"
+/// (shown, never counted).
+fn table_cell(o: Option<&OutcomeRow>, bench: bool) -> &'static str {
+    match o {
+        Some(o) => match (o.manual_status.as_deref(), o.outcome.as_str()) {
+            (Some("present"), _) => "present",
+            (Some("late"), _) => "late",
+            (Some("benched"), _) => "benched",
+            (Some("excused"), _) => "excused",
+            (Some("absent"), _) | (_, "no_show") => "absent",
+            (_, "attended") => "present",
+            _ if bench => "benched",
+            _ => "",
+        },
+        None if bench => "benched",
+        None => "",
+    }
+}
+
+/// `GET /api/guilds/{id}/attendance?limit=N`: everyone's attendance over
+/// the last N raids with attendance (MRT imports or hand marks; default 10,
+/// up to 50), counted like everywhere else.
+pub async fn guild_table(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(guild_id): Path<i64>,
+    Query(q): Query<LimitQuery>,
+) -> AppResult<Json<AttendanceTable>> {
+    let limit = q.limit.unwrap_or(10).clamp(1, 50);
+    let ctx = member_ctx(&st.db, guild_id, user.id).await?;
+    let (channels, _) = history_scope(&st, &ctx).await?;
+    let raids: Vec<(i64, i64, String, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT e.id, e.channel_id, e.title, e.starts_at FROM events e
+         WHERE e.guild_id = $1 AND e.channel_id = ANY($2)
+           AND (EXISTS (SELECT 1 FROM attendance_pulls p WHERE p.event_id = e.id)
+                OR EXISTS (SELECT 1 FROM event_attendance a WHERE a.event_id = e.id))
+         ORDER BY e.starts_at DESC, e.id DESC
+         LIMIT $3",
+    )
+    .bind(guild_id)
+    .bind(&channels)
+    .bind(limit)
+    .fetch_all(&st.db)
+    .await?;
+    let ids: Vec<i64> = raids.iter().map(|r| r.0).collect();
+    let column: HashMap<i64, usize> = ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+    let rows = outcomes(&st, &ids, None).await?;
+    let bench: HashSet<(i64, i64)> = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT event_id, user_id FROM event_signups WHERE event_id = ANY($1) AND status = 'bench'",
+    )
+    .bind(&ids)
+    .fetch_all(&st.db)
+    .await?
+    .into_iter()
+    .collect();
+    let mut by: HashMap<(i64, i64), &OutcomeRow> = HashMap::new();
+    let mut people: HashSet<i64> = HashSet::new();
+    for o in &rows {
+        by.insert((o.event_id, o.user_id), o);
+        people.insert(o.user_id);
+    }
+    for (_, u) in &bench {
+        people.insert(*u);
+    }
+    let ids_people: Vec<i64> = people.iter().copied().collect();
+    let names: HashMap<i64, String> = sqlx::query_as::<_, (i64, String)>(
+        "SELECT u.id, COALESCE(gm.nickname, u.display_name) FROM users u
+         LEFT JOIN guild_members gm ON gm.guild_id = $2 AND gm.user_id = u.id
+         WHERE u.id = ANY($1)",
+    )
+    .bind(&ids_people)
+    .bind(guild_id)
+    .fetch_all(&st.db)
+    .await?
+    .into_iter()
+    .collect();
+    let mut members: Vec<TableMember> = Vec::new();
+    for u in ids_people {
+        let mut m = TableMember {
+            user_id: u,
+            display_name: names.get(&u).cloned().unwrap_or_default(),
+            history: vec![String::new(); ids.len()],
+            ..Default::default()
+        };
+        let mine: Vec<&OutcomeRow> = rows.iter().filter(|o| o.user_id == u).collect();
+        for &e in &ids {
+            let o = by.get(&(e, u)).copied();
+            let cell = table_cell(o, bench.contains(&(e, u)));
+            if let Some(&i) = column.get(&e) {
+                m.history[i] = cell.to_string();
+            }
+            match cell {
+                "present" => m.present += 1,
+                "late" => m.late += 1,
+                "benched" => m.benched += 1,
+                "excused" => m.excused += 1,
+                _ => {}
+            }
+        }
+        let t = totals(mine.into_iter());
+        m.absent = t.no_shows;
+        m.total = t.eligible;
+        m.percent = t.percent;
+        if m.history.iter().any(|h| !h.is_empty()) {
+            members.push(m);
+        }
+    }
+    members.sort_by(|a, b| {
+        b.percent.cmp(&a.percent).then(b.total.cmp(&a.total)).then(
+            a.display_name
+                .to_lowercase()
+                .cmp(&b.display_name.to_lowercase()),
+        )
+    });
+    Ok(Json(AttendanceTable {
+        raids: raids
+            .into_iter()
+            .map(|(id, channel_id, title, starts_at)| TableRaid {
+                id,
+                channel_id,
+                title,
+                starts_at,
+            })
+            .collect(),
+        members,
+    }))
+}
+
 // ---- The no-show hint on sign-ups (raid leaders) ----------------------------------------
 
 #[derive(Serialize)]

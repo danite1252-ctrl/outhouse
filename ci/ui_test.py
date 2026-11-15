@@ -742,16 +742,19 @@ with sync_playwright() as p:
     page.click(f"{att_ed} button[data-act='save-attendance']")
     page.wait_for_selector(f"{past_card} details.ev-attendance[open] .mrt-group[data-group='attended'] .mrt-name:has-text('Erin') .mrt-tag.manual:has-text('late')", timeout=10000)
     page.wait_for_selector(f"{past_card} .ev-link.attendance.done", timeout=10000)
-    # The raid list's 📋 Attendance: attendance per character (the Loot & attendance window).
+    # The outhouse's attendance table (📊 Attendance in the raid list): hand marks and MRT together.
     page.click("#raid-btn")
     page.click(".raid-list .rl-tool:has-text('Attendance')")
-    att_row = "dialog.loot-log-dialog .ll-people tr[data-character='{}'] td[data-col='attendance']"
-    page.wait_for_selector(att_row.format("erin") + " .ll-pct", timeout=10000)
-    assert page.inner_text(att_row.format("dave")).startswith("100%"), page.inner_text(att_row.format("dave"))
-    assert page.inner_text(att_row.format("erin")).startswith("50%"), page.inner_text(att_row.format("erin"))
-    page.screenshot(path=f"{SHOTS}/48-attendance-by-character.png")
-    page.click("dialog.loot-log-dialog .raid-close")
-    page.wait_for_selector("dialog.loot-log-dialog", state="detached")
+    page.wait_for_selector(".attendance-table-dialog .att-table tbody tr", timeout=10000)
+    assert page.inner_text(".attendance-table-dialog .att-table tbody tr:has-text('Dave') td.pct") == "100%"
+    assert page.inner_text(".attendance-table-dialog .att-table tbody tr:has-text('Erin') td.pct") == "50%"
+    page.wait_for_selector(".attendance-table-dialog .att-table tbody tr:has-text('Erin') .att-dot.late")
+    page.wait_for_selector(".attendance-table-dialog .att-table tbody tr:has-text('Erin') .att-dot.absent")
+    page.click(".attendance-table-dialog th:has-text('Member')")
+    page.wait_for_selector(".attendance-table-dialog th.sorted:has-text('Member')")
+    page.screenshot(path=f"{SHOTS}/48-attendance-table.png")
+    page.click(".attendance-table-dialog button[title='Close']")
+    page.wait_for_selector(".attendance-table-dialog", state="detached")
     # Attendance on a profile card.
     page.evaluate(f"openProfile({json.dumps(ERIN)}, document.querySelector('#messages .event-card'))")
     page.wait_for_selector(".profile-card .pc-attendance:has-text('50%')", timeout=10000)
@@ -997,9 +1000,9 @@ with sync_playwright() as p:
     phone.click("#attach-btn")
     phone.click(".menu [role=menuitem]:has-text('Plan a raid')")
     phone.click(".raid-list .rl-tool:has-text('Attendance')")
-    phone.wait_for_selector("dialog.loot-log-dialog .ll-people tr[data-character='erin']", timeout=10000)
-    phone.screenshot(path=f"{SHOTS}/54-phone-attendance-by-character.png")
-    phone.click("dialog.loot-log-dialog .raid-close")
+    phone.wait_for_selector(".attendance-table-dialog .att-table tbody tr", timeout=10000)
+    phone.screenshot(path=f"{SHOTS}/54-phone-attendance-table.png")
+    phone.click(".attendance-table-dialog button[title='Close']")
     scroll_to_card(phone, "Molten Core run")
     phone.click(".event-card:has-text('Molten Core run') .ev-link.attendance")
     phone.wait_for_selector(".event-card:has-text('Molten Core run') details.ev-attendance[open] .att-editor .att-row", timeout=10000)

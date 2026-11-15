@@ -765,6 +765,13 @@ call GET "/api/guilds/$GUILD/attendance/mrt/characters?range=all" | jq -e --arg 
   .raids == 2
   and ([.characters[] | select(.user_id == $b)] | length == 1 and .[0].attended == 1 and .[0].no_shows == 1 and .[0].percent == 50)
   and ([.characters[] | select(.user_id == $c)] | length == 1 and .[0].attended == 2 and .[0].percent == 100)' >/dev/null
+# The outhouse's attendance table ("Raid attendance" window) counts the same way.
+call GET "/api/guilds/$GUILD/attendance?limit=10" | jq -e --arg b "$BOB" --arg c "$CARL" --arg at2 "$AT2" '
+  (.raids | length == 2) and .raids[0].id == $at2
+  and (.members[] | select(.user_id == $b) | .total == 2 and .percent == 50 and .absent == 1 and .history == ["absent", "benched"])
+  and (.members[] | select(.user_id == $c) | .late == 1 and .present == 1 and .percent == 100)' >/dev/null
+call GET "/api/guilds/$GUILD/attendance?limit=1" | jq -e '.raids | length == 1' >/dev/null
+TOKEN=$OUT; fail_call GET "/api/guilds/$GUILD/attendance"; TOKEN=$TOKEN_A
 call GET "/api/events/$AT2/attendance/mrt" | jq -e --arg b "$BOB" '.pulls == [] and .can_edit and (.manual[] | select(.user_id == $b) | .status == "absent" and .marked_by_name != null)' >/dev/null
 TOKEN=$TOKEN_B
 call GET "/api/events/$AT2/attendance/mrt" | jq -e '.can_edit | not' >/dev/null

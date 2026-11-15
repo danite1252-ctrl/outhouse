@@ -214,6 +214,27 @@ def run(browser, base, shots, watch, db_url):
     lp.wait_for_timeout(200)
     lp.screenshot(path=f"{shots}/8006-desktop-imports.png")
     lp.click("dialog.loot-log-dialog .raid-close")
+
+    # ---- The outhouse's "Raid attendance" table (📊 Attendance) reads MRT imports too ----
+    lp.evaluate("openAttendanceTable()")
+    who = {"Kit": kit, "Plain": plain, "Tent": tent, "Benchy": benchy}
+
+    class _Rows:
+        def format(self, name):
+            return f".attendance-table-dialog .att-table tbody tr[data-user='{who[name]['user']['id']}']"
+    tr = _Rows()
+    lp.wait_for_selector(tr.format("Kit") + " td.pct", timeout=10000)
+    assert lp.locator(".attendance-table-dialog .att-table thead th.raid-col").count() == 3
+    assert lp.inner_text(tr.format("Kit") + " td.pct") == "67%"
+    assert lp.locator(tr.format("Kit") + " .att-dot.present").count() == 2 and lp.locator(tr.format("Kit") + " .att-dot.absent").count() == 1
+    assert lp.inner_text(tr.format("Plain") + " td.pct") == "0%" and lp.locator(tr.format("Plain") + " .att-dot.absent").count() == 3
+    assert lp.inner_text(tr.format("Tent") + " td.pct") == "0%"
+    lp.wait_for_selector(tr.format("Benchy") + " .att-dot.benched")
+    assert lp.inner_text(tr.format("Benchy") + " td.pct") == "—"
+    lp.wait_for_timeout(200)
+    lp.screenshot(path=f"{shots}/85-desktop-attendance-table-mrt.png")
+    lp.click(".attendance-table-dialog button[title='Close']")
+    lp.wait_for_selector(".attendance-table-dialog", state="detached")
     lp.close()
 
     # ---- Last week's raids, so the no-show hint (4 weeks) applies; next week's raid ----
@@ -338,6 +359,20 @@ def run(browser, base, shots, watch, db_url):
     pc = lp.eval_on_selector_all(prow, "els => Object.fromEntries(els.map(e => [e.dataset.col, e.textContent.trim()]))")
     assert pc["attendance"].startswith("33%") and pc["noshows"] == "2", pc
     lp.click("dialog.loot-log-dialog .raid-close")
+    # The table shows hand marks and MRT together: Plain present (by hand) on Sunday, excused tonight.
+    lp.evaluate("openAttendanceTable()")
+    who = {"Kit": kit, "Plain": plain, "Tent": tent, "Benchy": benchy}
+
+    class _Rows:
+        def format(self, name):
+            return f".attendance-table-dialog .att-table tbody tr[data-user='{who[name]['user']['id']}']"
+    tr = _Rows()
+    lp.wait_for_selector(tr.format("Plain") + " .att-dot.excused", timeout=10000)
+    assert lp.inner_text(tr.format("Plain") + " td.pct") == "33%"
+    lp.wait_for_selector(tr.format("Tent") + " .att-dot.present")
+    lp.wait_for_timeout(200)
+    lp.screenshot(path=f"{shots}/85-desktop-attendance-table.png")
+    lp.click(".attendance-table-dialog button[title='Close']")
     lp.close()
 
     # A member sees the hand marks, but can't edit.
@@ -367,6 +402,10 @@ def run(browser, base, shots, watch, db_url):
     pp.screenshot(path=f"{shots}/85-phone-edit-attendance.png")
     pp.click(f"{c1} .att-editor .att-save button.ghost")
     pp.wait_for_selector(f"{c1} details.ev-attendance .mrt-compare", timeout=10000)
+    pp.evaluate("openAttendanceTable()")
+    pp.wait_for_selector(".attendance-table-dialog .att-table tbody tr td.pct", timeout=10000)
+    pp.wait_for_timeout(300)
+    pp.screenshot(path=f"{shots}/85-phone-attendance-table.png")
     pp.close()
 
 

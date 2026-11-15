@@ -1,5 +1,6 @@
-// Outhouse: raid calendar, attendance on profile cards (taking it is the
-// raid card's 📋 Attendance section, mrt.js) and live raid updates. Loaded after features.js and
+// Outhouse: raid calendar, the outhouse's attendance table and attendance on
+// profile cards (taking it is the raid card's 📋 Attendance section, mrt.js)
+// and live raid updates. Loaded after features.js and
 // uses its raid helpers (renderEventCard, openRaidDialog, eventWhen, …).
 
 const ATT_LABEL = { present: "Present", late: "Late", benched: "Benched", excused: "Excused", absent: "Absent" };
@@ -151,8 +152,7 @@ function drawCalendar() {
       el("button", { type: "button", class: "icon-btn", title: "Next month", "aria-label": "Next month", onclick: () => moveMonth(1) }, "›"),
       el("button", { type: "button", class: "cal-today", onclick: () => { cal.month = new Date(new Date().getFullYear(), new Date().getMonth(), 1); cal.selected = todayKey; loadCalendar(); } }, "Today")),
     el("div", { class: "cal-actions" },
-      // Attendance per character (MRT imports and hand marks): the Loot & attendance window.
-      typeof openLootLog === "function" ? el("button", { type: "button", class: "cal-today", onclick: () => openLootLog({ tab: "people" }) }, "📋 Attendance") : null,
+      el("button", { type: "button", class: "cal-today", onclick: () => openAttendanceTable() }, "📊 Attendance"),
       canPlanHere() ? el("button", { type: "button", class: "primary cal-plan", title: "Plan a raid", onclick: () => planOn(cal.selected) }, "＋ Plan", el("span", { class: "plan-long" }, " a raid")) : null,
       closeX(cal.dialog)));
   const pendingNote = !isPhoneWidth() && cal.events.some(signupsNotOpen) ? " Blue raids: sign-ups aren't open yet." : "";
@@ -267,6 +267,74 @@ handleEvent = function (ev) {
   }
   raidsBaseHandle(ev);
 };
+
+// ---------- The outhouse's attendance table ("Raid attendance") ----------
+// One attendance: MRT imports and hand marks, counted like everywhere else
+// (no-shows show as Absent, the bench as Benched; % = attended out of
+// attended + no-shows).
+
+async function openAttendanceTable() {
+  if (!state.guildId) return;
+  const dialog = raidWindow("attendance-table-dialog");
+  let limit = prefs.get("attendance_limit", 10);
+  let sort = { key: "percent", dir: -1 };
+  let data = null;
+  const body = el("div", { class: "att-table-wrap" }, el("p", { class: "muted" }, "Loading…"));
+  const pick = el("select", { class: "select", "aria-label": "How many raids" },
+    [5, 10, 20, 50].map((n) => el("option", { value: n, selected: n === limit }, `Last ${n} raids`)));
+  pick.addEventListener("change", () => { limit = Number(pick.value); prefs.set("attendance_limit", limit); load(); });
+
+  const cols = [
+    ["name", "Member"], ["percent", "%"], ["present", "✓"], ["late", "⏱"], ["absent", "✗"], ["benched", "🪑"], ["excused", "🛈"],
+  ];
+  const colTitle = { name: "Member", percent: "Attendance: raids attended out of raids attended or missed after signing up", present: "Present (MRT or by hand)", late: "Late", absent: "Absent (no-shows)", benched: "Benched", excused: "Excused (not counted)" };
+  const nameOf = (m) => memberById(m.user_id)?.display_name ?? m.display_name;
+  const draw = () => {
+    if (!data) return;
+    if (!data.raids.length) {
+      body.replaceChildren(el("div", { class: "att-empty" },
+        el("p", {}, "No attendance yet."),
+        el("p", { class: "muted small" }, "Raid leaders can import Method Raid Tools' attendance export (raid card ⋯ → Import attendance (MRT)…, or the Loot & attendance window), or take it by hand once a raid starts (the raid card's 📋 Attendance → Edit attendance).")));
+      return;
+    }
+    const rows = [...data.members].sort((a, b) => {
+      const v = sort.key === "name" ? nameOf(a).localeCompare(nameOf(b)) : (a[sort.key] - b[sort.key]) || (a.total - b.total);
+      return v * sort.dir || nameOf(a).localeCompare(nameOf(b));
+    });
+    const th = ([key, label]) => el("th", {
+      class: `sortable${sort.key === key ? ` sorted ${sort.dir > 0 ? "asc" : "desc"}` : ""}${key === "name" ? " name" : ""}`,
+      title: `Sort by ${colTitle[key].toLowerCase()}`, "aria-sort": sort.key === key ? (sort.dir > 0 ? "ascending" : "descending") : "none",
+      onclick: () => { sort = sort.key === key ? { key, dir: -sort.dir } : { key, dir: key === "name" ? 1 : -1 }; draw(); },
+    }, label, sort.key === key ? (sort.dir > 0 ? " ▲" : " ▼") : "");
+    const day = (iso) => new Date(iso).toLocaleDateString([], { day: "numeric", month: "short" });
+    body.replaceChildren(el("table", { class: "att-table" },
+      el("thead", {}, el("tr", {}, cols.map(th),
+        data.raids.map((r) => el("th", { class: "raid-col", title: `${r.title} · ${new Date(r.starts_at).toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })}` }, day(r.starts_at))))),
+      el("tbody", {}, rows.map((m) => el("tr", { "data-user": m.user_id },
+        el("td", { class: "name" }, el("button", { type: "button", class: "att-member", onclick: (e) => openProfile(m.user_id, e.currentTarget) },
+          avatarFor(m.user_id, nameOf(m), 22), nameOf(m))),
+        el("td", { class: "pct", title: m.total ? `Attended ${m.total - m.absent} of ${m.total} raids that count` : "Nothing counts yet (bench, excused or not signed up)" },
+          el("div", { class: "pct-bar", style: `--pct:${m.total ? m.percent : 0}%` }, el("span", {}, m.total ? `${m.percent}%` : "—"))),
+        el("td", {}, m.present), el("td", {}, m.late), el("td", {}, m.absent), el("td", {}, m.benched), el("td", {}, m.excused),
+        m.history.map((h, i) => el("td", { class: "raid-col" }, h
+          ? el("span", { class: `att-dot ${h}`, title: `${ATT_LABEL[h]} · ${data.raids[i].title}` })
+          : el("span", { class: "att-dot none", title: `Not there · ${data.raids[i].title}` }))))))));
+  };
+  const load = async () => {
+    const guild = state.guildId;
+    data = await tryApi("GET", `/api/guilds/${guild}/attendance?limit=${limit}`).catch(() => null);
+    if (!data) { body.replaceChildren(el("p", { class: "muted" }, "Couldn't load attendance.")); return; }
+    draw();
+  };
+  dialog.append(
+    el("div", { class: "att-head" },
+      el("div", {}, el("h2", {}, "Raid attendance"), el("div", { class: "muted small" }, currentGuild()?.name ?? "")),
+      el("div", { class: "att-head-tools" }, pick, closeX(dialog))),
+    el("div", { class: "att-legend muted small" }, Object.keys(ATT_LABEL).map((k) => el("span", {}, el("span", { class: `att-dot ${k}` }), ATT_LABEL[k])),
+      typeof openLootLog === "function" ? el("button", { type: "button", class: "link small att-by-char", onclick: () => { dialog.close(); openLootLog({ tab: "people" }); } }, "📜 By character") : null),
+    body);
+  load();
+}
 
 // ---------- Attendance on profile cards ----------
 // The same numbers as everywhere else (MRT imports and hand marks): the last

@@ -455,6 +455,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/wow/items/{id}", get(loot::get_item))
         // Attendance from Method Raid Tools
         .route("/api/events/{id}/attendance/mrt", get(mrt::raid_attendance))
+        .route("/api/guilds/{id}/attendance", get(mrt::guild_table))
         .route(
             "/api/events/{id}/attendance/mrt/preview",
             post(mrt::raid_preview),

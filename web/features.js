@@ -1075,8 +1075,7 @@ async function openRaidList(anchor) {
     el("div", { class: "rl-head" }, el("h3", {}, "Upcoming raids"),
       el("div", { class: "rl-tools" },
         el("button", { type: "button", class: "rl-tool", onclick: () => { closePopover(); openCalendar(); } }, "📅 Calendar"),
-        // Attendance per character (MRT imports and hand marks) lives in the Loot & attendance window.
-        typeof openLootLog === "function" ? el("button", { type: "button", class: "rl-tool", onclick: () => { closePopover(); openLootLog({ tab: "people" }); } }, "📋 Attendance") : null,
+        el("button", { type: "button", class: "rl-tool", onclick: () => { closePopover(); openAttendanceTable(); } }, "📊 Attendance"),
         typeof openLootLog === "function" ? el("button", { type: "button", class: "rl-tool", onclick: () => { closePopover(); openLootLog(); } }, "📜 Loot") : null)),
     rows.length ? el("div", { class: "rl-rows" }, rows) : el("p", { class: "muted small" }, "Nothing planned yet."),
     ...[
