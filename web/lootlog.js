@@ -384,7 +384,7 @@ async function openLootLog(filters = {}) {
   const P_COLS = [["character", "Character"], ["attendance", "Attendance"], ["noshows", "No-shows"], ["last_raid", "Last raid"],
     ["ms", "Main spec"], ["os", "Off spec"], ["sr", "SR"], ["total", "Items"], ["per_raid", "Per raid"], ["last_item", "Last item"]];
   const P_HINT = {
-    attendance: "Raids they were there for (at least one boss) out of raids they attended or signed up to and missed. Only raids with attendance imported from MRT count.",
+    attendance: "Raids they were there for (at least one boss, or marked present, late or benched) out of raids they attended or signed up to and missed. Only raids with attendance (imported from MRT or taken by hand) count; excused never counts.",
     noshows: "Signed up (or late, or tentative) and not there for any boss. “Can't make it” and the bench don't count.",
     per_raid: "Items won per raid attended",
   };
@@ -404,7 +404,7 @@ async function openLootLog(filters = {}) {
       return (pSort.dir === "asc" ? cmp : -cmp) || b.total - a.total || (a.character_name || "").localeCompare(b.character_name || "");
     });
     countLine.textContent = plural(list.length, "character");
-    if (!list.length) return body.replaceChildren(el("p", { class: "muted att-empty" }, "Nobody's won anything or been to a raid with imported attendance in that range."));
+    if (!list.length) return body.replaceChildren(el("p", { class: "muted att-empty" }, "Nobody's won anything or been to a raid with attendance in that range."));
     const head = (key, label) => {
       const on = pSort.key === key;
       return el("th", { "data-col": key, title: P_HINT[key] ?? "", "aria-sort": on ? (pSort.dir === "asc" ? "ascending" : "descending") : "none" },

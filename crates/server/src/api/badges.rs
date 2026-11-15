@@ -103,19 +103,20 @@ pub async fn list(
     .bind(RAID_LEADER_RAIDS)
     .fetch_all(db)
     .await?;
+    // Raids with attendance (imported or marked by hand), as counted
+    // everywhere else: excused and unsigned absences don't break a streak.
     let streaks: Vec<i64> = sqlx::query_scalar(
         "SELECT user_id FROM (
-             SELECT a.user_id, a.status,
-                    row_number() OVER (PARTITION BY a.user_id ORDER BY e.starts_at DESC) AS rn
-             FROM event_attendance a
-             JOIN events e ON e.id = a.event_id
-             JOIN guild_members m ON m.guild_id = e.guild_id AND m.user_id = a.user_id
-             WHERE e.guild_id = $1) recent
+             SELECT o.user_id, o.outcome,
+                    row_number() OVER (PARTITION BY o.user_id ORDER BY e.starts_at DESC) AS rn
+             FROM raid_attendance_outcomes o
+             JOIN events e ON e.id = o.event_id
+             JOIN guild_members m ON m.guild_id = e.guild_id AND m.user_id = o.user_id
+             WHERE e.guild_id = $1 AND o.outcome IN ('attended', 'no_show')) recent
          WHERE rn <= $2
          GROUP BY user_id
-         HAVING count(*) = $2 AND bool_and(status <> 'absent')",
+         HAVING count(*) = $2 AND bool_and(outcome = 'attended')",
     )
-    .bind(guild_id)
     .bind(STREAK_RAIDS)
     .fetch_all(db)
     .await?;

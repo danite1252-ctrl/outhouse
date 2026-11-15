@@ -311,9 +311,22 @@ pub(crate) async fn build(db: &PgPool, rows: Vec<EventRow>) -> AppResult<Vec<Rai
     .await?
     .into_iter()
     .collect();
+    #[allow(clippy::type_complexity)]
+    let mut attendance_manual: HashMap<i64, (i64, DateTime<Utc>)> =
+        sqlx::query_as::<_, (i64, i64, DateTime<Utc>)>(
+            "SELECT event_id, count(*), max(marked_at) FROM event_attendance
+             WHERE event_id = ANY($1) GROUP BY event_id",
+        )
+        .bind(&ids)
+        .fetch_all(db)
+        .await?
+        .into_iter()
+        .map(|(e, n, at)| (e, (n, at)))
+        .collect();
     Ok(rows
         .into_iter()
         .map(|r| {
+            let manual = attendance_manual.remove(&r.id);
             let closes = r.closes_at();
             let reserves_locked = r.reserves_locked();
             let opens = if r.message_id.is_none() && r.card_removed_at.is_none() {
@@ -354,6 +367,8 @@ pub(crate) async fn build(db: &PgPool, rows: Vec<EventRow>) -> AppResult<Vec<Rai
                 reserves: reserves.remove(&r.id).unwrap_or_default(),
                 loot_count: loot_counts.get(&r.id).copied().unwrap_or(0),
                 attendance_bosses: attendance_bosses.get(&r.id).copied().unwrap_or(0),
+                attendance_manual: manual.map_or(0, |m| m.0),
+                attendance_edited_at: manual.map(|m| m.1),
             }
         })
         .collect())

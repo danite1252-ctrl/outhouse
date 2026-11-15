@@ -757,18 +757,31 @@ call PUT "/api/events/$AT/attendance" '{"all_signed_up":true,"records":[{"user_i
 call GET "/api/events/$AT" | jq -e '.attendance_taken' >/dev/null
 TOKEN=$TOKEN_B; call GET "/api/events/$AT/attendance" | jq -e 'length == 3' >/dev/null; TOKEN=$TOKEN_A
 AT2=$(call POST "/api/channels/$RX/events" '{"title":"The night before","starts_at":"'"$PAST"'"}' | jq -r .event.id)
+call PUT "/api/events/$AT2/signup" '{"status":"yes","role":"dps","class":"Druid","spec":"Feral (Cat)","user_id":"'"$BOB"'"}' >/dev/null
 call PUT "/api/events/$AT2/attendance" '{"records":[{"user_id":"'"$BOB"'","status":"absent"},{"user_id":"'"$CARL"'","status":"present"}]}' >/dev/null
-call GET "/api/guilds/$GUILD/attendance?limit=10" | jq -e --arg b "$BOB" --arg c "$CARL" --arg at2 "$AT2" '
-  (.raids | length == 2) and .raids[0].id == $at2
-  and (.members[] | select(.user_id == $b) | .total == 2 and .percent == 50 and .history == ["absent", "benched"])
-  and (.members[] | select(.user_id == $c) | .late == 1 and .present == 1 and .percent == 100)' >/dev/null
-call GET "/api/guilds/$GUILD/attendance?limit=1" | jq -e '.raids | length == 1' >/dev/null
+# One attendance (hand marks and MRT imports together): Bob was benched (attended) and
+# signed up but marked absent the night before (a no-show); Carl came to both.
+call GET "/api/guilds/$GUILD/attendance/mrt/characters?range=all" | jq -e --arg b "$BOB" --arg c "$CARL" '
+  .raids == 2
+  and ([.characters[] | select(.user_id == $b)] | length == 1 and .[0].attended == 1 and .[0].no_shows == 1 and .[0].percent == 50)
+  and ([.characters[] | select(.user_id == $c)] | length == 1 and .[0].attended == 2 and .[0].percent == 100)' >/dev/null
+call GET "/api/events/$AT2/attendance/mrt" | jq -e --arg b "$BOB" '.pulls == [] and .can_edit and (.manual[] | select(.user_id == $b) | .status == "absent" and .marked_by_name != null)' >/dev/null
 TOKEN=$TOKEN_B
-call GET "/api/guilds/$GUILD/attendance/$BOB" | jq -e '.total == 2 and .percent == 50 and .recent[0].status == "absent" and .recent[0].title == "The night before"' >/dev/null
-TOKEN=$OUT; fail_call GET "/api/guilds/$GUILD/attendance"; fail_call GET "/api/events/$AT/attendance"; TOKEN=$TOKEN_A
+call GET "/api/events/$AT2/attendance/mrt" | jq -e '.can_edit | not' >/dev/null
+call GET "/api/users/$BOB/attendance" | jq -e --arg g "$GUILD" '.[] | select(.guild_id == $g)
+  | .all_time.attended == 1 and .all_time.no_shows == 1 and .all_time.percent == 50
+  and .raids[0].title == "The night before" and .raids[0].outcome == "no_show" and .raids[0].manual_status == "absent"
+  and .raids[1].manual_status == "benched" and .raids[1].outcome == "attended"' >/dev/null
+TOKEN=$OUT; fail_call GET "/api/events/$AT/attendance"; fail_call GET "/api/events/$AT/attendance/mrt"; TOKEN=$TOKEN_A
+# Excused: not a no-show. Edits are in the audit log.
+call PUT "/api/events/$AT2/attendance" '{"records":[{"user_id":"'"$BOB"'","status":"excused"}]}' | jq -e --arg b "$BOB" '.[] | select(.user_id == $b) | .status == "excused"' >/dev/null
+call GET "/api/users/$BOB/attendance" | jq -e --arg g "$GUILD" '.[] | select(.guild_id == $g) | .all_time.no_shows == 0 and .all_time.excused == 1 and .all_time.percent == 100' >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?action=attendance_edit" | jq -e '.entries | length >= 3 and any(.[]; .details | contains("absent → excused")) and any(.[]; .target_name == "The night before")' >/dev/null
 call PUT "/api/events/$AT2/attendance" '{"records":[{"user_id":"'"$BOB"'","status":""},{"user_id":"'"$CARL"'","status":""}]}' | jq -e 'length == 0' >/dev/null
-call GET "/api/events/$AT2" | jq -e '.attendance_taken | not' >/dev/null
-call GET "/api/guilds/$GUILD/attendance/$BOB" | jq -e '.total == 1 and .percent == 100' >/dev/null
+call GET "/api/events/$AT2" | jq -e '(.attendance_taken | not) and .attendance_manual == 0' >/dev/null
+call GET "/api/guilds/$GUILD/audit-log?action=attendance_edit" | jq -e 'any(.entries[]; .details | contains("cleared (back to MRT)"))' >/dev/null
+# No attendance on that raid any more: Bob's sign-up there doesn't count.
+call GET "/api/users/$BOB/attendance" | jq -e --arg g "$GUILD" '.[] | select(.guild_id == $g) | .all_time.attended == 1 and .all_time.eligible == 1 and .all_time.percent == 100' >/dev/null
 
 step "wow: info and characters"
 call GET /api/wow/info | jq -e '(.classes | length == 9) and (.classes | index("Monk") | not) and (.activities | map(.name) | index("Molten Core")) and .bnet_enabled and (.wowhead_url | endswith("/classic"))
@@ -1992,7 +2005,8 @@ call GET "/api/events/$CAE" | jq -e '.message_id == null and .card_removed and .
 call GET "/api/channels/$CC/messages?limit=100" | jq -e --arg m "$CAM" 'all(.[]; .id != $m)' >/dev/null
 call GET "/api/events/$COE" | jq -e '.message_id != null and (.card_removed | not)' >/dev/null # Off keeps it
 call GET "/api/channels/$CC/messages?limit=100" | jq -e --arg e "$COE" 'any(.[]; .event.id == $e)' >/dev/null
-call GET "/api/guilds/$GUILD/attendance?limit=50" | jq -e --arg e "$CAE" --arg c "$C1" 'any(.raids[]; .id == $e) and any(.raids[]; .id == $c)' >/dev/null
+call GET "/api/events/$CAE" | jq -e '.attendance_manual > 0' >/dev/null
+call GET "/api/events/$C1" | jq -e '.attendance_manual == 2' >/dev/null
 call GET "/api/guilds/$GUILD/events?from=$CFROM&to=$CTO" | jq -e --arg e "$CAE" '[.[] | select(.id == $e and .card_removed)] | length == 1' >/dev/null
 
 step "raid reminder"
@@ -4999,8 +5013,10 @@ BASE=$BASE DATABASE_URL=$DATABASE_URL bash ci/loot_import_test.sh
 # Raid attendance from Method Raid Tools (feat-attendance): its own script,
 # so it can also run on its own against a local server.
 # ---------------------------------------------------------------------------
-step "raid attendance: MRT imports, no-shows, attendance %, reliability hint (ci/attendance_test.sh)"
+step "raid attendance: MRT imports, hand marks, no-shows, attendance %, reliability hint (ci/attendance_test.sh)"
 BASE=$BASE DATABASE_URL=$DATABASE_URL bash ci/attendance_test.sh
+step "raid attendance: migration 0047 keeps old hand-taken attendance (ci/attendance_migration_test.sh)"
+DATABASE_URL=$DATABASE_URL bash ci/attendance_migration_test.sh
 
 # ---------------------------------------------------------------------------
 # "My raids", sidebar widgets, realm time and the Mentions inbox

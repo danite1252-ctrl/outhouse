@@ -418,8 +418,10 @@ function renderEventCard(m) {
     } }, descOpen ? "less" : "more") : null) : null;
 
   const series = !!ev.series_id;
+  const hasAtt = !!(ev.attendance_bosses || ev.attendance_manual);
   const menuBtn = manager ? el("button", { class: "icon-btn small rc-menu", title: "Raid options", "aria-label": "Raid options", "aria-haspopup": "menu", onclick: (e) => {
     const r = e.currentTarget.getBoundingClientRect();
+    const cardNode = e.currentTarget.closest(".event-card");
     openMenu(r.left, r.bottom + 4, [
       { label: series ? "Edit this raid" : "Edit raid", onClick: () => openRaidDialog(ev) },
       series ? { label: "Edit this and future raids", onClick: () => openRaidDialog(ev, { scope: "future" }) } : null,
@@ -428,7 +430,7 @@ function renderEventCard(m) {
       // <t:…:F> shows in each reader's own time zone when pasted into chat.
       { label: "Copy time tag", onClick: () => copy(`<t:${Math.floor(new Date(ev.starts_at).getTime() / 1000)}:F>`, "Time tag copied") },
       typeof openRaidExport === "function" ? { label: "Export / invite list", onClick: () => openRaidExport(ev) } : null,
-      when.started ? { label: "Take attendance", onClick: () => openAttendanceDialog(ev) } : null,
+      when.started && typeof openAttendanceEdit === "function" ? { label: hasAtt ? "Edit attendance" : "Take attendance", onClick: () => openAttendanceEdit(ev, cardNode) } : null,
       typeof openGargulImport === "function" ? { label: "Import loot (Gargul)…", onClick: () => openGargulImport(ev) } : null,
       typeof openMrtImport === "function" ? { label: "Import attendance (MRT)…", onClick: () => openMrtImport(ev) } : null,
       "sep",
@@ -539,7 +541,9 @@ function renderEventCard(m) {
   const links = [
     srLink,
     manager && when.started && typeof openLoot === "function" ? link("loot", "Loot won", () => openLoot(ev, "won")) : null,
-    manager && when.started ? link(`attendance${ev.attendance_taken ? " done" : ""}`, ev.attendance_taken ? "Attendance ✓" : "Take attendance", () => openAttendanceDialog(ev)) : null,
+    // Opens the 📋 Attendance section below in edit mode.
+    manager && when.started && typeof openAttendanceEdit === "function"
+      ? link(`attendance${hasAtt ? " done" : ""}`, hasAtt ? "Attendance ✓" : "Take attendance", (e) => openAttendanceEdit(ev, e.currentTarget.closest(".event-card"))) : null,
     manager && typeof openRaidExport === "function" && ev.signups.some((s) => s.status !== "no")
       ? link("export", "Invite list", () => openRaidExport(ev), { title: "Names to paste into Method Raid Tools or an /invite macro" }) : null,
     inChat && typeof openCalendar === "function" ? link("calendar-link", "Calendar", () => openCalendar(start)) : null,
@@ -1071,7 +1075,8 @@ async function openRaidList(anchor) {
     el("div", { class: "rl-head" }, el("h3", {}, "Upcoming raids"),
       el("div", { class: "rl-tools" },
         el("button", { type: "button", class: "rl-tool", onclick: () => { closePopover(); openCalendar(); } }, "📅 Calendar"),
-        el("button", { type: "button", class: "rl-tool", onclick: () => { closePopover(); openAttendanceTable(); } }, "📊 Attendance"),
+        // Attendance per character (MRT imports and hand marks) lives in the Loot & attendance window.
+        typeof openLootLog === "function" ? el("button", { type: "button", class: "rl-tool", onclick: () => { closePopover(); openLootLog({ tab: "people" }); } }, "📋 Attendance") : null,
         typeof openLootLog === "function" ? el("button", { type: "button", class: "rl-tool", onclick: () => { closePopover(); openLootLog(); } }, "📜 Loot") : null)),
     rows.length ? el("div", { class: "rl-rows" }, rows) : el("p", { class: "muted small" }, "Nothing planned yet."),
     ...[

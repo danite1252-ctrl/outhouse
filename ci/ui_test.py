@@ -165,6 +165,9 @@ bench = api("POST", f"/api/channels/{chan['id']}/events", {
 api("PUT", f"/api/events/{bench['event']['id']}/signup", {"status": "yes", "role": "tank", "class": "Warrior", "spec": "Protection"}, dave["token"])
 api("PUT", f"/api/events/{bench['event']['id']}/signup", {"status": "yes", "role": "tank", "class": "Druid", "spec": "Feral (Bear)", "note": "can swap to cat"}, erin["token"])
 earlier = api("POST", f"/api/channels/{chan['id']}/events", {"title": "Zul'Gurub warm-up", "starts_at": iso(time.time() - 50 * 60)}, TOKEN)
+# Erin signed up and didn't come (marked absent: a no-show); Dave came.
+api("PUT", f"/api/events/{earlier['event']['id']}/signup",
+    {"status": "yes", "role": "healer", "class": "Priest", "spec": "Holy", "user_id": ERIN}, TOKEN)
 api("PUT", f"/api/events/{earlier['event']['id']}/attendance",
     {"records": [{"user_id": DAVE, "status": "present"}, {"user_id": ERIN, "status": "absent"}]}, TOKEN)
 past = api("POST", f"/api/channels/{chan['id']}/events", {"title": "Molten Core run", "starts_at": iso(time.time() - 40 * 60), "duration_minutes": 180}, TOKEN)
@@ -725,29 +728,30 @@ with sync_playwright() as p:
     aq = [e for e in api("GET", f"/api/guilds/{guild['id']}/events", None, TOKEN) if e["title"] == "AQ40 from the calendar"]
     assert len(aq) == 1 and aq[0]["channel_id"] == general["id"] and aq[0]["message_id"] is None and aq[0]["game"] == "tbc", aq
     assert aq[0]["post_rule"]["mode"] == "weekday" and aq[0]["post_rule"]["time"] == "09:00", aq
-    # Take attendance after the raid starts.
+    # Take attendance after the raid starts: the card's one 📋 Attendance section, in edit mode.
     past_card = ".event-card:has-text('Molten Core run')"
     scroll_to_card(page, "Molten Core run")
     page.click(f"{past_card} .ev-link.attendance")
-    page.wait_for_selector(".attendance-dialog .att-row:has-text('Erin')")
-    page.click(".attendance-dialog .att-all")
-    page.click(".attendance-dialog .att-row:has-text('Erin') .att-choice.late")
-    page.wait_for_selector(".attendance-dialog .att-row:has-text('Dave') .att-choice.present.on")
+    att_ed = f"{past_card} details.ev-attendance[open] .att-editor"
+    page.wait_for_selector(f"{att_ed} .att-row:has-text('Erin')", timeout=10000)
+    page.click(f"{att_ed} .att-all")
+    page.click(f"{att_ed} .att-row:has-text('Erin') .att-choice.late")
+    page.wait_for_selector(f"{att_ed} .att-row:has-text('Dave') .att-choice.present.on")
+    page.wait_for_selector(f"{att_ed} .att-row:has-text('Erin') .att-outcome:has-text('attended')")
     page.screenshot(path=f"{SHOTS}/47-take-attendance.png")
-    page.click(".attendance-dialog button:has-text('Save attendance')")
-    page.wait_for_selector(".attendance-dialog", state="detached")
+    page.click(f"{att_ed} button[data-act='save-attendance']")
+    page.wait_for_selector(f"{past_card} details.ev-attendance[open] .mrt-group[data-group='attended'] .mrt-name:has-text('Erin') .mrt-tag.manual:has-text('late')", timeout=10000)
     page.wait_for_selector(f"{past_card} .ev-link.attendance.done", timeout=10000)
-    # The outhouse's attendance table.
+    # The raid list's 📋 Attendance: attendance per character (the Loot & attendance window).
     page.click("#raid-btn")
     page.click(".raid-list .rl-tool:has-text('Attendance')")
-    page.wait_for_selector(".attendance-table-dialog .att-table tbody tr", timeout=10000)
-    assert page.inner_text(".attendance-table-dialog .att-table tbody tr:has-text('Dave') td.pct") == "100%"
-    assert page.inner_text(".attendance-table-dialog .att-table tbody tr:has-text('Erin') td.pct") == "50%"
-    page.click(".attendance-table-dialog th:has-text('Member')")
-    page.wait_for_selector(".attendance-table-dialog th.sorted:has-text('Member')")
-    page.screenshot(path=f"{SHOTS}/48-attendance-table.png")
-    page.click(".attendance-table-dialog button[title='Close']")
-    page.wait_for_selector(".attendance-table-dialog", state="detached")
+    att_row = "dialog.loot-log-dialog .ll-people tr[data-character='{}'] td[data-col='attendance']"
+    page.wait_for_selector(att_row.format("erin") + " .ll-pct", timeout=10000)
+    assert page.inner_text(att_row.format("dave")).startswith("100%"), page.inner_text(att_row.format("dave"))
+    assert page.inner_text(att_row.format("erin")).startswith("50%"), page.inner_text(att_row.format("erin"))
+    page.screenshot(path=f"{SHOTS}/48-attendance-by-character.png")
+    page.click("dialog.loot-log-dialog .raid-close")
+    page.wait_for_selector("dialog.loot-log-dialog", state="detached")
     # Attendance on a profile card.
     page.evaluate(f"openProfile({json.dumps(ERIN)}, document.querySelector('#messages .event-card'))")
     page.wait_for_selector(".profile-card .pc-attendance:has-text('50%')", timeout=10000)
@@ -993,14 +997,15 @@ with sync_playwright() as p:
     phone.click("#attach-btn")
     phone.click(".menu [role=menuitem]:has-text('Plan a raid')")
     phone.click(".raid-list .rl-tool:has-text('Attendance')")
-    phone.wait_for_selector(".attendance-table-dialog .att-table tbody tr", timeout=10000)
-    phone.screenshot(path=f"{SHOTS}/54-phone-attendance-table.png")
-    phone.click(".attendance-table-dialog button[title='Close']")
+    phone.wait_for_selector("dialog.loot-log-dialog .ll-people tr[data-character='erin']", timeout=10000)
+    phone.screenshot(path=f"{SHOTS}/54-phone-attendance-by-character.png")
+    phone.click("dialog.loot-log-dialog .raid-close")
     scroll_to_card(phone, "Molten Core run")
     phone.click(".event-card:has-text('Molten Core run') .ev-link.attendance")
-    phone.wait_for_selector(".attendance-dialog .att-row")
+    phone.wait_for_selector(".event-card:has-text('Molten Core run') details.ev-attendance[open] .att-editor .att-row", timeout=10000)
     phone.screenshot(path=f"{SHOTS}/55-phone-take-attendance.png")
-    phone.click(".attendance-dialog button[title='Close']")
+    phone.click(".event-card:has-text('Molten Core run') .att-editor .att-save button.ghost")
+    phone.wait_for_selector(".event-card:has-text('Molten Core run') details.ev-attendance .mrt-compare", timeout=10000)
     phone.click("#nav-toggle")
     phone.wait_for_timeout(400)
     phone.click("#home-btn")
@@ -2220,12 +2225,12 @@ with sync_playwright() as p:
     td.wait_for_timeout(200)
     td.screenshot(path=f"{SHOTS}/2001-calendar-raid-without-card.png")
     td.click(f"{tcard} .ev-link.attendance")
-    td.wait_for_selector(".attendance-dialog .att-row", timeout=10000)
-    td.click(".attendance-dialog .att-all")
+    td.wait_for_selector(f"{tcard} details.ev-attendance[open] .att-editor .att-row", timeout=10000)
+    td.click(f"{tcard} .att-editor .att-all")
     td.wait_for_timeout(200)
     td.screenshot(path=f"{SHOTS}/2002-attendance-without-card.png")
-    td.click(".attendance-dialog button.primary:has-text('Save attendance')")
-    td.wait_for_selector(".attendance-dialog", state="detached", timeout=10000)
+    td.click(f"{tcard} .att-editor button[data-act='save-attendance']")
+    td.wait_for_selector(f"{tcard} .att-editor", state="detached", timeout=10000)
     for _ in range(30):
         if api("GET", f"/api/events/{TID}", None, TOKEN)["attendance_taken"]:
             break

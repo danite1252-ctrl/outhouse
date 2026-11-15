@@ -391,7 +391,6 @@ pub fn router(state: AppState) -> Router {
             "/api/events/{id}/attendance",
             get(attendance::get).put(attendance::set),
         )
-        .route("/api/guilds/{id}/attendance", get(attendance::guild_table))
         // Raid composition, soft reserves and the loot log
         .route("/api/events/{id}/composition", get(events::composition))
         .route("/api/events/{id}/loot-table", get(loot::get_table))
@@ -454,10 +453,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/guilds/{id}/loot-instances", get(loot::instances))
         .route("/api/wow/items", get(loot::search_item))
         .route("/api/wow/items/{id}", get(loot::get_item))
-        .route(
-            "/api/guilds/{id}/attendance/{user}",
-            get(attendance::member),
-        )
         // Attendance from Method Raid Tools
         .route("/api/events/{id}/attendance/mrt", get(mrt::raid_attendance))
         .route(

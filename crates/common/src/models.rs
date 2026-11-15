@@ -816,6 +816,12 @@ pub struct RaidEvent {
     /// Boss pulls with imported attendance (Method Raid Tools).
     #[serde(default)]
     pub attendance_bosses: i64,
+    /// Members marked by hand (raid leaders' Edit attendance).
+    #[serde(default)]
+    pub attendance_manual: i64,
+    /// When a hand mark last changed.
+    #[serde(default)]
+    pub attendance_edited_at: Option<DateTime<Utc>>,
 }
 
 /// When a raid's sign-up card is posted in chat.
@@ -1302,7 +1308,8 @@ pub struct AttendanceRequest {
 pub struct AttendanceMark {
     #[serde(with = "as_string")]
     pub user_id: i64,
-    /// "present", "late", "absent", "benched", or "" to clear.
+    /// "present", "late", "benched" (attended), "excused", "absent", or ""
+    /// to clear the mark (back to what MRT says).
     pub status: String,
 }
 

@@ -4,7 +4,10 @@ on a raid card and a two-night grid in the Loot & attendance window (the
 preview's comparison with sign-ups), the raid card's Attendance section,
 the no-show hint raid leaders see (and members don't), attendance % on the
 By character tab, and attendance per character on the full profile page.
-Desktop and phone screenshots (80-*).
+Then hand marks in the same Attendance section (Edit attendance: marking
+someone MRT missed, adding someone who didn't sign up, a raid with no
+import), what members see, and the numbers counting both.
+Desktop and phone screenshots (80-*, 85-*).
 
 ci/ui_test.py calls run(); it can also run on its own against a local server
 (see the bottom).
@@ -275,6 +278,95 @@ def run(browser, base, shots, watch, db_url):
     pp.evaluate("document.querySelector('dialog.profile-page #fp-attendance').scrollIntoView({block: 'start'})")
     pp.wait_for_timeout(300)
     pp.screenshot(path=f"{shots}/8014-phone-profile-attendance.png")
+    pp.close()
+
+    # ---- One attendance: hand marks in the same 📋 Attendance section (Edit attendance) ----
+    # Sunday: MRT missed Plain (joined after the last boss) and Tent came without signing up.
+    lp = page(T, "att-merge-desktop", DESKTOP)
+    c1 = card(lp, R1)
+    if not lp.locator(f"{c1} details.ev-attendance[open]").count():
+        lp.click(f"{c1} details.ev-attendance > summary")
+    lp.click(f"{c1} details.ev-attendance button[data-act='edit-attendance']")
+    ed = f"{c1} details.ev-attendance[open] .att-editor"
+    plain_row = f"{ed} .att-row[data-user='{plain['user']['id']}']"
+    lp.wait_for_selector(f"{plain_row} .att-outcome.o-no_show", timeout=10000)
+    assert "MRT: not there" in lp.inner_text(plain_row), lp.inner_text(plain_row)
+    kit_row = f"{ed} .att-row[data-user='{kit['user']['id']}']"
+    assert "MRT: 1/1 boss" in lp.inner_text(kit_row) and "(from MRT)" in lp.inner_text(kit_row), lp.inner_text(kit_row)
+    lp.click(f"{plain_row} .att-choice.present")
+    lp.wait_for_selector(f"{plain_row}.marked.present .att-outcome.o-attended")
+    lp.fill(f"{ed} .att-search", "Ten")
+    lp.click(f"{ed} .att-add[data-user='{tent['user']['id']}']")
+    lp.wait_for_selector(f"{ed} .att-row[data-user='{tent['user']['id']}'] .att-choice.present.on")
+    lp.wait_for_selector(f"{ed} button[data-act='save-attendance']:has-text('Save attendance (2)')")
+    lp.evaluate("s => document.querySelector(s)?.scrollIntoView({block: 'start'})", f"{c1} details.ev-attendance")
+    lp.wait_for_timeout(300)
+    lp.screenshot(path=f"{shots}/85-desktop-edit-attendance.png")
+    lp.click(f"{ed} button[data-act='save-attendance']")
+    lp.wait_for_selector(f"{c1} details.ev-attendance .mrt-group[data-group='attended'] .mrt-name.manual:has-text('Plain') .mrt-tag.manual:has-text('present')", timeout=10000)
+    lp.wait_for_selector(f"{c1} details.ev-attendance .mrt-group[data-group='unsigned'] .mrt-name.manual:has-text('Tent')")
+    lp.wait_for_function("s => document.querySelector(s)?.textContent.includes('24 attended · 0 no-shows · 20 unsigned')", arg=f"{c1} details.ev-attendance > summary", timeout=10000)
+    lp.wait_for_selector(f"{c1} details.ev-attendance .att-manual-note:has-text('2 people marked by hand')")
+    lp.evaluate("s => document.querySelector(s)?.scrollIntoView({block: 'start'})", f"{c1} details.ev-attendance")
+    lp.wait_for_timeout(300)
+    lp.screenshot(path=f"{shots}/85-desktop-attendance-merged.png")
+    # A raid without an MRT import: Take attendance on the card opens the same section.
+    R5 = raid("Karazhan pug")
+    signup(R5, kit, "yes", "Rogue", "kit")
+    signup(R5, sham, "yes", "Shaman", "sham", "healer")
+    signup(R5, plain, "yes", "Warrior", None, "tank")
+    psql(f"UPDATE events SET starts_at = now() - interval '1 hour' WHERE id = {R5}")
+    lp.close()
+    lp = page(T, "att-merge-manual", DESKTOP, wait_for=R5)
+    c5 = card(lp, R5)
+    lp.wait_for_selector(f"{c5} details.ev-attendance .ev-comp-sum:has-text('Not taken yet')", timeout=10000)
+    lp.click(f"{c5} .ev-link.attendance:has-text('Take attendance')")
+    ed5 = f"{c5} details.ev-attendance[open] .att-editor"
+    lp.wait_for_selector(f"{ed5} .att-row", timeout=10000)
+    lp.click(f"{ed5} .att-all")
+    lp.click(f"{ed5} .att-row[data-user='{plain['user']['id']}'] .att-choice.excused")
+    lp.click(f"{ed5} .att-row[data-user='{sham['user']['id']}'] .att-choice.absent")
+    lp.wait_for_selector(f"{ed5} .att-row[data-user='{sham['user']['id']}'] .att-outcome.o-no_show")
+    lp.click(f"{ed5} button[data-act='save-attendance']")
+    lp.wait_for_function("s => document.querySelector(s)?.textContent.includes('1 attended · 1 no-show')", arg=f"{c5} details.ev-attendance > summary", timeout=10000)
+    lp.wait_for_selector(f"{c5} details.ev-attendance .mrt-group[data-group='missed'] .mrt-name:not(.noshow):has-text('Plain') .mrt-tag:has-text('excused')")
+    lp.wait_for_selector(f"{c5} .ev-link.attendance.done:has-text('Attendance ✓')")
+    # By character counts both: Plain came to Sunday (by hand), missed Wednesday and Thursday, excused tonight.
+    lp.evaluate("openLootLog({tab: 'people'})")
+    prow = "dialog.loot-log-dialog .ll-people tr[data-character='plain'] td"
+    lp.wait_for_selector(prow + "[data-col='attendance'] .ll-pct", timeout=10000)
+    pc = lp.eval_on_selector_all(prow, "els => Object.fromEntries(els.map(e => [e.dataset.col, e.textContent.trim()]))")
+    assert pc["attendance"].startswith("33%") and pc["noshows"] == "2", pc
+    lp.click("dialog.loot-log-dialog .raid-close")
+    lp.close()
+
+    # A member sees the hand marks, but can't edit.
+    mp = page(kit["token"], "att-merge-member", DESKTOP)
+    c1 = card(mp, R1)
+    mp.click(f"{c1} details.ev-attendance > summary")
+    mp.wait_for_selector(f"{c1} details.ev-attendance .mrt-name.manual:has-text('Plain')", timeout=10000)
+    assert mp.locator(f"{c1} details.ev-attendance [data-act='edit-attendance']").count() == 0
+    assert mp.locator(f"{c1} .ev-link.attendance").count() == 0
+    mp.close()
+
+    # Phone: the merged section and its editor.
+    pp = page(T, "att-merge-phone", PHONE)
+    c1 = card(pp, R1)
+    pp.click(f"{c1} details.ev-attendance > summary")
+    pp.wait_for_selector(f"{c1} details.ev-attendance .att-manual-note", timeout=10000)
+    # Let the cards settle (sections load in), then scroll to the section.
+    pp.wait_for_timeout(1000)
+    for _ in range(2):
+        pp.evaluate("s => document.querySelector(s)?.scrollIntoView({block: 'start'})", f"{c1} details.ev-attendance .mrt-group[data-group='attended']")
+        pp.wait_for_timeout(400)
+    pp.screenshot(path=f"{shots}/85-phone-attendance-merged.png")
+    pp.click(f"{c1} details.ev-attendance button[data-act='edit-attendance']")
+    pp.wait_for_selector(f"{c1} .att-editor .att-row[data-user='{plain['user']['id']}'].marked.present", timeout=10000)
+    pp.evaluate("s => document.querySelector(s)?.scrollIntoView({block: 'start'})", f"{c1} .att-editor")
+    pp.wait_for_timeout(300)
+    pp.screenshot(path=f"{shots}/85-phone-edit-attendance.png")
+    pp.click(f"{c1} .att-editor .att-save button.ghost")
+    pp.wait_for_selector(f"{c1} details.ev-attendance .mrt-compare", timeout=10000)
     pp.close()
 
 

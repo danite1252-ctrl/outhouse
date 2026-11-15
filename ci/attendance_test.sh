@@ -258,4 +258,60 @@ ok "$TA" GET "/api/guilds/$G/audit-log?action=attendance_import" | check '.entri
 ok "$TA" GET "/api/guilds/$G/audit-log?action=attendance_import_undo" | check '.entries | length == 1'
 ok "$TA" GET "/api/guilds/$G/audit-log?action=attendance_import_delete" | check '.entries | length == 1 and (.[0].details | contains("3 bosses"))'
 
+astep "hand marks (Edit attendance): raid leaders only, once the raid has started"
+no 403 "$TE" PUT "/api/events/$R2/attendance" '{"records":[{"user_id":"'"$UE"'","status":"present"}]}'
+no 404 "$TX" PUT "/api/events/$R2/attendance" '{"records":[{"user_id":"'"$UE"'","status":"present"}]}'
+no 400 "$TM" PUT "/api/events/$R4/attendance" '{"records":[{"user_id":"'"$UE"'","status":"present"}]}'
+no 400 "$TM" PUT "/api/events/$R2/attendance" '{"records":[{"user_id":"'"$UE"'","status":"asleep"}]}'
+ok "$TE" GET "/api/events/$R2/attendance/mrt" | check '.can_edit | not'
+ok "$TM" GET "/api/events/$R2/attendance/mrt" | check '.can_edit and .manual == []'
+
+astep "a raid with only hand marks counts (present, excused, absent)"
+# Wednesday's import is gone: Kit marked present, Plain excused, Tent absent; the rest unmarked.
+ok "$TM" PUT "/api/events/$R2/attendance" '{"records":[{"user_id":"'"$UD"'","status":"present"},{"user_id":"'"$UE"'","status":"excused"},{"user_id":"'"$UT"'","status":"absent"}]}' \
+  | check 'length == 3 and (map(.status) | sort) == ["absent", "excused", "present"] and all(.[]; .marked_by_name == "Mags")'
+ok "$TE" GET "/api/events/$R2" | check '.attendance_bosses == 0 and .attendance_manual == 3 and .attendance_taken'
+ok "$TE" GET "/api/events/$R2/attendance/mrt" | check --arg d "$UD" '.pulls == [] and (.manual | length == 3) and (.manual[] | select(.user_id == $d) | .status == "present")'
+ok "$TE" GET "/api/guilds/$G/attendance/mrt/characters?range=all" > /tmp/att-manual.json
+# Sunday (MRT) and Wednesday (by hand) count; Thursday has nothing any more.
+check --arg e "$UE" --arg t "$UT" --arg n "$UN" --arg s "$US" '
+  .raids == 2
+  and (.characters[] | select(.character_key == "kitstab") | .attended == 2 and .eligible == 2 and .no_shows == 0 and .percent == 100)
+  and (.characters[] | select(.user_id == $e) | .attended == 0 and .eligible == 1 and .no_shows == 1)
+  and (.characters[] | select(.user_id == $t) | .attended == 0 and .no_shows == 1)
+  and (.characters[] | select(.character_key == "avizandum") | .attended == 1 and .no_shows == 1 and .percent == 50)
+  and ([.characters[] | select(.user_id == $n or .user_id == $s)] == [])' < /tmp/att-manual.json
+
+astep "a hand mark overrides the import for that person on that raid"
+# Sunday: MRT missed Plain (joined after the last boss): marked present. Sham was there but is excused.
+ok "$TM" PUT "/api/events/$R1/attendance" '{"records":[{"user_id":"'"$UE"'","status":"present"},{"user_id":"'"$UB"'","status":"excused"}]}' >/dev/null
+ok "$TE" GET "/api/events/$R1/attendance/mrt" | check --arg e "$UE" --arg b "$UB" '
+  (.pulls | length == 1) and (.manual | length == 2)
+  and (.manual[] | select(.user_id == $e) | .status == "present")
+  and (.players[] | select(.user_id == $b) | .present == [true])'
+ok "$TE" GET "/api/guilds/$G/attendance/mrt/characters?range=all" | check --arg e "$UE" '
+  (.characters[] | select(.user_id == $e) | .attended == 1 and .eligible == 1 and .no_shows == 0 and .percent == 100)
+  and (.characters[] | select(.character_key == "shambulance") | .attended == 0 and .eligible == 1 and .no_shows == 1)'
+ok "$TE" GET "/api/users/$UE/attendance" | check '.[0].all_time == {"attended": 1, "no_shows": 0, "excused": 1, "eligible": 1, "percent": 100}
+  and (.[0].raids | length == 2) and .[0].raids[0].manual_status == "excused" and .[0].raids[1].manual_status == "present" and .[0].raids[1].outcome == "attended"'
+
+astep "undoing an MRT import keeps the hand marks"
+REIMP=$(ok "$TM" GET "/api/guilds/$G/attendance/mrt/imports" | jq -r --arg r1 "$R1" '[.[] | select(.event_id == $r1 and .undone_at == null)][0].id')
+ok "$TM" DELETE "/api/attendance/imports/$REIMP" | check '.removed == 1'
+ok "$TE" GET "/api/events/$R1" | check '.attendance_bosses == 0 and .attendance_manual == 2'
+ok "$TE" GET "/api/events/$R1/attendance/mrt" | check '.pulls == [] and (.manual | length == 2)'
+ok "$TE" GET "/api/guilds/$G/attendance/mrt/characters?range=all" | check --arg e "$UE" '
+  .raids == 2 and (.characters[] | select(.user_id == $e) | .attended == 1 and .percent == 100)'
+
+astep "the no-show hint counts hand marks too"
+# Thursday by hand: Sham marked absent (signed up: a no-show, with Wednesday's that's 2).
+ok "$TM" PUT "/api/events/$R3/attendance" '{"records":[{"user_id":"'"$UB"'","status":"absent"}]}' >/dev/null
+sql "UPDATE events SET starts_at = now() - interval '3 days' WHERE id = $R3"
+ok "$TM" GET "/api/events/$R4/attendance/reliability" | check --arg b "$UB" '.people == [{"user_id": $b, "no_shows": 2, "signed_up": 2}]'
+
+astep "hand edits are in the audit log"
+ok "$TA" GET "/api/guilds/$G/audit-log?action=attendance_edit" | check '.entries | length == 3
+  and any(.[]; .target_name == "BT Wednesday" and (.details | contains("Kit present") and contains("Plain excused") and contains("Tent absent")))
+  and any(.[]; .target_name == "BT Sunday" and (.details | contains("Sham excused")))'
+
 echo "Attendance test passed."

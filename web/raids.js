@@ -1,9 +1,8 @@
-// Outhouse: raid calendar, attendance (taking it, the outhouse table, and
-// on profile cards) and live raid updates. Loaded after features.js and
+// Outhouse: raid calendar, attendance on profile cards (taking it is the
+// raid card's 📋 Attendance section, mrt.js) and live raid updates. Loaded after features.js and
 // uses its raid helpers (renderEventCard, openRaidDialog, eventWhen, …).
 
-const ATT_LABEL = { present: "Present", late: "Late", absent: "Absent", benched: "Benched" };
-const ATT_ICON = { present: "✓", late: "⏱", absent: "✗", benched: "🪑" };
+const ATT_LABEL = { present: "Present", late: "Late", benched: "Benched", excused: "Excused", absent: "Absent" };
 const MONTHS_FMT = { month: "long", year: "numeric" };
 const myTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "your time zone";
 
@@ -152,7 +151,8 @@ function drawCalendar() {
       el("button", { type: "button", class: "icon-btn", title: "Next month", "aria-label": "Next month", onclick: () => moveMonth(1) }, "›"),
       el("button", { type: "button", class: "cal-today", onclick: () => { cal.month = new Date(new Date().getFullYear(), new Date().getMonth(), 1); cal.selected = todayKey; loadCalendar(); } }, "Today")),
     el("div", { class: "cal-actions" },
-      el("button", { type: "button", class: "cal-today", onclick: () => openAttendanceTable() }, "📊 Attendance"),
+      // Attendance per character (MRT imports and hand marks): the Loot & attendance window.
+      typeof openLootLog === "function" ? el("button", { type: "button", class: "cal-today", onclick: () => openLootLog({ tab: "people" }) }, "📋 Attendance") : null,
       canPlanHere() ? el("button", { type: "button", class: "primary cal-plan", title: "Plan a raid", onclick: () => planOn(cal.selected) }, "＋ Plan", el("span", { class: "plan-long" }, " a raid")) : null,
       closeX(cal.dialog)));
   const pendingNote = !isPhoneWidth() && cal.events.some(signupsNotOpen) ? " Blue raids: sign-ups aren't open yet." : "";
@@ -268,148 +268,13 @@ handleEvent = function (ev) {
   raidsBaseHandle(ev);
 };
 
-// ---------- Taking attendance ----------
-
-async function openAttendanceDialog(ev) {
-  const existing = await tryApi("GET", `/api/events/${ev.id}/attendance`).catch(() => null);
-  if (!existing) return;
-  const marks = new Map(existing.map((r) => [r.user_id, r.status]));
-  const original = new Map(marks);
-  const people = new Map();
-  const rank = (s) => !s ? 5 : s.status === "yes" || s.status === "late" ? 0 : s.status === "bench" ? 1 : s.status === "tentative" ? 2 : 4;
-  const roleRank = { tank: 0, healer: 1, dps: 2 };
-  for (const s of ev.signups) if (s.status !== "no") people.set(s.user_id, { id: s.user_id, name: memberById(s.user_id)?.display_name ?? s.display_name, signup: s });
-  for (const r of existing) if (!people.has(r.user_id)) people.set(r.user_id, { id: r.user_id, name: memberById(r.user_id)?.display_name ?? r.display_name, signup: null });
-
-  const dialog = raidWindow("attendance-dialog");
-  const list = el("div", { class: "att-list" });
-  const summary = el("div", { class: "att-summary muted small" });
-  const add = el("select", { class: "select", "aria-label": "Add someone" });
-
-  const draw = () => {
-    const sorted = [...people.values()].sort((a, b) => rank(a.signup) - rank(b.signup)
-      || (roleRank[a.signup?.role] ?? 3) - (roleRank[b.signup?.role] ?? 3) || a.name.localeCompare(b.name));
-    list.replaceChildren(...(sorted.length ? sorted.map((p) => {
-      const s = p.signup;
-      const colour = classColour(s?.class);
-      const mark = marks.get(p.id) ?? "";
-      return el("div", { class: `att-row${mark ? ` marked ${mark}` : ""}`, "data-user": p.id },
-        el("div", { class: "att-who" },
-          el("span", { class: "att-name", style: colour ? `color:${colour}` : "" }, p.name),
-          el("span", { class: "muted small" }, s ? `${ROLE_INFO[s.role]?.icon ?? ""} ${s.spec ? `${s.spec} ${s.class}` : s.class || ""} · ${STATUS_LABEL[s.status]}`.trim() : "Didn't sign up")),
-        el("div", { class: "att-choices", role: "group", "aria-label": `${p.name}'s attendance` },
-          Object.keys(ATT_LABEL).map((k) => el("button", {
-            type: "button", class: `att-choice ${k}${mark === k ? " on" : ""}`, title: ATT_LABEL[k], "aria-pressed": mark === k ? "true" : "false",
-            onclick: () => { if (marks.get(p.id) === k) marks.delete(p.id); else marks.set(p.id, k); draw(); },
-          }, el("span", { class: "att-ic" }, ATT_ICON[k]), el("span", { class: "att-lbl" }, ATT_LABEL[k])))));
-    }) : [el("p", { class: "muted small" }, "Nobody signed up. Add people below.")]));
-    const counts = Object.keys(ATT_LABEL).map((k) => `${[...marks.values()].filter((v) => v === k).length} ${ATT_LABEL[k].toLowerCase()}`);
-    const unmarked = [...people.keys()].filter((id) => !marks.has(id)).length;
-    summary.textContent = `${counts.join(" · ")}${unmarked ? ` · ${unmarked} not marked` : ""}`;
-    const others = state.members.filter((m) => !m.bot && !people.has(m.id)).sort((a, b) => a.display_name.localeCompare(b.display_name));
-    add.replaceChildren(el("option", { value: "" }, "＋ Add someone who didn't sign up…"), ...others.map((m) => el("option", { value: m.id }, m.display_name)));
-    add.hidden = !others.length;
-  };
-  add.addEventListener("change", () => {
-    const m = memberById(add.value);
-    if (m) { people.set(m.id, { id: m.id, name: m.display_name, signup: null }); marks.set(m.id, "present"); }
-    draw();
-  });
-  const allPresent = el("button", { type: "button", class: "ghost att-all", onclick: () => {
-    for (const p of people.values()) {
-      const st = p.signup?.status;
-      if (st === "yes" || st === "late") marks.set(p.id, "present");
-      else if (st === "bench") marks.set(p.id, "benched");
-    }
-    draw();
-  } }, "✓ Mark all signed-up as present");
-  const save = el("button", { type: "button", class: "primary", onclick: async () => {
-    const records = [];
-    for (const id of new Set([...marks.keys(), ...original.keys()])) {
-      if (marks.get(id) !== original.get(id)) records.push({ user_id: id, status: marks.get(id) ?? "" });
-    }
-    if (!records.length) return dialog.close();
-    save.disabled = true;
-    const ok = await tryApi("PUT", `/api/events/${ev.id}/attendance`, { records }).then(() => true, () => false);
-    save.disabled = false;
-    if (ok) { dialog.close(); toast("Attendance saved."); }
-  } }, "Save attendance");
-
-  dialog.append(
-    el("div", { class: "att-head" },
-      el("div", {}, el("h2", {}, "Attendance"), el("div", { class: "muted small" }, `${ev.title} · ${eventWhen(ev).text}`)),
-      closeX(dialog)),
-    el("div", { class: "att-tools" }, allPresent, summary),
-    list,
-    add,
-    el("div", { class: "row" }, el("button", { type: "button", class: "ghost", onclick: () => dialog.close() }, "Cancel"), save));
-  draw();
-}
-
-// ---------- The outhouse's attendance table ----------
-
-async function openAttendanceTable() {
-  if (!state.guildId) return;
-  const dialog = raidWindow("attendance-table-dialog");
-  let limit = prefs.get("attendance_limit", 10);
-  let sort = { key: "percent", dir: -1 };
-  let data = null;
-  const body = el("div", { class: "att-table-wrap" }, el("p", { class: "muted" }, "Loading…"));
-  const pick = el("select", { class: "select", "aria-label": "How many raids" },
-    [5, 10, 20, 50].map((n) => el("option", { value: n, selected: n === limit }, `Last ${n} raids`)));
-  pick.addEventListener("change", () => { limit = Number(pick.value); prefs.set("attendance_limit", limit); load(); });
-
-  const cols = [
-    ["name", "Member"], ["percent", "%"], ["present", "✓"], ["late", "⏱"], ["absent", "✗"], ["benched", "🪑"],
-  ];
-  const colTitle = { name: "Member", percent: "Attendance (present, late or benched)", present: "Present", late: "Late", absent: "Absent", benched: "Benched" };
-  const nameOf = (m) => memberById(m.user_id)?.display_name ?? m.display_name;
-  const draw = () => {
-    if (!data) return;
-    if (!data.raids.length) {
-      body.replaceChildren(el("div", { class: "att-empty" },
-        el("p", {}, "No attendance taken yet."),
-        el("p", { class: "muted small" }, "Once a raid starts, its leader can take attendance from the raid card (📋 Take attendance).")));
-      return;
-    }
-    const rows = [...data.members].sort((a, b) => {
-      const v = sort.key === "name" ? nameOf(a).localeCompare(nameOf(b)) : (a[sort.key] - b[sort.key]) || (a.total - b.total);
-      return v * sort.dir || nameOf(a).localeCompare(nameOf(b));
-    });
-    const th = ([key, label]) => el("th", {
-      class: `sortable${sort.key === key ? ` sorted ${sort.dir > 0 ? "asc" : "desc"}` : ""}${key === "name" ? " name" : ""}`,
-      title: `Sort by ${colTitle[key].toLowerCase()}`, "aria-sort": sort.key === key ? (sort.dir > 0 ? "ascending" : "descending") : "none",
-      onclick: () => { sort = sort.key === key ? { key, dir: -sort.dir } : { key, dir: key === "name" ? 1 : -1 }; draw(); },
-    }, label, sort.key === key ? (sort.dir > 0 ? " ▲" : " ▼") : "");
-    const day = (iso) => new Date(iso).toLocaleDateString([], { day: "numeric", month: "short" });
-    body.replaceChildren(el("table", { class: "att-table" },
-      el("thead", {}, el("tr", {}, cols.map(th),
-        data.raids.map((r) => el("th", { class: "raid-col", title: `${r.title} · ${new Date(r.starts_at).toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })}` }, day(r.starts_at))))),
-      el("tbody", {}, rows.map((m) => el("tr", {},
-        el("td", { class: "name" }, el("button", { type: "button", class: "att-member", onclick: (e) => openProfile(m.user_id, e.currentTarget) },
-          avatarFor(m.user_id, nameOf(m), 22), nameOf(m))),
-        el("td", { class: "pct" }, el("div", { class: "pct-bar", style: `--pct:${m.percent}%` }, el("span", {}, `${m.percent}%`))),
-        el("td", {}, m.present), el("td", {}, m.late), el("td", {}, m.absent), el("td", {}, m.benched),
-        m.history.map((h, i) => el("td", { class: "raid-col" }, h
-          ? el("span", { class: `att-dot ${h}`, title: `${ATT_LABEL[h]} · ${data.raids[i].title}` })
-          : el("span", { class: "att-dot none", title: `Not marked · ${data.raids[i].title}` }))))))));
-  };
-  const load = async () => {
-    const guild = state.guildId;
-    data = await tryApi("GET", `/api/guilds/${guild}/attendance?limit=${limit}`).catch(() => null);
-    if (!data) { body.replaceChildren(el("p", { class: "muted" }, "Couldn't load attendance.")); return; }
-    draw();
-  };
-  dialog.append(
-    el("div", { class: "att-head" },
-      el("div", {}, el("h2", {}, "Raid attendance"), el("div", { class: "muted small" }, currentGuild()?.name ?? "")),
-      el("div", { class: "att-head-tools" }, pick, closeX(dialog))),
-    el("div", { class: "att-legend muted small" }, Object.keys(ATT_LABEL).map((k) => el("span", {}, el("span", { class: `att-dot ${k}` }), ATT_LABEL[k]))),
-    body);
-  load();
-}
-
 // ---------- Attendance on profile cards ----------
+// The same numbers as everywhere else (MRT imports and hand marks): the last
+// 8 weeks (else all time) in this outhouse, and their last raids as dots.
+
+const ATT_DOT = { present: "present", late: "late", benched: "benched", excused: "excused", absent: "absent" };
+const attDot = (r) => (r.manual_status ? ATT_DOT[r.manual_status] : null) ?? ({ attended: "present", no_show: "absent", excused: "excused" })[r.outcome] ?? "none";
+const ATT_OUTCOME_LABEL = { attended: "Attended", no_show: "No-show", excused: "Excused", absent: "Absent (didn't sign up)" };
 
 const raidsBaseOpenProfile = openProfile;
 openProfile = async function (userId, anchor) {
@@ -417,17 +282,24 @@ openProfile = async function (userId, anchor) {
   const guild = state.guildId;
   const pop = popover;
   if (!guild || state.home || !pop?.classList.contains("profile-pop")) return;
-  const a = await api("GET", `/api/guilds/${guild}/attendance/${userId}`).catch(() => null);
-  if (!a || !a.total || popover !== pop || !pop.isConnected) return;
-  const came = a.present + a.late + a.benched;
+  const all = await api("GET", `/api/users/${userId}/attendance`).catch(() => null);
+  const a = all?.find((g) => g.guild_id === guild);
+  if (!a || !(a.all_time.eligible || a.raids.length) || popover !== pop || !pop.isConnected) return;
+  const recent = a.recent.eligible > 0;
+  const t = recent ? a.recent : a.all_time;
   const day = (iso) => new Date(iso).toLocaleDateString([], { day: "numeric", month: "short" });
+  const raids = (n) => `${n} raid${n === 1 ? "" : "s"}`;
   const section = el("div", { class: "pc-section pc-attendance" },
     el("h4", {}, "RAID ATTENDANCE"),
     el("div", { class: "pca-row" },
-      el("strong", { class: "pca-pct" }, `${a.percent}%`),
-      el("span", { class: "muted small" }, `${came} of ${a.total} raid${a.total === 1 ? "" : "s"}${a.late ? ` · ${a.late} late` : ""}${a.benched ? ` · ${a.benched} benched` : ""}`)),
+      el("strong", { class: "pca-pct" }, t.eligible ? `${t.percent}%` : "—"),
+      el("span", { class: "muted small" }, [
+        `${t.attended} of ${raids(t.eligible)}${recent ? " in 8 weeks" : ""}`,
+        t.no_shows ? `${t.no_shows} no-show${t.no_shows === 1 ? "" : "s"}` : null,
+        t.excused ? `${t.excused} excused` : null].filter(Boolean).join(" · "))),
     el("div", { class: "pca-dots", "aria-label": "Recent raids, oldest first" },
-      [...a.recent].reverse().map((r) => el("span", { class: `att-dot ${r.status}`, title: `${r.title} · ${day(r.starts_at)} · ${ATT_LABEL[r.status]}` }))));
+      [...a.raids].reverse().map((r) => el("span", { class: `att-dot ${attDot(r)}`,
+        title: `${r.title} · ${day(r.starts_at)} · ${r.manual_status ? `${ATT_LABEL[r.manual_status] ?? r.manual_status} (marked by hand)` : ATT_OUTCOME_LABEL[r.outcome] ?? r.outcome}` }))));
   const body = pop.querySelector(".pc-body");
   body?.insertBefore(section, body.querySelector(".pc-actions"));
   const r = pop.getBoundingClientRect();

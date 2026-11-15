@@ -1,7 +1,8 @@
-// Outhouse: raid attendance from Method Raid Tools (MRT). Importing MRT's
-// attendance export (a raid card's ⋯ menu, or the Loot & attendance
-// window), the Attendance section on raid cards (who came, no-shows, who
-// came without signing up, who left early or joined late), the no-show hint
+// Outhouse: raid attendance. Importing Method Raid Tools' (MRT) attendance
+// export (a raid card's ⋯ menu, or the Loot & attendance window), the one
+// 📋 Attendance section on raid cards (who came, no-shows, who came without
+// signing up, who left early or joined late; hand marks override the
+// import, and raid leaders edit them there: Edit attendance), the no-show hint
 // raid leaders see next to sign-ups, and attendance per character on the
 // full profile page. The By character tab's attendance columns are in
 // lootlog.js. Loaded after lootlog.js; uses its helpers (lootKey, lootDay,
@@ -28,21 +29,40 @@ function mrtSignup(s) {
   };
 }
 
+// Marks raid leaders set by hand (Edit attendance). Present, late and
+// benched count as attended; excused is neither attended nor a no-show;
+// absent is a no-show if they signed up (yes, late or tentative).
+const ATT_MARKS = ["present", "late", "benched", "excused", "absent"];
+const ATT_MARK_LABEL = { present: "Present", late: "Late", benched: "Benched", excused: "Excused", absent: "Absent" };
+const ATT_MARK_ICON = { present: "✓", late: "⏱", benched: "🪑", excused: "🛈", absent: "✗" };
+const ATTENDED_MARKS = new Set(["present", "late", "benched"]);
+
 // Who came and who didn't, against the sign-ups. `pulls`: [{boss_name, local}],
-// `players`: [{name, key, user_id, class, display_name, present: [bool per pull]}].
-function mrtCompare(pulls, players, signups) {
+// `players`: [{name, key, user_id, class, display_name, present: [bool per pull]}],
+// `manual`: hand marks [{user_id, display_name, status}], which override
+// what the import says about that member.
+function mrtCompare(pulls, players, signups, manual = []) {
   const ups = signups.map(mrtSignup);
+  const marks = new Map(manual.map((m) => [m.user_id, m]));
   const n = pulls.length;
   const signupOf = (p) => (p.user_id ? ups.find((s) => s.user_id === p.user_id) : null) || ups.find((s) => s.key && s.key === p.key) || null;
   const attended = [], unsigned = [], partial = [];
   const came = new Set();
-  for (const p of players) {
-    if (!p.present.some(Boolean)) continue;
-    const s = signupOf(p);
+  const add = (p, s) => {
     if (s) came.add(s.user_id);
+    if (p.user_id) came.add(p.user_id);
     if (s && s.status !== "no") attended.push({ p, s });
     else unsigned.push({ p, s });
-    if (n > 1 && !p.present.every(Boolean)) {
+  };
+  for (const raw of players) {
+    const m = raw.user_id ? marks.get(raw.user_id) : null;
+    if (m ? !ATTENDED_MARKS.has(m.status) : !raw.present.some(Boolean)) continue;
+    // Marked by hand: once, however many characters MRT saw them on.
+    if (m && came.has(raw.user_id)) continue;
+    const p = m ? { ...raw, mark: m } : raw;
+    const s = signupOf(p);
+    add(p, s);
+    if (!m && n > 1 && !p.present.every(Boolean)) {
       const first = p.present.indexOf(true), last = p.present.lastIndexOf(true);
       const bits = [];
       if (first > 0) bits.push("joined late");
@@ -52,22 +72,34 @@ function mrtCompare(pulls, players, signups) {
       partial.push({ p, s, note: bits.join(", ") });
     }
   }
-  const missed = ups.filter((s) => !came.has(s.user_id)).map((s) => ({ s, counted: NO_SHOW_STATUSES.has(s.status) }));
+  // Marked present (late, benched) but not in the import.
+  for (const m of manual) {
+    if (!ATTENDED_MARKS.has(m.status) || came.has(m.user_id)) continue;
+    const s = ups.find((u) => u.user_id === m.user_id) || null;
+    add({ name: s?.name || m.display_name, key: s?.key || "", user_id: m.user_id, class: s?.class || "", display_name: m.display_name, present: pulls.map(() => false), mark: m }, s);
+  }
+  const missed = ups.filter((s) => !came.has(s.user_id)).map((s) => {
+    const mark = marks.get(s.user_id)?.status ?? null;
+    return { s, mark, counted: NO_SHOW_STATUSES.has(s.status) && mark !== "excused" };
+  });
   missed.sort((a, b) => Number(b.counted) - Number(a.counted) || a.s.name.localeCompare(b.s.name));
   return { attended, unsigned, partial, missed, noShows: missed.filter((m) => m.counted).length, there: attended.length + unsigned.length };
 }
 
 // "✓ Naj'entus 20:44 / ✗ Supremus 21:10" for a name's tooltip.
 const presenceTitle = (pulls, p) => pulls.map((b, i) => `${p.present[i] ? "✓" : "✗"} ${b.boss_name} ${mrtTime(b.local)}`).join("\n");
+const markedBy = (m) => `Marked ${ATT_MARK_LABEL[m.status]?.toLowerCase() ?? m.status} by hand${m.marked_by_name ? ` by ${m.marked_by_name}` : ""}`;
 
 function mrtName(p, pulls, { warn = true } = {}) {
   const colour = classColour(p.class);
-  const title = [p.display_name && p.display_name !== p.name ? p.display_name : null, pulls ? presenceTitle(pulls, p) : null].filter(Boolean).join("\n");
+  const title = [p.display_name && p.display_name !== p.name ? p.display_name : null, p.mark ? markedBy(p.mark) : null,
+    pulls?.length && !p.mark ? presenceTitle(pulls, p) : null].filter(Boolean).join("\n");
   if (!p.user_id && warn) {
     return el("span", { class: "mrt-name unmatched", title: `Nobody in this outhouse has a character by that name${title ? `\n${title}` : ""}` },
       el("span", { class: "loot-warn", "aria-label": "Not matched" }, "⚠"), p.name);
   }
-  return el("span", { class: "mrt-name", style: colour ? `color:${colour}` : "", title }, p.name);
+  return el("span", { class: `mrt-name${p.mark ? " manual" : ""}`, style: colour ? `color:${colour}` : "", title },
+    p.name, p.mark ? el("span", { class: `mrt-tag manual ${p.mark.status}` }, `✎ ${ATT_MARK_LABEL[p.mark.status]?.toLowerCase() ?? p.mark.status}`) : null);
 }
 
 function signupChip(s, tag, counted) {
@@ -76,19 +108,25 @@ function signupChip(s, tag, counted) {
     s.name, tag ? el("span", { class: `mrt-tag${counted ? "" : " excused"}` }, tag) : null);
 }
 
+const missedTag = ({ s, mark, counted }) => {
+  if (mark === "excused") return "✎ excused";
+  if (mark === "absent") return counted ? "✎ absent · no-show" : "✎ absent";
+  return counted ? (s.status === "tentative" ? "tentative · no-show" : "no-show") : MISSED_TAG[s.status] ?? s.status;
+};
+
 // The four lists, for the import preview and the raid card.
-function mrtCompareView(pulls, players, signups) {
-  const c = mrtCompare(pulls, players, signups);
+function mrtCompareView(pulls, players, signups, manual = []) {
+  const c = mrtCompare(pulls, players, signups, manual);
   const group = (cls, title, hint, items) => el("div", { class: `mrt-group ${cls}`, "data-group": cls },
     el("div", { class: "mrt-group-head", title: hint }, title, el("span", { class: "mrt-n" }, ` ${items.length}`)),
     items.length ? el("div", { class: "mrt-names" }, items) : el("div", { class: "muted small" }, "Nobody"));
   return {
     c,
     node: el("div", { class: "mrt-compare" },
-      group("attended", "✓ Signed up & attended", "Signed up and there for at least one boss", c.attended.map(({ p }) => mrtName(p, pulls))),
-      group("missed", "✗ Signed up, didn't attend", "No-shows count: signed up (or late, or tentative) and not there for any boss. “Can't make it” and the bench don't count.",
-        c.missed.map(({ s, counted }) => signupChip(s, counted ? (s.status === "tentative" ? "tentative · no-show" : "no-show") : MISSED_TAG[s.status] ?? s.status, counted))),
-      group("unsigned", "＋ Attended without signing up", "There for at least one boss, but not signed up to the raid", c.unsigned.map(({ p, s }) => el("span", { class: "mrt-chip" }, mrtName(p, pulls),
+      group("attended", "✓ Signed up & attended", "Signed up and there for at least one boss (or marked present, late or benched)", c.attended.map(({ p }) => mrtName(p, pulls))),
+      group("missed", "✗ Signed up, didn't attend", "No-shows count: signed up (or late, or tentative) and not there for any boss, or marked absent. “Can't make it”, the bench and anyone marked excused don't count.",
+        c.missed.map((m) => signupChip(m.s, missedTag(m), m.counted))),
+      group("unsigned", "＋ Attended without signing up", "There for at least one boss (or marked present), but not signed up to the raid", c.unsigned.map(({ p, s }) => el("span", { class: "mrt-chip" }, mrtName(p, pulls),
         s?.status === "no" ? el("span", { class: "mrt-tag excused" }, "said absent") : null))),
       pulls.length > 1 ? group("partial", "◐ Left early / joined late", "There for some bosses but not all", c.partial.map(({ p, note }) => el("span", { class: "mrt-chip" }, mrtName(p, pulls), el("span", { class: "mrt-tag excused" }, note)))) : null),
   };
@@ -269,60 +307,232 @@ function openMrtImport(ev = null, onDone = null) {
 window.openMrtImport = openMrtImport;
 
 // ======================================================================
-// The Attendance section on raid cards
+// The Attendance section on raid cards: imported bosses and hand marks,
+// and (raid leaders, once the raid has started) Edit attendance
 // ======================================================================
 
-const raidAtt = { cache: new Map(), open: new Set(), pending: new Map() };
+// cache: ev.id → {sig, data}; open: sections folded out; edit: ev.id → the
+// edit in progress (kept while the card redraws).
+const raidAtt = { cache: new Map(), open: new Set(), pending: new Map(), edit: new Map() };
 
-function loadRaidAttendance(ev) {
-  const sig = String(ev.attendance_bosses ?? 0);
+const attSig = (ev) => `${ev.attendance_bosses ?? 0}:${ev.attendance_manual ?? 0}:${ev.attendance_edited_at ?? ""}`;
+const hasAttendance = (ev) => !!(ev.attendance_bosses || ev.attendance_manual);
+
+function loadRaidAttendance(ev, { force = false } = {}) {
+  const sig = attSig(ev);
   const hit = raidAtt.cache.get(ev.id);
-  if (hit?.sig === sig) return hit.data;
-  if (raidAtt.pending.get(ev.id) !== sig) {
+  if (hit?.sig === sig && !force) return hit.data;
+  if (raidAtt.pending.get(ev.id) !== sig || force) {
     raidAtt.pending.set(ev.id, sig);
     api("GET", `/api/events/${ev.id}/attendance/mrt`).then((data) => {
       raidAtt.cache.set(ev.id, { sig, data });
-      for (const node of document.querySelectorAll(`details.ev-attendance[data-event="${ev.id}"]`)) node.attFill?.();
+      refreshAttendance(ev.id);
     }).catch(() => {}).finally(() => { if (raidAtt.pending.get(ev.id) === sig) raidAtt.pending.delete(ev.id); });
   }
   return hit?.data ?? null;
 }
 
+const refreshAttendance = (id) => { for (const node of document.querySelectorAll(`details.ev-attendance[data-event="${id}"]`)) node.attFill?.(); };
+
 const pullsOf = (data) => data.pulls.map((p) => ({ ...p, boss_name: p.encounter_name || p.boss_name, local: p.pulled_local }));
 const playersOf = (data) => data.players.map((p) => ({ name: p.character_name, key: p.character_key, user_id: p.user_id, class: p.character_class, display_name: p.display_name, present: p.present }));
 
+// Raid leaders: open the raid's Attendance section in edit mode (the card's
+// "Take attendance" link and ⋯ menu). `card`: the raid card it came from.
+function openAttendanceEdit(ev, card = null) {
+  raidAtt.open.add(ev.id);
+  if (!raidAtt.edit.has(ev.id)) raidAtt.edit.set(ev.id, null);
+  loadRaidAttendance(ev);
+  const nodes = [...document.querySelectorAll(`details.ev-attendance[data-event="${ev.id}"]`)];
+  for (const node of nodes) { node.open = true; node.attFill?.(); }
+  const mine = card?.querySelector("details.ev-attendance") ?? nodes[0];
+  mine?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  mine?.querySelector("summary")?.focus({ preventScroll: true });
+}
+window.openAttendanceEdit = openAttendanceEdit;
+
+// Starts an edit from the raid's attendance (once it has loaded).
+function editState(ev, data) {
+  let ed = raidAtt.edit.get(ev.id);
+  if (ed === null && data) {
+    const original = new Map(data.manual.map((m) => [m.user_id, m.status]));
+    ed = { original, marks: new Map(original), added: new Map(), query: "", saving: false };
+    raidAtt.edit.set(ev.id, ed);
+  }
+  return ed ?? null;
+}
+
+// What a member's raid counts as, with this mark (or none) — the same rule
+// as the server's (migration 0047).
+function attOutcome(mark, there, signup) {
+  if (mark) {
+    if (ATTENDED_MARKS.has(mark)) return "attended";
+    if (mark === "excused") return "excused";
+  } else if (there) return "attended";
+  return NO_SHOW_STATUSES.has(signup?.status) ? "no_show" : "none";
+}
+const OUTCOME_TEXT = { attended: "Counts as attended", excused: "Excused: not counted", no_show: "Counts as a no-show", none: "Not counted" };
+
+function attendanceEditor(ev, data, ed) {
+  const pulls = pullsOf(data);
+  const players = playersOf(data);
+  const nameOf = (id, fallback) => memberById(id)?.display_name ?? fallback ?? "Someone";
+  const people = new Map();
+  for (const s of ev.signups) {
+    if (s.status !== "no" || ed.marks.has(s.user_id) || ed.original.has(s.user_id)) {
+      people.set(s.user_id, { id: s.user_id, name: signupLabel(s), person: signupPerson(s), signup: s, cls: s.class });
+    }
+  }
+  for (const p of players) {
+    if (p.user_id && !people.has(p.user_id)) people.set(p.user_id, { id: p.user_id, name: p.name, person: nameOf(p.user_id, p.display_name), signup: null, cls: p.class });
+  }
+  for (const m of data.manual) if (!people.has(m.user_id)) people.set(m.user_id, { id: m.user_id, name: nameOf(m.user_id, m.display_name), signup: null });
+  for (const [id, name] of ed.added) if (!people.has(id)) people.set(id, { id, name, signup: null });
+  const bosses = (id) => players.filter((p) => p.user_id === id).reduce((n, p) => Math.max(n, p.present.filter(Boolean).length), 0);
+  const rank = (s) => !s ? 5 : s.status === "yes" || s.status === "late" ? 0 : s.status === "bench" ? 1 : s.status === "tentative" ? 2 : 4;
+  const roleRank = { tank: 0, healer: 1, dps: 2 };
+  const sorted = [...people.values()].sort((a, b) => rank(a.signup) - rank(b.signup)
+    || (roleRank[a.signup?.role] ?? 3) - (roleRank[b.signup?.role] ?? 3) || a.name.localeCompare(b.name));
+  const redraw = () => refreshAttendance(ev.id);
+
+  const rows = sorted.map((p) => {
+    const mark = ed.marks.get(p.id) ?? "";
+    const s = p.signup;
+    const seen = pulls.length ? bosses(p.id) : 0;
+    const outcome = attOutcome(mark, seen > 0, s);
+    const colour = classColour(s?.class ?? p.cls);
+    const bits = [
+      s ? STATUS_LABEL[s.status] : "Didn't sign up",
+      pulls.length ? (seen ? `MRT: ${seen}/${pulls.length} ${pulls.length === 1 ? "boss" : "bosses"}` : "MRT: not there") : null,
+    ].filter(Boolean);
+    return el("div", { class: `att-row${mark ? ` marked ${mark}` : ""} o-${outcome}`, "data-user": p.id },
+      el("div", { class: "att-who" },
+        el("span", { class: "att-name", style: colour ? `color:${colour}` : "", title: p.person && p.person !== p.name ? p.person : "" }, p.name),
+        el("span", { class: "muted small" }, bits.join(" · ")),
+        el("span", { class: `att-outcome small o-${outcome}` }, `${OUTCOME_TEXT[outcome]}${mark ? "" : pulls.length && seen ? " (from MRT)" : ""}`)),
+      el("div", { class: "att-choices", role: "group", "aria-label": `${p.name}'s attendance` },
+        ATT_MARKS.map((k) => el("button", {
+          type: "button", class: `att-choice ${k}${mark === k ? " on" : ""}`, "aria-pressed": mark === k ? "true" : "false",
+          title: mark === k ? `${ATT_MARK_LABEL[k]} (click again to clear${pulls.length ? " and go by MRT" : ""})` : ATT_MARK_LABEL[k],
+          onclick: () => { if (ed.marks.get(p.id) === k) ed.marks.delete(p.id); else ed.marks.set(p.id, k); redraw(); },
+        }, el("span", { class: "att-ic", "aria-hidden": "true" }, ATT_MARK_ICON[k]), el("span", { class: "att-lbl" }, ATT_MARK_LABEL[k])))));
+  });
+
+  const changes = () => [...new Set([...ed.marks.keys(), ...ed.original.keys()])]
+    .filter((id) => ed.marks.get(id) !== ed.original.get(id))
+    .map((id) => ({ user_id: id, status: ed.marks.get(id) ?? "" }));
+  const counts = ATT_MARKS.map((k) => [k, [...ed.marks.values()].filter((v) => v === k).length]).filter(([, n]) => n)
+    .map(([k, n]) => `${n} ${ATT_MARK_LABEL[k].toLowerCase()}`);
+  const outcomes = sorted.map((p) => attOutcome(ed.marks.get(p.id), pulls.length && bosses(p.id) > 0, p.signup));
+  const summary = el("div", { class: "att-summary muted small" },
+    [`Listed here: ${outcomes.filter((o) => o === "attended").length} attended`, plural(outcomes.filter((o) => o === "no_show").length, "no-show"),
+      counts.length ? `marked by hand: ${counts.join(", ")}` : "nobody marked by hand"].join(" · "));
+
+  const allPresent = el("button", { type: "button", class: "ghost small-btn att-all", onclick: () => {
+    for (const p of people.values()) {
+      if (ed.marks.has(p.id)) continue;
+      const st = p.signup?.status;
+      if (st === "yes" || st === "late") ed.marks.set(p.id, st === "late" ? "late" : "present");
+      else if (st === "bench") ed.marks.set(p.id, "benched");
+    }
+    redraw();
+  } }, "✓ Mark everyone signed up as present");
+
+  // Add someone who isn't listed (didn't sign up, MRT didn't see them).
+  const search = el("input", { type: "search", class: "att-search", placeholder: "Add someone else…", "aria-label": "Add someone who isn't listed", value: ed.query, autocomplete: "off" });
+  const found = el("div", { class: "att-found" });
+  const drawFound = () => {
+    const q = ed.query.trim().toLowerCase();
+    const hits = q ? state.members.filter((m) => !m.bot && !people.has(m.id) && m.display_name.toLowerCase().includes(q))
+      .sort((a, b) => a.display_name.localeCompare(b.display_name)).slice(0, 8) : [];
+    found.replaceChildren(...hits.map((m) => el("button", { type: "button", class: "att-add", "data-user": m.id, onclick: () => {
+      ed.added.set(m.id, m.display_name);
+      ed.marks.set(m.id, "present");
+      ed.query = "";
+      redraw();
+    } }, avatarFor(m.id, m.display_name, 18), m.display_name, el("span", { class: "muted small" }, " ＋ present"))),
+    q && !hits.length ? el("span", { class: "muted small" }, "Nobody else by that name.") : null);
+  };
+  search.addEventListener("input", () => { ed.query = search.value; drawFound(); });
+  drawFound();
+
+  const n = changes().length;
+  const save = el("button", { type: "button", class: "primary", "data-act": "save-attendance", disabled: ed.saving || !n, onclick: async () => {
+    const records = changes();
+    if (!records.length) return;
+    ed.saving = true;
+    redraw();
+    const reply = await tryApi("PUT", `/api/events/${ev.id}/attendance`, { records }).catch(() => null);
+    ed.saving = false;
+    if (!reply) return redraw();
+    raidAtt.edit.delete(ev.id);
+    const hit = raidAtt.cache.get(ev.id);
+    if (hit) hit.data = { ...hit.data, manual: reply };
+    // The no-show hints on other raids count this raid too.
+    if (typeof reliability !== "undefined") reliability.cache.clear();
+    toast("Attendance saved.");
+    redraw();
+    loadRaidAttendance(ev, { force: true });
+  } }, ed.saving ? "Saving…" : n ? `Save attendance (${n})` : "Save attendance");
+  const cancel = el("button", { type: "button", class: "ghost", onclick: () => { raidAtt.edit.delete(ev.id); redraw(); } }, n ? "Discard changes" : "Done");
+
+  return el("div", { class: "att-editor" },
+    el("p", { class: "muted small att-help" }, pulls.length
+      ? "A mark overrides MRT for that person on this raid (say they joined after the last boss). Leave someone unmarked to go by MRT."
+      : "Mark who came. Present, late and benched count as attended; excused doesn't count either way; absent is a no-show if they signed up."),
+    el("div", { class: "att-tools" }, allPresent, summary),
+    el("div", { class: "att-list" }, rows.length ? rows : el("p", { class: "muted small" }, "Nobody signed up. Add people below.")),
+    el("div", { class: "att-addbox" }, search, found),
+    el("div", { class: "row att-save" }, cancel, save));
+}
+
 function raidAttendanceSection(ev) {
-  if (!ev.attendance_bosses) return null;
   const manager = canManageEvent(ev);
+  const started = eventWhen(ev).started;
+  if (!hasAttendance(ev) && !(manager && started)) return null;
   const details = el("details", { class: "ev-lootlog ev-attendance", "data-event": ev.id });
   if (raidAtt.open.has(ev.id)) details.open = true;
-  const sum = el("span", { class: "ev-comp-sum" }, plural(ev.attendance_bosses, "boss", "bosses"));
+  const sum = el("span", { class: "ev-comp-sum" }, hasAttendance(ev) ? "" : "Not taken yet");
   const body = el("div", { class: "ev-lootlog-body" });
   details.append(el("summary", {}, el("span", { class: "ev-comp-title" }, "📋 Attendance"), sum), body);
   details.attFill = () => {
     const data = raidAtt.cache.get(ev.id)?.data ?? null;
-    if (data) sum.textContent = compareLine(mrtCompare(pullsOf(data), playersOf(data), ev.signups));
+    const ed = editState(ev, data);
+    if (ed) sum.textContent = "Editing…";
+    else if (data && (data.pulls.length || data.manual.length)) sum.textContent = compareLine(mrtCompare(pullsOf(data), playersOf(data), ev.signups, data.manual));
+    else if (data || !hasAttendance(ev)) sum.textContent = "Not taken yet";
     if (!details.open) return;
     if (!data) return body.replaceChildren(el("p", { class: "muted small" }, "Loading…"));
+    if (ed && data.can_edit) return body.replaceChildren(attendanceEditor(ev, data, ed));
     const pulls = pullsOf(data);
     const players = playersOf(data);
-    const { node } = mrtCompareView(pulls, players, ev.signups);
-    const bossList = el("div", { class: "mrt-bosses" }, pulls.map((b, i) => {
+    const bossList = pulls.length ? el("div", { class: "mrt-bosses" }, pulls.map((b, i) => {
       const here = players.filter((p) => p.present[i]);
       return el("span", { class: "mrt-boss", title: `${here.length} there:\n${here.map((p) => p.name).join(", ")}` },
         el("strong", {}, b.boss_name), el("span", { class: "muted small" }, ` ${mrtTime(b.local)} · ${here.length}`),
         b.difficulty != null ? el("span", { class: "mrt-diff" }, ` ${({ 3: "10", 4: "25", 9: "40", 148: "20" })[b.difficulty] ?? b.difficulty}`) : null);
-    }));
-    body.replaceChildren(bossList, node,
+    })) : null;
+    const lastEdit = [...data.manual].sort((a, b) => String(b.marked_at).localeCompare(String(a.marked_at)))[0];
+    const manualNote = data.manual.length ? el("div", { class: "muted small att-manual-note", title: lastEdit?.marked_by_name ? `Last changed by ${lastEdit.marked_by_name}` : "" },
+      `✎ ${plural(data.manual.length, "person", "people")} marked by hand${pulls.length ? " (these override MRT)" : ""}`) : null;
+    const empty = !pulls.length && !data.manual.length;
+    const editBtn = data.can_edit ? el("button", { type: "button", class: `${empty ? "primary" : "ghost"} small-btn att-edit`, "data-act": "edit-attendance", onclick: () => openAttendanceEdit(ev, details.closest(".event-card")) },
+      empty ? "Take attendance" : "✎ Edit attendance") : null;
+    body.replaceChildren(
+      empty ? el("p", { class: "muted small" }, data.can_edit ? "No attendance yet. Mark who came, or import Method Raid Tools' export." : "No attendance yet.") : null,
+      bossList,
+      empty ? null : mrtCompareView(pulls, players, ev.signups, data.manual).node,
+      manualNote,
       el("div", { class: "rl-foot" },
+        editBtn,
         el("button", { type: "button", class: "link small", onclick: () => openLootLog({ tab: "people" }) }, "📜 Attendance by character"),
-        manager ? el("button", { type: "button", class: "link small", onclick: () => openMrtImport(ev) }, "Import more from MRT…") : null));
+        manager && typeof openMrtImport === "function" ? el("button", { type: "button", class: "link small", onclick: () => openMrtImport(ev) }, pulls.length ? "Import more from MRT…" : "Import from MRT…") : null));
   };
   details.addEventListener("toggle", () => {
     if (details.open) { raidAtt.open.add(ev.id); loadRaidAttendance(ev); } else raidAtt.open.delete(ev.id);
     details.attFill();
   });
-  loadRaidAttendance(ev);
+  if (hasAttendance(ev) || details.open) loadRaidAttendance(ev);
   details.attFill();
   return details;
 }
@@ -361,7 +571,7 @@ function reliabilityTag(ev, s) {
     const weeks = Math.round(data.days / 7);
     tag.replaceChildren(el("span", { class: "rc-rely-long" }, `${me.no_shows} no-shows`), el("span", { class: "rc-rely-short", "aria-hidden": "true" }, `${me.no_shows}✗`));
     tag.setAttribute("aria-label", `${me.no_shows} no-shows in ${weeks} weeks`);
-    tag.title = `${me.no_shows} no-shows in the last ${weeks} weeks (signed up to ${me.signed_up} raids with imported attendance). Only raid leaders see this.`;
+    tag.title = `${me.no_shows} no-shows in the last ${weeks} weeks (signed up to ${me.signed_up} raids with attendance). Only raid leaders see this.`;
   };
   loadReliability(ev);
   tag.relyFill();
@@ -379,7 +589,7 @@ function charAttendanceBlock(c, guildName) {
   const pct = (x) => (x.eligible ? `${x.percent}%` : "—");
   return el("div", { class: "fpa-char", "data-character": c.character_key, style: colour ? `--cc:${colour}` : "" },
     el("strong", { class: "fpl-name" }, c.character_name),
-    el("span", { class: "fpa-pct", title: "Raids attended out of raids they attended or signed up to and missed (raids with imported attendance)" },
+    el("span", { class: "fpa-pct", title: "Raids attended out of raids they attended or signed up to and missed (raids with attendance, from MRT or taken by hand)" },
       `${pct(r)} `, el("span", { class: "muted small" }, `attended ${r.attended} of ${r.eligible} in the last 8 weeks`)),
     el("span", { class: "muted small" }, [
       r.last_attended ? `last raid ${lootDay(r.last_attended, { day: "numeric", month: "short" })}` : a.last_attended ? `last raid ${lootDay(a.last_attended, { day: "numeric", month: "short", year: "numeric" })}` : null,
@@ -399,7 +609,7 @@ async function addProfileAttendance(page, p) {
     const mine = blocks.find(({ c }) => keys.includes(c.character_key));
     if (!mine || !cards[i]) return;
     const r = mine.c.recent;
-    cards[i].querySelector(".fp-char-text")?.append(el("span", { class: "small fp-char-att", title: "Raids attended in the last 8 weeks (imported from MRT)" },
+    cards[i].querySelector(".fp-char-text")?.append(el("span", { class: "small fp-char-att", title: "Raids attended in the last 8 weeks (from MRT or taken by hand)" },
       r.eligible ? `📋 ${r.percent}% attendance (${r.attended}/${r.eligible})` : `📋 ${mine.c.all_time.attended} raids attended`));
   });
   const section = el("div", { class: "fp-attendance", id: "fp-attendance" },

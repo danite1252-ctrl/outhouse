@@ -14,15 +14,19 @@
 //! on the encounter lists (or another column in the same paste confirmed
 //! that number), so a boss whose real name ends in a digit stays whole.
 //!
-//! Also here: a raid's imported attendance (its card), the per-character
+//! Also here: a raid's attendance (its card: imported bosses and the marks
+//! raid leaders set by hand, see `attendance.rs`), the per-character
 //! attendance numbers (the Loot window's By character tab and full
 //! profiles), and the no-show hint raid leaders see on sign-ups.
 //!
-//! Counting: someone *attended* a raid if they were there for at least one
-//! boss. A *no-show* signed up (yes, late or tentative) to a raid with
-//! imported attendance and wasn't there for any boss; "can't make it" and
-//! the bench never count. Attendance % is raids attended out of raids they
-//! attended or no-showed (so it only counts raids with imported attendance).
+//! Counting: a raid *has attendance* when it has imported bosses or hand
+//! marks. Someone *attended* if they were there for at least one boss, or
+//! were marked present, late or benched. A *no-show* signed up (yes, late or
+//! tentative) to a raid with attendance and wasn't there for any boss (or
+//! was marked absent); "can't make it", the bench and anyone marked excused
+//! never count. A hand mark overrides the import for that member on that
+//! raid (the `raid_attendance_outcomes` view, migration 0047). Attendance %
+//! is raids attended out of raids they attended or no-showed.
 
 use std::collections::{HashMap, HashSet};
 
@@ -1172,16 +1176,22 @@ pub struct RaidPlayer {
 pub struct RaidAttendance {
     pub pulls: Vec<PullInfo>,
     pub players: Vec<RaidPlayer>,
+    /// Members marked by hand (they override what the import says).
+    pub manual: Vec<super::attendance::AttendanceRecord>,
+    /// You can edit it (a raid leader, once the raid has started).
+    pub can_edit: bool,
 }
 
-/// `GET /api/events/{id}/attendance/mrt`: the raid's imported attendance
-/// (anyone who can see the raid).
+/// `GET /api/events/{id}/attendance/mrt`: the raid's attendance: imported
+/// bosses and the hand marks (anyone who can see the raid).
 pub async fn raid_attendance(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
     Path(event_id): Path<i64>,
 ) -> AppResult<Json<RaidAttendance>> {
-    let (row, _) = load(&st, event_id, user.id).await?;
+    let (row, access) = load(&st, event_id, user.id).await?;
+    let can_edit = row.starts_at <= Utc::now() && can_manage(&st.db, &row, &access).await?;
+    let manual = super::attendance::records(&st, event_id).await?;
     let mut pulls = sqlx::query_as::<_, PullInfo>(
         "SELECT id, boss_name, encounter_key, difficulty, pulled_at, pulled_local, import_id
          FROM attendance_pulls WHERE event_id = $1 ORDER BY pulled_at, id",
@@ -1246,12 +1256,14 @@ pub async fn raid_attendance(
             .into_iter()
             .filter_map(|k| players.remove(&k))
             .collect(),
+        manual,
+        can_edit,
     }))
 }
 
 // ---- Counting ------------------------------------------------------------------------
 
-/// A raid with imported attendance.
+/// A raid with attendance (imported or marked by hand).
 #[derive(sqlx::FromRow, Clone)]
 struct CountedRaid {
     id: i64,
@@ -1273,7 +1285,6 @@ struct MarkSum {
 struct SignupSum {
     event_id: i64,
     user_id: i64,
-    status: String,
     character_name: String,
     character_last_name: String,
     class: String,
@@ -1294,18 +1305,42 @@ pub struct CharacterAttendance {
     pub eligible: i64,
     /// attended / eligible, rounded (100 when there's nothing to count).
     pub percent: i64,
-    /// Signed up (yes, late or tentative), didn't come.
+    /// Signed up (yes, late or tentative), didn't come (or marked absent).
     pub no_shows: i64,
     pub last_attended: Option<NaiveDate>,
 }
 
-/// The sign-up statuses that make missing a raid a no-show.
-fn counts_as_no_show(status: &str) -> bool {
-    matches!(status, "yes" | "late" | "tentative")
+/// What counts for a member on a raid with attendance: the
+/// `raid_attendance_outcomes` view (migration 0047), where a hand mark
+/// overrides the import. `outcome`: attended, no_show, excused, or absent
+/// (marked absent without signing up: not counted).
+#[derive(sqlx::FromRow, Clone)]
+struct OutcomeRow {
+    event_id: i64,
+    user_id: i64,
+    outcome: String,
+    manual_status: Option<String>,
 }
 
-/// Per character over these raids: attended, no-shows (put on the
-/// character they signed up with, else the one they raid on most), %.
+async fn outcomes(
+    st: &AppState,
+    ids: &[i64],
+    only_user: Option<i64>,
+) -> AppResult<Vec<OutcomeRow>> {
+    Ok(sqlx::query_as::<_, OutcomeRow>(
+        "SELECT event_id, user_id, outcome, manual_status FROM raid_attendance_outcomes
+         WHERE event_id = ANY($1) AND ($2::BIGINT IS NULL OR user_id = $2)",
+    )
+    .bind(ids)
+    .bind(only_user)
+    .fetch_all(&st.db)
+    .await?)
+}
+
+/// Per character over these raids: attended, no-shows, %. A member's raid
+/// goes on the characters MRT saw them on; otherwise (marked by hand, or a
+/// no-show) on the character they signed up with, else the one they raid on
+/// most, else their name.
 async fn count(
     st: &AppState,
     guild_id: i64,
@@ -1326,7 +1361,7 @@ async fn count(
     .fetch_all(&st.db)
     .await?;
     let signups = sqlx::query_as::<_, SignupSum>(
-        "SELECT event_id, user_id, status, character_name, character_last_name, class, character_class
+        "SELECT event_id, user_id, character_name, character_last_name, class, character_class
          FROM event_signups WHERE event_id = ANY($1) AND ($2::BIGINT IS NULL OR user_id = $2)",
     )
     .bind(&ids)
@@ -1334,20 +1369,27 @@ async fn count(
     .fetch_all(&st.db)
     .await?;
     let names: HashMap<i64, String> = sqlx::query_as::<_, (i64, String)>(
-        "SELECT gm.user_id, COALESCE(gm.nickname, u.display_name)
-         FROM guild_members gm JOIN users u ON u.id = gm.user_id WHERE gm.guild_id = $1",
+        "SELECT u.id, COALESCE(gm.nickname, u.display_name)
+         FROM users u LEFT JOIN guild_members gm ON gm.guild_id = $1 AND gm.user_id = u.id
+         WHERE u.id IN (SELECT user_id FROM guild_members WHERE guild_id = $1)
+            OR u.id IN (SELECT user_id FROM event_attendance WHERE event_id = ANY($2))",
     )
     .bind(guild_id)
+    .bind(&ids)
     .fetch_all(&st.db)
     .await?
     .into_iter()
     .collect();
+    let outcomes = outcomes(st, &ids, only_user).await?;
 
     type Key = (String, Option<i64>);
     let mut rows: HashMap<Key, CharacterAttendance> = HashMap::new();
-    let mut attended_raids: HashMap<Key, HashSet<i64>> = HashMap::new();
-    // Raids each member was there for (on any character).
-    let mut user_there: HashSet<(i64, i64)> = HashSet::new();
+    let mut attended: HashMap<Key, HashSet<i64>> = HashMap::new();
+    let mut missed: HashMap<Key, HashSet<i64>> = HashMap::new();
+    // The characters MRT saw each member on, per raid.
+    let mut seen_on: HashMap<(i64, i64), Vec<Key>> = HashMap::new();
+    // Raids MRT saw each character at (a member's usual character).
+    let mut usual: HashMap<Key, usize> = HashMap::new();
     for m in &marks {
         let k = (m.character_key.clone(), m.user_id);
         let r = rows
@@ -1363,75 +1405,101 @@ async fn count(
         if r.character_class.is_empty() {
             r.character_class = m.character_class.clone();
         }
-        if m.present {
-            attended_raids.entry(k).or_default().insert(m.event_id);
-            if let Some(u) = m.user_id {
-                user_there.insert((u, m.event_id));
+        if !m.present {
+            continue;
+        }
+        match m.user_id {
+            // Nobody here by that name: counted as MRT says.
+            None => {
+                attended.entry(k).or_default().insert(m.event_id);
+            }
+            Some(u) => {
+                seen_on.entry((u, m.event_id)).or_default().push(k.clone());
+                *usual.entry(k).or_default() += 1;
             }
         }
     }
-    let mut no_shows: HashMap<Key, HashSet<i64>> = HashMap::new();
-    for s in &signups {
-        if !counts_as_no_show(&s.status) || user_there.contains(&(s.user_id, s.event_id)) {
-            continue;
-        }
-        let signed_key = if s.character_name.is_empty() {
-            String::new()
-        } else {
-            char_key(&full(&s.character_name, &s.character_last_name))
+    let signup_of: HashMap<(i64, i64), &SignupSum> = signups
+        .iter()
+        .map(|s| ((s.user_id, s.event_id), s))
+        .collect();
+    for o in &outcomes {
+        let came = match o.outcome.as_str() {
+            "attended" => true,
+            "no_show" => false,
+            _ => continue,
         };
-        // Their character on the sign-up, else the one they raid on most.
-        let key = if !signed_key.is_empty() {
-            signed_key
+        let seen = if came {
+            seen_on
+                .get(&(o.user_id, o.event_id))
+                .cloned()
+                .unwrap_or_default()
         } else {
-            rows.keys()
-                .filter(|(_, u)| *u == Some(s.user_id))
-                .max_by_key(|k| attended_raids.get(*k).map_or(0, |r| r.len()))
-                .map(|(c, _)| c.clone())
-                .unwrap_or_else(|| char_key(names.get(&s.user_id).map_or("", |n| n.as_str())))
+            Vec::new()
         };
-        let k = (key, Some(s.user_id));
-        let class = if s.character_class.is_empty() {
-            s.class.clone()
-        } else {
-            s.character_class.clone()
-        };
-        let r = rows
-            .entry(k.clone())
-            .or_insert_with(|| CharacterAttendance {
-                character_key: k.0.clone(),
-                character_name: if s.character_name.is_empty() {
-                    names.get(&s.user_id).cloned().unwrap_or_default()
-                } else {
-                    full(&s.character_name, &s.character_last_name)
-                },
-                character_class: class.clone(),
-                user_id: Some(s.user_id),
-                display_name: names.get(&s.user_id).cloned(),
-                ..Default::default()
+        let keys = if seen.is_empty() {
+            let s = signup_of.get(&(o.user_id, o.event_id)).copied();
+            let signed = s
+                .filter(|s| !s.character_name.is_empty())
+                .map(|s| char_key(&full(&s.character_name, &s.character_last_name)));
+            let key = signed.unwrap_or_else(|| {
+                usual
+                    .iter()
+                    .filter(|((_, u), _)| *u == Some(o.user_id))
+                    .max_by(|a, b| a.1.cmp(b.1).then(b.0 .0.cmp(&a.0 .0)))
+                    .map(|((c, _), _)| c.clone())
+                    .unwrap_or_else(|| char_key(names.get(&o.user_id).map_or("", |n| n.as_str())))
             });
-        if r.character_class.is_empty() {
-            r.character_class = class;
+            let k = (key, Some(o.user_id));
+            let class = s
+                .map(|s| {
+                    if s.character_class.is_empty() {
+                        s.class.clone()
+                    } else {
+                        s.character_class.clone()
+                    }
+                })
+                .unwrap_or_default();
+            let r = rows
+                .entry(k.clone())
+                .or_insert_with(|| CharacterAttendance {
+                    character_key: k.0.clone(),
+                    character_name: match s {
+                        Some(s) if !s.character_name.is_empty() => {
+                            full(&s.character_name, &s.character_last_name)
+                        }
+                        _ => names.get(&o.user_id).cloned().unwrap_or_default(),
+                    },
+                    character_class: class.clone(),
+                    user_id: Some(o.user_id),
+                    display_name: names.get(&o.user_id).cloned(),
+                    ..Default::default()
+                });
+            if r.character_class.is_empty() {
+                r.character_class = class;
+            }
+            vec![k]
+        } else {
+            seen
+        };
+        let into = if came { &mut attended } else { &mut missed };
+        for k in keys {
+            into.entry(k).or_default().insert(o.event_id);
         }
-        no_shows.entry(k).or_default().insert(s.event_id);
     }
     let mut out: Vec<CharacterAttendance> = rows
         .into_iter()
         .map(|(k, mut r)| {
-            let there = attended_raids.get(&k).cloned().unwrap_or_default();
-            let missed = no_shows.get(&k).map_or(0, |m| m.difference(&there).count()) as i64;
+            let there = attended.get(&k).cloned().unwrap_or_default();
+            let no_shows = missed.get(&k).map_or(0, |m| m.difference(&there).count()) as i64;
             r.attended = there.len() as i64;
-            r.no_shows = missed;
-            r.eligible = r.attended + missed;
-            r.percent = if r.eligible == 0 {
-                100
-            } else {
-                ((r.attended as f64 * 100.0) / r.eligible as f64).round() as i64
-            };
+            r.no_shows = no_shows;
+            r.eligible = r.attended + no_shows;
+            r.percent = percent(r.attended, r.eligible);
             r.last_attended = there.iter().filter_map(|e| date.get(e)).max().copied();
             r
         })
-        // Listed but never there, and never signed up: nothing to count.
+        // Listed but never counted (not there, excused, never signed up).
         .filter(|r| r.eligible > 0)
         .collect();
     out.sort_by(|a, b| {
@@ -1447,7 +1515,43 @@ async fn count(
     Ok(out)
 }
 
-/// The outhouse's raids with imported attendance in these channels.
+/// attended / eligible, rounded (100 when there's nothing to count).
+fn percent(attended: i64, eligible: i64) -> i64 {
+    if eligible == 0 {
+        100
+    } else {
+        ((attended as f64 * 100.0) / eligible as f64).round() as i64
+    }
+}
+
+/// A member's raids in total (whichever character): attended, no-shows,
+/// excused, %.
+#[derive(Serialize, Clone, Default, Debug, PartialEq)]
+pub struct Totals {
+    pub attended: i64,
+    pub no_shows: i64,
+    pub excused: i64,
+    pub eligible: i64,
+    pub percent: i64,
+}
+
+fn totals<'a>(rows: impl IntoIterator<Item = &'a OutcomeRow>) -> Totals {
+    let mut t = Totals::default();
+    for o in rows {
+        match o.outcome.as_str() {
+            "attended" => t.attended += 1,
+            "no_show" => t.no_shows += 1,
+            "excused" => t.excused += 1,
+            _ => {}
+        }
+    }
+    t.eligible = t.attended + t.no_shows;
+    t.percent = percent(t.attended, t.eligible);
+    t
+}
+
+/// The outhouse's raids with attendance (imported or marked by hand) in
+/// these channels.
 async fn counted_raids(
     st: &AppState,
     guild_id: i64,
@@ -1458,7 +1562,8 @@ async fn counted_raids(
         "SELECT e.id, e.loot_instance, (e.starts_at AT TIME ZONE $3)::DATE AS local_date
          FROM events e
          WHERE e.guild_id = $1 AND e.channel_id = ANY($2)
-           AND EXISTS (SELECT 1 FROM attendance_pulls p WHERE p.event_id = e.id)
+           AND (EXISTS (SELECT 1 FROM attendance_pulls p WHERE p.event_id = e.id)
+                OR EXISTS (SELECT 1 FROM event_attendance a WHERE a.event_id = e.id))
          ORDER BY e.starts_at",
     )
     .bind(guild_id)
@@ -1599,7 +1704,7 @@ fn in_range(
 pub struct OuthouseAttendance {
     #[serde(flatten)]
     pub range: Range,
-    /// Raids with imported attendance in the range.
+    /// Raids with attendance (imported or marked by hand) in the range.
     pub raids: usize,
     pub characters: Vec<CharacterAttendance>,
 }
@@ -1640,7 +1745,7 @@ pub struct ProfileCharacter {
     pub character_class: String,
     /// The last 8 weeks.
     pub recent: CharacterAttendance,
-    /// Every raid with imported attendance.
+    /// Every raid with attendance.
     pub all_time: CharacterAttendance,
 }
 
@@ -1650,6 +1755,23 @@ pub struct ProfileAttendance {
     pub guild_id: i64,
     pub guild_name: String,
     pub characters: Vec<ProfileCharacter>,
+    /// Whichever character: the last 8 weeks, and every raid with attendance.
+    pub recent: Totals,
+    pub all_time: Totals,
+    /// Their last raids with attendance, newest first (up to 10).
+    pub raids: Vec<ProfileRaid>,
+}
+
+#[derive(Serialize)]
+pub struct ProfileRaid {
+    #[serde(with = "as_string")]
+    pub event_id: i64,
+    pub title: String,
+    pub starts_at: DateTime<Utc>,
+    /// attended, no_show, excused or absent.
+    pub outcome: String,
+    /// Their hand mark, if they have one (present, late, benched, …).
+    pub manual_status: Option<String>,
 }
 
 /// `GET /api/users/{id}/attendance`: their attendance by character in the
@@ -1710,11 +1832,40 @@ pub async fn user_attendance(
                 }
             })
             .collect();
-        if !characters.is_empty() {
+        let ids: Vec<i64> = all.iter().map(|r| r.id).collect();
+        let theirs = outcomes(&st, &ids, Some(target)).await?;
+        let recent_ids: HashSet<i64> = recent_raids.iter().map(|r| r.id).collect();
+        let recent_totals = totals(theirs.iter().filter(|o| recent_ids.contains(&o.event_id)));
+        let all_totals = totals(&theirs);
+        let by_event: HashMap<i64, &OutcomeRow> = theirs.iter().map(|o| (o.event_id, o)).collect();
+        let info: Vec<(i64, String, DateTime<Utc>)> = sqlx::query_as(
+            "SELECT id, title, starts_at FROM events WHERE id = ANY($1)
+             ORDER BY starts_at DESC, id DESC",
+        )
+        .bind(by_event.keys().copied().collect::<Vec<i64>>())
+        .fetch_all(&st.db)
+        .await?;
+        let raids: Vec<ProfileRaid> = info
+            .into_iter()
+            .take(10)
+            .filter_map(|(id, title, starts_at)| {
+                by_event.get(&id).map(|o| ProfileRaid {
+                    event_id: id,
+                    title,
+                    starts_at,
+                    outcome: o.outcome.clone(),
+                    manual_status: o.manual_status.clone(),
+                })
+            })
+            .collect();
+        if !characters.is_empty() || !raids.is_empty() {
             out.push(ProfileAttendance {
                 guild_id,
                 guild_name,
                 characters,
+                recent: recent_totals,
+                all_time: all_totals,
+                raids,
             });
         }
     }
@@ -1728,7 +1879,7 @@ pub struct Reliability {
     #[serde(with = "as_string")]
     pub user_id: i64,
     pub no_shows: i64,
-    /// Raids with imported attendance they signed up to in the window.
+    /// Raids with attendance they signed up to in the window.
     pub signed_up: i64,
 }
 
@@ -1741,7 +1892,8 @@ pub struct ReliabilityReply {
 
 /// `GET /api/events/{id}/attendance/reliability` (the raid's leaders): the
 /// people signed up to this raid with 2 or more no-shows in the 4 weeks up
-/// to it (raids with imported attendance, in channels the leader can see).
+/// to it (raids with attendance, imported or marked by hand, in channels the
+/// leader can see; a hand mark overrides the import).
 pub async fn reliability(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
@@ -1761,18 +1913,16 @@ pub async fn reliability(
              SELECT e.id FROM events e
              WHERE e.guild_id = $1 AND e.channel_id = ANY($2)
                AND e.starts_at > $3 AND e.starts_at <= $4
-               AND EXISTS (SELECT 1 FROM attendance_pulls p WHERE p.event_id = e.id)
+               AND (EXISTS (SELECT 1 FROM attendance_pulls p WHERE p.event_id = e.id)
+                    OR EXISTS (SELECT 1 FROM event_attendance a WHERE a.event_id = e.id))
          )
-         SELECT s.user_id,
-                count(*) FILTER (WHERE NOT EXISTS (
-                    SELECT 1 FROM attendance_marks m
-                    WHERE m.event_id = s.event_id AND m.user_id = s.user_id AND m.present)) AS no_shows,
-                count(*) AS signed_up
-         FROM event_signups s
-         WHERE s.event_id IN (SELECT id FROM raids)
-           AND s.status IN ('yes', 'late', 'tentative')
-           AND s.user_id IN (SELECT user_id FROM event_signups WHERE event_id = $5)
-         GROUP BY s.user_id",
+         SELECT o.user_id,
+                count(*) FILTER (WHERE o.outcome = 'no_show') AS no_shows,
+                count(*) FILTER (WHERE o.signup_status IN ('yes', 'late', 'tentative')) AS signed_up
+         FROM raid_attendance_outcomes o
+         WHERE o.event_id IN (SELECT id FROM raids)
+           AND o.user_id IN (SELECT user_id FROM event_signups WHERE event_id = $5)
+         GROUP BY o.user_id",
     )
     .bind(row.guild_id)
     .bind(&channels)
@@ -1798,6 +1948,34 @@ pub async fn reliability(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn totals_count_excused_apart() {
+        let row = |outcome: &str| OutcomeRow {
+            event_id: 1,
+            user_id: 1,
+            outcome: outcome.into(),
+            manual_status: None,
+        };
+        let rows = [
+            row("attended"),
+            row("attended"),
+            row("no_show"),
+            row("excused"),
+            row("absent"),
+        ];
+        assert_eq!(
+            totals(&rows),
+            Totals {
+                attended: 2,
+                no_shows: 1,
+                excused: 1,
+                eligible: 3,
+                percent: 67
+            }
+        );
+        assert_eq!(totals(&[]).percent, 100);
+    }
 
     const SAMPLE: &str = include_str!("../../../../ci/mrt-attendance-sample.tsv");
 

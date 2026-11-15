@@ -145,6 +145,7 @@ pub const ACTIONS: &[(&str, &str)] = &[
     ("attendance_import", "Imported attendance from MRT"),
     ("attendance_import_undo", "Undid an attendance import"),
     ("attendance_import_delete", "Deleted an attendance import"),
+    ("attendance_edit", "Edited a raid's attendance"),
     (
         "loot_reserve_add",
         "Soft-reserved for someone (or allowed a won item)",
