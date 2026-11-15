@@ -89,6 +89,7 @@ function layoutRemove(layout, id) {
 // handed out in the new order (so channels you can't see keep their place
 // among them). `moved`: a channel that changed category, to offer a sync.
 async function saveLayout(layout, moved = null) {
+  document.querySelector(".cat-sync-offer")?.remove(); // about an earlier move
   const order = [];
   const push = (id, parent) => order.push({ id, parent });
   for (const id of layout.text) push(id, null);
