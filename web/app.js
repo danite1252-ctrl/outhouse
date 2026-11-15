@@ -1464,12 +1464,38 @@ function addFiles(files) {
   input.focus();
 }
 
+// Cards for files waiting to be sent: a thumbnail for pictures (and the first
+// frame of videos), an icon and name for anything else, and a ✕ to remove.
+// Each composer gets its own drawer so preview URLs are freed when files go.
+function pendingFileDrawer() {
+  const urls = new Map();
+  return function draw(box, files, onRemove) {
+    for (const [f, u] of urls) if (!files.includes(f)) { URL.revokeObjectURL(u); urls.delete(f); }
+    box.hidden = !files.length;
+    box.replaceChildren(...files.map((f, i) => {
+      const isImage = f.type.startsWith("image/");
+      const isVideo = f.type.startsWith("video/");
+      let thumb;
+      if (isImage || isVideo) {
+        if (!urls.has(f)) urls.set(f, URL.createObjectURL(f));
+        thumb = isImage
+          ? el("img", { src: urls.get(f), alt: "", draggable: "false" })
+          : el("video", { src: urls.get(f), muted: true, preload: "metadata", playsinline: true });
+      } else {
+        const ext = (f.name.split(".").pop() || "").slice(0, 4).toUpperCase();
+        thumb = el("div", { class: "pf-icon" }, el("span", {}, "📄"), ext ? el("small", {}, ext) : null);
+      }
+      return el("div", { class: `pending-file${isImage || isVideo ? " media" : ""}`, title: `${f.name} · ${fmtSize(f.size)}` },
+        thumb,
+        el("div", { class: "pf-name" }, f.name),
+        el("button", { type: "button", class: "pf-remove", "aria-label": `Remove ${f.name}`, onclick: () => onRemove(i) }, "✕"));
+    }));
+  };
+}
+const drawMainPendingFiles = pendingFileDrawer();
+
 function renderPendingFiles() {
-  const box = $("pending-files");
-  box.hidden = !state.pendingFiles.length;
-  box.replaceChildren(...state.pendingFiles.map((f, i) =>
-    el("span", { class: "chip" }, f.type.startsWith("image/") ? "🖼" : "📄", ` ${f.name} `, el("span", { class: "muted" }, fmtSize(f.size)),
-      el("button", { type: "button", "aria-label": `Remove ${f.name}`, onclick: () => { state.pendingFiles.splice(i, 1); renderPendingFiles(); } }, "✕"))));
+  drawMainPendingFiles($("pending-files"), state.pendingFiles, (i) => { state.pendingFiles.splice(i, 1); renderPendingFiles(); });
 }
 
 $("attach-btn").addEventListener("click", () => $("file-input").click());

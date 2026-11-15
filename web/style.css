@@ -116,7 +116,19 @@ dialog .primary { padding: 0 16px; }
 .typing { height: 20px; font-size: 12px; color: var(--muted); padding: 2px 4px; }
 .reply-bar { display: flex; justify-content: space-between; align-items: center; padding: 6px 12px; background: var(--raised); border: 1px solid var(--line); border-bottom: 0; border-radius: 12px 12px 0 0; font-size: 13px; color: var(--muted); }
 .reply-bar strong { color: var(--text); }
-.pending-files { display: flex; gap: 8px; flex-wrap: wrap; padding: 8px; background: var(--raised); border: 1px solid var(--line); border-bottom: 0; border-radius: 12px 12px 0 0; }
+.pending-files { display: flex; gap: 10px; flex-wrap: wrap; padding: 10px; background: var(--raised); border: 1px solid var(--line); border-bottom: 0; border-radius: 12px 12px 0 0; }
+/* Files waiting to be sent: picture thumbnails, or an icon card for other files. */
+.pending-file { position: relative; width: 112px; display: flex; flex-direction: column; gap: 4px; }
+.pending-file > img, .pending-file > video, .pending-file .pf-icon { width: 112px; height: 112px; border-radius: 10px; border: 1px solid var(--line); background: var(--night); object-fit: cover; display: block; }
+.pending-file .pf-icon { display: grid; place-content: center; justify-items: center; gap: 4px; font-size: 32px; }
+.pending-file .pf-icon small { font-size: 11px; font-weight: 700; color: var(--muted); letter-spacing: .04em; }
+.pending-file .pf-name { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pending-file .pf-remove { position: absolute; top: -6px; right: -6px; width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 12px; display: grid; place-items: center; cursor: pointer; }
+.pending-file .pf-remove:hover { background: #e5484d; border-color: #e5484d; color: #fff; }
+@media (max-width: 520px) {
+  .pending-file { width: 84px; }
+  .pending-file > img, .pending-file > video, .pending-file .pf-icon { width: 84px; height: 84px; }
+}
 .reply-bar + .pending-files { border-radius: 0; }
 .chip { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); font-size: 13px; }
 .chip button { border: 0; background: none; color: var(--muted); }

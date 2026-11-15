@@ -276,11 +276,8 @@ function threadComposer() {
   const ta = el("textarea", { rows: 1, placeholder: canSend ? `Reply in ${t.name}` : "You can't post here.", "aria-label": "Reply in thread", disabled: !canSend });
   const chips = el("div", { class: "pending-files", hidden: true });
   const fileInput = el("input", { type: "file", multiple: true, hidden: true });
-  const drawChips = () => {
-    chips.hidden = !thread.files.length;
-    chips.replaceChildren(...thread.files.map((f, i) => el("span", { class: "chip" }, f.type.startsWith("image/") ? "🖼" : "📄", ` ${f.name} `,
-      el("button", { type: "button", "aria-label": `Remove ${f.name}`, onclick: () => { thread.files.splice(i, 1); drawChips(); } }, "✕"))));
-  };
+  const drawFiles = pendingFileDrawer();
+  const drawChips = () => drawFiles(chips, thread.files, (i) => { thread.files.splice(i, 1); drawChips(); });
   fileInput.addEventListener("change", () => {
     for (const f of fileInput.files) {
       if (f.size > 25 * 1024 * 1024) { toast(`${f.name} is over 25 MB.`); continue; }

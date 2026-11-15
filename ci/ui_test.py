@@ -4653,6 +4653,19 @@ with sync_playwright() as p:
     assert "/banner" in fp.eval_on_selector(".sidebar-head", "e => e.style.backgroundImage")
     fp.wait_for_timeout(300)
     fp.screenshot(path=f"{SHOTS}/3816-desktop-sidebar-banner.png")
+    # Files waiting to be sent show as cards: a thumbnail for pictures.
+    fp.set_input_files("#file-input", files=[
+        {"name": "preview.png", "mimeType": "image/png", "buffer": make_png(64)},
+        {"name": "notes.txt", "mimeType": "text/plain", "buffer": b"hello"},
+    ])
+    fp.wait_for_selector("#pending-files .pending-file.media img", timeout=5000)
+    assert fp.locator("#pending-files .pending-file").count() == 2
+    assert fp.eval_on_selector("#pending-files .pending-file.media img", "i => i.src.startsWith('blob:')")
+    assert "TXT" in fp.inner_text("#pending-files .pf-icon")
+    fp.screenshot(path=f"{SHOTS}/3817-desktop-pending-file-previews.png")
+    fp.click("#pending-files .pending-file:nth-child(2) .pf-remove")
+    fp.click("#pending-files .pf-remove")
+    fp.wait_for_selector("#pending-files", state="hidden", timeout=5000)
 
     # Settings → Roles: one tab, a role picker.
     pv_role = api("POST", f"/api/guilds/{G}/roles", {"name": "Previewer", "color": 0x60a5fa}, TOKEN)
