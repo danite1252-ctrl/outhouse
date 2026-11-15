@@ -146,7 +146,7 @@ document.addEventListener("click", (e) => {
   if (!(t instanceof Element) || t.closest("button.manageable, .su-name.manageable, input, textarea, select, a")) return;
   const mention = t.closest(".mention[data-user]");
   const member = !mention && t.closest("#member-list .member[data-id]");
-  const voice = !mention && !member && t.closest("#voice-channels .voice-user[data-id]:not(.hidden-voice)");
+  const voice = !mention && !member && t.closest("#channel-tree .voice-user[data-id]:not(.hidden-voice)");
   const dmAvatar = !mention && !member && !voice && t.closest("#dm-list .dm-row .dm-avatar");
   const signup = !mention && !member && !voice && !dmAvatar && t.closest(".su-name[data-user]:not(.manageable)");
   if (member && t.closest(".avatar-wrap")) return; // already opens it

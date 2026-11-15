@@ -87,6 +87,22 @@ pub enum ServerEvent {
         guild_id: i64,
     },
     ChannelCreate(Channel),
+    /// Channels or categories were moved, a category was made, renamed or
+    /// deleted: re-fetch the channel list (what each person can see
+    /// differs, so it isn't sent in the event).
+    ChannelsReordered {
+        #[serde(with = "as_string")]
+        guild_id: i64,
+    },
+    /// You collapsed or expanded a category on another device (sent to
+    /// you only).
+    CategoryCollapse {
+        #[serde(with = "as_string")]
+        guild_id: i64,
+        #[serde(with = "as_string")]
+        channel_id: i64,
+        collapsed: bool,
+    },
     /// A channel's name, topic, slowmode or content setting changed.
     ChannelUpdate(Channel),
     /// You said you're 18+ for an age-restricted channel, or took it back

@@ -86,16 +86,16 @@
   <aside class="sidebar" aria-label="Channels">
     <header class="sidebar-head">
       <span id="guild-name">No outhouse yet</span>
-      <button id="invite-btn" class="icon-btn" title="Invite people" aria-label="Invite people" hidden>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0M19 8v6M16 11h6"/></svg>
-      </button>
+      <span class="head-btns">
+        <button id="channel-add" class="icon-btn" title="Create a channel or category" aria-label="Create a channel or category" hidden>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+        <button id="invite-btn" class="icon-btn" title="Invite people" aria-label="Invite people" hidden>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0M19 8v6M16 11h6"/></svg>
+        </button>
+      </span>
     </header>
-    <div class="channels">
-      <div class="section-label">TEXT CHANNELS <button id="new-channel" class="icon-btn small" title="Create channel" aria-label="Create channel" hidden>+</button></div>
-      <div id="text-channels"></div>
-      <div class="section-label">VOICE</div>
-      <div id="voice-channels"></div>
-    </div>
+    <div class="channels" id="channel-tree" data-menu="channel-list" aria-label="Channel list"></div>
     <div id="voice-panel" class="voice-panel" hidden></div>
     <div id="voice-audio" hidden></div>
     <footer class="user-panel">
@@ -189,6 +189,7 @@
 <script src="folders.js"></script>
 <script src="guild-info.js"></script>
 <script src="role-preview.js"></script>
+<script src="categories.js"></script>
 <script src="outhouses.js"></script>
 <script src="timetags.js"></script>
 <script src="detector.js"></script>

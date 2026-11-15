@@ -102,7 +102,14 @@ pub mod channel_kind {
     pub const VOICE: i16 = 2;
     /// A group direct message (up to [`super::MAX_GROUP_DM`] people).
     pub const GROUP_DM: i16 = 3;
+    /// A category: a header that text and voice channels sit under (as in
+    /// Discord). It has a name, a position and permission overwrites, but
+    /// no messages; channels point at it with `parent_id`.
+    pub const CATEGORY: i16 = 4;
 }
+
+/// Longest category name (shown in capitals).
+pub const MAX_CATEGORY_NAME_CHARS: usize = 100;
 
 /// The outhouse ID direct-message channels report (they don't belong to one).
 pub const DM_GUILD: i64 = 0;
@@ -144,6 +151,21 @@ pub struct Channel {
     #[serde(default)]
     #[cfg_attr(feature = "sqlx", sqlx(default))]
     pub nsfw_accepted: bool,
+    /// The category this channel sits under (None: uncategorised, and
+    /// always None for categories themselves).
+    #[serde(with = "option_as_string", default)]
+    #[cfg_attr(feature = "sqlx", sqlx(default))]
+    pub parent_id: Option<i64>,
+    /// In a category: its permission overwrites are the same as the
+    /// category's ("Synced"). Only in the channel list.
+    #[serde(default)]
+    #[cfg_attr(feature = "sqlx", sqlx(default))]
+    pub permissions_synced: bool,
+    /// A category you've collapsed (per person, on every device). Only in
+    /// your own channel list.
+    #[serde(default)]
+    #[cfg_attr(feature = "sqlx", sqlx(default))]
+    pub collapsed: bool,
 }
 
 /// How a channel's messages are shown.
@@ -1490,6 +1512,50 @@ pub struct CreateGuildRequest {
 pub struct CreateChannelRequest {
     pub name: String,
     pub kind: Option<i16>,
+    /// The category to put it in (text and voice channels only).
+    #[serde(with = "option_as_string", default)]
+    pub parent_id: Option<i64>,
+    /// Copy the category's permission overwrites onto the new channel.
+    #[serde(default)]
+    pub sync_permissions: bool,
+}
+
+/// One entry of `PATCH /api/guilds/{id}/channels/positions`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelPosition {
+    #[serde(with = "as_string")]
+    pub id: i64,
+    /// Where it goes among its neighbours (left out: where it is).
+    #[serde(default)]
+    pub position: Option<i32>,
+    /// Left out: stays where it is; null: uncategorised; an ID: into that
+    /// category.
+    #[serde(default, deserialize_with = "parent_patch")]
+    pub parent_id: Option<Option<String>>,
+    /// Also copy the (new) category's permission overwrites onto it.
+    #[serde(default)]
+    pub sync_permissions: bool,
+}
+
+fn parent_patch<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Option<String>>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        S(String),
+        N(i64),
+    }
+    Ok(Some(Option::<Raw>::deserialize(d)?.map(|r| match r {
+        Raw::S(s) => s,
+        Raw::N(n) => n.to_string(),
+    })))
+}
+
+/// `PUT /api/channels/{id}/collapse`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollapseRequest {
+    pub collapsed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -467,7 +467,7 @@ document.addEventListener("keydown", (e) => {
   let timer = null;
   document.addEventListener("pointerdown", (e) => {
     if (e.pointerType !== "touch") return;
-    const row = e.target.closest?.("#voice-channels .voice-user:not(.hidden-voice)");
+    const row = e.target.closest?.("#channel-tree .voice-user:not(.hidden-voice)");
     if (!row) return;
     clearTimeout(timer);
     const { clientX, clientY } = e;

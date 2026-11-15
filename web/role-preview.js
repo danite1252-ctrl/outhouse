@@ -54,7 +54,11 @@ function applyPreview() {
   const p = pv.perms;
   state.myPerms = { guild: big(p.guild), channels: p.channels, top: p.top_position };
   // From the full list each time (adding a role can bring channels back).
-  state.channels = pv.channels.filter((c) => c.id in p.channels && can("view_channel", c.id));
+  const seen = pv.channels.filter((c) => c.kind !== CATEGORY && c.id in p.channels && can("view_channel", c.id));
+  // Categories as the server would list them: one with a channel the role
+  // can see, or one it can see (renderChannels hides empty ones it can't fill).
+  const filled = new Set(seen.map((c) => c.parent_id).filter(Boolean));
+  state.channels = [...seen, ...pv.channels.filter((c) => c.kind === CATEGORY && (filled.has(c.id) || (c.id in p.channels && can("view_channel", c.id))))];
   $("app").classList.add("previewing");
   drawPreviewBanner();
   renderChannels();

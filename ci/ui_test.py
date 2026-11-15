@@ -1200,14 +1200,14 @@ with sync_playwright() as p:
         extra = "window.__OUTHOUSE_DESKTOP__ = true; window.__OUTHOUSE_PLATFORM__ = 'android'; window.__OUTHOUSE_APP_VERSION__ = '0.2.1';" if android else ""
         pg.add_init_script(extra + f"localStorage.setItem('outhouse_token', {json.dumps(token)}); localStorage.setItem('outhouse_guild', {json.dumps(guild['id'])}); localStorage.setItem('outhouse_channel_{guild['id']}', {json.dumps(chan['id'])});")
         pg.goto(BASE + "/")
-        pg.wait_for_selector("#voice-channels .channel.voice", timeout=15000)
+        pg.wait_for_selector("#channel-tree .channel.voice", timeout=15000)
         return pg
 
     def join(pg, name, drawer=False):
         if drawer and not pg.evaluate("document.getElementById('app').classList.contains('show-nav')"):
             pg.click("#nav-toggle")
             pg.wait_for_timeout(400)
-        pg.click(f"#voice-channels .channel.voice:has-text('{name}')")
+        pg.click(f"#channel-tree .channel.voice:has-text('{name}')")
         pg.wait_for_selector("#voice-panel .vp-status:not(.connecting)", timeout=20000)
         pg.wait_for_function("state.voice.room && state.voice.room.state === 'connected'", timeout=20000)
 
@@ -1217,7 +1217,7 @@ with sync_playwright() as p:
     join(davev, "Raid comms")
     # Dave's entrance sound plays for Carol.
     carolv.wait_for_function(f"state.voice.lastEntrance?.user_id === {json.dumps(DAVE)} && state.voice.lastEntrance.played", timeout=10000)
-    carolv.wait_for_selector(f"#voice-channels .voice-user[data-id='{DAVE}']", timeout=10000)
+    carolv.wait_for_selector(f"#channel-tree .voice-user[data-id='{DAVE}']", timeout=10000)
 
     # Screen share: Carol shares, Dave sees a tile and a LIVE badge.
     carolv.click("#voice-panel .vp-btn.share")
@@ -1233,7 +1233,7 @@ with sync_playwright() as p:
     assert saved["res"] == "720p" and saved["fps"] == 30, saved
     carolv.wait_for_selector("#screen-stage .screen-tile.mine .st-quality:has-text('720p · 30 fps')", timeout=10000)
     davev.wait_for_selector("#screen-stage .screen-tile .st-quality:has-text('720p · 30 fps')", timeout=15000)
-    davev.wait_for_selector(f"#voice-channels .voice-user[data-id='{CAROL}'] .live-badge", timeout=10000)
+    davev.wait_for_selector(f"#channel-tree .voice-user[data-id='{CAROL}'] .live-badge", timeout=10000)
     davev.wait_for_selector(f"#screen-stage .screen-tile[data-id='{CAROL}']", timeout=15000)
     davev.wait_for_function(f"document.querySelector(\"#screen-stage .screen-tile[data-id='{CAROL}'] video\").videoWidth > 0", timeout=15000)
     davev.screenshot(path=f"{SHOTS}/80-screen-share-strip.png")
@@ -1247,9 +1247,9 @@ with sync_playwright() as p:
     # A phone watching (no share button needed there, but it can watch).
     erinv = voice_page(erin["token"], "erin-phone", {"width": 390, "height": 844}, mobile=True)
     join(erinv, "Raid comms", drawer=True)
-    erinv.wait_for_selector(f"#voice-channels .voice-user[data-id='{CAROL}'] .live-badge", timeout=10000)
+    erinv.wait_for_selector(f"#channel-tree .voice-user[data-id='{CAROL}'] .live-badge", timeout=10000)
     erinv.screenshot(path=f"{SHOTS}/82-phone-voice-panel.png")
-    erinv.click(f"#voice-channels .voice-user[data-id='{CAROL}'] .live-badge")
+    erinv.click(f"#channel-tree .voice-user[data-id='{CAROL}'] .live-badge")
     erinv.wait_for_selector("#screen-stage.focused .screen-tile.big", timeout=15000)
     erinv.wait_for_timeout(400)
     erinv.screenshot(path=f"{SHOTS}/83-phone-screen-share.png")
@@ -1263,14 +1263,14 @@ with sync_playwright() as p:
     frankv.screenshot(path=f"{SHOTS}/84-android-voice-panel.png")
 
     # Moderation: right-click Dave in voice.
-    carolv.click(f"#voice-channels .voice-user[data-id='{DAVE}']", button="right")
+    carolv.click(f"#channel-tree .voice-user[data-id='{DAVE}']", button="right")
     carolv.wait_for_selector(".menu button:has-text('Server mute')")
     carolv.wait_for_selector(".menu .menu-slider input[max='200']")
     carolv.screenshot(path=f"{SHOTS}/85-voice-user-menu.png")
     carolv.click(".menu button:has-text('Server mute')")
     davev.wait_for_selector("#me-mute.forced", timeout=10000)
-    davev.wait_for_selector(f"#voice-channels .voice-user[data-id='{DAVE}'] .vicon.server", timeout=10000)
-    carolv.wait_for_selector(f"#voice-channels .voice-user[data-id='{DAVE}'] .vicon.server", timeout=10000)
+    davev.wait_for_selector(f"#channel-tree .voice-user[data-id='{DAVE}'] .vicon.server", timeout=10000)
+    carolv.wait_for_selector(f"#channel-tree .voice-user[data-id='{DAVE}'] .vicon.server", timeout=10000)
     davev.wait_for_function("state.voice.serverMuted === true")
     davev.screenshot(path=f"{SHOTS}/86-server-muted.png")
     # Rejoining keeps the mute.
@@ -1279,7 +1279,7 @@ with sync_playwright() as p:
     join(davev, "Raid comms")
     davev.wait_for_function("state.voice.serverMuted === true", timeout=10000)
     davev.wait_for_selector("#me-mute.forced")
-    carolv.click(f"#voice-channels .voice-user[data-id='{DAVE}']", button="right")
+    carolv.click(f"#channel-tree .voice-user[data-id='{DAVE}']", button="right")
     carolv.click(".menu button:has-text('Server mute')")
     davev.wait_for_function("state.voice.serverMuted === false", timeout=10000)
     davev.wait_for_selector("#me-mute.forced", state="detached")
@@ -1287,33 +1287,33 @@ with sync_playwright() as p:
     davev.wait_for_function("(() => { const p = state.voice.room.localParticipant.getTrackPublication(LivekitClient.Track.Source.Microphone); return !!p && !p.isMuted; })()", timeout=15000)
 
     # Server deafen, then undeafen: Dave hears Carol again.
-    carolv.click(f"#voice-channels .voice-user[data-id='{DAVE}']", button="right")
+    carolv.click(f"#channel-tree .voice-user[data-id='{DAVE}']", button="right")
     carolv.click(".menu button:has-text('Server deafen')")
     davev.wait_for_function("state.voice.serverDeafened === true", timeout=10000)
     davev.wait_for_selector("#me-mute.forced")
-    carolv.wait_for_selector(f"#voice-channels .voice-user[data-id='{DAVE}'] .vicon.server")
-    carolv.click(f"#voice-channels .voice-user[data-id='{DAVE}']", button="right")
+    carolv.wait_for_selector(f"#channel-tree .voice-user[data-id='{DAVE}'] .vicon.server")
+    carolv.click(f"#channel-tree .voice-user[data-id='{DAVE}']", button="right")
     carolv.click(".menu button:has-text('Server deafen')")
     davev.wait_for_function("state.voice.serverDeafened === false", timeout=10000)
     davev.wait_for_function(f"(() => {{ const p = state.voice.room.remoteParticipants.get({json.dumps(CAROL)}); const pub = p && p.getTrackPublication(LivekitClient.Track.Source.Microphone); return !!pub && pub.isSubscribed && !!pub.track; }})()", timeout=15000)
 
     # Mute Dave just for Carol.
-    carolv.click(f"#voice-channels .voice-user[data-id='{DAVE}']", button="right")
+    carolv.click(f"#channel-tree .voice-user[data-id='{DAVE}']", button="right")
     carolv.click(".menu button:has-text('Mute for me')")
-    carolv.wait_for_selector(f"#voice-channels .voice-user[data-id='{DAVE}'] .vicon.local")
+    carolv.wait_for_selector(f"#channel-tree .voice-user[data-id='{DAVE}'] .vicon.local")
     carolv.screenshot(path=f"{SHOTS}/87-voice-list-desktop.png")
 
     # Move Dave to AFK, then disconnect him.
-    carolv.click(f"#voice-channels .voice-user[data-id='{DAVE}']", button="right")
+    carolv.click(f"#channel-tree .voice-user[data-id='{DAVE}']", button="right")
     carolv.hover(".menu button:has-text('Move to')")
     carolv.click(".menu button:has-text('AFK')")
     davev.wait_for_selector("#voice-panel .vp-channel:has-text('AFK')", timeout=20000)
     davev.wait_for_function("state.voice.room && state.voice.room.state === 'connected' && state.voice.channelId === " + json.dumps(afk["id"]), timeout=20000)
     carolv.wait_for_function(f"state.voiceStates.get({json.dumps(DAVE)})?.channel_id === {json.dumps(afk['id'])}", timeout=10000)
-    carolv.click(f"#voice-channels .voice-user[data-id='{DAVE}']", button="right")
+    carolv.click(f"#channel-tree .voice-user[data-id='{DAVE}']", button="right")
     carolv.click(".menu button:has-text('Disconnect from voice')")
     davev.wait_for_selector("#voice-panel", state="hidden", timeout=10000)
-    carolv.wait_for_selector(f"#voice-channels .voice-user[data-id='{DAVE}']", state="detached", timeout=10000)
+    carolv.wait_for_selector(f"#channel-tree .voice-user[data-id='{DAVE}']", state="detached", timeout=10000)
 
     # The built-in classics really decode in Chrome, aren't silent or clipped, and fit the 10 s limit.
     decoded = carolv.evaluate("""async () => {
@@ -1598,7 +1598,7 @@ with sync_playwright() as p:
         pg.screenshot(path=f"{SHOTS}/91{'e' if label == 'phone' else 'f'}-{label}-userbar-out-of-voice.png")
     # Reload: still muted, and joining voice keeps the mic off.
     carolv.reload()
-    carolv.wait_for_selector("#voice-channels .channel.voice", timeout=15000)
+    carolv.wait_for_selector("#channel-tree .channel.voice", timeout=15000)
     carolv.wait_for_selector("#me-mute.off")
     join(carolv, "Raid comms")
     assert carolv.evaluate("state.voice.muted") is True
@@ -1686,12 +1686,12 @@ with sync_playwright() as p:
     b6.screenshot(path=f"{SHOTS}/96-profile-emberdrift.png")
     b6.keyboard.press("Escape")
     # Mute a channel and set the outhouse's level from right-click menus.
-    b6.click("#text-channels .channel:has-text('general')", button="right")
+    b6.click("#channel-tree .channel.text:has-text('general')", button="right")
     b6.hover(".menu button:has-text('Mute channel')")
     b6.wait_for_selector(".menu button:has-text('For 8 hours')")
     b6.screenshot(path=f"{SHOTS}/96b-channel-mute-menu.png")
     b6.click(".menu button:has-text('Until I turn it back on')")
-    b6.wait_for_selector("#text-channels .channel.muted-channel:has-text('general')", timeout=10000)
+    b6.wait_for_selector("#channel-tree .channel.text.muted-channel:has-text('general')", timeout=10000)
     b6.click(f".guild[title='UI Test Guild']", button="right")
     b6.hover(".menu button:has-text('Notifications')")
     b6.wait_for_selector(".menu button:has-text('Only @mentions and replies')")
@@ -1988,27 +1988,27 @@ with sync_playwright() as p:
     ec.keyboard.press("Escape")
     ec.wait_for_selector("dialog.settings", state="detached")
     # The ⚙ on hover and the right-click menu both open it.
-    ec.hover(f"#text-channels .channel[data-id='{spoil['id']}']")
-    ec.click(f"#text-channels .channel[data-id='{spoil['id']}'] .ch-gear")
+    ec.hover(f"#channel-tree .channel.text[data-id='{spoil['id']}']")
+    ec.click(f"#channel-tree .channel.text[data-id='{spoil['id']}'] .ch-gear")
     ec.wait_for_selector("dialog.edit-channel .ec-mode-spoiler input:checked")
     assert ec.evaluate("document.querySelector('.ec-slow-value').textContent") == "30 seconds"
     ec.keyboard.press("Escape")
     ec.wait_for_selector("dialog.settings", state="detached")
-    ec.click(f"#text-channels .channel[data-id='{dark['id']}']", button="right")
+    ec.click(f"#channel-tree .channel.text[data-id='{dark['id']}']", button="right")
     ec.wait_for_selector(".menu button:has-text('Edit channel')")
     ec.screenshot(path=f"{SHOTS}/166-channel-menu.png")
     ec.keyboard.press("Escape")
     # Age-restricted: the gate, then the messages once you say yes.
-    ec.click(f"#text-channels .channel[data-id='{dark['id']}']")
+    ec.click(f"#channel-tree .channel.text[data-id='{dark['id']}']")
     ec.wait_for_selector(".age-gate .ag-continue")
-    assert ec.evaluate(f"!!document.querySelector(\"#text-channels .channel[data-id='{dark['id']}'] .nsfw-badge\")")
+    assert ec.evaluate(f"!!document.querySelector(\"#channel-tree .channel.text[data-id='{dark['id']}'] .nsfw-badge\")")
     assert ec.evaluate("getComputedStyle(document.querySelector('#composer')).display") == "none"
     ec.screenshot(path=f"{SHOTS}/167-nsfw-gate.png")
     ec.click(".age-gate .ag-continue")
     ec.wait_for_selector("#messages .msg-text:has-text('Late night banter')", timeout=10000)
     ec.screenshot(path=f"{SHOTS}/168-nsfw-accepted.png")
     # Spoiler channel: blurred until clicked.
-    ec.click(f"#text-channels .channel[data-id='{spoil['id']}']")
+    ec.click(f"#channel-tree .channel.text[data-id='{spoil['id']}']")
     ec.wait_for_selector("#messages article.msg.spoilered")
     ec.wait_for_selector(".spoiler-bar")
     ec.screenshot(path=f"{SHOTS}/169-spoiler-channel.png")
@@ -2022,7 +2022,7 @@ with sync_playwright() as p:
 
     # Slowmode countdown for someone who doesn't skip it.
     sd = fresh(dave["token"], "slowmode-desktop", viewport={"width": 1280, "height": 800})
-    sd.click(f"#text-channels .channel[data-id='{spoil['id']}']")
+    sd.click(f"#channel-tree .channel.text[data-id='{spoil['id']}']")
     sd.wait_for_selector("#slowmode-note")
     sd.fill("#composer-input", "Who's got the frost resist gear?")
     sd.keyboard.press("Enter")
@@ -2034,7 +2034,7 @@ with sync_playwright() as p:
     sd.wait_for_selector(".toast:has-text('Slowmode')", timeout=5000)
     assert sd.evaluate("document.querySelector('#composer-input').value") == "too quick"
     # Dave sees the 18+ gate (Carol's yes doesn't count for him).
-    sd.click(f"#text-channels .channel[data-id='{dark['id']}']")
+    sd.click(f"#channel-tree .channel.text[data-id='{dark['id']}']")
     sd.wait_for_selector(".age-gate")
     sd.close()
 
@@ -3596,11 +3596,11 @@ with sync_playwright() as p:
     hv = voice_page(hush["token"], "parity-hush-voice")
     join(hv, "Quiet corner")
     # Carol: Grim folds into "Blocked user" (no avatar); Hush is only "Someone (blocked)".
-    grim_row = f"#voice-channels .voice-user[data-id='{GRIM}']"
+    grim_row = f"#channel-tree .voice-user[data-id='{GRIM}']"
     cv.wait_for_selector(f"{grim_row}.blocked-voice:has-text('Blocked user') .bv-show", timeout=10000)
     assert not cv.query_selector(f"{grim_row} .avatar")
-    cv.wait_for_selector("#voice-channels .voice-user.hidden-voice:has-text('Someone (blocked)')", timeout=20000)
-    assert not cv.query_selector(f"#voice-channels .voice-user[data-id='{HUSH}']:not(.hidden-voice)"), "Hush shown by name"
+    cv.wait_for_selector("#channel-tree .voice-user.hidden-voice:has-text('Someone (blocked)')", timeout=20000)
+    assert not cv.query_selector(f"#channel-tree .voice-user[data-id='{HUSH}']:not(.hidden-voice)"), "Hush shown by name"
     assert cv.evaluate(f"[...state.voiceStates.keys()].includes({json.dumps(HUSH)})") is False
     cv.wait_for_timeout(1500)
     assert cv.evaluate("state.voice.lastEntrance?.user_id ?? null") != GRIM, "Grim's entrance sound reached Carol"
@@ -3611,13 +3611,13 @@ with sync_playwright() as p:
     cv.eval_on_selector(grim_row, "e => e.scrollIntoView({block: 'center'})")
     cv.screenshot(path=f"{SHOTS}/3561-desktop-voice-blocked-shown.png")
     # Grim on a phone: Carol (who blocked him) is "Someone (blocked)" there.
-    gv.wait_for_selector(f"#voice-channels .voice-user.hidden-voice[data-id='{CAROL}']:has-text('Someone (blocked)')", timeout=20000)
+    gv.wait_for_selector(f"#channel-tree .voice-user.hidden-voice[data-id='{CAROL}']:has-text('Someone (blocked)')", timeout=20000)
     assert gv.evaluate(f"[...state.voiceStates.keys()].includes({json.dumps(CAROL)})") is False
-    gv.eval_on_selector(f"#voice-channels .voice-user.hidden-voice[data-id='{CAROL}']", "e => e.scrollIntoView({block: 'center'})")
+    gv.eval_on_selector(f"#channel-tree .voice-user.hidden-voice[data-id='{CAROL}']", "e => e.scrollIntoView({block: 'center'})")
     gv.wait_for_timeout(400)
     gv.screenshot(path=f"{SHOTS}/3562-phone-voice-blocked-by.png")
     # Hush blocked Carol, so she's folded in Hush's list.
-    hv.wait_for_selector(f"#voice-channels .voice-user.blocked-voice[data-id='{CAROL}']", timeout=10000)
+    hv.wait_for_selector(f"#channel-tree .voice-user.blocked-voice[data-id='{CAROL}']", timeout=10000)
     # Privacy settings: the fold switch.
     cv.evaluate("openUserSettings('privacy')")
     cv.wait_for_selector("#voice-fold-blocked", timeout=10000)
@@ -3710,7 +3710,7 @@ with sync_playwright() as p:
         up.wait_for_selector(".upd-pop", state="detached", timeout=3000)
         if label == "desktop":
             # In voice: it warns first, and leaves voice before updating.
-            up.click("#voice-channels .channel.voice:has-text('Raid comms')")
+            up.click("#channel-tree .channel.voice:has-text('Raid comms')")
             up.wait_for_function("state.voice.room && state.voice.room.state === 'connected'", timeout=20000)
             up.click("#update-btn")
             up.wait_for_selector(".upd-pop .upd-warn:has-text('This will disconnect you from voice')")
@@ -4804,7 +4804,7 @@ with sync_playwright() as p:
     api("PUT", f"/api/channels/{pv_hidden['id']}/permissions/{pv_role['id']}", {"kind": "role", "allow": str(VIEW), "deny": "0"}, TOKEN)
     api("PUT", f"/api/channels/{pv_ro['id']}/permissions/{G}", {"kind": "role", "allow": "0", "deny": str(SEND)}, TOKEN)
     api("POST", f"/api/channels/{pv_ro['id']}/messages", {"content": "Patch day tomorrow."}, TOKEN)
-    fp.wait_for_selector("#text-channels .channel:has-text('previewers-only')", timeout=10000)
+    fp.wait_for_selector("#channel-tree .channel.text:has-text('previewers-only')", timeout=10000)
     fp.evaluate("openSettings('roles')")
     fp.wait_for_selector("#role-picker", timeout=10000)
     assert fp.locator("dialog.settings .settings-nav button:text-is('Roles')").count() == 1
@@ -4824,8 +4824,8 @@ with sync_playwright() as p:
     fp.wait_for_selector("dialog.settings h2:text-is('@everyone')")
     fp.click("dialog.settings button.view-as")
     fp.wait_for_selector("#preview-banner .pv-exit", timeout=10000)
-    fp.wait_for_selector("#text-channels .channel:has-text('previewers-only')", state="detached")
-    fp.click("#text-channels .channel:has-text('read-only-news')")
+    fp.wait_for_selector("#channel-tree .channel.text:has-text('previewers-only')", state="detached")
+    fp.click("#channel-tree .channel.text:has-text('read-only-news')")
     fp.wait_for_selector("#messages .msg:has-text('Patch day tomorrow.')", timeout=10000)
     assert fp.is_disabled("#composer-input")
     assert "can't post" in fp.get_attribute("#composer-input", "placeholder")
@@ -4835,7 +4835,7 @@ with sync_playwright() as p:
     fp.click("#preview-banner .pv-add")
     fp.click(".menu button:has-text('Previewer')")
     fp.wait_for_selector("#preview-banner .pv-chip:has-text('Previewer')")
-    fp.wait_for_selector("#text-channels .channel:has-text('previewers-only')", timeout=10000)
+    fp.wait_for_selector("#channel-tree .channel.text:has-text('previewers-only')", timeout=10000)
     fp.screenshot(path=f"{SHOTS}/3815-desktop-view-as-previewer.png")
     fp.click("#preview-banner .pv-exit")
     fp.wait_for_selector("#preview-banner", state="detached")
@@ -4897,7 +4897,7 @@ with sync_playwright() as p:
             php.screenshot(path=f"{SHOTS}/3829-phone-view-as-everyone.png")
             php.click("#nav-toggle")
             php.wait_for_timeout(500)
-            assert php.locator("#text-channels .channel:has-text('previewers-only')").count() == 0
+            assert php.locator("#channel-tree .channel.text:has-text('previewers-only')").count() == 0
             php.screenshot(path=f"{SHOTS}/3830-phone-view-as-everyone-drawer.png")
         php.close()
 
@@ -5206,6 +5206,10 @@ with sync_playwright() as p:
     # ---- Raid attendance from MRT (mrt.js): ci/ui_attendance.py ----
     import ui_attendance
     ui_attendance.run(browser, BASE, SHOTS, watch, os.environ["DATABASE_URL"])
+
+    # ---- Channel categories and drag and drop (categories.js): ci/ui_categories.py ----
+    import ui_categories
+    ui_categories.run(browser, BASE, SHOTS, watch, os.environ["DATABASE_URL"])
 
     browser.close()
 

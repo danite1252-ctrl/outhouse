@@ -174,6 +174,15 @@ pub fn router(state: AppState) -> Router {
             get(channels::list).post(channels::create),
         )
         .route(
+            "/api/guilds/{id}/channels/positions",
+            patch(channels::reorder),
+        )
+        .route(
+            "/api/channels/{id}/sync-permissions",
+            post(channels::sync_permissions),
+        )
+        .route("/api/channels/{id}/collapse", put(channels::collapse))
+        .route(
             "/api/channels/{id}",
             patch(channels::update).delete(channels::delete),
         )

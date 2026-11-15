@@ -23,7 +23,7 @@ const chById = (id) => state.channels.find((c) => c.id === id);
 const isGuildText = (c) => c && c.kind === TEXT && c.guild_id && c.guild_id !== "0";
 // Age-restricted and not accepted yet: nothing from it is shown (the server won't send it anyway).
 const isGated = (c) => isGuildText(c) && c.content_mode === "nsfw" && !c.nsfw_accepted;
-const canEditChannel = (c) => c && c.guild_id && c.guild_id !== "0" && (c.kind === TEXT || c.kind === VOICE) &&
+const canEditChannel = (c) => c && c.guild_id && c.guild_id !== "0" && (c.kind === TEXT || c.kind === VOICE || c.kind === CATEGORY) &&
   (can("manage_channels", c.id) || can("manage_roles"));
 const skipsSlowmode = (c) => can("manage_messages", c.id) || can("manage_channels", c.id);
 
@@ -177,7 +177,7 @@ renderMessages.forceBottom = false;
 const csBaseRenderChannels = renderChannels;
 renderChannels = function (...args) {
   const out = csBaseRenderChannels(...args);
-  for (const node of document.querySelectorAll("#text-channels .channel[data-id], #voice-channels .channel[data-id]")) {
+  for (const node of document.querySelectorAll("#channel-tree .channel[data-id]")) {
     const ch = chById(node.dataset.id);
     if (!ch) continue;
     if (ch.kind === TEXT && ch.content_mode === "nsfw" && !node.querySelector(".nsfw-badge")) {
@@ -398,7 +398,8 @@ sendMessage = async function (content, ...rest) {
 function openEditChannel(channel, tab = "overview") {
   const ch = chById(channel.id) || channel;
   if (!canEditChannel(ch)) return toast("You can't edit this channel.");
-  const shell = settingsShell(`Edit #${ch.name}`);
+  const isCat = ch.kind === CATEGORY;
+  const shell = settingsShell(isCat ? `Edit ${ch.name.toUpperCase()}` : `Edit #${ch.name}`);
   const { dialog, nav, main } = shell;
   dialog.classList.add("edit-channel");
   let dirty = null; // the Overview page's "unsaved changes" check
@@ -412,11 +413,11 @@ function openEditChannel(channel, tab = "overview") {
     dirty = null;
     const current = chById(ch.id) || ch;
     nav.replaceChildren(
-      el("h3", {}, `${current.kind === VOICE ? "🔈 " : "#"}${current.name.toUpperCase()}`),
-      el("h3", { class: "ec-kind" }, current.kind === VOICE ? "VOICE CHANNEL" : "TEXT CHANNEL"),
+      el("h3", {}, `${current.kind === VOICE ? "🔈 " : isCat ? "" : "#"}${current.name.toUpperCase()}`),
+      el("h3", { class: "ec-kind" }, current.kind === VOICE ? "VOICE CHANNEL" : isCat ? "CATEGORY" : "TEXT CHANNEL"),
       ...tabs.map(([key, label]) => el("button", { class: key === active ? "active" : "", "data-tab": key, onclick: () => draw(key) }, label)),
       can("manage_channels", ch.id) ? el("div", { class: "ec-sep" }) : null,
-      can("manage_channels", ch.id) ? el("button", { class: `ec-delete-tab${active === "delete" ? " active" : ""}`, "data-tab": "delete", onclick: () => draw("delete") }, "Delete", el("span", { class: "ec-wide" }, " channel")) : null);
+      can("manage_channels", ch.id) ? el("button", { class: `ec-delete-tab${active === "delete" ? " active" : ""}`, "data-tab": "delete", onclick: () => draw("delete") }, "Delete", el("span", { class: "ec-wide" }, isCat ? " category" : " channel")) : null);
     if (active === "overview") dirty = drawChannelOverview(main, current, dialog);
     else if (active === "permissions") drawChannelPermissions(main, current, dialog);
     else if (active === "automod") drawChannelAutomod(main, current).then((check) => { if (check && nav.querySelector("button.active[data-tab='automod']")) dirty = check; });
@@ -435,10 +436,12 @@ function openEditChannel(channel, tab = "overview") {
 
 function drawChannelOverview(main, ch, dialog) {
   const text = ch.kind === TEXT;
-  const name = el("input", { type: "text", maxlength: 50, "aria-label": "Channel name", autocomplete: "off" });
+  const isCat = ch.kind === CATEGORY;
+  const name = el("input", { type: "text", maxlength: isCat ? 100 : 50, "aria-label": isCat ? "Category name" : "Channel name", autocomplete: "off" });
   name.value = ch.name;
   const nameHint = el("div", { class: "ec-hint" });
   const showNameHint = () => {
+    if (isCat) { nameHint.textContent = "Shown in capitals in the channel list."; return; }
     if (!text) return;
     const norm = name.value.trim().toLowerCase().split(/\s+/).join("-").replace(/[^\p{L}\p{N}_-]/gu, "").slice(0, 50);
     nameHint.textContent = norm && norm !== name.value.trim() ? `Will be saved as #${norm}` : "Lower case, dashes for spaces.";
@@ -498,7 +501,7 @@ function drawChannelOverview(main, ch, dialog) {
   };
   const save = el("button", { class: "primary", onclick: async () => {
     const v = values();
-    if (!v.name) return toast("Give the channel a name.");
+    if (!v.name) return toast(isCat ? "Give the category a name." : "Give the channel a name.");
     if ([...v.topic].length > TOPIC_MAX) return toast(`Topics can be up to ${TOPIC_MAX} characters.`);
     save.disabled = true;
     const body = text ? v : { name: v.name };
@@ -512,9 +515,9 @@ function drawChannelOverview(main, ch, dialog) {
     name.value = updated.name;
     topic.value = decodeTopic(updated.topic);
     showNameHint(); showTopic();
-    toast("Channel saved.");
+    toast(isCat ? "Category saved." : "Channel saved.");
     renderChannels();
-    if (state.channelId === ch.id && !state.home) selectChannel(ch.id);
+    if (!isCat && state.channelId === ch.id && !state.home) selectChannel(ch.id);
     paintBar();
   } }, "Save changes");
   const reset = el("button", { class: "link", onclick: () => {
@@ -534,7 +537,7 @@ function drawChannelOverview(main, ch, dialog) {
 
   main.replaceChildren(el("div", { class: "ec-page" },
     el("h2", {}, "Overview"),
-    el("label", { class: "field" }, "Channel name", name, text ? nameHint : null),
+    el("label", { class: "field" }, isCat ? "Category name" : "Channel name", name, text || isCat ? nameHint : null),
     text ? el("div", { class: "field ec-topic" },
       el("div", { class: "ec-row" }, el("label", { for: `topic-${ch.id}` }, "Channel topic"), count),
       topic,
@@ -549,7 +552,8 @@ function drawChannelOverview(main, ch, dialog) {
     text ? el("div", { class: "field" }, el("span", {}, "Content visibility"), modeBox) : null,
     text && typeof threadArchiveField === "function" ? el("div", { class: "ec-divider" }) : null,
     text && typeof threadArchiveField === "function" ? threadArchiveField(ch) : null,
-    !text ? el("p", { class: "muted", style: "margin:0" }, "Voice channels just have a name. Use the Permissions tab to decide who can join and speak.") : null),
+    isCat ? el("p", { class: "muted", style: "margin:0" }, "Categories group text and voice channels under a header. Their permissions are copied onto channels when you sync them (on each channel's Permissions tab, or Sync all on this one's).") : null,
+    !text && !isCat ? el("p", { class: "muted", style: "margin:0" }, "Voice channels just have a name. Use the Permissions tab to decide who can join and speak.") : null),
     bar);
   topic.id = `topic-${ch.id}`;
   paintBar();
@@ -559,7 +563,8 @@ function drawChannelOverview(main, ch, dialog) {
 function drawChannelPermissions(main, ch, dialog) {
   const targets = el("nav", { class: "settings-nav ec-perm-targets", "aria-label": "Roles and members" });
   const page = el("div", { class: "ec-perm-page" });
-  main.replaceChildren(el("div", { class: "ec-perms" }, targets, page));
+  const sync = typeof categorySyncBar === "function" ? categorySyncBar(ch) : null;
+  main.replaceChildren(el("div", { class: `ec-perms${sync ? " with-sync" : ""}` }, sync, targets, page));
   // The existing channel permission editor, drawn inside this tab.
   const shellOverride = { dialog, nav: targets, main: page, title: `#${ch.name}` };
   const realShell = settingsShell;
@@ -572,6 +577,7 @@ function drawChannelPermissions(main, ch, dialog) {
 }
 
 function drawChannelDelete(main, ch, dialog) {
+  if (ch.kind === CATEGORY) return drawCategoryDelete(main, ch, dialog);
   const isVoice = ch.kind === VOICE;
   main.replaceChildren(el("div", { class: "ec-page" },
     el("h2", {}, "Delete channel"),
@@ -588,6 +594,23 @@ function drawChannelDelete(main, ch, dialog) {
         const ok = await tryApi("DELETE", `/api/channels/${ch.id}`).then(() => true).catch(() => false);
         if (ok) { toast(`${isVoice ? ch.name : `#${ch.name}`} has been flushed.`); dialog.close(); }
       } }, "Delete channel"))));
+}
+
+function drawCategoryDelete(main, cat, dialog) {
+  const inside = state.channels.filter((c) => c.parent_id === cat.id).length;
+  main.replaceChildren(el("div", { class: "ec-page" },
+    el("h2", {}, "Delete category"),
+    el("div", { class: "ec-danger" },
+      el("div", { class: "ec-danger-icon", "aria-hidden": "true" }, "🗂"),
+      el("div", {},
+        el("p", { class: "ec-danger-title" }, `Delete ${cat.name.toUpperCase()}?`),
+        el("p", { class: "muted" }, inside
+          ? `Its ${inside} channel${inside === 1 ? "" : "s"} won't be deleted: they move to the top of the list, with no category.`
+          : "There's nothing in it. Channels are never deleted with a category."))),
+    el("div", {},
+      el("button", { class: "danger-btn ec-delete-btn", onclick: async () => {
+        if (await deleteCategory(cat)) dialog.close();
+      } }, "Delete category"))));
 }
 
 // The channel list and header may already be drawn (this file loads last).

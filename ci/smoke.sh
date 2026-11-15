@@ -5046,4 +5046,11 @@ BASE=$BASE MAIL_DIR=$MAIL_DIR OWNER_TOKEN=$TOKEN_A bash ci/auth_test.sh
 step "site staff and ownership transfers (ci/staff_test.sh)"
 BASE=$BASE MAIL_DIR=$MAIL_DIR OWNER_TOKEN=$TOKEN_A PUSH=$PUSH bash ci/staff_test.sh
 
+# ---------------------------------------------------------------------------
+# Channel categories and drag-and-drop order (feat-categories): its own
+# script, so it can also run on its own against a local server.
+# ---------------------------------------------------------------------------
+step "channel categories, channel order, permission sync (ci/categories_test.sh)"
+BASE=$BASE DATABASE_URL=$DATABASE_URL bash ci/categories_test.sh
+
 echo "Smoke test passed."

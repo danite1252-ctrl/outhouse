@@ -582,7 +582,7 @@ html.android-app { --safe-top: max(env(safe-area-inset-top, 0px), 32px); --safe-
 .home.active::before { content: ""; position: absolute; left: -6px; top: 10px; width: 4px; height: 40px; border-radius: 0 4px 4px 0; background: var(--text); }
 .home .mention-badge.rail-badge { position: absolute; right: -4px; bottom: -4px; margin: 0; border: 3px solid var(--panel); height: 22px; line-height: 16px; border-radius: 11px; }
 .app.home-mode .sidebar .channels:not(#dm-list) { display: none; }
-.app.home-mode #invite-btn, .app.home-mode #raid-btn, .app.home-mode #pins-btn,
+.app.home-mode #invite-btn, .app.home-mode #channel-add, .app.home-mode #raid-btn, .app.home-mode #pins-btn,
 .app.home-mode .search-box, .app.home-mode #search-toggle { display: none !important; }
 .app.home-mode .chat-head .hash { font-size: 18px; }
 .dm-row { gap: 10px; padding: 6px 8px; }
@@ -2592,7 +2592,7 @@ button.sc-row:hover { border-color: var(--muted); }
 /* ---------- Profile cards' message box, the full profile page, message requests (profiles.js) ---------- */
 .mention.mention-user, .su-name.su-person { cursor: pointer; }
 #member-list .member[data-id] { cursor: pointer; }
-#voice-channels .voice-user[data-id]:not(.hidden-voice) { cursor: pointer; }
+#channel-tree .voice-user[data-id]:not(.hidden-voice) { cursor: pointer; }
 .pc-msg-box { display: grid; gap: 4px; margin-top: 2px; }
 .pc-msg { display: flex; }
 .pc-msg-input { flex: 1; min-width: 0; height: 40px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--night); color: var(--text); font: inherit; outline: none; }
@@ -2965,7 +2965,7 @@ dialog.settings .settings-nav button.so-tab.active { box-shadow: inset 3px 0 0 v
   .sc-seg { width: 100%; }
   .sc-seg-btn { flex: 1; }
 }
-.app.tombstone-mode #composer-wrap, .app.tombstone-mode .sidebar .section-label, .app.tombstone-mode #invite-btn,
+.app.tombstone-mode #composer-wrap, .app.tombstone-mode .sidebar .section-label, .app.tombstone-mode #invite-btn, .app.tombstone-mode #channel-add,
 .app.tombstone-mode .chat-head .divider, .app.tombstone-mode .chat-head .hash, .app.tombstone-mode #members-toggle { display: none !important; }
 .app.tombstone-mode .chat-head > *:not(#nav-toggle):not(#channel-name):not(.conn) { display: none !important; }
 @media (max-width: 760px) {
@@ -3341,4 +3341,63 @@ dialog.mrt-dialog[open] { display: flex; flex-direction: column; gap: 10px; max-
   .att-editor .att-choice { flex: 1; justify-content: center; padding: 0 2px; gap: 2px; }
   .att-editor .att-choice .att-lbl { font-size: 10.5px; }
   .att-save > button { flex: 1; }
+}
+
+/* ---------- Channel categories and drag and drop (categories.js) ---------- */
+.sidebar-head .head-btns { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+.sidebar-head #guild-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ch-item { position: relative; }
+.ch-category { position: relative; margin-top: 14px; }
+#channel-tree.has-categories > .ch-group:first-child:not(:empty) + .ch-group { margin-top: 2px; }
+.category-head { display: flex; align-items: center; gap: 2px; padding: 4px 2px 4px 0; margin-bottom: 2px; font-size: 12px; font-weight: 600; letter-spacing: .04em; color: var(--muted); cursor: pointer; user-select: none; -webkit-user-select: none; border-radius: 6px; }
+.category-head:hover, .category-head:focus-visible { color: var(--text); }
+.category-head:focus-visible { outline: 2px solid var(--ember); outline-offset: 1px; }
+.cat-caret { display: inline-grid; place-items: center; width: 14px; height: 14px; font-size: 14px; line-height: 1; transform: rotate(90deg); transition: transform .12s; }
+.ch-category.collapsed .cat-caret { transform: none; }
+.cat-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.category-head .cat-add { opacity: 0; transition: opacity .1s; }
+.category-head:hover .cat-add, .category-head:focus-within .cat-add { opacity: 1; }
+@media (pointer: coarse) { .category-head .cat-add { opacity: 1; } }
+#channel-tree.has-categories > .ch-group:empty { display: none; }
+#channel-tree.drag-on > .ch-group:empty { display: block; min-height: 10px; }
+#channel-tree.drag-on .ch-group:empty { min-height: 10px; }
+.ch-item.dragging, .ch-category.dragging { opacity: .4; }
+.ch-item.drop-before::before, .ch-item.drop-after::after, .ch-category.drop-before::before, .ch-category.drop-after::after, .ch-group.drop-empty::after {
+  content: ""; position: absolute; left: 4px; right: 4px; height: 2px; border-radius: 2px; background: var(--ember); box-shadow: 0 0 6px var(--glow, var(--ember)); pointer-events: none; z-index: 1;
+}
+.ch-item.drop-before::before { top: -1px; }
+.ch-item.drop-after::after { bottom: -1px; }
+.ch-category.drop-before::before { top: -8px; }
+.ch-category.drop-after::after { bottom: -6px; }
+.ch-group.drop-empty { position: relative; min-height: 10px; }
+.ch-group.drop-empty::after { top: 4px; }
+.category-head.drop-into { background: color-mix(in srgb, var(--ember) 20%, transparent); color: var(--text); }
+.app.tombstone-mode .sidebar .category-head { display: none !important; }
+/* Create channel: the Category picker. */
+.cc-fields { display: grid; gap: 10px; margin: 0 0 12px; }
+.cc-field { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
+.cc-field select { width: 100%; }
+.cc-sync { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text); cursor: pointer; }
+.cc-sync[hidden] { display: none; }
+.cc-sync input { width: 16px; height: 16px; accent-color: var(--ember); margin: 0; }
+.cat-ask-note { margin: 0 0 10px; font-size: 13px; }
+/* "Sync them with RAIDS?" after a move. */
+.cat-sync-offer { position: fixed; left: 50%; bottom: 76px; transform: translateX(-50%); z-index: 60; display: flex; align-items: center; gap: 12px; max-width: min(560px, calc(100vw - 24px)); padding: 10px 12px 10px 16px; border-radius: 12px; border: 1px solid var(--line); background: var(--raised); box-shadow: 0 10px 30px rgba(0, 0, 0, .45); font-size: 14px; }
+.cat-sync-offer .cso-btns { display: flex; gap: 6px; flex: 0 0 auto; }
+.cat-sync-offer button { height: 32px; padding: 0 12px; }
+@media (max-width: 760px) {
+  .cat-sync-offer { flex-direction: column; align-items: stretch; bottom: 16px; width: calc(100vw - 24px); }
+  .cat-sync-offer .cso-btns { justify-content: flex-end; }
+}
+/* Synced / Not synced on a channel's Permissions tab. */
+.ec-perms.with-sync { flex-wrap: wrap; align-content: flex-start; }
+.ec-sync { flex: 1 0 calc(100% - 36px); margin-right: 36px; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); font-size: 13px; }
+.ec-sync-text { flex: 1; min-width: 160px; color: var(--muted); }
+.ec-sync-badge { padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+.ec-sync-badge.on { background: color-mix(in srgb, var(--vacant) 22%, transparent); color: var(--vacant); }
+.ec-sync-badge.off { background: color-mix(in srgb, var(--ember) 22%, transparent); color: var(--ember); }
+.ec-sync-btn { height: 30px; padding: 0 12px; }
+@media (max-width: 760px) {
+  .ec-perms.with-sync { flex-wrap: nowrap; }
+  .ec-perms.with-sync .ec-sync { flex: 0 0 auto; margin-right: 0; }
 }

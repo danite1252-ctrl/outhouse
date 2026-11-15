@@ -132,7 +132,7 @@ with sync_playwright() as p:
     pg.evaluate(f"openEditChannel(chById({json.dumps(chan['id'])}), 'automod')")
     pg.wait_for_selector("dialog.edit-channel .am-card", timeout=10000)
     pg.keyboard.press("Escape")
-    pg.click("#voice-channels .channel.voice:has-text('CSP Voice')")
+    pg.click("#channel-tree .channel.voice:has-text('CSP Voice')")
     pg.wait_for_selector("#voice-panel .vp-status:not(.connecting)", timeout=20000)
     until(pg, "state.voice.room && state.voice.room.state === 'connected'")
     pg.wait_for_timeout(1500)

@@ -4,6 +4,8 @@
 const AVATAR_COLOURS = ["#ff6b35", "#ffb347", "#fbbf24", "#f2917a", "#4ade80", "#a1a1aa"];
 const TEXT = 0;
 const VOICE = 2;
+// A channel category (a header text and voice channels sit under).
+const CATEGORY = 4;
 const QUICK_REACTIONS = ["👍", "😂", "❤️", "🔥", "😮", "😢"];
 const EMOJI = [
   "😀", "😂", "🤣", "😊", "😍", "😎", "🤔", "😮", "😢", "😭", "😡", "🥳",
@@ -274,7 +276,7 @@ function openMenu(x, y, items, depth = 0) {
           btn.classList.add("open");
           const r = btn.getBoundingClientRect();
           const sub = openMenu(r.right + 4, r.top - 6, item.submenu, depth + 1);
-          if (r.right + sub.offsetWidth + 8 > window.innerWidth) sub.style.left = `${r.left - sub.offsetWidth - 4}px`;
+          if (r.right + sub.offsetWidth + 8 > window.innerWidth) sub.style.left = `${Math.max(8, r.left - sub.offsetWidth - 4)}px`;
         };
         btn.addEventListener("mouseenter", openSub);
         btn.addEventListener("click", openSub);
@@ -857,9 +859,9 @@ function renderGuilds() {
 
 function renderEmpty() {
   $("guild-name").textContent = "No outhouse yet";
-  for (const id of ["text-channels", "voice-channels", "member-list"]) $(id).replaceChildren();
+  for (const id of ["channel-tree", "member-list"]) $(id).replaceChildren();
   $("invite-btn").hidden = true;
-  $("new-channel").hidden = true;
+  $("channel-add").hidden = true;
   $("composer-input").disabled = true;
   $("channel-name").textContent = "—";
   $("messages").replaceChildren(
@@ -874,47 +876,134 @@ function isUnread(c) {
   return c.kind === TEXT && c.last_message_id && (!c.last_read_id || idGt(c.last_message_id, c.last_read_id));
 }
 
-function renderChannels() {
-  const text = state.channels.filter((c) => c.kind === TEXT);
-  const voice = state.channels.filter((c) => c.kind === VOICE);
-  $("text-channels").replaceChildren(
-    ...text.map((c) =>
+// Channels in list order: by position (the server numbers them in list
+// order), then ID.
+const byPosition = (a, b) => (a.position - b.position) || (a.id.length - b.id.length) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+// The channel list as a tree, the way it's drawn: uncategorised text and
+// voice channels, then each category with its text channels above its voice
+// channels (Discord's rule). A category shows if you can see a channel in it,
+// or can see it and manage channels (so empty ones show to people who can
+// fill them). Channels whose category you can't see count as uncategorised.
+function channelTree(channels = state.channels) {
+  const cats = channels.filter((c) => c.kind === CATEGORY).sort(byPosition);
+  const known = new Set(cats.map((c) => c.id));
+  const groups = new Map();
+  const group = (parent, kind) => {
+    const key = `${parent || ""}:${kind}`;
+    if (!groups.has(key)) groups.set(key, []);
+    return groups.get(key);
+  };
+  for (const c of channels.filter((x) => x.kind === TEXT || x.kind === VOICE).sort(byPosition)) {
+    group(known.has(c.parent_id) ? c.parent_id : null, c.kind).push(c);
+  }
+  const categories = cats
+    .map((cat) => ({ cat, text: group(cat.id, TEXT), voice: group(cat.id, VOICE) }))
+    .filter((t) => t.text.length || t.voice.length || (t.cat.id in (state.myPerms?.channels || {})
+      ? can("view_channel", t.cat.id) && can("manage_channels", t.cat.id)
+      : can("manage_channels"))); // just made, before its permissions are fetched
+  return { text: group(null, TEXT), voice: group(null, VOICE), categories };
+}
+
+// Dragging channels around (desktop, Manage Channels, not while previewing a role).
+const channelDragOk = () => can("manage_channels") && !state.preview && !(typeof isTouch === "function" && isTouch());
+
+function channelRow(c, drag) {
+  if (c.kind === VOICE) {
+    const here = [...state.voiceStates.values()].filter((v) => v.channel_id === c.id);
+    const mine = state.voice.channelId === c.id;
+    return el("div", { class: "ch-item voice-item", "data-id": c.id, draggable: drag ? "true" : false },
       el("button", {
-        class: `channel${c.id === state.channelId ? " active" : ""}${c.id !== state.channelId && isUnread(c) ? " unread" : ""}`,
+        class: `channel voice${mine ? " active" : ""}`,
         "data-menu": "channel",
         "data-id": c.id,
-        onclick: () => selectChannel(c.id),
-      }, el("span", { class: "hash" }, "#"), el("span", { class: "cname" }, c.name), channelBadge(c.id)),
-    ),
-  );
-  $("voice-channels").replaceChildren(
-    ...voice.flatMap((c) => {
-      const here = [...state.voiceStates.values()].filter((v) => v.channel_id === c.id);
-      const mine = state.voice.channelId === c.id;
-      return [
-        el("button", {
-          class: `channel voice${mine ? " active" : ""}`,
-          "data-menu": "channel",
-          "data-id": c.id,
-          title: can("connect", c.id) ? `Join ${c.name}` : "You can't join this channel",
-          onclick: () => joinVoice(c.id),
-        }, el("span", { class: "hash" }, "🔈"), c.name),
-        ...here.map((v) => {
-          const m = memberById(v.user_id);
-          const speaking = mine && state.voice.speaking.has(v.user_id);
-          const live = mine && v.user_id === state.me.id && state.voice.live;
-          return el("div", { class: `voice-user${speaking ? " speaking" : ""}${live ? " live" : ""}`, "data-menu": "member", "data-id": v.user_id },
-            avatarFor(v.user_id, m?.display_name, 22),
-            el("span", { class: "vname" }, m?.display_name ?? "Someone"),
-            typeof voiceUserIcons === "function" ? voiceUserIcons(v, mine)
-              : v.deafened ? el("span", { class: "vicon", title: "Deafened" }, "🎧") : v.muted ? el("span", { class: "vicon", title: "Muted" }, "🔇") : null);
-        }),
-      ];
-    }),
-  );
+        title: can("connect", c.id) ? `Join ${c.name}` : "You can't join this channel",
+        onclick: () => joinVoice(c.id),
+      }, el("span", { class: "hash" }, "🔈"), c.name),
+      ...here.map((v) => {
+        const m = memberById(v.user_id);
+        const speaking = mine && state.voice.speaking.has(v.user_id);
+        const live = mine && v.user_id === state.me.id && state.voice.live;
+        return el("div", { class: `voice-user${speaking ? " speaking" : ""}${live ? " live" : ""}`, "data-menu": "member", "data-id": v.user_id },
+          avatarFor(v.user_id, m?.display_name, 22),
+          el("span", { class: "vname" }, m?.display_name ?? "Someone"),
+          typeof voiceUserIcons === "function" ? voiceUserIcons(v, mine)
+            : v.deafened ? el("span", { class: "vicon", title: "Deafened" }, "🎧") : v.muted ? el("span", { class: "vicon", title: "Muted" }, "🔇") : null);
+      }));
+  }
+  return el("div", { class: "ch-item", "data-id": c.id, draggable: drag ? "true" : false },
+    el("button", {
+      class: `channel text${c.id === state.channelId ? " active" : ""}${c.id !== state.channelId && isUnread(c) ? " unread" : ""}`,
+      "data-menu": "channel",
+      "data-id": c.id,
+      onclick: () => selectChannel(c.id),
+    }, el("span", { class: "hash" }, "#"), el("span", { class: "cname" }, c.name), channelBadge(c.id)));
+}
+
+// Collapsed categories still show the open channel, the voice channel
+// you're in, and channels with unread messages or mentions (as Discord does).
+function showsWhenCollapsed(c) {
+  if (c.kind === VOICE) return state.voice.channelId === c.id;
+  return c.id === state.channelId || isUnread(c) || (typeof channelMentions === "function" && channelMentions(c.id) > 0);
+}
+
+function renderChannels() {
+  const tree = channelTree();
+  const drag = channelDragOk();
+  const manage = can("manage_channels");
+  const groupBox = (parent, kind, list) =>
+    el("div", { class: `ch-group ${kind === VOICE ? "voice-group" : "text-group"}`, "data-parent": parent || "", "data-kind": kind }, list.map((c) => channelRow(c, drag)));
+  const nodes = [];
+  if (!tree.categories.length) {
+    // No categories: the classic look, "TEXT CHANNELS" and "VOICE".
+    nodes.push(
+      el("div", { class: "section-label" }, "TEXT CHANNELS",
+        manage ? el("button", { id: "new-channel", class: "icon-btn small", title: "Create channel", "aria-label": "Create channel", onclick: () => createChannel(TEXT) }, "+") : null),
+      groupBox(null, TEXT, tree.text),
+      el("div", { class: "section-label" }, "VOICE"),
+      groupBox(null, VOICE, tree.voice));
+  } else {
+    nodes.push(groupBox(null, TEXT, tree.text), groupBox(null, VOICE, tree.voice));
+    for (const { cat, text, voice } of tree.categories) {
+      const collapsed = !!cat.collapsed;
+      const shown = (list) => (collapsed ? list.filter(showsWhenCollapsed) : list);
+      nodes.push(el("div", { class: `ch-category${collapsed ? " collapsed" : ""}`, "data-id": cat.id },
+        el("div", {
+          class: "category-head",
+          "data-menu": "category",
+          "data-id": cat.id,
+          draggable: drag ? "true" : false,
+          role: "button",
+          tabindex: "0",
+          "aria-expanded": collapsed ? "false" : "true",
+          title: collapsed ? "Expand" : "Collapse",
+          onclick: (e) => { if (!e.target.closest(".cat-add")) toggleCategory(cat); },
+          onkeydown: (e) => { if ((e.key === "Enter" || e.key === " ") && !e.target.closest(".cat-add")) { e.preventDefault(); toggleCategory(cat); } },
+        },
+        el("span", { class: "cat-caret", "aria-hidden": "true" }, "›"),
+        el("span", { class: "cat-name" }, cat.name.toUpperCase()),
+        can("manage_channels", cat.id) ? el("button", {
+          class: "icon-btn small cat-add", type: "button", title: "Create channel", "aria-label": `Create a channel in ${cat.name}`,
+          onclick: (e) => { e.stopPropagation(); createChannel(TEXT, cat.id); },
+        }, "+") : null),
+        groupBox(cat.id, TEXT, shown(text)),
+        groupBox(cat.id, VOICE, shown(voice))));
+    }
+  }
+  const box = $("channel-tree");
+  box.classList.toggle("has-categories", tree.categories.length > 0);
+  box.classList.toggle("can-drag", drag);
+  box.replaceChildren(...nodes);
   renderVoicePanel();
-  $("new-channel").hidden = !can("manage_channels");
+  $("channel-add").hidden = !manage;
   $("invite-btn").hidden = !can("create_invite");
+}
+
+// Collapse or expand a category (yours alone; remembered on the server).
+function toggleCategory(cat, collapsed = !cat.collapsed) {
+  cat.collapsed = collapsed;
+  renderChannels();
+  api("PUT", `/api/channels/${cat.id}/collapse`, { collapsed }).catch(() => {});
 }
 
 function renderMembers() {
@@ -2374,13 +2463,13 @@ function meterTick() {
   const live = !!mic && !mic.isMuted && (usingPtt() || micPipe.gateOpen);
   if (live !== state.voice.live) {
     state.voice.live = live;
-    document.querySelector(`#voice-channels .voice-user[data-id="${state.me.id}"]`)?.classList.toggle("live", live);
+    document.querySelector(`#channel-tree .voice-user[data-id="${state.me.id}"]`)?.classList.toggle("live", live);
   }
   const prev = state.voice.speaking;
   if (speaking.size === prev.size && [...speaking].every((id) => prev.has(id))) return;
   state.voice.speaking = speaking;
   // Flip the class in place; redrawing the whole sidebar 20 times a second would be wasteful.
-  document.querySelectorAll("#voice-channels .voice-user").forEach((row) => {
+  document.querySelectorAll("#channel-tree .voice-user").forEach((row) => {
     row.classList.toggle("speaking", speaking.has(row.dataset.id));
   });
 }
@@ -3110,6 +3199,7 @@ const MENUS = {
       "sep",
       can("manage_roles") ? { label: "Edit permissions", onClick: () => openChannelPermissions(c) } : null,
       c.kind === TEXT && can("manage_webhooks", c.id) ? { label: "Webhooks & news feeds", onClick: () => openSettings("integrations") } : null,
+      ...(typeof channelMoveItems === "function" ? channelMoveItems(c) : []),
       can("manage_channels", c.id) ? { label: "Delete channel", danger: true, onClick: () => deleteChannel(c) } : null,
       "sep",
       { label: "Copy channel ID", onClick: () => copy(c.id, "ID copied") },
@@ -3126,6 +3216,7 @@ const MENUS = {
       here && can("create_invite") ? { label: "Invite people", onClick: invitePeople } : null,
       here && can("manage_channels") ? { label: "Create text channel", onClick: () => createChannel(TEXT) } : null,
       here && can("manage_channels") ? { label: "Create voice channel", onClick: () => createChannel(VOICE) } : null,
+      here && can("manage_channels") && typeof createCategory === "function" ? { label: "Create category", onClick: () => createCategory() } : null,
       here && (can("manage_roles") || can("ban_members") || can("manage_webhooks") || can("manage_guild") || can("view_audit_log")) ? { label: "Outhouse settings", onClick: () => openSettings(can("manage_guild") ? "overview" : can("manage_roles") ? "roles" : can("manage_webhooks") ? "integrations" : can("manage_guild") ? "emoji" : can("ban_members") ? "bans" : "audit") } : null,
       here && can("manage_guild") ? { label: "Custom emoji", onClick: () => openSettings("emoji") } : null,
       ...(typeof notifyMenuItems === "function" ? ["sep", ...notifyMenuItems("guild", g)] : []),
@@ -3189,11 +3280,30 @@ async function invitePeople() {
   if (res) await ask("Invite code (lasts 7 days)", { value: res.code, readOnly: true });
 }
 
-async function createChannel(kind = TEXT) {
+// `parentId`: start with that category picked. With categories, the dialog
+// has a Category picker and "Sync permissions with the category" (ticked,
+// like Discord: the new channel gets a copy of the category's permissions).
+async function createChannel(kind = TEXT, parentId = null) {
   const voice = kind === VOICE;
-  const name = await ask(voice ? "New voice channel" : "New text channel", { placeholder: voice ? "Raid comms" : "raid-signups", confirm: "Create" });
+  const cats = channelTree().categories.map((t) => t.cat).filter((c) => can("manage_channels", c.id));
+  let picker = null;
+  let sync = null;
+  let body = null;
+  if (cats.length) {
+    picker = el("select", { class: "cc-category", "aria-label": "Category" },
+      el("option", { value: "" }, "No category"),
+      cats.map((c) => el("option", { value: c.id, selected: c.id === parentId }, c.name.toUpperCase())));
+    sync = el("input", { type: "checkbox", class: "cc-sync-box", checked: true });
+    const syncRow = el("label", { class: "cc-sync" }, sync, el("span", {}, "Sync permissions with the category"));
+    const paint = () => { syncRow.hidden = !picker.value; };
+    picker.addEventListener("change", paint);
+    paint();
+    body = el("div", { class: "cc-fields" }, el("label", { class: "field cc-field" }, el("span", {}, "Category"), picker), syncRow);
+  }
+  const name = await ask(voice ? "New voice channel" : "New text channel", { placeholder: voice ? "Raid comms" : "raid-signups", confirm: "Create", body });
   if (!name) return;
-  const c = await tryApi("POST", `/api/guilds/${state.guildId}/channels`, { name, kind }).catch(() => null);
+  const parent = picker?.value || null;
+  const c = await tryApi("POST", `/api/guilds/${state.guildId}/channels`, { name, kind, parent_id: parent, sync_permissions: !!(parent && sync?.checked) }).catch(() => null);
   if (c) {
     if (!state.channels.some((x) => x.id === c.id)) state.channels.push(c);
     await refreshGuild();
@@ -3608,7 +3718,8 @@ async function drawIntegrations(main) {
 // ---------- settings: channel permissions ----------
 
 async function openChannelPermissions(channel) {
-  const { nav, main } = settingsShell(`#${channel.name}`);
+  const label = channel.kind === CATEGORY ? channel.name.toUpperCase() : `#${channel.name}`;
+  const { nav, main } = settingsShell(label);
   const draw = async (targetId) => {
     const overwrites = await tryApi("GET", `/api/channels/${channel.id}/permissions`).catch(() => null);
     if (!overwrites) return;
@@ -3623,7 +3734,7 @@ async function openChannelPermissions(channel) {
     }
     const current = targets.find((t) => t.id === targetId) || targets[0];
 
-    nav.replaceChildren(el("h3", {}, `#${channel.name.toUpperCase()}`), el("h3", {}, "ROLES & MEMBERS"),
+    nav.replaceChildren(el("h3", {}, label.toUpperCase()), el("h3", {}, "ROLES & MEMBERS"),
       ...targets.map((t) => el("button", { class: t.id === current.id ? "active" : "", onclick: () => draw(t.id) }, t.kind === "member" ? "👤 " : "", t.label)));
     const missingRoles = roles.filter((r) => !targets.some((t) => t.id === r.id));
     if (missingRoles.length) {
@@ -3674,8 +3785,10 @@ async function openChannelPermissions(channel) {
     });
 
     main.replaceChildren(
-      el("h2", {}, `#${channel.name}: ${current.label}`),
-      el("p", { class: "muted", style: "margin:0" }, "✕ takes a permission away in this channel, ✓ grants it, / uses the role's normal setting. Tip: to make a private channel, deny View channels for @everyone and allow it for a role."),
+      el("h2", {}, `${label}: ${current.label}`),
+      el("p", { class: "muted", style: "margin:0" }, channel.kind === CATEGORY
+        ? "✕ takes a permission away, ✓ grants it, / uses the role's normal setting. A category's permissions decide who sees the category; channels get a copy when you sync them."
+        : "✕ takes a permission away in this channel, ✓ grants it, / uses the role's normal setting. Tip: to make a private channel, deny View channels for @everyone and allow it for a role."),
       ...rows,
       el("div", { class: "settings-actions" },
         current.id === state.guildId && !existing ? el("span") : el("button", { class: "danger-btn", onclick: async () => {
@@ -3716,7 +3829,10 @@ $("join-guild").addEventListener("click", async () => {
 });
 
 $("invite-btn").addEventListener("click", () => invitePeople());
-$("new-channel").addEventListener("click", () => createChannel(TEXT));
+$("channel-add").addEventListener("click", (e) => {
+  const r = e.currentTarget.getBoundingClientRect();
+  openMenu(r.left, r.bottom + 6, createMenuItems());
+});
 $("guild-name").addEventListener("click", (e) => {
   if (!state.guildId) return;
   const r = e.currentTarget.getBoundingClientRect();

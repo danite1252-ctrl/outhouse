@@ -109,7 +109,7 @@ function notifyMenuItems(kind, obj) {
 const notifyBaseRenderChannels = renderChannels;
 renderChannels = function () {
   notifyBaseRenderChannels();
-  for (const node of document.querySelectorAll("#text-channels .channel[data-id]")) {
+  for (const node of document.querySelectorAll("#channel-tree .channel.text[data-id]")) {
     const muted = notifyMuted(node.dataset.id);
     node.classList.toggle("muted-channel", muted);
     if (muted && !node.querySelector(".mute-icon")) node.append(el("span", { class: "mute-icon", title: muteLabel(node.dataset.id) }, "🔕"));

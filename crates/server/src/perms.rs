@@ -252,7 +252,7 @@ pub async fn fetch_channel(db: &PgPool, channel_id: i64) -> AppResult<Channel> {
     sqlx::query_as::<_, Channel>(
         "SELECT id, COALESCE(guild_id, 0) AS guild_id, name, kind, position, last_message_id,
                 NULL::BIGINT AS last_read_id, topic, slowmode_secs, content_mode,
-                FALSE AS nsfw_accepted
+                FALSE AS nsfw_accepted, parent_id
          FROM channels WHERE id = $1",
     )
     .bind(channel_id)
@@ -287,6 +287,10 @@ pub async fn channel_access(
     user_id: i64,
 ) -> AppResult<ChannelAccess> {
     let access = channel_access_meta(db, channel_id, user_id).await?;
+    // Categories are headers: nothing to read or post in them.
+    if access.channel.kind == outhouse_common::models::channel_kind::CATEGORY {
+        return Err(AppError::NotFound);
+    }
     if is_age_gated(&access.channel) && !content_allowed(db, access.channel.id, user_id).await {
         return Err(AppError::AgeRestricted);
     }
@@ -432,6 +436,33 @@ struct GuildOverwriteRow {
     target_kind: i16,
     allow_bits: i64,
     deny_bits: i64,
+}
+
+/// Every channel's overwrites in an outhouse (one query), by channel.
+pub async fn guild_overwrites(
+    db: &PgPool,
+    guild_id: i64,
+) -> AppResult<std::collections::HashMap<i64, Vec<Overwrite>>> {
+    let rows = sqlx::query_as::<_, GuildOverwriteRow>(
+        "SELECT o.channel_id, o.target_id, o.target_kind, o.allow_bits, o.deny_bits
+         FROM channel_overwrites o
+         JOIN channels c ON c.id = o.channel_id
+         WHERE c.guild_id = $1",
+    )
+    .bind(guild_id)
+    .fetch_all(db)
+    .await?;
+    let mut by_channel: std::collections::HashMap<i64, Vec<Overwrite>> =
+        std::collections::HashMap::new();
+    for r in rows {
+        by_channel.entry(r.channel_id).or_default().push(Overwrite {
+            target_id: r.target_id,
+            is_member: r.target_kind == 1,
+            allow: r.allow_bits as u64,
+            deny: r.deny_bits as u64,
+        });
+    }
+    Ok(by_channel)
 }
 
 /// IDs of the text channels in the member's outhouse where they have all of

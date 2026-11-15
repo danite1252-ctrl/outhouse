@@ -303,7 +303,7 @@ function voiceParticipantLabel(id) {
 const parBaseRenderChannels = renderChannels;
 renderChannels = function (...args) {
   const out = parBaseRenderChannels(...args);
-  const list = $("voice-channels");
+  const list = $("channel-tree");
   if (!list) return out;
   const speaking = state.voice.speaking || new Set();
   // Fold people you've blocked into a placeholder.

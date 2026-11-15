@@ -225,7 +225,7 @@ function showShutDownNotice(name, removeAt = null, guildId = null) {
   state.channelId = null;
   state.channels = [];
   $("guild-name").textContent = name || "Outhouse";
-  for (const id of ["text-channels", "voice-channels", "member-list"]) $(id)?.replaceChildren();
+  for (const id of ["channel-tree", "member-list"]) $(id)?.replaceChildren();
   $("channel-name").textContent = name || "Closed";
   $("channel-topic").textContent = "";
   $("composer-input").disabled = true;
