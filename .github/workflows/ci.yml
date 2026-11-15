@@ -123,6 +123,7 @@ jobs:
           node --check web/admin-extras.js
           node --check web/raid-admin.js
           node --check web/loot.js
+          node --check web/lootlog.js
           node --check web/channel-settings.js
           node --check web/nicknames.js
           node --check web/invites.js

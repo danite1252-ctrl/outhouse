@@ -295,6 +295,14 @@ pub(crate) async fn build(db: &PgPool, rows: Vec<EventRow>) -> AppResult<Vec<Rai
     series_ids.dedup();
     let repeats = repeat_for(db, &series_ids).await?;
     let mut reserves = super::loot::reserves_for(db, &ids).await?;
+    let loot_counts: HashMap<i64, i64> = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT event_id, count(*) FROM loot_awards WHERE event_id = ANY($1) GROUP BY event_id",
+    )
+    .bind(&ids)
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .collect();
     Ok(rows
         .into_iter()
         .map(|r| {
@@ -336,6 +344,7 @@ pub(crate) async fn build(db: &PgPool, rows: Vec<EventRow>) -> AppResult<Vec<Rai
                 loot_instance_name: outhouse_common::raidplan::instance_name(&r.loot_instance),
                 loot_instance: r.loot_instance,
                 reserves: reserves.remove(&r.id).unwrap_or_default(),
+                loot_count: loot_counts.get(&r.id).copied().unwrap_or(0),
             }
         })
         .collect())

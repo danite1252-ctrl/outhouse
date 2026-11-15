@@ -5191,6 +5191,10 @@ with sync_playwright() as p:
         wp.close()
     api("PUT", "/api/users/@me/widgets", {"widgets": [{"id": "clock", "on": True}, {"id": "calendar", "on": True}, {"id": "mentions", "on": True}, {"id": "soundboard", "on": False}]}, TOKEN)
 
+    # ---- Loot history from Gargul (lootlog.js): ci/ui_loot_import.py ----
+    import ui_loot_import
+    ui_loot_import.run(browser, BASE, SHOTS, watch, os.environ["DATABASE_URL"])
+
     browser.close()
 
     # Scrollbars (headless Chrome hides them unless asked): a long chat at

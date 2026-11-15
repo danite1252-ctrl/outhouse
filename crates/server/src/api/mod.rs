@@ -24,6 +24,7 @@ pub mod invites;
 mod ipblocks;
 pub mod lfg;
 mod loot;
+mod loot_import;
 pub mod members;
 pub mod mentions;
 pub mod messages;
@@ -417,7 +418,38 @@ pub fn router(state: AppState) -> Router {
             get(loot::raid_awards).post(loot::award),
         )
         .route("/api/loot/{id}", delete(loot::remove_award))
-        .route("/api/guilds/{id}/loot", get(loot::guild_log))
+        .route("/api/guilds/{id}/loot", get(loot_import::guild_log))
+        .route(
+            "/api/guilds/{id}/loot/summary",
+            get(loot_import::guild_summary),
+        )
+        .route(
+            "/api/guilds/{id}/loot/export",
+            get(loot_import::guild_export),
+        )
+        .route(
+            "/api/guilds/{id}/loot/preview",
+            post(loot_import::guild_preview),
+        )
+        .route(
+            "/api/guilds/{id}/loot/import",
+            post(loot_import::guild_import),
+        )
+        .route(
+            "/api/guilds/{id}/loot/imports",
+            get(loot_import::list_imports),
+        )
+        .route("/api/loot/imports/{id}", delete(loot_import::undo_import))
+        .route(
+            "/api/events/{id}/loot/preview",
+            post(loot_import::raid_preview),
+        )
+        .route(
+            "/api/events/{id}/loot/import",
+            post(loot_import::raid_import),
+        )
+        .route("/api/events/{id}/won-locks", get(loot::get_won_locks))
+        .route("/api/users/{id}/loot", get(loot_import::user_loot))
         .route("/api/guilds/{id}/loot-instances", get(loot::instances))
         .route("/api/wow/items", get(loot::search_item))
         .route("/api/wow/items/{id}", get(loot::get_item))

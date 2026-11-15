@@ -73,6 +73,19 @@ ITEMS[17076] = {
                '</td></tr></table>',
 }
 
+# Black Temple loot (TBC) for the Gargul loot import tests; other items in
+# ci/gargul-sample.csv stay unknown (shown as "Item 32261").
+def _tbc(name, slot, kind, extra, quality=4):
+    return {"name": name, "quality": quality, "icon": "inv_misc_questionmark",
+            "tooltip": f'<table><tr><td><b class="q{quality}">{name}</b><br>Binds when picked up'
+                       f'<table width="100%"><tr><td>{slot}</td><th>{kind}</th></tr></table>{extra}'
+                       '<br>Item Level <!--ilvl-->141<br>Requires Level 70</td></tr></table>'}
+
+ITEMS[32240] = _tbc("Guise of the Tidal Lurker", "Head", "Leather", "+42 Stamina<br>+36 Intellect")
+ITEMS[32234] = _tbc("Fists of Mukoa", "Hands", "Mail", "+28 Stamina<br>+25 Intellect")
+ITEMS[32347] = _tbc("Grips of Damnation", "Hands", "Leather", "+30 Agility<br>+27 Stamina")
+ITEMS[32526] = _tbc("Band of Devastation", "Finger", "", "+30 Strength<br>+24 Stamina")
+
 SEARCH = {
     "thunderfury": [
         {"type": 3, "id": 18564, "name": "Bindings of the Windseeker", "quality": 5},

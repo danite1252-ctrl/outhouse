@@ -168,7 +168,8 @@ function itemData(id, branch) {
 // The item's icon (our copy of Wowhead's), or a plain square if there's none.
 function itemIcon(id, size = "") {
   const img = el("img", { class: `item-icon${size ? ` ${size}` : ""}`, src: `/api/wow/item-icons/${id}`, alt: "", loading: "lazy", decoding: "async", draggable: "false" });
-  img.addEventListener("error", () => { img.removeAttribute("src"); img.classList.add("none"); }, { once: true });
+  // No icon: a plain square (an <img> without one would show Chrome's broken-image mark).
+  img.addEventListener("error", () => img.replaceWith(el("span", { class: `item-icon none${size ? ` ${size}` : ""}`, "aria-hidden": "true" })), { once: true });
   return img;
 }
 
@@ -333,13 +334,16 @@ async function openLoot(ev, tab = "reserve") {
 
 async function refreshLoot() {
   const ev = loot.ev;
-  const [table, awards] = await Promise.all([
+  const [table, awards, locks] = await Promise.all([
     api("GET", `/api/events/${ev.id}/loot-table`).catch(() => null),
     api("GET", `/api/events/${ev.id}/loot`).catch(() => []),
+    ev.soft_reserves > 0 ? api("GET", `/api/events/${ev.id}/won-locks`).catch(() => []) : [],
   ]);
   if (!loot.dialog || loot.ev.id !== ev.id) return;
   setTable(table ?? { instance: "", instance_name: "", items: [], bosses: [], sources: [] });
   loot.awards = awards;
+  // Items you won on a reserve before (outhouses that lock won reserves).
+  loot.locks = new Map(locks.map((l) => [l.item_id, l]));
   drawLoot();
 }
 
@@ -374,9 +378,19 @@ function applyLootReply(reply) {
   if (reply.event) lootEventChanged(reply.event);
 }
 
-async function reserveItem(itemId) {
-  const reply = await tryApi("PUT", `/api/events/${loot.ev.id}/reserves`, { item_id: itemId }).catch(() => null);
+async function reserveItem(itemId, extra = {}) {
+  const body = itemId != null ? { item_id: itemId, ...extra } : extra;
+  const reply = await tryApi("PUT", `/api/events/${loot.ev.id}/reserves`, body).catch(() => null);
   applyLootReply(reply);
+  return !!reply;
+}
+
+// "✓ Won" on a won reserve (or "Won before" on one a raid leader allowed again).
+const wonDay = (iso) => { const [y, m, d] = iso.split("-").map(Number); return new Date(y, m - 1, d).toLocaleDateString([], { day: "numeric", month: "short" }); };
+function wonMark(r) {
+  if (r.won_on) return el("span", { class: "sr-won-mark", title: `Won on ${wonDay(r.won_on)}` }, "✓ Won");
+  if (r.won_before) return el("span", { class: "sr-won-mark before", title: `Won on ${wonDay(r.won_before)} on a reserve; a raid leader let them reserve it again` }, `Won ${wonDay(r.won_before)}`);
+  return null;
 }
 
 async function unreserveItem(itemId, userId = state.me.id) {
@@ -470,8 +484,8 @@ function drawReserveTab(ev, manager) {
     el("p", { class: `loot-status${!me || (ev.reserves_locked && !manager) ? " warn" : ""}` }, status),
     el("div", { class: "loot-mine" },
       el("div", { class: "loot-mine-head" }, `Your reserves (${mine.length}/${ev.soft_reserves})`),
-      mine.length ? el("div", { class: "loot-mine-list" }, mine.map((r) => el("span", { class: "sr-chip big" },
-        itemName(r.item_id, r.item_name, r.quality, branch), srBadge(ev, r.item_id),
+      mine.length ? el("div", { class: "loot-mine-list" }, mine.map((r) => el("span", { class: `sr-chip big${r.won_on ? " won" : ""}`, "data-item": r.item_id },
+        itemName(r.item_id, r.item_name, r.quality, branch), srBadge(ev, r.item_id), wonMark(r),
         canEdit ? el("button", { type: "button", class: "sr-x", title: `Take back ${r.item_name}`, "aria-label": `Take back ${r.item_name}`, onclick: () => unreserveItem(r.item_id) }, "✕") : null)))
         : el("span", { class: "muted small" }, "Nothing yet.")),
     lootBanner(),
@@ -484,13 +498,17 @@ const suitsClass = (it, cls) => !it.classes || !CLASS_BIT[cls] || (it.classes & 
 
 function lootItemRow(ev, it, manager, branch) {
   const mine = ev.reserves.some((r) => r.user_id === state.me.id && r.item_id === it.item_id);
+  const lock = !mine ? loot.locks?.get(it.item_id) : null;
+  const lockTitle = lock ? `You won this on ${wonDay(lock.won_on)}${lock.raid_title ? ` (${lock.raid_title})` : ""} on a soft reserve, so you can't reserve it again${manager ? "" : ". Ask a raid leader if you need an exception"}.` : "";
   const btn = mine ? el("button", { type: "button", class: "ev-btn on sr-pick", disabled: !loot.canEdit, onclick: () => unreserveItem(it.item_id), title: loot.canEdit ? "Take it back" : "" }, "Reserved ✓")
-    : el("button", { type: "button", class: "ev-btn sr-pick", disabled: !loot.canEdit || loot.atLimit, title: loot.atLimit && loot.canEdit ? "Take back one of yours first" : "", onclick: () => reserveItem(it.item_id) }, "Reserve");
+    : lock && manager ? el("button", { type: "button", class: "ev-btn sr-pick won-lock", disabled: !loot.canEdit || loot.atLimit, title: `${lockTitle} As raid leader you can allow it.`, onclick: () => reserveItem(it.item_id, { allow_won: true }) }, "Reserve anyway")
+      : lock ? el("button", { type: "button", class: "ev-btn sr-pick won-lock", disabled: true, title: lockTitle }, `Won ${wonDay(lock.won_on)}`)
+        : el("button", { type: "button", class: "ev-btn sr-pick", disabled: !loot.canEdit || loot.atLimit, title: loot.atLimit && loot.canEdit ? "Take back one of yours first" : "", onclick: () => reserveItem(it.item_id) }, "Reserve");
   const won = loot.awards.filter((a) => a.item_id === it.item_id);
   const count = reserversOf(ev, it.item_id).length;
-  const meta = [it.slot, it.chance != null ? `${it.chance < 1 ? it.chance.toFixed(1) : Math.round(it.chance)}% drop` : null, it.boss && it.showBoss ? it.boss : null,
-    won.length ? `won by ${won.map((a) => a.character_name || a.display_name).join(", ")}` : null].filter(Boolean);
-  return el("div", { class: `loot-row${mine ? " mine" : ""}`, "data-item": it.item_id, "data-cat": it.category || "" },
+  const meta = [lock ? `won on ${wonDay(lock.won_on)}` : null, it.slot, it.chance != null ? `${it.chance < 1 ? it.chance.toFixed(1) : Math.round(it.chance)}% drop` : null, it.boss && it.showBoss ? it.boss : null,
+    won.length ? `won by ${won.map((a) => a.disenchanted ? "disenchanted" : (a.character_name || a.display_name)).join(", ")}` : null].filter(Boolean);
+  return el("div", { class: `loot-row${mine ? " mine" : ""}${lock ? " locked-won" : ""}`, "data-item": it.item_id, "data-cat": it.category || "", title: lock ? lockTitle : null },
     el("div", { class: "loot-row-main" }, itemName(it.item_id, it.name, it.quality, branch),
       meta.length ? el("span", { class: "loot-row-meta muted small" }, meta.join(" · ")) : null),
     count ? srBadge(ev, it.item_id) : el("span", { class: "sr-count none", title: "Nobody has reserved it yet" }, "0 SR"),
@@ -679,17 +697,17 @@ function drawListTab(ev) {
         el("button", { type: "button", class: "sr-x", title: "Remove from this raid's list", "aria-label": `Remove ${it.name} from the list`, onclick: () => removeListItem(it) }, "✕"))))) : null);
 }
 
-function personChip(ev, userId, { onRemove = null } = {}) {
+function personChip(ev, userId, { onRemove = null, won = null } = {}) {
   const s = signupOf(ev, userId);
   const colour = s ? classColour(s.class) : null;
-  return el("span", { class: "sr-person", style: colour ? `--cc:${colour}` : "" },
-    el("span", { class: "sr-person-name" }, reserverName(ev, userId)),
+  return el("span", { class: `sr-person${won?.won_on ? " won" : ""}`, style: colour ? `--cc:${colour}` : "", "data-user": userId },
+    el("span", { class: "sr-person-name" }, reserverName(ev, userId)), won ? wonMark(won) : null,
     onRemove ? el("button", { type: "button", class: "sr-x", title: "Remove this reserve", "aria-label": `Remove ${reserverName(ev, userId)}'s reserve`, onclick: onRemove }, "✕") : null);
 }
 
 function wonBy(itemId) {
   const won = loot.awards.filter((a) => a.item_id === itemId);
-  return won.length ? el("span", { class: "sr-won" }, `💰 ${won.map((a) => a.character_name || a.display_name).join(", ")}`) : null;
+  return won.length ? el("span", { class: "sr-won" }, `💰 ${won.map((a) => a.disenchanted ? "disenchanted" : (a.character_name || a.display_name)).join(", ")}`) : null;
 }
 
 function awardMenu(ev, it, anchor) {
@@ -722,7 +740,9 @@ function drawAllTab(ev, manager) {
     el("button", { type: "button", class: `ev-btn${ev.reserves_locked ? " on" : ""}`, onclick: () => setLock(!ev.reserves_locked) }, ev.reserves_locked ? "🔓 Unlock" : "🔒 Lock reserves"),
     ev.reserve_lock_override != null ? el("button", { type: "button", class: "ev-btn ghost", title: "Lock and unlock on the raid's own schedule again", onclick: () => setLock(null) }, "Auto lock") : null,
     el("button", { type: "button", class: `ev-btn${loot.exp.open ? " on" : ""}`, "data-act": "export", "aria-expanded": loot.exp.open ? "true" : "false",
-      title: "Gargul, softres.it CSV or a plain list", onclick: () => toggleExport() }, "📤 Export")) : null;
+      title: "Gargul, softres.it CSV or a plain list", onclick: () => toggleExport() }, "📤 Export"),
+    el("button", { type: "button", class: `ev-btn${loot.forOpen ? " on" : ""}`, "data-act": "reserve-for", "aria-expanded": loot.forOpen ? "true" : "false",
+      title: "Add a reserve for someone signed up (and allow an item they've already won)", onclick: () => { loot.forOpen = !loot.forOpen; drawLoot(); } }, "＋ Reserve for…")) : null;
   let content;
   if (!ev.reserves.length) {
     content = el("p", { class: "muted" }, "Nobody has reserved anything yet.");
@@ -735,7 +755,7 @@ function drawAllTab(ev, manager) {
     const rows = [...byItem.values()].sort((a, b) => b.who.length - a.who.length || a.item_name.localeCompare(b.item_name));
     content = el("div", { class: "sr-table" }, rows.map((it) => el("div", { class: `sr-trow${it.who.length > 1 ? " contested" : ""}`, "data-item": it.item_id },
       el("div", { class: "sr-tcell item" }, itemName(it.item_id, it.item_name, it.quality, evBranch(ev)), srBadge(ev, it.item_id)),
-      el("div", { class: "sr-tcell who" }, it.who.map((w) => personChip(ev, w.user_id, { onRemove: manager ? () => removeReserve(ev, w) : null })), wonBy(it.item_id)),
+      el("div", { class: "sr-tcell who" }, it.who.map((w) => personChip(ev, w.user_id, { onRemove: manager ? () => removeReserve(ev, w) : null, won: w })), wonBy(it.item_id)),
       manager && started ? el("button", { type: "button", class: "ev-btn small-btn", onclick: (e) => awardMenu(ev, it, e.currentTarget) }, "Won by…") : null)));
   } else {
     const people = new Map();
@@ -746,15 +766,51 @@ function drawAllTab(ev, manager) {
     const rows = [...people].sort((a, b) => reserverName(ev, a[0]).localeCompare(reserverName(ev, b[0])));
     content = el("div", { class: "sr-table" }, rows.map(([userId, list]) => el("div", { class: "sr-trow", "data-user": userId },
       el("div", { class: "sr-tcell player" }, personChip(ev, userId)),
-      el("div", { class: "sr-tcell items" }, list.map((r) => el("span", { class: "sr-chip" }, itemName(r.item_id, r.item_name, r.quality, evBranch(ev)), srBadge(ev, r.item_id),
+      el("div", { class: "sr-tcell items" }, list.map((r) => el("span", { class: `sr-chip${r.won_on ? " won" : ""}`, "data-item": r.item_id }, itemName(r.item_id, r.item_name, r.quality, evBranch(ev)), srBadge(ev, r.item_id), wonMark(r),
         manager ? el("button", { type: "button", class: "sr-x", title: "Remove this reserve", "aria-label": `Remove ${r.item_name}`, onclick: () => removeReserve(ev, r) }, "✕") : null))))));
   }
   const missing = ev.signups.filter((s) => s.status !== "no" && !ev.reserves.some((r) => r.user_id === s.user_id));
   return el("div", { class: "loot-all" },
     el("div", { class: "loot-all-bar" }, views, tools),
     manager && loot.exp.open ? drawExportPanel(ev) : null,
+    manager && loot.forOpen ? drawReserveFor(ev) : null,
     content,
     missing.length ? el("p", { class: "muted small loot-noreserve" }, el("strong", {}, `No reserve yet (${missing.length}): `), missing.map(signupLabel).join(", ")) : null);
+}
+
+// Raid leaders: a reserve for someone signed up, even on an item they've
+// already won on a reserve (when the outhouse locks those).
+function drawReserveFor(ev) {
+  const people = ev.signups.filter((s) => s.status !== "no").sort((a, b) => signupLabel(a).localeCompare(signupLabel(b)));
+  const who = el("select", { class: "select", "aria-label": "Reserve for" }, el("option", { value: "" }, "Who?"),
+    people.map((s) => el("option", { value: s.user_id }, signupLabel(s))));
+  const item = el("input", { placeholder: "Item: name, Wowhead link or ID", maxlength: 200, "aria-label": "Item to reserve" });
+  const allow = el("input", { type: "checkbox", "aria-label": "Allow it anyway" });
+  const lockNote = el("p", { class: "muted small rf-locks" });
+  who.addEventListener("change", async () => {
+    lockNote.replaceChildren();
+    if (!who.value) return;
+    const locks = await api("GET", `/api/events/${ev.id}/won-locks?user_id=${who.value}`).catch(() => []);
+    if (locks.length && who.isConnected) lockNote.replaceChildren(el("strong", {}, "Won on a reserve before: "), locks.map((l) => `${l.item_name} (${wonDay(l.won_on)})`).join(", "));
+  });
+  const go = el("button", { type: "submit", class: "primary small-btn" }, "Reserve");
+  const form = el("form", { class: "reserve-for" },
+    el("div", { class: "loot-give-row" }, who, item, go),
+    el("label", { class: "small rf-allow" }, allow, "Allow it even if they've already won it on a reserve"),
+    lockNote);
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!who.value) return toast("Pick who it's for.");
+    const q = item.value.trim();
+    if (!q) return toast("Which item?");
+    go.disabled = true;
+    const id = /^\d+$/.test(q) ? Number(q) : null;
+    const body = { user_id: who.value, allow_won: allow.checked, ...(id ? { item_id: id } : { query: q }) };
+    const ok = await reserveItem(null, body);
+    go.disabled = false;
+    if (ok) { item.value = ""; allow.checked = false; toast("Reserved."); }
+  });
+  return form;
 }
 
 async function removeReserve(ev, r) {
@@ -886,17 +942,24 @@ function drawWonTab(ev, manager) {
     });
     if (pre) setTimeout(() => who.focus(), 0);
   }
-  const list = loot.awards.length ? el("div", { class: "won-list" }, [...loot.awards].reverse().map((a) => el("div", { class: "won-row", "data-award": a.id },
-    itemName(a.item_id, a.item_name, a.quality, a.branch || null),
+  const colourOf = (a) => classColour(a.character_class || signupOf(ev, a.user_id)?.class);
+  const list = loot.awards.length ? el("div", { class: "won-list" }, [...loot.awards].reverse().map((a) => el("div", { class: `won-row${a.disenchanted ? " de" : ""}`, "data-award": a.id },
+    typeof lootItemName === "function" ? lootItemName(a.item_id, a.item_name, a.quality, a.branch || null) : itemName(a.item_id, a.item_name, a.quality, a.branch || null),
     el("span", { class: "won-arrow muted" }, "→"),
-    el("span", { class: "won-who", style: classColour(signupOf(ev, a.user_id)?.class) ? `color:${classColour(signupOf(ev, a.user_id).class)}` : "" }, a.character_name || a.display_name),
+    a.disenchanted ? el("span", { class: "won-who loot-de-who" }, "✨ Disenchanted")
+      : el("span", { class: `won-who${a.user_id ? "" : " unmatched"}`, style: colourOf(a) ? `color:${colourOf(a)}` : "", title: a.user_id ? "" : "Nobody in this outhouse has a character by that name" }, a.user_id ? "" : "⚠ ", a.character_name || a.display_name),
+    a.offspec ? el("span", { class: "loot-os", title: "Off spec" }, "OS") : null,
     a.reserved ? el("span", { class: "sr-count", title: "They had reserved it" }, "SR") : null,
     a.note ? el("span", { class: "muted small won-note" }, a.note) : null,
-    el("span", { class: "muted small won-time" }, new Date(a.awarded_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })),
+    el("span", { class: "muted small won-time" }, a.gargul_id ? wonDay(a.awarded_on) : new Date(a.awarded_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })),
     manager ? el("button", { type: "button", class: "sr-x", title: "Take out of the loot log", "aria-label": `Remove ${a.item_name} from the loot log`, onclick: () => removeAward(a) }, "✕") : null)))
     : el("p", { class: "muted" }, started ? "Nothing handed out yet." : "Once the raid starts, its leaders log who won what here.");
-  return el("div", { class: "loot-won" }, form, list,
-    el("button", { type: "button", class: "link", onclick: () => openLootLog() }, "📜 The outhouse's loot log"));
+  return el("div", { class: "loot-won" },
+    manager && typeof openGargulImport === "function" ? el("div", { class: "loot-won-import" },
+      el("button", { type: "button", class: "ev-btn", "data-act": "gargul", onclick: () => openGargulImport(ev, () => refreshLoot()) }, "📥 Import from Gargul…"),
+      el("span", { class: "muted small" }, "Paste Gargul's awarded loot export instead of logging items one by one.")) : null,
+    form, list,
+    el("button", { type: "button", class: "link", onclick: () => openLootLog({ event: ev.id }) }, "📜 The outhouse's Loot page"));
 }
 
 async function removeAward(a) {
@@ -907,75 +970,7 @@ async function removeAward(a) {
   drawLoot();
 }
 
-// ---------- Loot log (the whole outhouse) ----------
-
-async function openLootLog(filters = {}) {
-  if (!state.guildId) return;
-  const guild = state.guildId;
-  const dialog = raidWindow("loot-log-dialog");
-  let entries = [];
-  let more = false;
-  const player = el("select", { class: "select", "aria-label": "Player" },
-    el("option", { value: "" }, "Everyone"),
-    [...state.members].filter((m) => !m.bot).sort((a, b) => a.display_name.localeCompare(b.display_name))
-      .map((m) => el("option", { value: m.id, selected: m.id === filters.user }, m.display_name)));
-  const raid = el("select", { class: "select", "aria-label": "Raid" }, el("option", { value: "" }, "Any raid"));
-  const search = el("input", { type: "search", placeholder: "Search items, raids or people", "aria-label": "Search the loot log", maxlength: 100 });
-  const body = el("div", { class: "loot-log-list" }, el("p", { class: "muted" }, "Loading…"));
-  const moreBtn = el("button", { type: "button", class: "ghost", hidden: true, onclick: () => load(true) }, "Load more");
-  const manageAny = can("manage_events") || (typeof hasRaidManagerRole === "function" && hasRaidManagerRole(guild));
-  const draw = () => {
-    if (!entries.length) {
-      body.replaceChildren(el("div", { class: "att-empty" }, el("p", {}, "No loot logged yet."),
-        el("p", { class: "muted small" }, "Raid leaders log who won what from a raid's card (💰 Loot won) once it starts.")));
-    } else {
-      const day = (iso) => new Date(iso).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
-      body.replaceChildren(el("table", { class: "loot-log-table" },
-        el("thead", {}, el("tr", {}, el("th", {}, "When"), el("th", {}, "Item"), el("th", {}, "Who"), el("th", {}, "Raid"), manageAny ? el("th", {}, "") : null)),
-        el("tbody", {}, entries.map((a) => el("tr", { "data-award": a.id },
-          el("td", { class: "muted small" }, day(a.awarded_at)),
-          el("td", { class: "ll-item" }, itemName(a.item_id, a.item_name, a.quality, a.branch || null), a.reserved ? el("span", { class: "sr-count", title: "They had reserved it" }, "SR") : null),
-          el("td", {}, el("button", { type: "button", class: "att-member", onclick: (e) => openProfile(a.user_id, e.currentTarget) },
-            avatarFor(a.user_id, a.display_name, 20), a.character_name || a.display_name),
-          a.character_name && a.character_name !== a.display_name ? el("span", { class: "muted small" }, ` ${a.display_name}`) : null),
-          el("td", {}, el("div", {}, a.raid_title), el("div", { class: "muted small" }, [a.instance_name, new Date(a.raid_starts_at).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })].filter(Boolean).join(" · "))),
-          manageAny ? el("td", {}, el("button", { type: "button", class: "sr-x", title: "Take out of the loot log", "aria-label": `Remove ${a.item_name}`, onclick: async () => {
-            if (!(await confirmBox("Remove from the loot log?", `${a.item_name} → ${a.character_name || a.display_name}`, "Remove"))) return;
-            if (await tryApi("DELETE", `/api/loot/${a.id}`).then(() => true, () => false)) { entries = entries.filter((x) => x.id !== a.id); draw(); }
-          } }, "✕")) : null)))));
-    }
-    moreBtn.hidden = !more;
-  };
-  let seq = 0;
-  const load = async (append = false) => {
-    const n = ++seq;
-    const params = new URLSearchParams({ limit: "50" });
-    if (player.value) params.set("user", player.value);
-    if (raid.value) params.set("instance", raid.value);
-    if (search.value.trim()) params.set("q", search.value.trim());
-    if (append && entries.length) params.set("before", entries[entries.length - 1].id);
-    const data = await tryApi("GET", `/api/guilds/${guild}/loot?${params}`).catch(() => null);
-    if (n !== seq || !dialog.isConnected) return;
-    if (!data) { body.replaceChildren(el("p", { class: "muted" }, "Couldn't load the loot log.")); return; }
-    entries = append ? [...entries, ...data.entries] : data.entries;
-    more = data.has_more;
-    draw();
-  };
-  let timer = null;
-  search.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => load(), 250); });
-  player.addEventListener("change", () => load());
-  raid.addEventListener("change", () => load());
-  dialog.append(
-    el("div", { class: "att-head" },
-      el("div", {}, el("h2", {}, "📜 Loot log"), el("div", { class: "muted small" }, currentGuild()?.name ?? "")),
-      el("div", { class: "att-head-tools" }, closeX(dialog))),
-    el("div", { class: "loot-log-filters" }, player, raid, search),
-    el("div", { class: "att-table-wrap" }, body), moreBtn);
-  api("GET", `/api/guilds/${guild}/loot-instances`).then((list) => {
-    raid.append(...list.map((i) => el("option", { value: i.key }, i.name)));
-  }).catch(() => {});
-  load();
-}
+// The outhouse's loot log (the Loot page) is in lootlog.js.
 
 // ---------- Plan / Edit raid: the loot fields ----------
 

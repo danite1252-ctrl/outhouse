@@ -140,6 +140,12 @@ pub const ACTIONS: &[(&str, &str)] = &[
     ("loot_item_remove", "Removed an item from a loot list"),
     ("loot_award", "Gave out loot"),
     ("loot_award_remove", "Removed a loot log entry"),
+    ("loot_import", "Imported loot from Gargul"),
+    ("loot_import_undo", "Undid a loot import"),
+    (
+        "loot_reserve_add",
+        "Soft-reserved for someone (or allowed a won item)",
+    ),
     ("badge_create", "Made a badge"),
     ("badge_update", "Changed a badge"),
     ("badge_delete", "Deleted a badge"),

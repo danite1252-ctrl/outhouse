@@ -810,6 +810,9 @@ pub struct RaidEvent {
     pub loot_instance_name: String,
     #[serde(default)]
     pub reserves: Vec<crate::raidplan::RaidReserve>,
+    /// Items in its loot history (logged or imported from Gargul).
+    #[serde(default)]
+    pub loot_count: i64,
 }
 
 /// When a raid's sign-up card is posted in chat.
@@ -944,6 +947,12 @@ pub struct RaidSettings {
     /// outhouse has a realm for or plans raids in, else one for all games.
     #[serde(default)]
     pub realm_clocks: Vec<RealmClock>,
+    /// When someone wins the item they soft-reserved: "keep", "lock" (they
+    /// can't reserve it again in later raids of that instance unless a raid
+    /// leader allows it) or "remove" (the reserve is taken off). Left out
+    /// when saving: unchanged.
+    #[serde(default)]
+    pub sr_won: Option<String>,
 }
 
 /// One game's realm in Outhouse settings → Raids ("" = use the default).

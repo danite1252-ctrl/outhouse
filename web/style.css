@@ -2109,6 +2109,7 @@ img.mc-emoji { width: 18px; height: 18px; object-fit: contain; }
 .item-icon { width: 20px; height: 20px; flex: none; border-radius: 4px; border: 1px solid #00000099; box-shadow: 0 0 0 1px #ffffff1f; background: #1d1d2b; object-fit: cover; }
 .item-icon.big { width: 36px; height: 36px; border-radius: 6px; }
 .item-icon.none { background: linear-gradient(135deg, #2a2a3d, #15151f); }
+span.item-icon { display: inline-block; box-sizing: border-box; vertical-align: middle; }
 .item-name.q4 .item-icon { box-shadow: 0 0 0 1px #a335ee88; }
 .item-name.q5 .item-icon { box-shadow: 0 0 0 1px #ff800099; }
 .item-name.q3 .item-icon { box-shadow: 0 0 0 1px #0070dd88; }
@@ -3065,4 +3066,150 @@ dialog.settings .settings-nav button.so-tab.active { box-shadow: inset 3px 0 0 v
   .pending-file .pf-status { width: 84px; height: 84px; }
   .pf-ring { width: 32px; height: 32px; }
   .pending-file .pf-badge { left: 3px; right: 3px; font-size: 10px; padding: 2px 4px; }
+}
+
+/* ---------- Loot history: Gargul imports, raid card Loot, the Loot page, profiles (lootlog.js) ---------- */
+.loot-os { font-size: 10px; font-weight: 800; letter-spacing: .04em; padding: 1px 5px; border-radius: 4px; color: #9fd3ff; background: rgba(0, 112, 221, .2); white-space: nowrap; }
+.sr-count.won { background: rgba(30, 255, 0, .12); color: #9bf08a; }
+.loot-who { border: 0; background: none; padding: 0; font: inherit; font-weight: 700; color: var(--text); cursor: pointer; text-align: left; overflow-wrap: anywhere; }
+button.loot-who:hover { text-decoration: underline; }
+.loot-who.unmatched { cursor: default; font-weight: 600; color: var(--muted); display: inline-flex; gap: 4px; align-items: center; }
+.loot-warn { color: #f0b37a; font-size: 12px; }
+.loot-member { font-weight: 500; }
+.loot-de-who { color: #b9a6d9; font-style: italic; font-size: 12.5px; white-space: nowrap; }
+.item-name.unknown .item-label { color: var(--muted); }
+
+/* Gargul import window */
+dialog.gargul-dialog { width: min(900px, 96vw); }
+dialog.gargul-dialog[open] { display: flex; flex-direction: column; gap: 10px; max-height: 92vh; }
+.gi-paste { display: grid; gap: 8px; }
+.gi-help { margin: 0; }
+.gi-text { width: 100%; min-height: 140px; resize: vertical; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--night); color: var(--text); box-sizing: border-box; }
+.gi-paste-actions, .gi-foot { display: flex; align-items: center; gap: 8px; }
+.gi-gap { flex: 1; }
+.gi-body { display: flex; flex-direction: column; gap: 8px; min-height: 0; flex: 1; }
+.gi-summary { font-size: 13px; }
+.gi-errors summary { cursor: pointer; font-size: 12.5px; color: #f0b37a; }
+.gi-errors ul { margin: 4px 0 0; padding-left: 18px; max-height: 120px; overflow: auto; }
+.gi-rows { overflow: auto; min-height: 0; flex: 1; border: 1px solid var(--line); border-radius: 10px; }
+.gi-row { display: grid; grid-template-columns: 28px 74px minmax(110px, 1fr) minmax(170px, 1.6fr) minmax(150px, 1.1fr); gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.gi-row:last-child { border-bottom: 0; }
+.gi-headrow { position: sticky; top: 0; z-index: 1; background: var(--raised); font-size: 12px; color: var(--muted); font-weight: 600; }
+.gi-c-item { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.gi-c-raid { display: grid; gap: 2px; min-width: 0; }
+.gi-c-raid .select { height: 30px; font-size: 12.5px; min-width: 0; width: 100%; }
+.gi-reason { color: #f0b37a; }
+.gi-row.out:not(.picked), .gi-row.dup { opacity: .5; }
+.gi-row.de .gi-c-item .item-name { opacity: .85; }
+.gi-tag { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 999px; white-space: nowrap; border: 1px solid var(--line); color: var(--muted); }
+.gi-tag.out { color: #f0b37a; border-color: rgba(240, 179, 122, .4); }
+.gi-done { padding: 14px 4px; }
+.gi-done-head { font-size: 15px; font-weight: 700; margin: 0 0 4px; }
+
+/* Raid card: Loot */
+.ev-lootlog { border: 1px solid var(--line); border-radius: 10px; background: var(--night); }
+.ev-lootlog > summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding: 8px 10px; font-size: 13px; user-select: none; }
+.ev-lootlog > summary::-webkit-details-marker { display: none; }
+.ev-lootlog > summary::before { content: "▸"; color: var(--muted); font-size: 11px; transition: transform .15s; display: inline-block; }
+.ev-lootlog[open] > summary::before { transform: rotate(90deg); }
+.ev-lootlog > summary:hover .ev-comp-title { color: var(--glow); }
+.ev-lootlog-body { padding: 0 10px 10px; display: grid; gap: 8px; }
+.rl-list { display: grid; gap: 6px; }
+.rl-boss { display: grid; gap: 2px; }
+.rl-boss-head { font-size: 11.5px; font-weight: 700; letter-spacing: .03em; color: var(--muted); text-transform: uppercase; padding: 2px 0; }
+.rl-row { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(80px, auto) auto; gap: 8px; align-items: center; font-size: 13px; padding: 3px 0; }
+.rl-row .item-name { min-width: 0; }
+.rl-badges { display: inline-flex; gap: 4px; }
+.rl-who { text-align: right; min-width: 0; }
+.rl-row.de { opacity: .8; }
+.rl-de > summary { cursor: pointer; padding: 2px 0; }
+.rl-foot { display: flex; gap: 14px; flex-wrap: wrap; }
+.rc-sr.won { color: #9bf08a; background: rgba(30, 255, 0, .12); }
+
+/* Soft reserves window: won */
+.sr-won-mark { font-size: 11px; font-weight: 800; color: #9bf08a; white-space: nowrap; }
+.sr-won-mark.before { color: #f0b37a; font-weight: 700; }
+.sr-chip.won { border-color: rgba(30, 255, 0, .35); }
+.sr-person.won { box-shadow: inset 0 0 0 1px rgba(30, 255, 0, .35); }
+.loot-row.locked-won .item-name { opacity: .7; }
+.ev-btn.sr-pick.won-lock { color: #f0b37a; border-color: rgba(240, 179, 122, .45); }
+.reserve-for { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--night); margin: 8px 0; }
+.reserve-for .loot-give-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.reserve-for input:not([type]), .reserve-for input[type="text"] { flex: 1 1 200px; height: 34px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); min-width: 0; }
+.rf-allow { display: inline-flex; gap: 6px; align-items: center; }
+.rf-locks { margin: 0; }
+.loot-won-import { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.won-row.de { opacity: .8; }
+.won-who.unmatched { color: var(--muted); }
+
+/* The Loot page */
+dialog.loot-log-dialog { width: min(1000px, 96vw); }
+.ll-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.loot-log-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 8px; align-items: end; }
+.loot-log-filters .select, .loot-log-filters input[type="date"], .loot-log-filters input[type="search"] { height: 34px; width: 100%; min-width: 0; box-sizing: border-box; }
+.loot-log-filters input[type="date"] { padding: 0 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--night); color: var(--text); color-scheme: dark; }
+.ll-field { display: grid; gap: 2px; min-width: 0; }
+.ll-label { font-size: 11px; color: var(--muted); font-weight: 600; }
+.ll-check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; height: 34px; }
+.ll-search { grid-column: span 3; }
+.ll-more { display: none; }
+.ll-sort { border: 0; background: none; padding: 0; font: inherit; color: inherit; cursor: pointer; font-weight: 600; }
+.ll-sort.on { color: var(--text); }
+.ll-arrow { font-size: 10px; }
+.loot-log-table tr.de td { opacity: .75; }
+.loot-log-table .ll-item { display: table-cell; }
+.loot-log-table .ll-item .loot-os, .loot-log-table .ll-item .sr-count { margin-left: 6px; }
+.ll-when { white-space: nowrap; }
+.ll-num { text-align: right; font-variant-numeric: tabular-nums; }
+.ll-people th:nth-child(n+2) { text-align: right; }
+.ll-imports { display: grid; gap: 6px; padding: 8px; }
+.ll-import { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--night); font-size: 13px; }
+.ll-import.undone { opacity: .6; }
+
+/* Full profile: loot by character */
+.fp-loot { display: grid; gap: 8px; margin-top: 12px; }
+.fp-loot > h4 { margin: 0; font-size: 12px; letter-spacing: .04em; color: var(--muted); }
+.fpl-char { border: 1px solid var(--line); border-left: 4px solid var(--cc, var(--line)); border-radius: 10px; padding: 8px 10px; background: var(--night); display: grid; gap: 6px; }
+.fpl-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.fpl-name { color: var(--cc, var(--text)); }
+.fpl-count { font-size: 12.5px; font-weight: 700; color: var(--glow); }
+.fpl-items { display: grid; gap: 3px; }
+.fpl-row { display: flex; align-items: center; gap: 8px; font-size: 13px; min-width: 0; }
+.fpl-date { width: 48px; flex: 0 0 auto; }
+.fpl-raid { margin-left: auto; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
+.fp-char-loot { justify-self: start; padding: 0; }
+
+@media (max-width: 760px) {
+  dialog.gargul-dialog { width: 100vw; max-width: none; height: 100dvh; max-height: none; border-radius: 0; padding: calc(var(--safe-top) + 12px) 12px calc(var(--safe-bottom) + 12px); }
+  dialog.gargul-dialog[open] { max-height: none; }
+  .gi-headrow { display: none; }
+  .gi-row { grid-template-columns: 24px 1fr auto; grid-template-areas: "pick item item" "pick who date" "pick raid raid"; gap: 3px 8px; }
+  .gi-c-pick { grid-area: pick; align-self: start; padding-top: 2px; }
+  .gi-c-item { grid-area: item; }
+  .gi-c-who { grid-area: who; min-width: 0; }
+  .gi-c-date { grid-area: date; font-size: 12px; color: var(--muted); }
+  .gi-c-raid { grid-area: raid; }
+  .gi-c-raid:empty { display: none; }
+  .loot-log-filters { grid-template-columns: 1fr 1fr; }
+  .loot-log-filters input { grid-column: auto; }
+  .loot-log-filters:not(.all) .ll-extra { display: none; }
+  .ll-search { grid-column: 1 / -1; }
+  .ll-more { display: inline; grid-column: 1 / -1; justify-self: start; }
+  .ll-long { display: none; }
+  /* The items list as stacked rows: item, then who and when, then the raid. */
+  .loot-log-table:not(.ll-people), .loot-log-table:not(.ll-people) tbody { display: block; }
+  .loot-log-table:not(.ll-people) thead { display: none; }
+  .loot-log-table:not(.ll-people) tr { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "item item x" "who when x" "raid raid x"; gap: 2px 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  .loot-log-table:not(.ll-people) td { display: block; padding: 0; border: 0; min-width: 0; }
+  .loot-log-table:not(.ll-people) td.ll-item { grid-area: item; min-width: 0; }
+  .loot-log-table:not(.ll-people) td.ll-who { grid-area: who; }
+  .loot-log-table:not(.ll-people) td.ll-when { grid-area: when; text-align: right; }
+  .loot-log-table:not(.ll-people) td.ll-raid { grid-area: raid; font-size: 12px; color: var(--muted); }
+  .loot-log-table:not(.ll-people) td.ll-raid > div { display: inline; }
+  .loot-log-table:not(.ll-people) td.ll-raid > div + div::before { content: " · "; }
+  .loot-log-table:not(.ll-people) td:last-child:not(.ll-raid) { grid-area: x; align-self: center; }
+  .ll-people th:nth-child(4), .ll-people td:nth-child(4), .ll-people th:nth-child(6), .ll-people td:nth-child(6) { display: none; }
+  .rl-row { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .rl-row .rl-who { grid-column: 1 / 2; text-align: left; font-size: 12.5px; }
+  .fpl-raid { display: none; }
 }

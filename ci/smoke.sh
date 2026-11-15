@@ -4989,6 +4989,13 @@ tok "$TOKEN_A" call POST "/api/safety/outhouses/$DXB/actions" '{"action":"delete
 [ "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM safety_log WHERE guild_id = $DXB AND action IN ('outhouse_shut_down','outhouse_restore','outhouse_delete','outhouse_view','outhouse_members_removed')")" -ge 8 ]
 
 # ---------------------------------------------------------------------------
+# Loot history from Gargul's awarded-loot export (feat-loot): its own script,
+# so it can also run on its own against a local server.
+# ---------------------------------------------------------------------------
+step "loot history: Gargul imports, won soft reserves, filters, export (ci/loot_import_test.sh)"
+BASE=$BASE DATABASE_URL=$DATABASE_URL bash ci/loot_import_test.sh
+
+# ---------------------------------------------------------------------------
 # "My raids", sidebar widgets, realm time and the Mentions inbox
 # (feat-widgets): its own script, so it can also run on its own.
 # ---------------------------------------------------------------------------

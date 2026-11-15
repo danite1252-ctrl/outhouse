@@ -15,20 +15,20 @@ use std::time::Duration;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use outhouse_common::models::EventSignup;
 use outhouse_common::permissions as p;
 use outhouse_common::raidplan::{
     self, AwardRequest, ItemLookup, LootAward, LootInstance, LootItem, LootItemRequest, LootTable,
-    RaidReserve, ReserveLockRequest, ReserveRequest,
+    RaidReserve, ReserveLockRequest, ReserveRequest, WonLock,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sqlx::PgPool;
 
 use super::events::{broadcast, build, can_manage, load, EventReply, EventRow};
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
-use crate::perms::{drop_age_gated, member_ctx, visible_text_channels};
+use crate::perms::member_ctx;
 use crate::state::AppState;
 
 /// Items a raid leader can add to one raid's list.
@@ -38,7 +38,9 @@ const MAX_NOTE_CHARS: usize = 100;
 
 // ---- Reserves on raids ---------------------------------------------------------
 
-/// Everyone's reserves on these raids (for the raid cards).
+/// Everyone's reserves on these raids (for the raid cards), with whether
+/// each was won here, or won earlier on a reserve (outhouses that lock won
+/// reserves).
 pub(crate) async fn reserves_for(
     db: &PgPool,
     event_ids: &[i64],
@@ -51,26 +53,168 @@ pub(crate) async fn reserves_for(
         item_name: String,
         item_quality: i32,
         created_at: DateTime<Utc>,
+        won_on: Option<NaiveDate>,
     }
     let rows = sqlx::query_as::<_, Row>(
-        "SELECT event_id, user_id, item_id, item_name, item_quality, created_at
-         FROM loot_reserves WHERE event_id = ANY($1)
-         ORDER BY created_at, user_id, item_id",
+        "SELECT r.event_id, r.user_id, r.item_id, r.item_name, r.item_quality, r.created_at,
+                (SELECT min(a.awarded_on) FROM loot_awards a
+                 WHERE a.event_id = r.event_id AND a.user_id = r.user_id
+                   AND a.item_id = r.item_id AND NOT a.disenchanted) AS won_on
+         FROM loot_reserves r WHERE r.event_id = ANY($1)
+         ORDER BY r.created_at, r.user_id, r.item_id",
     )
     .bind(event_ids)
     .fetch_all(db)
     .await?;
+    // Earlier wins on a reserve, in raids of the same instance.
+    #[derive(sqlx::FromRow)]
+    struct Before {
+        event_id: i64,
+        user_id: i64,
+        item_id: i32,
+        awarded_on: NaiveDate,
+        character_key: String,
+        sign_name: Option<String>,
+        sign_last: Option<String>,
+    }
+    let before = if rows.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_as::<_, Before>(
+            "SELECT r.event_id, r.user_id, r.item_id, a.awarded_on, a.character_key,
+                    s.character_name AS sign_name, s.character_last_name AS sign_last
+             FROM loot_reserves r
+             JOIN events e ON e.id = r.event_id
+             JOIN loot_awards a ON a.guild_id = e.guild_id AND a.user_id = r.user_id
+                  AND a.item_id = r.item_id AND a.reserved AND NOT a.disenchanted
+                  AND e.loot_instance <> '' AND a.loot_instance = e.loot_instance
+                  AND a.event_id IS DISTINCT FROM e.id AND a.awarded_at < e.starts_at
+             LEFT JOIN event_signups s ON s.event_id = r.event_id AND s.user_id = r.user_id
+             LEFT JOIN raid_settings rs ON rs.guild_id = e.guild_id
+             WHERE r.event_id = ANY($1) AND COALESCE(rs.sr_won, 'lock') = 'lock'
+             ORDER BY a.awarded_on",
+        )
+        .bind(event_ids)
+        .fetch_all(db)
+        .await?
+    };
+    let mut won_before: HashMap<(i64, i64, i32), NaiveDate> = HashMap::new();
+    for b in before {
+        let same = super::loot_import::same_character(
+            &b.character_key,
+            b.sign_name.as_deref().unwrap_or(""),
+            b.sign_last.as_deref().unwrap_or(""),
+        );
+        if same {
+            won_before.insert((b.event_id, b.user_id, b.item_id), b.awarded_on);
+        }
+    }
     let mut map: HashMap<i64, Vec<RaidReserve>> = HashMap::new();
     for r in rows {
+        let before = won_before.get(&(r.event_id, r.user_id, r.item_id)).copied();
         map.entry(r.event_id).or_default().push(RaidReserve {
             user_id: r.user_id,
             item_id: r.item_id,
             item_name: r.item_name,
             quality: r.item_quality,
             reserved_at: r.created_at,
+            won_on: r.won_on,
+            won_before: before,
         });
     }
     Ok(map)
+}
+
+/// Items this person can't reserve again in this raid: won on a reserve in
+/// an earlier raid of the same instance, when the outhouse locks won
+/// reserves (with the character they signed up with, if any).
+pub(crate) async fn won_locks(
+    db: &PgPool,
+    row: &EventRow,
+    user_id: i64,
+) -> AppResult<Vec<WonLock>> {
+    if row.loot_instance.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rule: Option<String> =
+        sqlx::query_scalar("SELECT sr_won FROM raid_settings WHERE guild_id = $1")
+            .bind(row.guild_id)
+            .fetch_optional(db)
+            .await?;
+    if rule.as_deref().unwrap_or("lock") != "lock" {
+        return Ok(Vec::new());
+    }
+    let sign: Option<(String, String)> = sqlx::query_as(
+        "SELECT character_name, character_last_name FROM event_signups
+         WHERE event_id = $1 AND user_id = $2",
+    )
+    .bind(row.id)
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?;
+    let (name, last) = sign.unwrap_or_default();
+    #[derive(sqlx::FromRow)]
+    struct Won {
+        item_id: i32,
+        item_name: String,
+        awarded_on: NaiveDate,
+        raid_title: String,
+        character_key: String,
+    }
+    let won = sqlx::query_as::<_, Won>(
+        "SELECT item_id, item_name, awarded_on, raid_title, character_key FROM loot_awards
+         WHERE guild_id = $1 AND user_id = $2 AND reserved AND NOT disenchanted
+           AND loot_instance = $3 AND event_id IS DISTINCT FROM $4 AND awarded_at < $5
+         ORDER BY awarded_on DESC",
+    )
+    .bind(row.guild_id)
+    .bind(user_id)
+    .bind(&row.loot_instance)
+    .bind(row.id)
+    .bind(row.starts_at)
+    .fetch_all(db)
+    .await?;
+    let mut out: Vec<WonLock> = Vec::new();
+    for w in won {
+        if !super::loot_import::same_character(&w.character_key, &name, &last)
+            || out.iter().any(|o| o.item_id == w.item_id)
+        {
+            continue;
+        }
+        out.push(WonLock {
+            item_id: w.item_id,
+            item_name: w.item_name,
+            won_on: w.awarded_on,
+            raid_title: w.raid_title,
+        });
+    }
+    Ok(out)
+}
+
+#[derive(Deserialize)]
+pub struct LockQuery {
+    user_id: Option<String>,
+}
+
+/// `GET /api/events/{id}/won-locks[?user_id=]`: what you (raid leaders:
+/// anyone) can't reserve again in this raid.
+pub async fn get_won_locks(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(event_id): Path<i64>,
+    Query(q): Query<LockQuery>,
+) -> AppResult<Json<Vec<WonLock>>> {
+    let (row, access) = load(&st, event_id, user.id).await?;
+    let target = match q.user_id.as_deref().filter(|s| !s.is_empty()) {
+        Some(raw) => raw
+            .parse::<i64>()
+            .map_err(|_| AppError::BadRequest("Unknown user.".into()))?,
+        None => user.id,
+    };
+    if target != user.id {
+        require_manager(&st, &row, &access).await?;
+    }
+    Ok(Json(won_locks(&st.db, &row, target).await?))
 }
 
 /// The loot list's key for a raid (see [`raidplan::instance_key`]).
@@ -894,19 +1038,46 @@ pub async fn reserve(
                 .into(),
         ));
     }
+    // Raid leaders can reserve for someone else who's signed up.
+    let target = req.user_id.unwrap_or(user.id);
+    if (target != user.id || req.allow_won) && !manager {
+        return Err(AppError::Forbidden);
+    }
     let status: Option<String> =
         sqlx::query_scalar("SELECT status FROM event_signups WHERE event_id = $1 AND user_id = $2")
             .bind(event_id)
-            .bind(user.id)
+            .bind(target)
             .fetch_optional(&st.db)
             .await?;
     if !status.is_some_and(|s| s != "no") {
-        return Err(AppError::BadRequest(
-            "Sign up for the raid first, then pick what you'd like to reserve.".into(),
-        ));
+        return Err(AppError::BadRequest(if target == user.id {
+            "Sign up for the raid first, then pick what you'd like to reserve.".into()
+        } else {
+            "They need to be signed up for the raid first.".into()
+        }));
     }
     let (item_id, name, quality) =
         resolve_item(&st, &row, req.item_id, req.query.as_deref()).await?;
+    // Won it on a reserve before (outhouses that lock won reserves).
+    let locked = won_locks(&st.db, &row, target)
+        .await?
+        .into_iter()
+        .find(|w| w.item_id == item_id);
+    if let Some(w) = &locked {
+        if !(manager && req.allow_won) {
+            let day = w.won_on.format("%-d %b");
+            return Err(AppError::BadRequest(if target == user.id {
+                format!(
+                    "You won {name} on {day} on a soft reserve, so you can't reserve it again. \
+                     Ask a raid leader if you need an exception."
+                )
+            } else {
+                format!(
+                    "They won {name} on {day} on a soft reserve. Tick \"allow it anyway\" to let them reserve it again."
+                )
+            }));
+        }
+    }
 
     let mut tx = st.db.begin().await?;
     // One at a time per raid, so two quick clicks can't go over the limit.
@@ -918,20 +1089,25 @@ pub async fn reserve(
         "SELECT item_id FROM loot_reserves WHERE event_id = $1 AND user_id = $2",
     )
     .bind(event_id)
-    .bind(user.id)
+    .bind(target)
     .fetch_all(&mut *tx)
     .await?;
+    let you = if target == user.id {
+        "You've"
+    } else {
+        "They've"
+    };
     if mine.contains(&item_id) {
         return Err(AppError::BadRequest(format!(
-            "You've already reserved {name}."
+            "{you} already reserved {name}."
         )));
     }
     if mine.len() as i32 >= row.soft_reserves {
         return Err(AppError::BadRequest(if row.soft_reserves == 1 {
-            "You've used your soft reserve. Remove it to pick something else.".into()
+            format!("{you} used the soft reserve. Remove it to pick something else.")
         } else {
             format!(
-                "You've used all {} of your soft reserves. Remove one to pick something else.",
+                "{you} used all {} soft reserves. Remove one to pick something else.",
                 row.soft_reserves
             )
         }));
@@ -941,13 +1117,29 @@ pub async fn reserve(
          VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(event_id)
-    .bind(user.id)
+    .bind(target)
     .bind(item_id)
     .bind(&name)
     .bind(quality)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    if target != user.id || locked.is_some() {
+        let who = display_name(&st.db, row.guild_id, target).await?;
+        let what = if locked.is_some() {
+            format!(
+                "Let {who} soft-reserve {name} again (already won on a reserve) ({})",
+                row.title
+            )
+        } else {
+            format!("Soft-reserved {name} for {who} ({})", row.title)
+        };
+        crate::audit::Entry::new(row.guild_id, user.id, "loot_reserve_add")
+            .target("user", target, who)
+            .details(what)
+            .save(&st)
+            .await;
+    }
     Ok(Json(broadcast(&st, event_id).await?))
 }
 
@@ -1189,16 +1381,17 @@ pub async fn instances(
 // ---- The loot log ---------------------------------------------------------------------
 
 #[derive(sqlx::FromRow)]
-struct AwardRow {
+pub(super) struct AwardRow {
     id: i64,
     event_id: Option<i64>,
-    channel_id: i64,
+    channel_id: Option<i64>,
     raid_title: String,
-    raid_starts_at: DateTime<Utc>,
+    raid_starts_at: Option<DateTime<Utc>>,
     loot_instance: String,
-    user_id: i64,
-    display_name: String,
+    user_id: Option<i64>,
+    display_name: Option<String>,
     character_name: String,
+    character_class: String,
     item_id: i32,
     item_name: String,
     item_quality: i32,
@@ -1206,6 +1399,11 @@ struct AwardRow {
     note: String,
     awarded_by: Option<i64>,
     awarded_at: DateTime<Utc>,
+    awarded_on: NaiveDate,
+    offspec: bool,
+    disenchanted: bool,
+    gargul_id: Option<String>,
+    import_id: Option<i64>,
 }
 
 impl From<AwardRow> for LootAward {
@@ -1219,8 +1417,9 @@ impl From<AwardRow> for LootAward {
             instance_name: raidplan::instance_name(&r.loot_instance),
             loot_instance: r.loot_instance,
             user_id: r.user_id,
-            display_name: r.display_name,
+            display_name: r.display_name.unwrap_or_default(),
             character_name: r.character_name,
+            character_class: r.character_class,
             item_id: r.item_id,
             item_name: r.item_name,
             quality: r.item_quality,
@@ -1228,20 +1427,27 @@ impl From<AwardRow> for LootAward {
             note: r.note,
             awarded_by: r.awarded_by,
             awarded_at: r.awarded_at,
+            awarded_on: r.awarded_on,
+            offspec: r.offspec,
+            disenchanted: r.disenchanted,
+            gargul_id: r.gargul_id,
+            import_id: r.import_id,
+            boss: String::new(),
             branch: String::new(),
         }
     }
 }
 
 /// Which Wowhead branch each entry's item links go to.
-async fn fill_branches(st: &AppState, awards: &mut [LootAward]) {
+pub(super) async fn fill_branches(st: &AppState, awards: &mut [LootAward]) {
     if awards.is_empty() {
         return;
     }
     let classic = crate::wowhead_loot::link_branch(st, "forever", "classic").await;
     for a in awards {
         let tbc = raidplan::instance(&raidplan::instance_key(&a.loot_instance))
-            .is_some_and(|i| i.2 == "tbc");
+            .is_some_and(|i| i.2 == "tbc")
+            || (a.loot_instance.is_empty() && super::loot_import::looks_tbc(a.item_id));
         a.branch = if tbc {
             st.config.wowhead_branch_tbc.clone()
         } else {
@@ -1250,21 +1456,58 @@ async fn fill_branches(st: &AppState, awards: &mut [LootAward]) {
     }
 }
 
-const AWARD_SELECT: &str = "SELECT a.id, a.event_id, a.channel_id, a.raid_title, a.raid_starts_at,
+/// The boss each item drops from, where the loot lists know.
+pub(super) async fn fill_bosses(db: &PgPool, guild_id: i64, awards: &mut [LootAward]) {
+    let mut ids: Vec<i32> = awards.iter().map(|a| a.item_id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.is_empty() {
+        return;
+    }
+    let found: Vec<(i32, String)> = sqlx::query_as(
+        "SELECT item_id, boss FROM (
+             SELECT DISTINCT ON (item_id) item_id, boss FROM (
+                 SELECT item_id, boss, 0 AS pref, 0 AS pos FROM loot_items
+                  WHERE guild_id = $2 AND item_id = ANY($1) AND boss <> ''
+                 UNION ALL
+                 SELECT item_id, boss, CASE WHEN trash THEN 2 ELSE 1 END, position FROM wowhead_drops
+                  WHERE item_id = ANY($1) AND boss <> ''
+             ) x ORDER BY item_id, pref, pos
+         ) y",
+    )
+    .bind(&ids)
+    .bind(guild_id)
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+    let map: HashMap<i32, String> = found.into_iter().collect();
+    for a in awards {
+        if let Some(b) = map.get(&a.item_id) {
+            a.boss = b.clone();
+        } else if let Some(s) = raidplan::SEED_ITEMS.iter().find(|s| s.1 == a.item_id) {
+            a.boss = s.4.to_string();
+        }
+    }
+}
+
+pub(super) const AWARD_SELECT: &str =
+    "SELECT a.id, a.event_id, a.channel_id, a.raid_title, a.raid_starts_at,
         a.loot_instance, a.user_id, COALESCE(gm.nickname, u.display_name) AS display_name,
-        a.character_name, a.item_id, a.item_name, a.item_quality, a.reserved, a.note,
-        a.awarded_by, a.awarded_at
+        a.character_name, a.character_class, a.item_id, a.item_name, a.item_quality, a.reserved,
+        a.note, a.awarded_by, a.awarded_at, a.awarded_on, a.offspec, a.disenchanted,
+        a.gargul_id, a.import_id
     FROM loot_awards a
-    JOIN users u ON u.id = a.user_id
+    LEFT JOIN users u ON u.id = a.user_id
     LEFT JOIN guild_members gm ON gm.guild_id = a.guild_id AND gm.user_id = a.user_id";
 
-/// `GET /api/events/{id}/loot`: what's been handed out in this raid.
+/// `GET /api/events/{id}/loot`: what's been handed out in this raid (by
+/// hand or imported from Gargul), with the boss each item drops from.
 pub async fn raid_awards(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
     Path(event_id): Path<i64>,
 ) -> AppResult<Json<Vec<LootAward>>> {
-    load(&st, event_id, user.id).await?;
+    let (row, _) = load(&st, event_id, user.id).await?;
     let sql = format!("{AWARD_SELECT} WHERE a.event_id = $1 ORDER BY a.awarded_at, a.id");
     let rows = sqlx::query_as::<_, AwardRow>(&sql)
         .bind(event_id)
@@ -1272,6 +1515,7 @@ pub async fn raid_awards(
         .await?;
     let mut out: Vec<LootAward> = rows.into_iter().map(LootAward::from).collect();
     fill_branches(&st, &mut out).await;
+    fill_bosses(&st.db, row.guild_id, &mut out).await;
     Ok(Json(out))
 }
 
@@ -1313,6 +1557,22 @@ pub async fn award(
         .and_then(|s| s.character.as_ref())
         .map(|c| c.full_name.clone())
         .unwrap_or_default();
+    let class = signup
+        .map(|s| {
+            if s.class.is_empty() {
+                s.character
+                    .as_ref()
+                    .map(|c| c.class.clone())
+                    .unwrap_or_default()
+            } else {
+                s.class.clone()
+            }
+        })
+        .unwrap_or_default();
+    let key = signup
+        .and_then(|s| s.character.as_ref())
+        .map(|c| super::loot_import::char_key(&c.name))
+        .unwrap_or_default();
     let reserved = ev
         .reserves
         .iter()
@@ -1321,8 +1581,9 @@ pub async fn award(
     sqlx::query(
         "INSERT INTO loot_awards (id, guild_id, event_id, channel_id, raid_title, raid_starts_at,
              loot_instance, user_id, character_name, item_id, item_name, item_quality, reserved,
-             note, awarded_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+             note, awarded_by, awarded_on, character_key, character_class)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                 (now() AT TIME ZONE 'UTC')::date, $16, $17)",
     )
     .bind(id)
     .bind(guild_id)
@@ -1339,6 +1600,8 @@ pub async fn award(
     .bind(reserved)
     .bind(&note)
     .bind(user.id)
+    .bind(&key)
+    .bind(&class)
     .execute(&st.db)
     .await?;
     let who = display_name(&st.db, guild_id, req.user_id).await?;
@@ -1347,6 +1610,10 @@ pub async fn award(
         .details(format!("{item_name} → {who} ({title})"))
         .save(&st)
         .await;
+    if reserved {
+        super::loot_import::apply_won_rule(&st, guild_id, &[(event_id, req.user_id, item_id)])
+            .await?;
+    }
     broadcast(&st, event_id).await?;
     let sql = format!("{AWARD_SELECT} WHERE a.id = $1");
     let row = sqlx::query_as::<_, AwardRow>(&sql)
@@ -1359,20 +1626,40 @@ pub async fn award(
     Ok(Json(out))
 }
 
+/// Can run loot for the whole outhouse: Manage Events or a raid manager role.
+pub(super) async fn outhouse_loot_manager(
+    st: &AppState,
+    guild_id: i64,
+    user_id: i64,
+) -> AppResult<()> {
+    let ctx = member_ctx(&st.db, guild_id, user_id).await?;
+    if ctx.require(p::MANAGE_EVENTS).is_ok()
+        || super::raid_settings::has_manager_role(&st.db, &ctx).await?
+    {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden)
+    }
+}
+
 /// `DELETE /api/loot/{id}`: take an entry out of the loot log (the raid's
-/// leaders; Manage Events if the raid's gone).
+/// leaders; raid managers and Manage Events if the raid's gone or it has
+/// none). Logged in the outhouse's audit log.
 pub async fn remove_award(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
     Path(award_id): Path<i64>,
 ) -> AppResult<StatusCode> {
-    let found: Option<(i64, Option<i64>, String, String, i64)> = sqlx::query_as(
-        "SELECT guild_id, event_id, item_name, raid_title, user_id FROM loot_awards WHERE id = $1",
-    )
-    .bind(award_id)
-    .fetch_optional(&st.db)
-    .await?;
-    let Some((guild_id, event_id, item_name, title, winner)) = found else {
+    #[allow(clippy::type_complexity)]
+    let found: Option<(i64, Option<i64>, String, String, Option<i64>, String, bool)> =
+        sqlx::query_as(
+            "SELECT guild_id, event_id, item_name, raid_title, user_id, character_name, disenchanted
+             FROM loot_awards WHERE id = $1",
+        )
+        .bind(award_id)
+        .fetch_optional(&st.db)
+        .await?;
+    let Some((guild_id, event_id, item_name, title, winner, character, de)) = found else {
         return Err(AppError::NotFound);
     };
     match event_id {
@@ -1380,108 +1667,37 @@ pub async fn remove_award(
             let (row, access) = load(&st, event_id, user.id).await?;
             require_manager(&st, &row, &access).await?;
         }
-        None => member_ctx(&st.db, guild_id, user.id)
-            .await?
-            .require(p::MANAGE_EVENTS)?,
+        None => outhouse_loot_manager(&st, guild_id, user.id).await?,
     }
     sqlx::query("DELETE FROM loot_awards WHERE id = $1")
         .bind(award_id)
         .execute(&st.db)
         .await?;
-    let who = display_name(&st.db, guild_id, winner).await?;
-    crate::audit::Entry::new(guild_id, user.id, "loot_award_remove")
-        .target("user", winner, who.clone())
-        .details(format!("{item_name} → {who} ({title})"))
-        .save(&st)
-        .await;
+    let who = match winner {
+        Some(w) => display_name(&st.db, guild_id, w).await?,
+        None if de => "Disenchanted".into(),
+        None => character.clone(),
+    };
+    let named = if !character.is_empty() && character != who {
+        format!("{character} ({who})")
+    } else {
+        who.clone()
+    };
+    let raid = if title.is_empty() {
+        "no raid".to_string()
+    } else {
+        title
+    };
+    let mut entry = crate::audit::Entry::new(guild_id, user.id, "loot_award_remove")
+        .details(format!("{item_name} → {named} ({raid})"));
+    if let Some(w) = winner {
+        entry = entry.target("user", w, who);
+    }
+    entry.save(&st).await;
     if let Some(event_id) = event_id {
         broadcast(&st, event_id).await?;
     }
     Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(Deserialize)]
-pub struct LogQuery {
-    user: Option<String>,
-    q: Option<String>,
-    instance: Option<String>,
-    before: Option<String>,
-    limit: Option<i64>,
-}
-
-#[derive(Serialize)]
-pub struct LootLog {
-    pub entries: Vec<LootAward>,
-    pub has_more: bool,
-}
-
-/// `GET /api/guilds/{id}/loot?user=&q=&instance=&before=&limit=`: the
-/// outhouse's loot log, newest first, from raids in channels you can see.
-pub async fn guild_log(
-    State(st): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(guild_id): Path<i64>,
-    Query(q): Query<LogQuery>,
-) -> AppResult<Json<LootLog>> {
-    let ctx = member_ctx(&st.db, guild_id, user.id).await?;
-    let mut channels = visible_text_channels(&st.db, &ctx, p::VIEW_CHANNEL).await?;
-    drop_age_gated(&st.db, user.id, &mut channels).await?;
-    let limit = q.limit.unwrap_or(50).clamp(1, 100);
-    let parse = |v: &Option<String>| -> AppResult<Option<i64>> {
-        match v.as_deref().filter(|s| !s.is_empty()) {
-            None => Ok(None),
-            Some(s) => s
-                .parse()
-                .map(Some)
-                .map_err(|_| AppError::BadRequest("Bad ID.".into())),
-        }
-    };
-    let who = parse(&q.user)?;
-    let before = parse(&q.before)?;
-    let text =
-        q.q.as_deref()
-            .map(|t| t.trim().chars().take(100).collect::<String>())
-            .filter(|t| !t.is_empty())
-            .map(|t| {
-                format!(
-                    "%{}%",
-                    t.replace('\\', "\\\\")
-                        .replace('%', "\\%")
-                        .replace('_', "\\_")
-                )
-            });
-    let instance = q
-        .instance
-        .as_deref()
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .map(|t| t.chars().take(60).collect::<String>());
-    let sql = format!(
-        "{AWARD_SELECT}
-         WHERE a.guild_id = $1 AND a.channel_id = ANY($2)
-           AND ($3::BIGINT IS NULL OR a.user_id = $3)
-           AND ($4::TEXT IS NULL OR a.item_name ILIKE $4 OR a.raid_title ILIKE $4
-                OR a.character_name ILIKE $4 OR COALESCE(gm.nickname, u.display_name) ILIKE $4)
-           AND ($5::TEXT IS NULL OR lower(a.loot_instance) = lower($5))
-           AND ($6::BIGINT IS NULL OR a.id < $6)
-         ORDER BY a.id DESC
-         LIMIT $7"
-    );
-    let mut rows = sqlx::query_as::<_, AwardRow>(&sql)
-        .bind(guild_id)
-        .bind(&channels)
-        .bind(who)
-        .bind(text)
-        .bind(instance)
-        .bind(before)
-        .bind(limit + 1)
-        .fetch_all(&st.db)
-        .await?;
-    let has_more = rows.len() as i64 > limit;
-    rows.truncate(limit as usize);
-    let mut entries: Vec<LootAward> = rows.into_iter().map(LootAward::from).collect();
-    fill_branches(&st, &mut entries).await;
-    Ok(Json(LootLog { entries, has_more }))
 }
 
 #[cfg(test)]

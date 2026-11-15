@@ -429,6 +429,7 @@ function renderEventCard(m) {
       { label: "Copy time tag", onClick: () => copy(`<t:${Math.floor(new Date(ev.starts_at).getTime() / 1000)}:F>`, "Time tag copied") },
       typeof openRaidExport === "function" ? { label: "Export / invite list", onClick: () => openRaidExport(ev) } : null,
       when.started ? { label: "Take attendance", onClick: () => openAttendanceDialog(ev) } : null,
+      typeof openGargulImport === "function" ? { label: "Import loot (Gargul)…", onClick: () => openGargulImport(ev) } : null,
       "sep",
       { label: series ? "Cancel this raid" : "Delete raid", danger: true, onClick: () => cancelRaid(ev, "one") },
       series ? { label: "Cancel this and future raids", danger: true, onClick: () => cancelRaid(ev, "future") } : null,
@@ -459,6 +460,8 @@ function renderEventCard(m) {
   // ---- Roster, grouped by class ----
   const srTag = (s) => {
     if (!sr) return null;
+    const won = (ev.reserves ?? []).filter((r) => r.user_id === s.user_id && r.won_on);
+    if (won.length) return el("span", { class: "rc-sr won", title: `Won their soft reserve: ${won.map((r) => r.item_name).join(", ")}` }, "SR ✓");
     if (reserved.has(s.user_id)) return el("span", { class: "rc-sr", title: "Has soft-reserved" }, "SR");
     return manager ? el("span", { class: "rc-sr none", title: "No soft reserve yet" }) : null;
   };
@@ -558,6 +561,7 @@ function renderEventCard(m) {
     line("ev-bench", "Bench", bench, benchHint),
     line("ev-absent", "Absence", absent, "", false)) : null,
   compSection,
+  typeof raidLootSection === "function" ? raidLootSection(ev) : null,
   foot);
 }
 

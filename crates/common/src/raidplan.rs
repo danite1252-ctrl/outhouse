@@ -8,7 +8,7 @@
 //! to any raid's list from the app (by Wowhead link, ID or name) and pick
 //! "Other" for a raid that isn't listed.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::id::{as_string, option_as_string};
@@ -1774,6 +1774,13 @@ pub struct RaidReserve {
     pub item_name: String,
     pub quality: i32,
     pub reserved_at: DateTime<Utc>,
+    /// They won it in this raid (the day it was handed out).
+    #[serde(default)]
+    pub won_on: Option<NaiveDate>,
+    /// They won it on a reserve in an earlier raid of this instance and the
+    /// outhouse locks won reserves (a raid leader let them reserve it again).
+    #[serde(default)]
+    pub won_before: Option<NaiveDate>,
 }
 
 /// `PUT /api/events/{id}/reserves` adds one of your reserves (by item ID,
@@ -1785,6 +1792,23 @@ pub struct ReserveRequest {
     pub item_id: Option<i32>,
     #[serde(default)]
     pub query: Option<String>,
+    /// Raid leaders: reserve for someone else who's signed up.
+    #[serde(with = "option_as_string", default)]
+    pub user_id: Option<i64>,
+    /// Raid leaders: allow an item they already won on a reserve (the
+    /// outhouse locks won reserves).
+    #[serde(default)]
+    pub allow_won: bool,
+}
+
+/// An item someone can't soft-reserve again: they won it on a reserve in an
+/// earlier raid of the same instance (`GET /api/events/{id}/won-locks`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WonLock {
+    pub item_id: i32,
+    pub item_name: String,
+    pub won_on: NaiveDate,
+    pub raid_title: String,
 }
 
 /// `PUT /api/events/{id}/reserves/lock`: true locks, false unlocks, null
@@ -1815,24 +1839,31 @@ pub struct AwardRequest {
     pub note: String,
 }
 
-/// An item someone won (the loot log).
+/// An item someone won (the loot log): logged by a raid leader or imported
+/// from Gargul.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LootAward {
     #[serde(with = "as_string")]
     pub id: i64,
     #[serde(with = "option_as_string", default)]
     pub event_id: Option<i64>,
-    #[serde(with = "as_string")]
-    pub channel_id: i64,
+    /// Null: kept without a raid.
+    #[serde(with = "option_as_string", default)]
+    pub channel_id: Option<i64>,
     pub raid_title: String,
-    pub raid_starts_at: DateTime<Utc>,
+    #[serde(default)]
+    pub raid_starts_at: Option<DateTime<Utc>>,
     pub loot_instance: String,
     pub instance_name: String,
-    #[serde(with = "as_string")]
-    pub user_id: i64,
+    /// Null: a character nobody in the outhouse has (or disenchanted).
+    #[serde(with = "option_as_string", default)]
+    pub user_id: Option<i64>,
     pub display_name: String,
-    /// Their character on the raid's sign-up, if they had one.
+    /// The character that won it (as Gargul wrote it, or their sign-up's).
     pub character_name: String,
+    /// The character's class, when it's known (for its colour).
+    #[serde(default)]
+    pub character_class: String,
     pub item_id: i32,
     pub item_name: String,
     pub quality: i32,
@@ -1842,6 +1873,21 @@ pub struct LootAward {
     #[serde(with = "option_as_string", default)]
     pub awarded_by: Option<i64>,
     pub awarded_at: DateTime<Utc>,
+    /// The day it was handed out (in game).
+    pub awarded_on: NaiveDate,
+    #[serde(default)]
+    pub offspec: bool,
+    /// Disenchanted (Gargul's "_disenchanted"): nobody won it.
+    #[serde(default)]
+    pub disenchanted: bool,
+    /// Gargul's ID for the award (imports only).
+    #[serde(default)]
+    pub gargul_id: Option<String>,
+    #[serde(with = "option_as_string", default)]
+    pub import_id: Option<i64>,
+    /// The boss that drops it, when the loot lists know.
+    #[serde(default)]
+    pub boss: String,
     /// The Wowhead branch its item links go to ("classic", "tbc", …).
     #[serde(default)]
     pub branch: String,

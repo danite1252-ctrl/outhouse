@@ -132,15 +132,22 @@ pub async fn load(st: &AppState, guild_id: i64) -> AppResult<RaidSettings> {
         String,
         String,
         SqlJson<BTreeMap<String, RealmGame>>,
+        String,
     )> = sqlx::query_as(
-        "SELECT default_channel_id, realm_time_zone, realm_region, realm_games
+        "SELECT default_channel_id, realm_time_zone, realm_region, realm_games, sr_won
              FROM raid_settings WHERE guild_id = $1",
     )
     .bind(guild_id)
     .fetch_optional(db)
     .await?;
-    let (default_channel_id, realm_tz, realm_region, SqlJson(realm_games)) =
-        row.unwrap_or((None, String::new(), String::new(), SqlJson(BTreeMap::new())));
+    let (default_channel_id, realm_tz, realm_region, SqlJson(realm_games), sr_won) =
+        row.unwrap_or((
+            None,
+            String::new(),
+            String::new(),
+            SqlJson(BTreeMap::new()),
+            "lock".into(),
+        ));
     // Games of raids from the last couple of months on.
     let used: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT game FROM events
@@ -165,6 +172,7 @@ pub async fn load(st: &AppState, guild_id: i64) -> AppResult<RaidSettings> {
         realm_time_zone_derived: derived,
         realm_games: Some(realm_games),
         realm_clocks,
+        sr_won: Some(sr_won),
     })
 }
 
@@ -365,6 +373,15 @@ pub async fn set(
             out
         }
     };
+    let sr_won = match req.sr_won.as_deref().map(str::trim) {
+        None => before.sr_won.clone().unwrap_or_else(|| "lock".into()),
+        Some(v @ ("keep" | "lock" | "remove")) => v.to_string(),
+        Some(_) => {
+            return Err(AppError::BadRequest(
+                "A won soft reserve is kept, locked or removed.".into(),
+            ))
+        }
+    };
     let mut tx = st.db.begin().await?;
     sqlx::query("DELETE FROM raid_manager_roles WHERE guild_id = $1")
         .bind(guild_id)
@@ -380,15 +397,16 @@ pub async fn set(
     sqlx::query(
         "INSERT INTO raid_settings (guild_id, default_channel_id, card_cleanup_series,
                                     card_cleanup_single, realm_time_zone, realm_region,
-                                    realm_games)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+                                    realm_games, sr_won)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT (guild_id) DO UPDATE
              SET default_channel_id = EXCLUDED.default_channel_id,
                  card_cleanup_series = EXCLUDED.card_cleanup_series,
                  card_cleanup_single = EXCLUDED.card_cleanup_single,
                  realm_time_zone = EXCLUDED.realm_time_zone,
                  realm_region = EXCLUDED.realm_region,
-                 realm_games = EXCLUDED.realm_games",
+                 realm_games = EXCLUDED.realm_games,
+                 sr_won = EXCLUDED.sr_won",
     )
     .bind(guild_id)
     .bind(req.default_channel_id)
@@ -397,6 +415,7 @@ pub async fn set(
     .bind(&realm_tz)
     .bind(&realm_region)
     .bind(SqlJson(&realm_games))
+    .bind(&sr_won)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -491,6 +510,18 @@ pub async fn set(
                 realm_text(new_games.get(g))
             ));
         }
+    }
+    if before.sr_won != after.sr_won {
+        let label = |v: &Option<String>| match v.as_deref() {
+            Some("keep") => "keep it",
+            Some("remove") => "remove it",
+            _ => "lock it for later raids",
+        };
+        details.push(format!(
+            "Won soft reserves: {} → {}",
+            label(&before.sr_won),
+            label(&after.sr_won)
+        ));
     }
     if !details.is_empty() {
         crate::audit::Entry::new(guild_id, user.id, "raid_settings_update")
