@@ -117,6 +117,7 @@ pub async fn list(
          GROUP BY user_id
          HAVING count(*) = $2 AND bool_and(outcome = 'attended')",
     )
+    .bind(guild_id)
     .bind(STREAK_RAIDS)
     .fetch_all(db)
     .await?;
