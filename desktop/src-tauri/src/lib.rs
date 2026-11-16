@@ -370,6 +370,11 @@ pub fn run() {
             let window =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                     .initialization_script(init_script(&version, start.as_deref()))
+                    // Let the page handle drag and drop itself. Tauri's own
+                    // file-drop handler otherwise swallows HTML5 drags on
+                    // Windows, so dragging channels and outhouses (and
+                    // dropping files on the message box) did nothing.
+                    .disable_drag_drop_handler()
                     .on_navigation(move |url| {
                         let local = url.scheme() == "tauri"
                             || url.host_str() == Some("tauri.localhost")
