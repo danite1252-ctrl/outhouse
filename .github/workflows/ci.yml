@@ -276,14 +276,6 @@ jobs:
           python ci/auth_ui_test.py
           python ci/staff_ui_test.py
           python ci/csp_test.py
-      - name: Screenshots (base64, for review)
-        if: always()
-        run: |
-          for f in /tmp/ui-shots/*.png; do
-            [ -f "$f" ] || continue
-            echo "=====SHOT $(basename "$f")"
-            base64 -w0 "$f"; echo
-          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
