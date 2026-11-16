@@ -179,11 +179,18 @@ async function api(method, path, body) {
     throw new Error("Your session expired. Sign in again.");
   }
   const data = res.status === 204 ? null : await res.json().catch(() => null);
+  // Staff changed their username: nothing works until they pick a new one (names.js).
+  if (res.status === 403 && data?.code === "must_choose_username") {
+    if (typeof onMustChooseUsername === "function") onMustChooseUsername();
+    const err = new Error(data.error);
+    err.quiet = true;
+    throw err;
+  }
   if (!res.ok) throw new Error((data && data.error) || `Request failed (${res.status})`);
   return data;
 }
 
-const tryApi = (...args) => api(...args).catch((err) => { toast(err.message); throw err; });
+const tryApi = (...args) => api(...args).catch((err) => { if (!err.quiet) toast(err.message); throw err; });
 
 function timeLabel(iso) {
   const d = new Date(iso);
@@ -2871,7 +2878,7 @@ function drawAccount(main) {
       el("div", { class: "inline-row" }, name, saveName)),
     el("p", { class: "muted small", style: "margin:-6px 0 0" }, "What everyone sees, unless you set a nickname in an outhouse."),
     el("label", { class: "field" }, "Username", el("input", { type: "text", value: state.me.username, disabled: true })),
-    el("p", { class: "muted small", style: "margin:-6px 0 0" }, "Used to sign in. It can't be changed."),
+    el("p", { class: "muted small", style: "margin:-6px 0 0" }, "Used to sign in. It can't be changed (Outhouse staff only change one that breaks the rules). Change your display name above, or your nickname in each outhouse."),
     el("h3", { style: "margin:12px 0 0" }, "Password"),
     el("label", { class: "field" }, "Current password", current),
     el("label", { class: "field" }, "New password", next),
@@ -3860,6 +3867,8 @@ async function start() {
   } catch (err) {
     toast(err.message);
   }
+  // A staff-forced username change: they pick a new one first (names.js connects after).
+  if (typeof checkMustChooseUsername === "function" && await checkMustChooseUsername()) return;
   connect();
 }
 

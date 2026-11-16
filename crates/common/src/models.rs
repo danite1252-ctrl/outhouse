@@ -1501,6 +1501,10 @@ pub struct UpdateMeRequest {
     /// Needed (with `new_password`) to change your password.
     pub current_password: Option<String>,
     pub new_password: Option<String>,
+    /// Never accepted: usernames only change when staff force it (the
+    /// server answers 403). Here so the request is refused, not ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
 }
 
 /// Your nickname in one outhouse. Empty or null clears it.

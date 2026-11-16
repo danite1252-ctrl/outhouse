@@ -120,9 +120,22 @@ pub async fn delete_session(db: &PgPool, token: &str) -> AppResult<()> {
 /// The user for a login token or a bot token. Suspended accounts (and bots
 /// whose owner is suspended) get nothing.
 pub async fn user_for_token(db: &PgPool, token: &str) -> AppResult<Option<User>> {
+    Ok(session_for_token(db, token).await?.map(|s| s.user))
+}
+
+#[derive(sqlx::FromRow)]
+pub struct TokenUser {
+    #[sqlx(flatten)]
+    pub user: User,
+    /// A staff-forced username change is waiting for them (api/names.rs).
+    pub must_choose_username: bool,
+}
+
+/// `user_for_token`, plus whether they must choose a new username first.
+pub async fn session_for_token(db: &PgPool, token: &str) -> AppResult<Option<TokenUser>> {
     let token = token.strip_prefix("Bot ").unwrap_or(token).trim();
     let sql = format!(
-        "SELECT {USER_COLUMNS} FROM users u
+        "SELECT {USER_COLUMNS}, u.must_choose_username FROM users u
          WHERE u.id = (
              SELECT user_id FROM sessions WHERE token_hash = $1 AND expires_at > now()
              UNION ALL
@@ -132,11 +145,24 @@ pub async fn user_for_token(db: &PgPool, token: &str) -> AppResult<Option<User>>
            AND NOT EXISTS (SELECT 1 FROM bots b JOIN users o ON o.id = b.owner_id
                            WHERE b.user_id = u.id AND o.suspended_until > now())"
     );
-    let user = sqlx::query_as::<_, User>(&sql)
+    let user = sqlx::query_as::<_, TokenUser>(&sql)
         .bind(token_hash(token))
         .fetch_optional(db)
         .await?;
     Ok(user)
+}
+
+/// What someone whose username was changed by staff can still do before
+/// picking a new one: see who they are, check and choose a name, sign out.
+fn allowed_while_choosing(method: &axum::http::Method, path: &str) -> bool {
+    use axum::http::Method;
+    matches!(
+        (method, path),
+        (&Method::GET, "/api/users/@me")
+            | (&Method::GET, "/api/users/@me/username/check")
+            | (&Method::POST, "/api/users/@me/username")
+            | (&Method::POST, "/api/auth/logout")
+    )
 }
 
 /// The token from `Authorization: Bearer <token>` (people) or
@@ -182,7 +208,10 @@ impl FromRequestParts<AppState> for AuthUser {
         let token = bearer_token(&parts.headers)
             .ok_or(AppError::Unauthorized)?
             .to_string();
-        let user = user_for_token(&state.db, &token)
+        let TokenUser {
+            user,
+            must_choose_username,
+        } = session_for_token(&state.db, &token)
             .await?
             .ok_or(AppError::Unauthorized)?;
         let crate::security::ClientIp(ip) =
@@ -194,6 +223,10 @@ impl FromRequestParts<AppState> for AuthUser {
             .await
         {
             return Err(AppError::Refused(crate::ipblock::USE_REFUSED.into()));
+        }
+        // A staff-forced username change: nothing else until they pick one.
+        if must_choose_username && !allowed_while_choosing(&parts.method, parts.uri.path()) {
+            return Err(AppError::MustChooseUsername);
         }
         // Signed-in activity: the address is noted at most once an hour
         // per session (see ips.rs; bots are skipped).

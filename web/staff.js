@@ -6,13 +6,13 @@
 
 const STAFF_TIER_TEXT = {
   support: "Account basics in People, password-reset links and removing two-factor for someone locked out, and report status (no evidence). No bans, suspensions or IP addresses.",
-  moderator: "Everything Support has, plus the Reports inbox with what was reported, hiding messages, warnings, timeouts, suspensions up to 7 days, a read-only look inside an outhouse with an open report, image-detector holds and same-IP hints (never the addresses).",
+  moderator: "Everything Support has, plus the Reports inbox with what was reported, hiding messages, warnings, forced username changes, timeouts, suspensions up to 7 days, a read-only look inside an outhouse with an open report, image-detector holds and same-IP hints (never the addresses).",
   senior: "Everything a Moderator has, plus permanent suspensions, IP addresses and Blocked networks, shutting down outhouses, child-safety reports (never files), family outhouses and staff-assisted ownership transfers.",
   custom: "Tick exactly the permissions this person gets.",
 };
 const STAFF_OWNER_ONLY = "Always yours alone: police hand-over and evidence downloads, deleting evidence, deleting outhouses for good, managing staff, Server status, the image detector's settings, email tests, backups, Teen protections and the whole safety log.";
 const STAFF_ACTION_LABEL = {
-  warn: "Warned", timeout: "Timed out", kick: "Kicked", ban: "Banned", suspend: "Suspended", unsuspend: "Lifted a suspension",
+  warn: "Warned", force_rename: "Forced a username change", timeout: "Timed out", kick: "Kicked", ban: "Banned", suspend: "Suspended", unsuspend: "Lifted a suspension",
   hide_messages: "Hid messages", unhide_messages: "Showed messages again", delete_message: "Deleted a message", remove_attachment: "Removed files",
   note: "Note", review: "Marked in review", close: "Closed a report", dismiss: "Dismissed a report", reopen: "Reopened a report",
   view_ips: "Looked at IP addresses", view_same_ip: "Checked same-IP hints", ip_block: "Blocked networks", ip_unblock: "Removed a block", ip_block_extend: "Changed a block",

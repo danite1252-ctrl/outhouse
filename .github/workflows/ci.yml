@@ -148,6 +148,7 @@ jobs:
           node --check web/mentions.js
           node --check web/widgets.js
           node --check web/staff.js
+          node --check web/names.js
           node --check web/transfers.js
           node --check web/joinmsg.js
           node --check web/bots/dice-bot.mjs
@@ -155,7 +156,7 @@ jobs:
         run: |
           command -v shellcheck >/dev/null || sudo -n apt-get install -y -qq shellcheck >/dev/null \
             || { echo "::error::shellcheck isn't installed (deploy/ci-runner/setup-linux-runner.sh installs it)"; exit 1; }
-          for f in deploy/*.sh deploy/ci-runner/*.sh ci/smoke.sh ci/staff_test.sh ci/categories_test.sh ci/runner-cleanup.sh; do bash -n "$f"; done
+          for f in deploy/*.sh deploy/ci-runner/*.sh ci/smoke.sh ci/staff_test.sh ci/rename_test.sh ci/categories_test.sh ci/runner-cleanup.sh; do bash -n "$f"; done
           shellcheck -S warning deploy/backup.sh deploy/evidence-handover.sh deploy/healthcheck.sh deploy/setup.sh deploy/restore.sh deploy/security-scan.sh ci/zap.sh \
             ci/runner-cleanup.sh deploy/ci-runner/*.sh
       - name: Workflow check (actionlint)
@@ -275,6 +276,7 @@ jobs:
           python ci/timetag_test.py
           python ci/auth_ui_test.py
           python ci/staff_ui_test.py
+          python ci/rename_ui_test.py
           python ci/csp_test.py
       - uses: actions/upload-artifact@v4
         if: always()

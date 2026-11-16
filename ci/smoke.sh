@@ -5047,6 +5047,12 @@ step "site staff and ownership transfers (ci/staff_test.sh)"
 BASE=$BASE MAIL_DIR=$MAIL_DIR OWNER_TOKEN=$TOKEN_A PUSH=$PUSH bash ci/staff_test.sh
 
 # ---------------------------------------------------------------------------
+# Usernames: staff-forced changes, reserved names, blocked words (feat-force-rename).
+# ---------------------------------------------------------------------------
+step "forced username changes and blocked words (ci/rename_test.sh)"
+BASE=$BASE MAIL_DIR=$MAIL_DIR OWNER_TOKEN=$TOKEN_A bash ci/rename_test.sh
+
+# ---------------------------------------------------------------------------
 # Channel categories and drag-and-drop order (feat-categories): its own
 # script, so it can also run on its own against a local server.
 # ---------------------------------------------------------------------------

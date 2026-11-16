@@ -30,6 +30,7 @@ pub mod mentions;
 pub mod messages;
 mod mrt;
 mod myraids;
+pub mod names;
 mod notifications;
 pub mod outhouses;
 pub mod police;
@@ -111,6 +112,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/safety/email-test", post(recovery::email_test))
         .route("/api/users/@me", get(account::me).patch(account::update_me))
+        // Usernames: only a new pick after a staff-forced change (names.rs).
+        .route("/api/users/@me/username", post(names::choose))
+        .route("/api/users/@me/username/check", get(names::check))
         .route("/api/users/@me/unread", get(search::unread))
         .route("/api/users/@me/raids", get(myraids::list))
         .route(
@@ -718,6 +722,12 @@ pub fn router(state: AppState) -> Router {
             post(safety::user_action_route),
         )
         .route("/api/safety/log", get(safety::get_log))
+        .route(
+            "/api/safety/username-words",
+            get(names::list_words)
+                .post(names::add_word)
+                .delete(names::remove_word),
+        )
         .route(
             "/api/safety/settings",
             get(safety::get_settings).put(safety::set_settings),

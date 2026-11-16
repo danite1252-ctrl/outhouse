@@ -20,6 +20,10 @@ pub enum AppError {
     AgeRestricted,
     #[error("Not found.")]
     NotFound,
+    /// Staff changed their username: they must pick a new one first (403,
+    /// code `must_choose_username`; the web client shows the dialog).
+    #[error("Your username was changed by Outhouse staff because it broke the rules. Choose a new one to keep using Outhouse.")]
+    MustChooseUsername,
     /// A file held back pending a safety review (HTTP 451, for everyone).
     #[error("This file was removed pending review.")]
     Removed,
@@ -48,9 +52,10 @@ impl IntoResponse for AppError {
         let status = match &self {
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Unauthorized | AppError::InvalidCredentials => StatusCode::UNAUTHORIZED,
-            AppError::Forbidden | AppError::AgeRestricted | AppError::Refused(_) => {
-                StatusCode::FORBIDDEN
-            }
+            AppError::Forbidden
+            | AppError::AgeRestricted
+            | AppError::MustChooseUsername
+            | AppError::Refused(_) => StatusCode::FORBIDDEN,
             AppError::NotFound | AppError::Db(sqlx::Error::RowNotFound) => StatusCode::NOT_FOUND,
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::Removed | AppError::Held => StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS,
@@ -70,6 +75,13 @@ impl IntoResponse for AppError {
             return (
                 status,
                 Json(json!({ "error": message, "code": "age_restricted" })),
+            )
+                .into_response();
+        }
+        if matches!(self, AppError::MustChooseUsername) {
+            return (
+                status,
+                Json(json!({ "error": message, "code": "must_choose_username" })),
             )
                 .into_response();
         }

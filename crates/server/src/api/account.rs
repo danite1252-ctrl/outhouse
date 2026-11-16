@@ -86,16 +86,10 @@ async fn check_registration_allowed(st: &AppState, invite: Option<&str>) -> AppR
 }
 
 fn validate_username(name: &str) -> AppResult<()> {
-    let ok_len = (2..=32).contains(&name.chars().count());
-    let ok_chars = name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.');
-    if ok_len && ok_chars {
+    if super::names::valid_username(name) {
         Ok(())
     } else {
-        Err(AppError::BadRequest(
-            "Usernames are 2–32 characters: letters, numbers, dots and underscores.".into(),
-        ))
+        Err(AppError::BadRequest(super::names::RULES.into()))
     }
 }
 
@@ -122,6 +116,8 @@ pub async fn register(
     }
     let username = req.username.trim().to_lowercase();
     validate_username(&username)?;
+    // Reserved after a forced change, or containing a blocked word (names.rs).
+    super::names::check_allowed(&st.db, &username).await?;
     check_new_password(&req.password)?;
     // Every new account gives an email (see recovery.rs).
     let email = super::recovery::normalize_email(req.email.as_deref().unwrap_or(""))?;
@@ -232,11 +228,22 @@ pub async fn login(
     if req.password.chars().count() > MAX_PASSWORD_CHARS {
         return Err(failed());
     }
-    let row =
+    let mut row =
         sqlx::query_as::<_, LoginRow>("SELECT id, password_hash FROM users WHERE username = $1")
             .bind(&username)
             .fetch_optional(&st.db)
             .await?;
+    // Staff changed their username and they haven't picked a new one yet:
+    // the old one (the name they know) still signs them in.
+    if row.is_none() {
+        if let Some(id) = super::names::pending_owner_of(&st.db, &username).await? {
+            row =
+                sqlx::query_as::<_, LoginRow>("SELECT id, password_hash FROM users WHERE id = $1")
+                    .bind(id)
+                    .fetch_optional(&st.db)
+                    .await?;
+        }
+    }
     // A blocked network (ipblock.rs): only the site owner and accounts he
     // exempted get past it. Checked before the password, so it says nothing
     // about whether a guess was right.
@@ -305,6 +312,25 @@ pub async fn me(
         ) {
             obj.extend(extra);
         }
+        // A staff-forced username change waiting for their pick (names.rs).
+        let choosing: bool =
+            sqlx::query_scalar("SELECT must_choose_username FROM users WHERE id = $1")
+                .bind(user.id)
+                .fetch_one(&st.db)
+                .await?;
+        if let Some(obj) = out.as_object_mut() {
+            obj.insert("must_choose_username".into(), choosing.into());
+            if choosing {
+                obj.insert(
+                    "forced_rename_reason".into(),
+                    super::names::forced_reason(&st.db, user.id)
+                        .await?
+                        .map(|r| r.split(':').next().unwrap_or("").to_string())
+                        .into(),
+                );
+                obj.insert("username_rules".into(), super::names::RULES.into());
+            }
+        }
     }
     Ok(Json(out))
 }
@@ -320,6 +346,10 @@ pub async fn update_me(
     headers: HeaderMap,
     Json(req): Json<UpdateMeRequest>,
 ) -> AppResult<Json<User>> {
+    // Usernames only change when staff force it (names.rs).
+    if req.username.is_some() {
+        return Err(AppError::Refused(super::names::NO_CHANGES.into()));
+    }
     if let Some(new_password) = req.new_password {
         check_new_password(&new_password)?;
         let current = req.current_password.unwrap_or_default();

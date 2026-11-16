@@ -245,7 +245,8 @@ struct NameRow {
 }
 
 /// Names someone has gone by, newest first. Nicknames only from
-/// `only_guilds` (None = every outhouse, for themselves and the site owner).
+/// `only_guilds` (None = every outhouse, for themselves and the site owner;
+/// staff-forced username changes are only shown then too).
 pub async fn name_history(
     db: &sqlx::PgPool,
     user_id: i64,
@@ -257,6 +258,8 @@ pub async fn name_history(
          FROM name_history h LEFT JOIN guilds g ON g.id = h.guild_id
          WHERE h.user_id = $1
            AND (h.kind <> 'nickname' OR $2::BIGINT[] IS NULL OR h.guild_id = ANY($2))
+           -- A staff-forced username change: never on other people's view.
+           AND (NOT h.staff_only OR $2::BIGINT[] IS NULL)
          ORDER BY h.changed_at DESC, h.id DESC
          LIMIT $3",
     )

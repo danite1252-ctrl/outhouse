@@ -2378,6 +2378,12 @@ async fn subject_json(st: &AppState, user_id: i64) -> AppResult<Value> {
         .bind(user_id)
         .fetch_one(&st.db)
         .await?;
+    let choosing_username: bool =
+        sqlx::query_scalar("SELECT must_choose_username FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(&st.db)
+            .await?;
+    let blocked_word = super::names::blocked_word_in(&st.db, &u.username).await?;
     let mut sign_in = super::twofactor::owner_summary(&st.db, user_id).await?;
     sign_in["email"] = json!(email.as_deref().map(super::recovery::mask_email));
     sign_in["email_verified"] = json!(email_verified);
@@ -2427,6 +2433,10 @@ async fn subject_json(st: &AppState, user_id: i64) -> AppResult<Value> {
         "sign_in": sign_in,
         "names": names,
         "message_requests": message_requests,
+        // A forced username change they haven't picked a new name for yet.
+        "choosing_username": choosing_username,
+        // The owner's blocked word their username contains (People filter).
+        "username_blocked_word": blocked_word,
     }))
 }
 
@@ -2583,6 +2593,12 @@ pub struct ActionRequest {
     /// "Allow from blocked networks"
     #[serde(default)]
     exempt: Option<bool>,
+    /// "Force username change": a preset reason key (names::REASONS).
+    #[serde(default)]
+    reason: Option<String>,
+    /// "Force username change": also reset their display name.
+    #[serde(default)]
+    reset_display_name: bool,
     /// Already counted towards the staff member's hourly cap (an approved request).
     #[serde(skip)]
     precharged: bool,
@@ -2903,6 +2919,7 @@ async fn action_perm(
             )
         }
         "hide_messages" | "unhide_messages" => ("hide_messages", Some(false)),
+        "force_rename" => ("force_rename", Some(false)),
         "set_ip_exempt" => ("ips", None),
         _ => ("owner", None),
     })
@@ -2958,6 +2975,21 @@ async fn user_action(
                 return Err(AppError::BadRequest("Write the note first.".into()));
             }
             log(st, Some(me), "note", report, Some(target), text).await;
+        }
+        "force_rename" => {
+            protect("force a username change on")?;
+            let line = super::names::force(
+                st,
+                a,
+                target,
+                super::names::ForceRename {
+                    reason: req.reason.as_deref().unwrap_or(""),
+                    text: req.text.as_deref().unwrap_or(""),
+                    reset_display_name: req.reset_display_name,
+                },
+            )
+            .await?;
+            log(st, Some(me), "force_rename", report, Some(target), line).await;
         }
         "warn" => {
             protect("warn")?;
@@ -3637,6 +3669,9 @@ pub(crate) async fn evidence_package(
 #[derive(Deserialize)]
 pub struct UserQuery {
     q: Option<String>,
+    /// `blocked`: only usernames containing one of the owner's blocked words.
+    #[serde(default)]
+    filter: Option<String>,
 }
 
 /// `GET /api/safety/users?q=`: find someone by name.
@@ -3653,21 +3688,30 @@ pub async fn find_users(
             .replace('%', "\\%")
             .replace('_', "\\_")
     );
-    let rows: Vec<(i64, String, String, String, bool, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT id, username, display_name, age_bracket, COALESCE(suspended_until > now(), false), created_at
-         FROM users
-         WHERE NOT is_bot AND (lower(username) LIKE $1 OR lower(display_name) LIKE $1)
-         ORDER BY created_at DESC LIMIT 50",
-    )
+    let blocked = q.filter.as_deref() == Some("blocked");
+    let rows: Vec<(i64, String, String, String, bool, DateTime<Utc>, bool)> = sqlx::query_as(&format!(
+        "SELECT u.id, u.username, u.display_name, u.age_bracket, COALESCE(u.suspended_until > now(), false),
+                u.created_at, u.must_choose_username
+         FROM users u
+         WHERE NOT u.is_bot AND (lower(u.username) LIKE $1 OR lower(u.display_name) LIKE $1)
+           AND (NOT $2 OR EXISTS (SELECT 1 FROM username_blocked_words w
+                                  WHERE strpos({}, w.word) > 0))
+         ORDER BY u.created_at DESC LIMIT 50",
+        super::names::BLOCKED_SQL
+    ))
     .bind(&pattern)
+    .bind(blocked)
     .fetch_all(&st.db)
     .await?;
     Ok(Json(json!(rows
         .iter()
-        .map(|(id, username, name, bracket, suspended, created)| json!({
-            "id": id.to_string(), "username": username, "display_name": name,
-            "age_bracket": bracket, "suspended": suspended, "created_at": created,
-        }))
+        .map(
+            |(id, username, name, bracket, suspended, created, choosing)| json!({
+                "id": id.to_string(), "username": username, "display_name": name,
+                "age_bracket": bracket, "suspended": suspended, "created_at": created,
+                "choosing_username": choosing,
+            })
+        )
         .collect::<Vec<_>>())))
 }
 

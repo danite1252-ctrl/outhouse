@@ -145,7 +145,7 @@ expect 200 POST /api/safety/staff "{\"username\":\"sen$RUN\",\"tier\":\"senior\"
 expect 200 POST /api/safety/staff "{\"username\":\"senb$RUN\",\"tier\":\"senior\"}" "$OWNER_T"
 expect 400 POST /api/safety/staff "{\"username\":\"sen$RUN\",\"tier\":\"senior\"}" "$OWNER_T"   # already staff
 expect 200 GET /api/safety/staff "" "$OWNER_T"
-jq -e --arg m "$MOD2_ID" '(.staff | length) >= 5 and (.catalogue.perms | length) == 17
+jq -e --arg m "$MOD2_ID" '(.staff | length) >= 5 and (.catalogue.perms | length) == 18
   and any(.staff[]; .id == $m and .tier == "custom" and .perms == ["people","hide_messages","warn"])
   and .settings.two_person_permanent_ip and .settings.two_person_shut_down and .settings.two_person_members == 25
   and (.settings.staff_badge | not)' "$SB" >/dev/null

@@ -385,6 +385,7 @@ const SITE_OWNER_TABS = [
   ["outhouses", "Outhouses"],
   ["blocks", "Blocked networks"],
   ["teens", "Teen protections"],
+  ["names", "Usernames"],
   ["detector", "Image detector"],
   ["digest", "This week"],
   ["log", "Safety log"],
@@ -407,6 +408,7 @@ function siteOwnerTabs() {
     .filter(([id]) => id !== "status" || typeof drawServerStatus === "function")
     .filter(([id]) => id !== "outhouses" || typeof drawOuthousesDirectory === "function")
     .filter(([id]) => !["staff", "staffact", "approvals"].includes(id) || typeof drawStaffPage === "function")
+    .filter(([id]) => id !== "names" || typeof drawUsernameWords === "function")
     .filter(([id]) => sOwner() || (STAFF_TAB_PERMS[id] || []).some(sCan));
 }
 // The section's heading in User settings.
@@ -421,10 +423,11 @@ function reportStatusTabs(current, draw) {
 }
 
 // One SITE OWNER page. `ctx.draw(key, extra)` redraws User settings.
-function drawSiteOwnerTab(page, key, { reportId = null, openPerson = null, outhouseId = null, staffId = null, stillMine, draw }) {
+function drawSiteOwnerTab(page, key, { reportId = null, openPerson = null, outhouseId = null, staffId = null, peopleFilter = "", stillMine, draw }) {
   const openUser = (uid) => draw("people", { openPerson: uid });
   if (reportId) return drawReportDetail(page, reportId, { back: () => draw(key), stillMine, openUser });
-  if (key === "people") return drawPeople(page, { stillMine, openReport: (rid) => draw("open", { reportId: rid }), userId: openPerson });
+  if (key === "people") return drawPeople(page, { stillMine, openReport: (rid) => draw("open", { reportId: rid }), userId: openPerson, filter: peopleFilter });
+  if (key === "names" && typeof drawUsernameWords === "function") return drawUsernameWords(page, { stillMine, draw });
   if (key === "status") return drawServerStatus(page);
   if (key === "outhouses") return drawOuthousesDirectory(page, { stillMine, openReport: (rid) => draw("open", { reportId: rid }), openUser, outhouseId, draw });
   if (key === "teens") return drawTeenSettings(page, stillMine);
@@ -617,6 +620,8 @@ function subjectView(u, act) {
     el("div", { class: "sc-meta" }, el("strong", {}, u.display_name), el("span", { class: "muted" }, ` @${u.username}`),
       u.site_owner ? el("span", { class: "rp-chip" }, "Site owner") : null,
       u.protected ? el("span", { class: "rp-chip", title: u.protected }, "Staff can't act on this account") : null,
+      u.choosing_username ? el("span", { class: "rp-chip rn-chip", title: "Staff changed their username; they haven't picked a new one yet" }, "Choosing a new username") : null,
+      u.username_blocked_word ? el("span", { class: "rp-chip cat-hate rn-chip-blocked", title: "Their username contains one of the site owner's blocked words" }, `Username has “${u.username_blocked_word}”`) : null,
       u.suspended ? el("span", { class: "rp-chip cat-child_safety" }, `Suspended ${u.suspended_label}`) : null),
     u.suspended && u.suspended_reason ? el("div", { class: "muted small" }, `Reason: ${u.suspended_reason}`) : null,
     el("div", { class: "status-grid" },
@@ -642,7 +647,7 @@ function subjectView(u, act) {
 function accountActions(u, act, guildId = null, ctx = null) {
   if (u.site_owner) return el("p", { class: "muted small", style: "margin:0" }, "Site owners can't be warned, timed out or suspended here.");
   if (u.protected) return el("p", { class: "muted small sc-protected", style: "margin:0" }, `🔒 ${u.protected}`);
-  const moderate = ["warn", "timeout", "suspend_7d", "suspend_permanent", "hide_messages", "ips"].some(sCan);
+  const moderate = ["warn", "timeout", "suspend_7d", "suspend_permanent", "hide_messages", "ips", "force_rename"].some(sCan);
   if (!moderate) return null;
   // Moderators suspend for up to 7 days; permanently is for seniors.
   const suspendOptions = [["1", "1 day"], ["3", "3 days"], ["7", "1 week"], ["30", "30 days"], ["90", "90 days"], ["", "Permanently"]]
@@ -658,6 +663,7 @@ function accountActions(u, act, guildId = null, ctx = null) {
       const f = await formDialog(`Warn ${u.display_name}`, [{ name: "text", label: "Warning (sent as a DM from Outhouse Safety; it doesn't say who reported them)", type: "textarea", placeholder: "Please don't post that here." }], "Send warning");
       if (f?.text) act({ action: "warn", text: f.text }, "Warning sent.");
     } }, "Warn…"),
+    sCan("force_rename") && !u.bot && typeof forceRenameDialog === "function" ? el("button", { class: "ghost sc-force-rename", disabled: !!u.choosing_username, title: u.choosing_username ? "They're already choosing a new username" : null, onclick: () => forceRenameDialog(u, act, ctx) }, "Force username change…") : null,
     outhouses.length && sCan("timeout") ? el("button", { class: "ghost", onclick: async () => {
       const f = await formDialog(`Time out ${u.display_name}`, [pickOuthouse(), { name: "minutes", label: "For", type: "select", value: "60", options: [["10", "10 minutes"], ["60", "1 hour"], ["1440", "1 day"], ["10080", "1 week"]] }], "Time out");
       if (f) act({ action: "timeout", guild_id: f.guild_id, minutes: Number(f.minutes) }, "Timed out.");
@@ -1165,8 +1171,11 @@ function ipMatchView(d, openUser) {
     el("p", { class: "muted small sc-tight" }, `${s.note || ""} Nothing has been done to either account. Open them in People to compare their IP addresses (each look is logged).`));
 }
 
-async function drawPeople(page, { stillMine, openReport, userId }) {
+async function drawPeople(page, { stillMine, openReport, userId, filter = "" }) {
   const search = el("input", { type: "text", placeholder: "Find someone by name or username", "aria-label": "Find someone" });
+  const show = el("select", { class: "select sc-people-filter", "aria-label": "Show" },
+    el("option", { value: "" }, "Everyone"),
+    el("option", { value: "blocked", selected: filter === "blocked" }, "Usernames matching blocked words"));
   const results = el("div", { class: "sc-list" });
   const detail = el("div", { class: "sc-person" });
   const showPerson = async (uid) => {
@@ -1199,21 +1208,23 @@ async function drawPeople(page, { stillMine, openReport, userId }) {
   let seq = 0;
   const find = async () => {
     const mine = ++seq;
-    const list = await tryApi("GET", `/api/safety/users?q=${encodeURIComponent(search.value.trim())}`).catch(() => []);
+    const list = await tryApi("GET", `/api/safety/users?q=${encodeURIComponent(search.value.trim())}${show.value ? `&filter=${show.value}` : ""}`).catch(() => []);
     if (mine !== seq || !stillMine()) return;
     results.replaceChildren(...(list.length ? list.map((u) => el("button", { class: "sc-row", "data-user": u.id, onclick: () => showPerson(u.id) },
       el("div", { class: "sc-row-who" }, el("strong", {}, u.display_name), el("span", { class: "muted" }, ` @${u.username}`),
         u.age_bracket === "teen" ? el("span", { class: "rp-chip" }, "Teen") : null,
         u.suspended ? el("span", { class: "rp-chip cat-child_safety" }, "Suspended") : null,
-        el("span", { class: "sc-when" }, `joined ${new Date(u.created_at).toLocaleDateString()}`)))) : [el("p", { class: "muted" }, "Nobody by that name.")]));
+        u.choosing_username ? el("span", { class: "rp-chip rn-chip" }, "Choosing a username") : null,
+        el("span", { class: "sc-when" }, `joined ${new Date(u.created_at).toLocaleDateString()}`)))) : [el("p", { class: "muted" }, show.value === "blocked" ? "No usernames match the blocked words." : "Nobody by that name.")]));
   };
   let timer = null;
   search.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(find, 250); });
+  show.addEventListener("change", find);
   page.replaceChildren(el("h2", {}, "People"),
     el("p", { class: "muted small", style: "margin:0" }, sOwner()
       ? "Look anyone up to see their history, set their age group (teen or adult), or warn, time out or suspend them without a report. Newest accounts first."
       : "Look anyone up. You see what your staff permissions allow; every action is written to the safety log. Newest accounts first."),
-    search, results, detail);
+    el("div", { class: "dir-tools sc-people-tools" }, search, show), results, detail);
   await find();
   if (userId) showPerson(userId);
 }

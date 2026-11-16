@@ -84,6 +84,11 @@ pub const PERMS: &[(&str, &str, &str)] = &[
         "moderator",
     ),
     (
+        "force_rename",
+        "Force a username change (an inappropriate or rude username)",
+        "moderator",
+    ),
+    (
         "timeout",
         "Time out or kick someone in an outhouse",
         "moderator",
@@ -1743,6 +1748,9 @@ mod tests {
         assert!(s.contains(&"people".to_string()) && !s.contains(&"warn".to_string()));
         assert!(m.contains(&"warn".to_string()) && !m.contains(&"ips".to_string()));
         assert!(x.contains(&"transfers".to_string()));
+        assert!(
+            m.contains(&"force_rename".to_string()) && !s.contains(&"force_rename".to_string())
+        );
         assert_eq!(x.len(), PERMS.len());
         assert_eq!(rank_of(&["people".into()]), 1);
         assert_eq!(rank_of(&["people".into(), "ips".into()]), 3);

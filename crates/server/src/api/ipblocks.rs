@@ -339,10 +339,7 @@ async fn make_blocks(st: &AppState, a: &Actor, id: i64, payload: &Value) -> AppR
             continue;
         }
         if c.own && !include_own {
-            skipped.push(format!(
-                "{} (one of your own addresses)",
-                c.network
-            ));
+            skipped.push(format!("{} (one of your own addresses)", c.network));
             continue;
         }
         let inserted: Option<i64> = sqlx::query_scalar(
