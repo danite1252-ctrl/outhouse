@@ -23,7 +23,7 @@ Set-Content -Path (Join-Path $root "VERSION") -Value $version -NoNewline
 Write-Host "Packing the code (skipping build output and local data)..."
 tar -czf $archive -C $root `
     --exclude=./target --exclude=./data --exclude=./tools --exclude=./.env `
-    --exclude=./deploy/.env --exclude=./deploy/livekit.yaml --exclude=./.git --exclude=./desktop --exclude=./deploy/updates --exclude=./deploy/status --exclude=./github-secrets.txt .
+    --exclude=./deploy/.env --exclude=./deploy/livekit.yaml --exclude=./.git --exclude=./desktop --exclude=./deploy/updates --exclude=./deploy/status --exclude=./github-secrets.txt --exclude=./_private --exclude=./_sync .
 if ($LASTEXITCODE -ne 0) { throw "Packing failed." }
 
 # Find ssh/scp even when this window's PATH doesn't have them (e.g. a 32-bit

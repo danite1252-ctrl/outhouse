@@ -301,7 +301,7 @@ md "## Summary"
 md "$PASS fine, $WARN worth a look, $FAIL to fix."
 {
   md ""
-  md "Next steps: deploy/README.md → \"Security checks\"; Apache settings in deploy/apache-hardening.conf."
+  md "Next steps: deploy/README.md → \"Security checks\"; Apache settings in your private Apache hardening snippet."
 }
 say "Done: $PASS fine, $WARN worth a look, $FAIL to fix."
 for f in "${FAILS[@]}"; do printf '  \033[31m✗\033[0m %s\n' "$f"; done

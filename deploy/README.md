@@ -36,10 +36,13 @@ Your router can only send 80/443 to one machine, so let Apache handle HTTPS
 and pass the Outhouse subdomain through to this server:
 1. Answer **y** to "Does another web server already handle HTTPS" during setup.
    Outhouse then listens on plain HTTP port **8080** instead of 80/443.
-2. Use `deploy/oh.hartspace.cc.conf` as the Apache site (set up for Apache
-   on 192.168.1.32 and Outhouse on 192.168.1.122 at oh.hartspace.cc). The
-   commands to enable it and get the certificate are at the top of the file.
-   (`apache-outhouse.conf` is an older template; use the oh.hartspace.cc one.)
+2. Point an Apache site at this server. Your own site file and Apache
+   hardening snippet are kept outside the repo (on your PC in
+   `_private/apache/`, never pushed or deployed). A site file needs, at
+   minimum: `ProxyPreserveHost On`, `RequestHeader unset X-Forwarded-For early`,
+   `ProxyPass /rtc ws://<outhouse-ip>:8080/rtc` plus `ProxyPass / http://<outhouse-ip>:8080/`
+   (with matching `ProxyPassReverse`), WebSocket upgrade for `/gateway`,
+   and a TLS certificate for the subdomain.
 3. On the router, only forward **7881 TCP** and **7882 UDP** to the Outhouse
    server. Voice can't go through Apache. 80/443 stay with Apache.
 
@@ -969,7 +972,7 @@ this applies to them.
 Outhouse needs the visitor's real address for sign-in limits and the IP
 addresses above. The chain at home:
 
-1. The internet → **Apache on 192.168.1.32** (HTTPS). `oh.hartspace.cc.conf`
+1. The internet → **Apache** (HTTPS). Its site file (kept outside the repo)
    has `RequestHeader unset X-Forwarded-For early`, so whatever a visitor
    sends is thrown away, then mod_proxy adds `X-Forwarded-For: <visitor>`.
 2. → **Caddy** (the `caddy-proxied` container, `Caddyfile.behind-proxy`).
@@ -998,7 +1001,7 @@ to believe Cloudflare's `CF-Connecting-IP`, from Cloudflare only:
 ```bash
 sudo a2enmod remoteip
 ```
-then add to the `<VirtualHost *:443>` in `oh.hartspace.cc.conf` (one
+then add to the `<VirtualHost *:443>` in your Outhouse Apache site file (one
 `RemoteIPTrustedProxy` line per range; take the current list from
 https://www.cloudflare.com/ips/ and keep it up to date):
 ```apache
@@ -1062,13 +1065,13 @@ view, run the Windows version on a laptop connected to a **phone hotspot**:
 5432, 7880, 8080 or 22 with passwords allowed, should be closed on the
 router.
 
-**Apache** (it also serves hartspace.cc): `deploy/apache-hardening.conf` is
-a server-wide snippet (ServerTokens Prod, ServerSignature Off, TraceEnable
-Off, TLS 1.2+ only with modern ciphers, no folder listings, dotfiles and
-backup files refused, mod_status for localhost only, HSTS and nosniff for
-every site). Install steps are at the top of the file. The Outhouse site
-file (`oh.hartspace.cc.conf`) also drops any `X-Forwarded-For` a visitor
-sends, so the sign-in limits see the real address.
+**Apache** (if it sits in front): use a server-wide hardening snippet
+(ServerTokens Prod, ServerSignature Off, TraceEnable Off, TLS 1.2+ only with
+modern ciphers, no folder listings, dotfiles and backup files refused,
+mod_status for localhost only, HSTS and nosniff for every site). Your own
+copy is kept outside the repo in `_private/apache/` on your PC. The Outhouse
+site file must also drop any `X-Forwarded-For` a visitor sends, so the
+sign-in limits see the real address.
 
 **Other things worth knowing**
 - Outhouse believes `X-Forwarded-For` only from `TRUSTED_PROXIES` (default:

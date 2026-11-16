@@ -13,3 +13,7 @@ __pycache__/
 /deploy/status
 /VERSION
 /web/updates
+
+# Local-only files (server configs, sync drops)
+_private/
+_sync/
