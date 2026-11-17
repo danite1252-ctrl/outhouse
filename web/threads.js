@@ -685,8 +685,9 @@ function customEmojiTabs(standard, onPick, forText) {
           locked && typeof lockedChip === "function" ? lockedChip("Golden Throne") : null),
         el("div", { class: "emoji-grid" }, list.map((e) => el("button", {
           type: "button",
-          title: locked ? `:${e.name}: (Golden Throne — coming soon)` : `:${e.name}:`,
+          title: `:${e.name}:`,
           "aria-disabled": locked ? "true" : null,
+          "aria-label": locked ? `:${e.name}: (Golden Throne — coming soon)` : null,
           onclick: () => {
             if (locked) return toast("Emoji from your other outhouses come with Golden Throne (coming soon).");
             closePopover(); onPick(forText ? `:${e.name}:` : `<:${e.name}:${e.id}>`);
