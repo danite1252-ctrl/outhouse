@@ -23,7 +23,6 @@ use crate::error::{AppError, AppResult};
 use crate::perms::{channel_access, ChannelAccess};
 use crate::state::{AppState, Audience};
 
-const MAX_MESSAGE_CHARS: usize = 4000;
 pub const MAX_FILES: usize = 10;
 pub const MAX_FILE_BYTES: usize = 25 * 1024 * 1024;
 pub(crate) const KEY_ALPHABET: &[u8] = b"abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -744,13 +743,34 @@ pub(crate) struct MessageExtras {
     pub skip_slowmode: bool,
 }
 
-fn check_content(content: &str, allow_empty: bool) -> AppResult<()> {
+/// Bots, webhooks and feeds keep the long limit they always had.
+const BOT_MESSAGE_CHARS: usize = 4000;
+
+/// The longest message this account may send (premium.rs: 2000, or 4000
+/// with Golden Throne, unless the owner changed them).
+pub(crate) async fn max_chars(db: &PgPool, user: &User) -> AppResult<usize> {
+    let limit = crate::api::premium::message_chars(db, user.id).await?;
+    Ok(if user.bot {
+        limit.max(BOT_MESSAGE_CHARS)
+    } else {
+        limit
+    })
+}
+
+fn check_content(content: &str, allow_empty: bool, max: usize) -> AppResult<()> {
     if content.is_empty() && !allow_empty {
         return Err(AppError::BadRequest("Messages can't be empty.".into()));
     }
-    if content.chars().count() > MAX_MESSAGE_CHARS {
+    let n = content.chars().count();
+    if n > max {
+        let s = crate::api::premium::switches();
+        let more = if max < s.premium_chars {
+            format!(" Golden Throne members can send up to {}.", s.premium_chars)
+        } else {
+            String::new()
+        };
         return Err(AppError::BadRequest(format!(
-            "Messages can be up to {MAX_MESSAGE_CHARS} characters."
+            "Messages can be up to {max} characters (this one is {n}).{more}"
         )));
     }
     Ok(())
@@ -798,6 +818,7 @@ pub(crate) async fn create_message_ex(
     let channel_id = access.channel.id;
     let guild_id = access.channel.guild_id;
     let content = content.trim().to_string();
+    let max = max_chars(&st.db, user).await?;
     check_content(
         &content,
         !files.is_empty()
@@ -806,6 +827,7 @@ pub(crate) async fn create_message_ex(
             || !extras.reused_files.is_empty()
             || extras.sticker.is_some()
             || extras.forward.is_some(),
+        max,
     )?;
     let components = if extras.components.is_empty() {
         Vec::new()
@@ -1185,10 +1207,16 @@ pub async fn upload(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
     Path(channel_id): Path<i64>,
+    headers: axum::http::HeaderMap,
     mut form: Multipart,
 ) -> AppResult<Json<Message>> {
     let access = channel_access(&st.db, channel_id, user.id).await?;
     access.require(p::SEND_MESSAGES | p::ATTACH_FILES)?;
+    // 25 MB a file, or more in a Golden Outhouse / a Golden Throne member's DMs.
+    let dm = access.channel.guild_id == DM_GUILD;
+    let file_limit =
+        crate::api::premium::upload_limit(&st.db, access.channel.guild_id, user.id).await?;
+    crate::api::premium::check_content_length(&headers, MAX_FILES * file_limit + 1024 * 1024, dm)?;
 
     let mut content = String::new();
     let mut reply_to_id = None;
@@ -1230,12 +1258,9 @@ pub async fn upload(
                 }
                 let filename = clean_filename(field.file_name().unwrap_or("file"));
                 let content_type = guess_content_type(&filename).to_string();
-                let data = field.bytes().await.map_err(upload_error)?;
-                if data.len() > MAX_FILE_BYTES {
-                    return Err(AppError::BadRequest(format!(
-                        "{filename} is too big (25 MB max)."
-                    )));
-                }
+                let data =
+                    crate::api::premium::read_field_limited(field, &filename, file_limit, dm)
+                        .await?;
                 files.push(PendingFile {
                     storage_key: auth::random_code(24, KEY_ALPHABET),
                     filename,
@@ -1457,6 +1482,7 @@ pub async fn edit(
             || !original.embeds.is_empty()
             || original.sticker.is_some()
             || original.forward.is_some(),
+        max_chars(&st.db, &user).await?,
     )?;
     let content =
         crate::api::emojis::expand(&st.db, access.channel.guild_id, user.id, &content).await?;
@@ -1634,6 +1660,22 @@ pub async fn add_reaction(
     access.require(p::ADD_REACTIONS)?;
     check_custom_reaction(&st.db, &emoji).await?;
     message_in_channel(&st.db, channel_id, message_id).await?;
+    if let Some((_, emoji_id)) = crate::api::emojis::parse_token(&emoji) {
+        if !crate::api::emojis::may_react(
+            &st.db,
+            access.channel.guild_id,
+            user.id,
+            emoji_id,
+            message_id,
+            &emoji,
+        )
+        .await?
+        {
+            return Err(AppError::Refused(
+                "Reacting with other outhouses' emoji comes with Golden Throne.".into(),
+            ));
+        }
+    }
     let added = sqlx::query(
         "INSERT INTO reactions (message_id, user_id, emoji) VALUES ($1, $2, $3)
          ON CONFLICT DO NOTHING",

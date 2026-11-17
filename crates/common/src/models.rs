@@ -21,6 +21,10 @@ pub struct User {
     #[serde(default)]
     #[cfg_attr(feature = "sqlx", sqlx(default))]
     pub bot: bool,
+    /// Has Golden Throne (premium) right now.
+    #[serde(default)]
+    #[cfg_attr(feature = "sqlx", sqlx(default))]
+    pub premium: bool,
 }
 
 /// A server ("outhouse"). Called a guild in the code, like Discord's API.
@@ -46,6 +50,10 @@ pub struct Guild {
     #[serde(default)]
     #[cfg_attr(feature = "sqlx", sqlx(default))]
     pub banner_url: Option<String>,
+    /// A Golden Outhouse (premium) right now.
+    #[serde(default)]
+    #[cfg_attr(feature = "sqlx", sqlx(default))]
+    pub premium: bool,
 }
 
 /// A member of a server: the user plus their server-specific details.
@@ -70,6 +78,10 @@ pub struct Member {
     #[serde(default)]
     #[cfg_attr(feature = "sqlx", sqlx(default))]
     pub bot: bool,
+    /// Has Golden Throne (a subtle badge next to their name).
+    #[serde(default)]
+    #[cfg_attr(feature = "sqlx", sqlx(default))]
+    pub premium: bool,
 }
 
 /// A role. The @everyone role has the same ID as its server.
@@ -1069,6 +1081,12 @@ pub struct Profile {
     pub accent_color: i32,
     pub bot: bool,
     pub created_at: DateTime<Utc>,
+    /// Has Golden Throne (the supporter badge).
+    #[serde(default)]
+    pub premium: bool,
+    /// Two colours for a gradient on the profile (Golden Throne only).
+    #[serde(default)]
+    pub profile_gradient: Option<Vec<i32>>,
     /// Their WoW characters (main first).
     #[serde(default)]
     pub characters: Vec<crate::wow::WowCharacter>,

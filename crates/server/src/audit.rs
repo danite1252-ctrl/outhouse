@@ -36,6 +36,20 @@ impl Entry {
         }
     }
 
+    /// An entry Outhouse made itself (no person did it), e.g. Golden
+    /// Outhouse running out.
+    pub fn system(guild_id: i64, action: &'static str) -> Self {
+        Self {
+            guild_id,
+            actor_id: None,
+            action,
+            target_kind: "",
+            target_id: None,
+            target_name: String::new(),
+            details: String::new(),
+        }
+    }
+
     pub fn target(mut self, kind: &'static str, id: i64, name: impl Into<String>) -> Self {
         self.target_kind = kind;
         self.target_id = Some(id);

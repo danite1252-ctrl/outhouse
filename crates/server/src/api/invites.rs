@@ -78,6 +78,11 @@ pub struct InviteGuild {
     #[serde(with = "outhouse_common::id::as_string")]
     pub id: i64,
     pub name: String,
+    /// A Golden Outhouse (the gold badge on the invite page).
+    #[serde(default)]
+    pub premium: bool,
+    #[serde(default)]
+    pub icon_url: Option<String>,
 }
 
 /// What anyone with the link can see, signed in or not.
@@ -90,6 +95,9 @@ pub struct InvitePreview {
     pub member_count: i64,
     pub online_count: i64,
     pub expires_at: Option<DateTime<Utc>>,
+    /// The outhouse's vanity link (Golden Outhouse), not a made invite.
+    #[serde(default)]
+    pub vanity: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -105,6 +113,9 @@ struct InviteRow {
     expires_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
     usable: bool,
+    /// A Golden Outhouse's vanity link (`guilds.vanity_code`).
+    #[sqlx(default)]
+    vanity: bool,
 }
 
 const INVITE_SELECT: &str = "
@@ -150,16 +161,44 @@ fn clean_code(code: &str) -> Option<&str> {
         .then_some(code)
 }
 
+/// A Golden Outhouse's vanity link as an invite: permanent, no use limit,
+/// "made" by the owner; usable while the outhouse is premium (a lapsed one
+/// is paused, see premium.rs).
+const VANITY_SELECT: &str = "
+    SELECT g.vanity_code AS code, g.id AS guild_id, g.name AS guild_name, g.owner_id AS creator_id,
+           COALESCE(NULLIF(m.nickname, ''), u.display_name) AS creator_name,
+           oh_file_url(u.avatar_key, 'avatar') AS creator_avatar,
+           g.vanity_uses AS uses, NULL::INT AS max_uses, NULL::TIMESTAMPTZ AS expires_at,
+           COALESCE(g.vanity_set_at, g.created_at) AS created_at,
+           (g.vanity_paused_at IS NULL AND oh_guild_premium(g.id)) AS usable,
+           true AS vanity
+    FROM guilds g
+    JOIN users u ON u.id = g.owner_id
+    LEFT JOIN guild_members m ON m.guild_id = g.id AND m.user_id = g.owner_id
+    WHERE g.vanity_code = $1";
+
 async fn find_invite(st: &AppState, code: &str) -> AppResult<Option<InviteRow>> {
-    let Some(code) = clean_code(code) else {
+    if let Some(code) = clean_code(code) {
+        let sql = format!("{INVITE_SELECT} WHERE i.code = $1");
+        if let Some(row) = sqlx::query_as::<_, InviteRow>(&sql)
+            .bind(code)
+            .fetch_optional(&st.db)
+            .await?
+        {
+            return Ok(Some(row));
+        }
+    }
+    let Ok(vanity) = super::premium::clean_vanity(code) else {
         return Ok(None);
     };
-    let sql = format!("{INVITE_SELECT} WHERE i.code = $1");
-    Ok(sqlx::query_as::<_, InviteRow>(&sql)
-        .bind(code)
+    Ok(sqlx::query_as::<_, InviteRow>(VANITY_SELECT)
+        .bind(vanity)
         .fetch_optional(&st.db)
         .await?)
 }
+
+/// A paused vanity link (its outhouse's Golden Outhouse lapsed).
+const VANITY_PAUSED: &str = "This link isn't active right now.";
 
 /// The site's public address: `PUBLIC_URL` when it's set, otherwise worked
 /// out from the request (Apache/Caddy pass on the original host and scheme).
@@ -300,6 +339,11 @@ pub async fn revoke(
     Path(code): Path<String>,
 ) -> AppResult<StatusCode> {
     let row = find_invite(&st, &code).await?.ok_or(AppError::NotFound)?;
+    if row.vanity {
+        return Err(AppError::BadRequest(
+            "That's the outhouse's vanity link. Change it in Outhouse settings → Invites.".into(),
+        ));
+    }
     let ctx = member_ctx(&st.db, row.guild_id, user.id).await?;
     if row.creator_id != user.id {
         ctx.require(p::MANAGE_GUILD)?;
@@ -325,13 +369,20 @@ async fn preview_for(st: &AppState, row: &InviteRow, base: &str) -> AppResult<In
             .fetch_all(&st.db)
             .await?;
     let online = member_ids.iter().filter(|id| st.is_online(**id)).count();
+    let icon_key: Option<String> = sqlx::query_scalar("SELECT icon_key FROM guilds WHERE id = $1")
+        .bind(row.guild_id)
+        .fetch_one(&st.db)
+        .await?;
     Ok(InvitePreview {
         code: row.code.clone(),
         url: invite_url(base, &row.code),
         guild: InviteGuild {
             id: row.guild_id,
             name: row.guild_name.clone(),
+            premium: super::premium::guild_has_premium(&st.db, row.guild_id).await?,
+            icon_url: super::profiles::pic_url(&st.db, &icon_key, "icon").await,
         },
+        vanity: row.vanity,
         inviter: Some(row.creator()),
         member_count: member_ids.len() as i64,
         online_count: online as i64,
@@ -348,10 +399,13 @@ pub async fn preview(
     headers: HeaderMap,
 ) -> AppResult<Json<InvitePreview>> {
     check_lookup_rate(ip)?;
-    let row = find_invite(&st, &code)
-        .await?
-        .filter(|r| r.usable)
-        .ok_or(AppError::NotFound)?;
+    let row = find_invite(&st, &code).await?.ok_or(AppError::NotFound)?;
+    if row.vanity && !row.usable {
+        return Err(AppError::Gone(VANITY_PAUSED.into()));
+    }
+    if !row.usable {
+        return Err(AppError::NotFound);
+    }
     crate::perms::refuse_if_shut_down(&st.db, row.guild_id).await?;
     Ok(Json(
         preview_for(&st, &row, &public_base(&st, &headers)).await?,
@@ -380,6 +434,9 @@ pub async fn join(
         return Ok(Json(fetch_guild(&st.db, row.guild_id).await?));
     }
     if !row.usable {
+        if row.vanity {
+            return Err(AppError::Gone(VANITY_PAUSED.into()));
+        }
         return Err(AppError::BadRequest(
             "That invite has expired or been used up.".into(),
         ));
@@ -400,17 +457,30 @@ pub async fn join(
     // Count the use and add the member together, so a 1-use invite can't
     // let two people in at once.
     let mut tx = st.db.begin().await?;
-    let counted = sqlx::query(
-        "UPDATE invites SET uses = uses + 1
-         WHERE code = $1
-           AND (expires_at IS NULL OR expires_at > now())
-           AND (max_uses IS NULL OR uses < max_uses)",
-    )
-    .bind(&row.code)
-    .execute(&mut *tx)
-    .await?
-    .rows_affected()
-        == 1;
+    let counted = if row.vanity {
+        sqlx::query(
+            "UPDATE guilds SET vanity_uses = vanity_uses + 1
+             WHERE id = $1 AND vanity_code = $2 AND vanity_paused_at IS NULL",
+        )
+        .bind(row.guild_id)
+        .bind(&row.code)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            == 1
+    } else {
+        sqlx::query(
+            "UPDATE invites SET uses = uses + 1
+             WHERE code = $1
+               AND (expires_at IS NULL OR expires_at > now())
+               AND (max_uses IS NULL OR uses < max_uses)",
+        )
+        .bind(&row.code)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            == 1
+    };
     if !counted {
         return Err(AppError::BadRequest(
             "That invite has expired or been used up.".into(),
@@ -590,9 +660,12 @@ pub async fn page(
     }
     let base = public_base(&st, &headers);
     let row = match find_invite(&st, &code).await {
-        Ok(row) => row.filter(|r| r.usable),
+        Ok(row) => row,
         Err(e) => return e.into_response(),
     };
+    // A paused vanity link gets a friendly "not active right now".
+    let paused = row.as_ref().is_some_and(|r| r.vanity && !r.usable);
+    let row = row.filter(|r| r.usable);
     // A shut-down outhouse's invites look like dead ones.
     let row = match row {
         Some(r)
@@ -614,14 +687,21 @@ pub async fn page(
     let template = tokio::fs::read_to_string(st.config.web_dir.join("invite.html"))
         .await
         .unwrap_or_else(|_| FALLBACK_TEMPLATE.to_string());
-    let shown_code = clean_code(&code).unwrap_or("");
-    let html = render_invite_page(
+    let vanity_code = super::premium::clean_vanity(&code).ok();
+    let shown_code = clean_code(&code)
+        .map(str::to_string)
+        .or(vanity_code)
+        .unwrap_or_default();
+    let mut html = render_invite_page(
         &template,
         &base,
         preview.as_ref(),
-        shown_code,
+        &shown_code,
         &st.config.android_package,
     );
+    if paused {
+        html = html.replace("data-state=\"invalid\"", "data-state=\"paused\"");
+    }
     let status = if preview.is_some() {
         StatusCode::OK
     } else {
@@ -707,6 +787,8 @@ mod tests {
             guild: InviteGuild {
                 id: 1,
                 name: "<b>Tom & Jerry</b>".into(),
+                premium: false,
+                icon_url: None,
             },
             inviter: Some(InviteCreator {
                 id: 2,
@@ -716,6 +798,7 @@ mod tests {
             member_count: 1,
             online_count: 0,
             expires_at: None,
+            vanity: false,
         };
         let html = render_invite_page(
             "<title>{{TITLE}}</title><i>{{INVITER}}</i><p>{{MEMBERS}}</p><script>{{DATA}}</script>",
@@ -738,6 +821,8 @@ mod tests {
             guild: InviteGuild {
                 id: 1,
                 name: "{{DATA}}".into(),
+                premium: false,
+                icon_url: None,
             },
             inviter: Some(InviteCreator {
                 id: 2,
@@ -747,6 +832,7 @@ mod tests {
             member_count: 1,
             online_count: 0,
             expires_at: None,
+            vanity: false,
         };
         let html = render_invite_page(
             "<meta content=\"{{TITLE}}\"><script>{{DATA}}</script>",

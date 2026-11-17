@@ -35,6 +35,7 @@ mod notifications;
 pub mod outhouses;
 pub mod police;
 pub mod polls;
+pub mod premium;
 mod profiles;
 pub mod raid_settings;
 pub mod recovery;
@@ -69,7 +70,11 @@ async fn permission_list() -> Json<Vec<PermissionInfo>> {
 }
 
 pub fn router(state: AppState) -> Router {
-    let upload_limit = messages::MAX_FILES * messages::MAX_FILE_BYTES + 1024 * 1024;
+    // Premium outhouses (and premium people's DMs) take bigger files: the
+    // layers allow the premium size and each handler applies the limit for
+    // that channel (413 before reading when Content-Length is already over).
+    let file_limit = premium::max_upload_bytes();
+    let upload_limit = messages::MAX_FILES * file_limit + 1024 * 1024;
     Router::new()
         .route("/api/health", get(audit::health))
         .route("/api/permissions", get(permission_list))
@@ -246,9 +251,7 @@ pub fn router(state: AppState) -> Router {
         // Files uploaded from the message box before sending (checked first)
         .route(
             "/api/channels/{id}/drafts",
-            post(drafts::upload).layer(DefaultBodyLimit::max(
-                messages::MAX_FILE_BYTES + 1024 * 1024,
-            )),
+            post(drafts::upload).layer(DefaultBodyLimit::max(file_limit + 1024 * 1024)),
         )
         .route("/api/drafts/sweep", post(drafts::sweep_now))
         .route("/api/drafts/{id}", get(drafts::get).delete(drafts::delete))
@@ -338,6 +341,21 @@ pub fn router(state: AppState) -> Router {
                 .layer(DefaultBodyLimit::max(sounds::MAX_SOUND_BYTES + 64 * 1024)),
         )
         .route("/api/users/@me/sounds", get(sounds::list_mine))
+        // Golden Throne: personal soundboard sounds
+        .route(
+            "/api/users/@me/personal-sounds",
+            get(sounds::list_personal)
+                .post(sounds::create_personal)
+                .layer(DefaultBodyLimit::max(sounds::MAX_SOUND_BYTES + 64 * 1024)),
+        )
+        .route(
+            "/api/users/@me/personal-sounds/{id}",
+            patch(sounds::edit_personal).delete(sounds::delete_personal),
+        )
+        .route(
+            "/api/users/@me/premium-entrance",
+            put(sounds::set_premium_entrance).delete(sounds::clear_premium_entrance),
+        )
         .route("/api/builtin-sounds", get(sounds::list_builtins))
         .route(
             "/api/guilds/{id}/hidden-sounds/{key}",
@@ -769,6 +787,43 @@ pub fn router(state: AppState) -> Router {
             get(detector::get_guild_settings).put(detector::set_guild_settings),
         )
         .route("/api/attachments/{id}/reveal", get(detector::reveal))
+        // Premium: Golden Throne and Golden Outhouse (premium.rs)
+        .route("/api/premium/perks", get(premium::perks))
+        .route("/api/premium/sweep", post(premium::sweep_now))
+        .route("/api/users/@me/premium", get(premium::my_status))
+        .route(
+            "/api/users/@me/premium/slot",
+            put(premium::set_slot).delete(premium::clear_slot),
+        )
+        .route("/api/users/@me/theme", put(premium::set_theme))
+        .route(
+            "/api/users/@me/profile-gradient",
+            put(premium::set_gradient),
+        )
+        .route("/api/guilds/{id}/premium", get(premium::guild_status))
+        .route(
+            "/api/guilds/{id}/premium-settings",
+            put(premium::set_guild_settings),
+        )
+        .route(
+            "/api/guilds/{id}/vanity",
+            put(premium::set_vanity).delete(premium::clear_vanity),
+        )
+        .route("/api/safety/premium", get(premium::list))
+        .route("/api/safety/premium-settings", put(premium::set_switches))
+        .route("/api/safety/users/{id}/premium", post(premium::grant_user))
+        .route(
+            "/api/safety/users/{id}/premium/revoke",
+            post(premium::revoke_user),
+        )
+        .route(
+            "/api/safety/outhouses/{id}/premium",
+            post(premium::grant_guild),
+        )
+        .route(
+            "/api/safety/outhouses/{id}/premium/revoke",
+            post(premium::revoke_guild),
+        )
         // GIFs, files, gateway
         .route("/api/gifs", get(gifs::search))
         .route("/files/{key}/{name}", get(files::serve))

@@ -20,7 +20,7 @@ const SESSION_DAYS: i32 = 30;
 /// Columns for a `User`, from `users u`.
 pub const USER_COLUMNS: &str = "u.id, u.username, u.display_name,
     oh_file_url(u.avatar_key, 'avatar') AS avatar_url,
-    u.is_bot AS bot";
+    u.is_bot AS bot, oh_user_premium(u.id) AS premium";
 
 /// SQL for a user's avatar URL from `users u` (NULL if none).
 pub const AVATAR_URL_SQL: &str = "oh_file_url(u.avatar_key, 'avatar')";

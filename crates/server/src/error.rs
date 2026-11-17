@@ -41,6 +41,9 @@ pub enum AppError {
     /// Too many tries (sign-in, sign-up, invite look-ups): slow down.
     #[error("{0}")]
     TooManyRequests(String),
+    /// An upload over the size allowed here (413), with a reason to show.
+    #[error("{0}")]
+    TooLarge(String),
     #[error(transparent)]
     Db(#[from] sqlx::Error),
     #[error(transparent)]
@@ -60,6 +63,7 @@ impl IntoResponse for AppError {
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::Removed | AppError::Held => StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS,
             AppError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+            AppError::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             AppError::Gone(_) => StatusCode::GONE,
             AppError::Db(_) | AppError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };

@@ -54,6 +54,7 @@ struct Row {
     messages_30d: i64,
     open_reports: i64,
     previous_names: Vec<String>,
+    premium: bool,
     total: i64,
 }
 
@@ -72,6 +73,7 @@ const ROW_SQL: &str = "
            (SELECT count(*) FROM reports r WHERE r.guild_id = g.id AND r.status <> 'closed') AS open_reports,
            ARRAY(SELECT h.old_name FROM guild_name_history h WHERE h.guild_id = g.id
                  ORDER BY h.changed_at DESC LIMIT 5) AS previous_names,
+           oh_guild_premium(g.id) AS premium,
            count(*) OVER () AS total
     FROM guilds g JOIN users u ON u.id = g.owner_id
     WHERE g.id <> 0";
@@ -115,6 +117,7 @@ fn row_json(st: &AppState, r: &Row, online: usize) -> Value {
         "messages_30d": r.messages_30d,
         "open_reports": r.open_reports,
         "family": r.family,
+        "premium": r.premium,
         "detector_enabled": r.detector_enabled,
         "shut_down": r.shut_down_at.is_some(),
         "shut_down_at": r.shut_down_at,
@@ -137,7 +140,13 @@ async fn online_in(st: &AppState, guild_id: i64) -> AppResult<usize> {
 /// `GET /api/safety/outhouses?q=&sort=name|members|created|activity|reports&page=`
 /// Who sees the directory: the owner, and staff who look inside, shut
 /// down, mark family outhouses or transfer ownership.
-const DIRECTORY_PERMS: &[&str] = &["outhouse_look", "shut_down", "family", "transfers"];
+const DIRECTORY_PERMS: &[&str] = &[
+    "outhouse_look",
+    "shut_down",
+    "family",
+    "transfers",
+    "grant_premium",
+];
 
 pub async fn list(
     State(st): State<AppState>,
@@ -324,6 +333,7 @@ async fn detail_json(st: &AppState, guild_id: i64) -> AppResult<Value> {
 /// whether it's a conflict of interest for them).
 async fn detail_for(st: &AppState, guild_id: i64, a: &Actor) -> AppResult<Value> {
     let mut d = detail_json(st, guild_id).await?;
+    d["golden"] = super::premium::outhouse_json(&st.db, guild_id).await?;
     if !a.owner {
         d["live_police_links"] = json!(0);
         let conflict = super::staff::moderated_guilds(&st.db, a.id())

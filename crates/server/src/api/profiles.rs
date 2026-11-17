@@ -59,19 +59,53 @@ pub async fn get(
     {
         return Err(AppError::NotFound);
     }
+    let (premium, profile_gradient) = premium_look(&st.db, row.id).await?;
     Ok(Json(Profile {
         id: row.id,
         username: row.username,
         display_name: row.display_name,
-        avatar_url: row.avatar_key.map(|k| format!("/files/{k}/avatar")),
-        banner_url: row.banner_key.map(|k| format!("/files/{k}/banner")),
+        avatar_url: pic_url(&st.db, &row.avatar_key, "avatar").await,
+        banner_url: pic_url(&st.db, &row.banner_key, "banner").await,
         about_me: row.about_me,
         profile_theme: row.profile_theme,
         accent_color: row.accent_color,
         bot: row.is_bot,
         created_at: row.created_at,
+        premium,
+        profile_gradient,
         characters: super::wow::characters_of(&st.db, row.id).await?,
     }))
+}
+
+/// A picture's link (`oh_file_url`: the detector's version, and whether it
+/// moves or only its first frame is shown).
+pub(crate) async fn pic_url(db: &sqlx::PgPool, key: &Option<String>, name: &str) -> Option<String> {
+    let k = key.as_ref()?;
+    sqlx::query_scalar::<_, Option<String>>("SELECT oh_file_url($1, $2)")
+        .bind(k)
+        .bind(name)
+        .fetch_one(db)
+        .await
+        .ok()
+        .flatten()
+        .or_else(|| Some(format!("/files/{k}/{name}")))
+}
+
+/// (has Golden Throne, their profile gradient while they do).
+pub(crate) async fn premium_look(
+    db: &sqlx::PgPool,
+    user_id: i64,
+) -> AppResult<(bool, Option<Vec<i32>>)> {
+    let premium = super::premium::user_has_premium(db, user_id).await?;
+    let gradient: Option<Vec<i32>> = if premium {
+        sqlx::query_scalar("SELECT profile_gradient FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(db)
+            .await?
+    } else {
+        None
+    };
+    Ok((premium, gradient.filter(|g| g.len() == 2)))
 }
 
 pub(crate) fn image_type(content_type: &str, filename: &str) -> Option<&'static str> {
@@ -127,6 +161,7 @@ async fn replace_image(
         // Kept while a safety report refers to it.
         if !crate::api::safety::file_retained(&st.db, &old).await {
             let _ = tokio::fs::remove_file(st.config.upload_dir.join(&old)).await;
+            let _ = tokio::fs::remove_file(st.config.upload_dir.join(format!("{old}.still"))).await;
         }
     }
     refresh_my_guilds(st, user_id).await
@@ -192,6 +227,7 @@ async fn upload(st: &AppState, user_id: i64, kind: &str, mut form: Multipart) ->
             None,
         )
         .await;
+        crate::api::premium::note_picture(&st.db, &key, &data, None).await;
         return replace_image(st, user_id, kind, Some(key)).await;
     }
     Err(AppError::BadRequest("Choose a picture to upload.".into()))
@@ -438,10 +474,7 @@ pub async fn full(
         return Err(AppError::NotFound);
     }
 
-    let avatar_url = row
-        .avatar_key
-        .as_ref()
-        .map(|k| format!("/files/{k}/avatar"));
+    let avatar_url = pic_url(db, &row.avatar_key, "avatar").await;
     let mut out = json!({
         "id": row.id.to_string(),
         "username": row.username,
@@ -503,11 +536,11 @@ pub async fn full(
     let online = st.is_online(row.id) && !blocked_me;
     obj.insert(
         "banner_url".into(),
-        json!(row
-            .banner_key
-            .as_ref()
-            .map(|k| format!("/files/{k}/banner"))),
+        json!(pic_url(db, &row.banner_key, "banner").await),
     );
+    let (premium, gradient) = premium_look(db, row.id).await?;
+    obj.insert("premium".into(), json!(premium));
+    obj.insert("profile_gradient".into(), json!(gradient));
     obj.insert("about_me".into(), json!(row.about_me));
     obj.insert("profile_theme".into(), json!(row.profile_theme));
     obj.insert("accent_color".into(), json!(row.accent_color));

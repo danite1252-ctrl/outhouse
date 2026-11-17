@@ -227,7 +227,7 @@ async fn play_entrance(
     channel_id: i64,
     user_id: i64,
 ) -> AppResult<()> {
-    let Some(url) = super::sounds::entrance_url(st, user_id).await? else {
+    let Some(url) = super::sounds::entrance_url(st, guild_id, user_id).await? else {
         return Ok(());
     };
     {

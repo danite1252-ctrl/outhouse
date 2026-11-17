@@ -23,7 +23,7 @@ const MEMBER_SELECT: &str = "
            COALESCE(array_agg(mr.role_id) FILTER (WHERE mr.role_id IS NOT NULL), '{}') AS role_ids,
            m.joined_at, m.timeout_until, false AS online,
            oh_file_url(u.avatar_key, 'avatar') AS avatar_url,
-           u.is_bot AS bot
+           u.is_bot AS bot, oh_user_premium(u.id) AS premium
     FROM guild_members m
     JOIN users u ON u.id = m.user_id
     LEFT JOIN member_roles mr ON mr.guild_id = m.guild_id AND mr.user_id = m.user_id

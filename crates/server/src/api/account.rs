@@ -75,6 +75,19 @@ async fn check_registration_allowed(st: &AppState, invite: Option<&str>) -> AppR
                 return Ok(());
             }
         }
+        // A Golden Outhouse's vanity link works like a permanent invite.
+        if let Some(vanity) = invite.and_then(|c| super::premium::clean_vanity(c).ok()) {
+            let usable: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM guilds WHERE vanity_code = $1
+                     AND vanity_paused_at IS NULL AND oh_guild_premium(id))",
+            )
+            .bind(&vanity)
+            .fetch_one(&st.db)
+            .await?;
+            if usable {
+                return Ok(());
+            }
+        }
         return Err(AppError::Refused(
             "New accounts need an invite here. Open the invite link you were sent, then sign up."
                 .into(),

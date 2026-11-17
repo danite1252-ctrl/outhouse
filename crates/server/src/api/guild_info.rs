@@ -182,8 +182,10 @@ async fn info_json(st: &AppState, guild_id: i64, user_id: i64) -> AppResult<Valu
     .await?;
     let icon_url = file_url(&st.db, &g.icon_key, "icon").await;
     let banner_url = file_url(&st.db, &g.banner_key, "banner").await;
+    let premium = crate::api::premium::guild_has_premium(&st.db, guild_id).await?;
     Ok(json!({
         "id": guild_id.to_string(),
+        "premium": premium,
         "name": g.name,
         "icon_url": icon_url,
         "banner_url": banner_url,
@@ -370,6 +372,7 @@ async fn replace_image(
             .await?;
         if !crate::api::safety::file_retained(&st.db, &old).await {
             let _ = tokio::fs::remove_file(st.config.upload_dir.join(&old)).await;
+            let _ = tokio::fs::remove_file(st.config.upload_dir.join(format!("{old}.still"))).await;
         }
     }
     announce(st, guild_id).await;
@@ -444,6 +447,7 @@ async fn upload(
             Some(guild_id),
         )
         .await;
+        crate::api::premium::note_picture(&st.db, &key, &data, Some(guild_id)).await;
         return replace_image(st, guild_id, kind, Some(key)).await;
     }
     Err(AppError::BadRequest("Choose a picture to upload.".into()))

@@ -113,8 +113,11 @@ fn deep_link_path(link: &str) -> Option<String> {
             .to_string(),
         _ => return None,
     };
-    let ok =
-        !code.is_empty() && code.len() <= 32 && code.chars().all(|c| c.is_ascii_alphanumeric());
+    // Invite codes are letters and digits; Golden Outhouse vanity links
+    // (e.g. /invite/the-long-drop) also have hyphens.
+    let ok = !code.is_empty()
+        && code.len() <= 32
+        && code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
     ok.then(|| format!("/invite/{code}"))
 }
 

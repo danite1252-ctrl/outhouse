@@ -136,6 +136,12 @@ pub async fn create(
     let access = channel_access(&st.db, channel_id, user.id).await?;
     access.require(p::SEND_MESSAGES)?;
     let content = check_content(&req.content)?;
+    let max = crate::api::messages::max_chars(&st.db, &user).await?;
+    if content.chars().count() > max {
+        return Err(AppError::BadRequest(format!(
+            "Messages can be up to {max} characters."
+        )));
+    }
     check_time(req.send_at)?;
     if let Some(thread_id) = req.thread_id {
         thread_in_channel(&st.db, channel_id, thread_id).await?;

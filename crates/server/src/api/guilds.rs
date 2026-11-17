@@ -19,7 +19,8 @@ use crate::state::{AppState, Audience};
 pub const GUILD_COLUMNS: &str = "g.id, g.name, g.owner_id, g.created_at,
     oh_file_url(g.icon_key, 'icon') AS icon_url,
     oh_file_url(g.banner_key, 'banner') AS banner_url,
-    CASE WHEN g.shut_down_at IS NULL THEN NULL ELSE g.members_remove_at END AS closed_until";
+    CASE WHEN g.shut_down_at IS NULL THEN NULL ELSE g.members_remove_at END AS closed_until,
+    oh_guild_premium(g.id) AS premium";
 
 pub async fn guilds_for_user(db: &PgPool, user_id: i64) -> AppResult<Vec<Guild>> {
     let guilds = sqlx::query_as::<_, Guild>(&format!(

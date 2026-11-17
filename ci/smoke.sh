@@ -72,6 +72,9 @@ python3 ci/detector_images.py /tmp/dt >/dev/null
 export OUTHOUSE_TEST_HOOKS=1
 # Message requests: a small daily limit so the test can reach it (the default is 10).
 export MESSAGE_REQUESTS_PER_DAY=4 MESSAGE_REQUEST_MAX_MESSAGES=3
+# Premium uploads: 30 MB here (default 100) so ci/premium_test.sh can test the
+# limits without huge files.
+export PREMIUM_UPLOAD_MB=30
 # Staff hourly caps small enough for ci/staff_test.sh to reach (defaults 30 and 5).
 export STAFF_ACTIONS_PER_HOUR=8 STAFF_HEAVY_ACTIONS_PER_HOUR=10
 # Gateway probe files from an earlier run would satisfy "wait for READY" before the new probe starts.
@@ -497,7 +500,9 @@ code=$(upload_emoji "$TOKEN_A" pog /tmp/pixel.png); [[ "$code" == 409 ]] || { ec
 TOKEN=$OUT; fail_call GET "/api/guilds/$GUILD/emojis"; TOKEN=$TOKEN_A
 TOK="<:pog:$EMOJI>"
 call POST "/api/channels/$CHAN/messages" '{"content":"gg :pog: :nope: `:pog:`"}' | jq -e --arg e "$TOK" '.content == ("gg " + $e + " :nope: `:pog:`")' >/dev/null
-call POST "/api/channels/$DMID/messages" '{"content":":pog:"}' | jq -e --arg e "$TOK" '.content == $e' >/dev/null
+# In a DM every custom emoji is another outhouse's: that needs Golden Throne
+# (ci/premium_test.sh checks it with), so without it :pog: stays text.
+call POST "/api/channels/$DMID/messages" '{"content":":pog:"}' | jq -e '.content == ":pog:"' >/dev/null
 EM=$(call POST "/api/channels/$CHAN/messages" '{"content":"plain"}' | jq -r .id)
 call PATCH "/api/channels/$CHAN/messages/$EM" '{"content":"edited :pog:"}' | jq -e --arg e "$TOK" '.content == ("edited " + $e)' >/dev/null
 call PUT "/api/channels/$CHAN/messages/$EM/reactions/$(enc "$TOK")" >/dev/null
@@ -5065,5 +5070,12 @@ BASE=$BASE DATABASE_URL=$DATABASE_URL bash ci/categories_test.sh
 # ---------------------------------------------------------------------------
 step "join and leave messages (ci/joinmsg_test.sh)"
 BASE=$BASE DATABASE_URL=$DATABASE_URL bash ci/joinmsg_test.sh
+
+# ---------------------------------------------------------------------------
+# Premium: Golden Throne / Golden Outhouse entitlements and every gated
+# feature (feat-premium): its own script, so it can also run on its own.
+# ---------------------------------------------------------------------------
+step "premium: Golden Throne and Golden Outhouse (ci/premium_test.sh)"
+BASE=$BASE DATABASE_URL=$DATABASE_URL OWNER_TOKEN=$TOKEN_A bash ci/premium_test.sh
 
 echo "Smoke test passed."

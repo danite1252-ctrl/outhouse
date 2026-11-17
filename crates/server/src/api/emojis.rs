@@ -116,34 +116,164 @@ struct NameId {
     id: i64,
 }
 
+/// May this person use other outhouses' emoji here? Free for everyone
+/// unless the owner made it a Golden Throne perk (the default); bots and
+/// webhooks always may (their outhouse set them up).
+pub async fn cross_ok(db: &PgPool, user_id: i64) -> AppResult<bool> {
+    if !crate::api::premium::switches().emoji_premium {
+        return Ok(true);
+    }
+    let bot: bool = sqlx::query_scalar("SELECT is_bot FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(db)
+        .await?
+        .unwrap_or(false);
+    Ok(bot || crate::api::premium::user_has_premium(db, user_id).await?)
+}
+
+/// `<:name:id>` tokens outside `code`: (start, end, name, id).
+fn token_spans(text: &str) -> Vec<(usize, usize, String, i64)> {
+    let b = text.as_bytes();
+    let mut out = Vec::new();
+    let mut in_code = false;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'`' => {
+                in_code = !in_code;
+                i += 1;
+            }
+            b'<' if !in_code => match token_len(&text[i..]) {
+                Some(len) => {
+                    if let Some((name, id)) = parse_token(&text[i..i + len]) {
+                        out.push((i, i + len, name.to_string(), id));
+                    }
+                    i += len;
+                }
+                None => i += 1,
+            },
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+#[derive(sqlx::FromRow)]
+struct TokenEmoji {
+    id: i64,
+    guild_id: i64,
+    member: bool,
+}
+
 /// Turns `:name:` into custom emoji tokens. The outhouse you're posting in
-/// wins; otherwise any outhouse you're in (that's how DMs get emoji).
+/// wins; other outhouses you're in only when you may use their emoji
+/// ([`cross_ok`]: Golden Throne, unless the owner made it free). Ready-made
+/// `<:name:id>` tokens are checked the same way: one you can't use (or a
+/// deleted emoji) goes back to plain `:name:`. Existing messages are never
+/// touched, so they keep showing their emoji.
 pub async fn expand(db: &PgPool, guild_id: i64, user_id: i64, content: &str) -> AppResult<String> {
     let names: Vec<String> = shortcodes(content)
         .into_iter()
         .map(|(s, e)| content[s + 1..e - 1].to_string())
         .collect();
-    if names.is_empty() {
+    let spans = token_spans(content);
+    if names.is_empty() && spans.is_empty() {
         return Ok(content.to_string());
+    }
+    let cross = cross_ok(db, user_id).await?;
+    // Ready-made tokens first.
+    let mut text = content.to_string();
+    if !spans.is_empty() {
+        let ids: Vec<i64> = spans.iter().map(|s| s.3).collect();
+        let known = sqlx::query_as::<_, TokenEmoji>(
+            "SELECT e.id, e.guild_id,
+                    EXISTS(SELECT 1 FROM guild_members m
+                           WHERE m.guild_id = e.guild_id AND m.user_id = $2) AS member
+             FROM emojis e WHERE e.id = ANY($1)",
+        )
+        .bind(&ids)
+        .bind(user_id)
+        .fetch_all(db)
+        .await?;
+        let mut out = String::with_capacity(text.len());
+        let mut last = 0;
+        for (start, end, name, id) in &spans {
+            let ok = known
+                .iter()
+                .find(|k| k.id == *id)
+                .is_some_and(|k| k.guild_id == guild_id || (cross && k.member));
+            out.push_str(&content[last..*start]);
+            if ok {
+                out.push_str(&content[*start..*end]);
+            } else {
+                out.push_str(&format!(":{name}:"));
+            }
+            last = *end;
+        }
+        out.push_str(&content[last..]);
+        text = out;
+    }
+    let names: Vec<String> = shortcodes(&text)
+        .into_iter()
+        .map(|(s, e)| text[s + 1..e - 1].to_string())
+        .collect();
+    if names.is_empty() {
+        return Ok(text);
     }
     let found = sqlx::query_as::<_, NameId>(
         "SELECT DISTINCT ON (e.name) e.name, e.id
          FROM emojis e
          JOIN guild_members gm ON gm.guild_id = e.guild_id AND gm.user_id = $1
-         WHERE e.name = ANY($2)
+         WHERE e.name = ANY($2) AND ($4 OR e.guild_id = $3)
          ORDER BY e.name, (e.guild_id = $3) DESC, gm.joined_at",
     )
     .bind(user_id)
     .bind(&names)
     .bind(guild_id)
+    .bind(cross)
     .fetch_all(db)
     .await?;
     if found.is_empty() {
-        return Ok(content.to_string());
+        return Ok(text);
     }
-    Ok(replace_shortcodes(content, |name| {
+    Ok(replace_shortcodes(&text, |name| {
         found.iter().find(|f| f.name == name).map(|f| f.id)
     }))
+}
+
+/// May this person react with custom emoji `id` in `guild_id`? Its own
+/// outhouse's emoji always; another outhouse's when they may use it there
+/// ([`cross_ok`] and a member), or to join a reaction that's already on the
+/// message.
+pub async fn may_react(
+    db: &PgPool,
+    guild_id: i64,
+    user_id: i64,
+    emoji_id: i64,
+    message_id: i64,
+    token: &str,
+) -> AppResult<bool> {
+    let e = sqlx::query_as::<_, TokenEmoji>(
+        "SELECT e.id, e.guild_id,
+                EXISTS(SELECT 1 FROM guild_members m
+                       WHERE m.guild_id = e.guild_id AND m.user_id = $2) AS member
+         FROM emojis e WHERE e.id = $1",
+    )
+    .bind(emoji_id)
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?;
+    let Some(e) = e else { return Ok(false) };
+    if e.guild_id == guild_id || (e.member && cross_ok(db, user_id).await?) {
+        return Ok(true);
+    }
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM reactions WHERE message_id = $1 AND emoji = $2)",
+    )
+    .bind(message_id)
+    .bind(token)
+    .fetch_one(db)
+    .await?)
 }
 
 // ---- Endpoints -------------------------------------------------------------------

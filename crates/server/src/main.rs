@@ -17,6 +17,7 @@ mod ipblock;
 mod ips;
 mod livekit;
 mod mail;
+mod media;
 mod perms;
 mod push;
 mod security;
@@ -112,6 +113,11 @@ async fn main() -> anyhow::Result<()> {
     api::twofactor::spawn_tidier(state.clone());
     api::staff::spawn_sweeper(state.clone());
     api::transfers::spawn_sweeper(state.clone());
+    if let Err(e) = api::premium::load_switches(&state.db).await {
+        tracing::warn!(error = %e, "couldn't load the premium switches");
+    }
+    api::premium::spawn_sweeper(state.clone());
+    api::premium::spawn_animated_check(state.clone());
     // `/` is the welcome page (it sends signed-in people and the apps on to
     // `/app`); `/app` and `/login` are the web client. Everything else is a
     // plain file from the web folder.

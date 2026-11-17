@@ -25,7 +25,6 @@ use serde_json::{json, Value};
 
 use super::messages::{
     check_dm_blocks, clean_filename, guess_content_type, thread_in_channel, KEY_ALPHABET,
-    MAX_FILE_BYTES,
 };
 use crate::auth::{self, AuthUser};
 use crate::error::{AppError, AppResult};
@@ -88,11 +87,18 @@ pub async fn upload(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
     Path(channel_id): Path<i64>,
+    headers: axum::http::HeaderMap,
     mut form: Multipart,
 ) -> AppResult<Json<Value>> {
     let access = channel_access(&st.db, channel_id, user.id).await?;
     access.require(p::SEND_MESSAGES | p::ATTACH_FILES)?;
     check_dm_blocks(&st, &access, user.id).await?;
+    // 25 MB, or more in a Golden Outhouse / a Golden Throne member's DMs;
+    // refused before reading when the request says it's bigger.
+    let dm = access.channel.guild_id == outhouse_common::models::DM_GUILD;
+    let file_limit =
+        crate::api::premium::upload_limit(&st.db, access.channel.guild_id, user.id).await?;
+    crate::api::premium::check_content_length(&headers, file_limit + 64 * 1024, dm)?;
     if crate::security::get().rate_limits
         && !crate::security::limiter().allow(
             &format!("draft:{}", user.id),
@@ -135,12 +141,9 @@ pub async fn upload(
                     return Err(AppError::BadRequest("One file at a time.".into()));
                 }
                 let filename = clean_filename(field.file_name().unwrap_or("file"));
-                let data = field.bytes().await.map_err(upload_error)?;
-                if data.len() > MAX_FILE_BYTES {
-                    return Err(AppError::BadRequest(format!(
-                        "{filename} is too big (25 MB max)."
-                    )));
-                }
+                let data =
+                    crate::api::premium::read_field_limited(field, &filename, file_limit, dm)
+                        .await?;
                 file = Some((filename, data));
             }
             _ => {}

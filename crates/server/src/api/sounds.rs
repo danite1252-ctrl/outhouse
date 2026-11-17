@@ -498,6 +498,9 @@ pub async fn play(
     AuthUser(user): AuthUser,
     Path(id): Path<String>,
 ) -> AppResult<StatusCode> {
+    if let Some(pid) = id.strip_prefix(PERSONAL_PREFIX) {
+        return play_personal(&st, user.id, pid).await;
+    }
     let custom = match parse_ref(&id)? {
         SoundRef::Builtin(b) => Err(b),
         SoundRef::Custom(sound_id) => {
@@ -652,6 +655,324 @@ pub async fn remove_favourite(
 
 // ---------- entrance sounds ----------
 
+// ---------- personal sounds (Golden Throne) ----------
+
+const PERSONAL_PREFIX: &str = "personal:";
+
+#[derive(sqlx::FromRow)]
+struct PersonalRow {
+    id: i64,
+    name: String,
+    emoji: String,
+    storage_key: String,
+    volume: f32,
+    duration_ms: Option<i32>,
+}
+
+impl PersonalRow {
+    fn json(&self, locked: bool) -> serde_json::Value {
+        serde_json::json!({
+            "id": format!("{PERSONAL_PREFIX}{}", self.id),
+            "guild_id": "0",
+            "name": self.name,
+            "emoji": self.emoji,
+            "url": attachment_url(&self.storage_key, "sound"),
+            "volume": self.volume,
+            "favourite": false,
+            "builtin": false,
+            "hidden": false,
+            "personal": true,
+            "locked": locked,
+            "duration_ms": self.duration_ms,
+        })
+    }
+}
+
+const PERSONAL_SELECT: &str =
+    "SELECT id, name, emoji, storage_key, volume, duration_ms FROM user_sounds";
+
+fn personal_id(id: &str) -> AppResult<i64> {
+    id.strip_prefix(PERSONAL_PREFIX)
+        .unwrap_or(id)
+        .parse()
+        .map_err(|_| AppError::NotFound)
+}
+
+async fn my_personal(st: &AppState, user_id: i64, id: i64) -> AppResult<PersonalRow> {
+    sqlx::query_as::<_, PersonalRow>(&format!("{PERSONAL_SELECT} WHERE id = $1 AND user_id = $2"))
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&st.db)
+        .await?
+        .ok_or(AppError::NotFound)
+}
+
+/// `GET /api/users/@me/personal-sounds`: your sounds (kept but locked when
+/// Golden Throne lapses), the limit, and which one is your entrance.
+pub async fn list_personal(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<serde_json::Value>> {
+    let premium = super::premium::user_has_premium(&st.db, user.id).await?;
+    let rows = sqlx::query_as::<_, PersonalRow>(&format!(
+        "{PERSONAL_SELECT} WHERE user_id = $1 ORDER BY lower(name), id"
+    ))
+    .bind(user.id)
+    .fetch_all(&st.db)
+    .await?;
+    let entrance: Option<i64> =
+        sqlx::query_scalar("SELECT sound_id FROM premium_entrance WHERE user_id = $1")
+            .bind(user.id)
+            .fetch_optional(&st.db)
+            .await?;
+    Ok(Json(serde_json::json!({
+        "premium": premium,
+        "max": super::premium::config().personal_sounds,
+        "sounds": rows.iter().map(|r| r.json(!premium)).collect::<Vec<_>>(),
+        "entrance_id": entrance.map(|e| format!("{PERSONAL_PREFIX}{e}")),
+    })))
+}
+
+/// `POST /api/users/@me/personal-sounds`: multipart like an outhouse sound
+/// (`name`, optional `emoji`, `volume`, and `file`; same size and length
+/// limits). Golden Throne only.
+pub async fn create_personal(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    mut form: Multipart,
+) -> AppResult<Json<serde_json::Value>> {
+    if !super::premium::user_has_premium(&st.db, user.id).await? {
+        return Err(AppError::Refused(
+            "Personal sounds come with Golden Throne.".into(),
+        ));
+    }
+    let max = super::premium::config().personal_sounds;
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM user_sounds WHERE user_id = $1")
+        .bind(user.id)
+        .fetch_one(&st.db)
+        .await?;
+    if count >= max {
+        return Err(AppError::BadRequest(format!(
+            "You have {max} personal sounds already. Delete one first."
+        )));
+    }
+    let (mut name, mut emoji, mut volume) = (String::new(), String::new(), 1.0f32);
+    let mut file: Option<(String, axum::body::Bytes)> = None;
+    while let Some(field) = form.next_field().await.map_err(bad)? {
+        let field_name = field.name().unwrap_or_default().to_string();
+        match field_name.as_str() {
+            "name" => name = field.text().await.map_err(bad)?,
+            "emoji" => emoji = field.text().await.map_err(bad)?,
+            "volume" => {
+                volume = field
+                    .text()
+                    .await
+                    .map_err(bad)?
+                    .trim()
+                    .parse::<f32>()
+                    .unwrap_or(1.0)
+            }
+            "file" => {
+                let filename = field.file_name().unwrap_or("sound").to_string();
+                let data = field.bytes().await.map_err(bad)?;
+                file = Some((filename, data));
+            }
+            _ => {}
+        }
+    }
+    let name: String = name.trim().chars().take(32).collect();
+    if name.is_empty() {
+        return Err(AppError::BadRequest("Give the sound a name.".into()));
+    }
+    let emoji: String = emoji.trim().chars().take(8).collect();
+    let volume = if volume.is_finite() {
+        volume.clamp(0.1, 1.0)
+    } else {
+        1.0
+    };
+    let (filename, data) =
+        file.ok_or_else(|| AppError::BadRequest("Choose a sound file.".into()))?;
+    let content_type = audio_type(&filename)
+        .ok_or_else(|| AppError::BadRequest("Sounds can be MP3, OGG or WAV files.".into()))?;
+    if data.len() > MAX_SOUND_BYTES {
+        return Err(AppError::BadRequest(
+            "Sounds can be up to 1 MB (about 5 seconds is plenty).".into(),
+        ));
+    }
+    let ms = check_length(&data, content_type, MAX_SOUND_MS)?;
+    let key = save_file(&st, &data).await?;
+    let id = st.ids.next_id();
+    sqlx::query(
+        "INSERT INTO user_sounds (id, user_id, name, emoji, storage_key, content_type, size, volume, duration_ms)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+    )
+    .bind(id)
+    .bind(user.id)
+    .bind(&name)
+    .bind(&emoji)
+    .bind(&key)
+    .bind(content_type)
+    .bind(data.len() as i64)
+    .bind(volume)
+    .bind(ms as i32)
+    .execute(&st.db)
+    .await?;
+    Ok(Json(my_personal(&st, user.id, id).await?.json(false)))
+}
+
+/// `PATCH /api/users/@me/personal-sounds/{id}`: name, emoji, volume.
+pub async fn edit_personal(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+    Json(body): Json<EditSound>,
+) -> AppResult<Json<serde_json::Value>> {
+    let sound = my_personal(&st, user.id, personal_id(&id)?).await?;
+    let name = match body.name {
+        Some(n) => {
+            let n: String = n.trim().chars().take(32).collect();
+            if n.is_empty() {
+                return Err(AppError::BadRequest("Give the sound a name.".into()));
+            }
+            n
+        }
+        None => sound.name.clone(),
+    };
+    let emoji = body
+        .emoji
+        .map(|e| e.trim().chars().take(8).collect::<String>())
+        .unwrap_or(sound.emoji.clone());
+    let volume = body
+        .volume
+        .filter(|v| v.is_finite())
+        .map(|v| v.clamp(0.1, 1.0))
+        .unwrap_or(sound.volume);
+    sqlx::query("UPDATE user_sounds SET name = $2, emoji = $3, volume = $4 WHERE id = $1")
+        .bind(sound.id)
+        .bind(&name)
+        .bind(&emoji)
+        .bind(volume)
+        .execute(&st.db)
+        .await?;
+    let premium = super::premium::user_has_premium(&st.db, user.id).await?;
+    Ok(Json(
+        my_personal(&st, user.id, sound.id).await?.json(!premium),
+    ))
+}
+
+/// `DELETE /api/users/@me/personal-sounds/{id}` (works without premium too).
+pub async fn delete_personal(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+) -> AppResult<StatusCode> {
+    let sound = my_personal(&st, user.id, personal_id(&id)?).await?;
+    sqlx::query("DELETE FROM user_sounds WHERE id = $1")
+        .bind(sound.id)
+        .execute(&st.db)
+        .await?;
+    if !crate::api::safety::file_retained(&st.db, &sound.storage_key).await {
+        let _ = tokio::fs::remove_file(st.config.upload_dir.join(&sound.storage_key)).await;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize)]
+pub struct PremiumEntranceBody {
+    sound_id: String,
+}
+
+/// `PUT /api/users/@me/premium-entrance {"sound_id": "personal:<id>"}`: one
+/// of your personal sounds plays when you join voice, everywhere (instead
+/// of your usual entrance sound) while you have Golden Throne.
+pub async fn set_premium_entrance(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Json(body): Json<PremiumEntranceBody>,
+) -> AppResult<Json<serde_json::Value>> {
+    if !super::premium::user_has_premium(&st.db, user.id).await? {
+        return Err(AppError::Refused(
+            "Personal entrance sounds come with Golden Throne.".into(),
+        ));
+    }
+    let sound = my_personal(&st, user.id, personal_id(&body.sound_id)?).await?;
+    if sound.duration_ms.unwrap_or(0) as u32 > MAX_ENTRANCE_MS {
+        return Err(AppError::BadRequest(format!(
+            "{} is too long for an entrance sound (the limit is {} seconds).",
+            sound.name,
+            MAX_ENTRANCE_MS / 1000
+        )));
+    }
+    sqlx::query(
+        "INSERT INTO premium_entrance (user_id, sound_id) VALUES ($1, $2)
+         ON CONFLICT (user_id) DO UPDATE SET sound_id = $2",
+    )
+    .bind(user.id)
+    .bind(sound.id)
+    .execute(&st.db)
+    .await?;
+    list_personal(State(st), AuthUser(user)).await
+}
+
+/// `DELETE /api/users/@me/premium-entrance`: back to your usual entrance sound.
+pub async fn clear_premium_entrance(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> AppResult<Json<serde_json::Value>> {
+    sqlx::query("DELETE FROM premium_entrance WHERE user_id = $1")
+        .bind(user.id)
+        .execute(&st.db)
+        .await?;
+    list_personal(State(st), AuthUser(user)).await
+}
+
+fn take_cooldown(st: &AppState, user_id: i64) -> AppResult<()> {
+    let mut cooldowns = st.sound_cooldowns.lock().expect("cooldown lock");
+    let now = Instant::now();
+    if let Some(last) = cooldowns.get(&user_id) {
+        if now.duration_since(*last) < COOLDOWN {
+            return Err(AppError::BadRequest("Easy on the soundboard!".into()));
+        }
+    }
+    cooldowns.insert(user_id, now);
+    Ok(())
+}
+
+/// Plays one of your personal sounds in your voice channel.
+async fn play_personal(st: &AppState, user_id: i64, id: &str) -> AppResult<StatusCode> {
+    let sound = my_personal(st, user_id, personal_id(id)?).await?;
+    if !super::premium::user_has_premium(&st.db, user_id).await? {
+        return Err(AppError::Refused(
+            "Personal sounds come with Golden Throne.".into(),
+        ));
+    }
+    let voice = voice_state_of(st, user_id)
+        .ok_or_else(|| AppError::BadRequest("Join a voice channel first.".into()))?;
+    let access = channel_access(&st.db, voice.channel_id, user_id).await?;
+    access.require(p::USE_SOUNDBOARD)?;
+    if !super::premium::personal_sounds_allowed(&st.db, voice.guild_id).await? {
+        return Err(AppError::Refused(
+            "This outhouse has turned off personal soundboard sounds.".into(),
+        ));
+    }
+    take_cooldown(st, user_id)?;
+    st.dispatch(
+        Audience::Channel {
+            guild_id: voice.guild_id,
+            channel_id: voice.channel_id,
+        },
+        ServerEvent::SoundboardPlay {
+            guild_id: voice.guild_id,
+            channel_id: voice.channel_id,
+            user_id,
+            sound_id: format!("{PERSONAL_PREFIX}{}", sound.id),
+            url: attachment_url(&sound.storage_key, "sound"),
+            volume: sound.volume,
+        },
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Your entrance sound is either a file you uploaded or one of the built-ins.
 #[derive(sqlx::FromRow)]
 struct EntranceRow {
@@ -679,8 +1000,28 @@ async fn entrance_of(st: &AppState, user_id: i64) -> AppResult<Option<EntranceRo
     .await?)
 }
 
-/// The URL of someone's entrance sound, if they have one.
-pub(crate) async fn entrance_url(st: &AppState, user_id: i64) -> AppResult<Option<String>> {
+/// The URL of someone's entrance sound in an outhouse, if they have one:
+/// their personal (Golden Throne) one where personal sounds are allowed,
+/// otherwise their usual one.
+pub(crate) async fn entrance_url(
+    st: &AppState,
+    guild_id: i64,
+    user_id: i64,
+) -> AppResult<Option<String>> {
+    let personal: Option<String> = sqlx::query_scalar(
+        "SELECT s.storage_key FROM premium_entrance e JOIN user_sounds s ON s.id = e.sound_id
+         WHERE e.user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(&st.db)
+    .await?;
+    if let Some(key) = personal {
+        if super::premium::user_has_premium(&st.db, user_id).await?
+            && super::premium::personal_sounds_allowed(&st.db, guild_id).await?
+        {
+            return Ok(Some(attachment_url(&key, "sound")));
+        }
+    }
     Ok(entrance_of(st, user_id).await?.and_then(|r| r.url()))
 }
 

@@ -5,7 +5,7 @@
 //! file can never run as a web page on the Outhouse site.
 
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::header::{
     CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_SECURITY_POLICY, CONTENT_TYPE,
     X_CONTENT_TYPE_OPTIONS,
@@ -34,9 +34,17 @@ fn safe_type(content_type: &str) -> (&str, bool) {
     }
 }
 
+#[derive(serde::Deserialize)]
+pub struct FileQuery {
+    /// `?still=1`: the first frame of an animated avatar, banner or outhouse
+    /// picture (see media.rs).
+    still: Option<String>,
+}
+
 pub async fn serve(
     State(st): State<AppState>,
     Path((key, _name)): Path<(String, String)>,
+    Query(q): Query<FileQuery>,
 ) -> AppResult<Response> {
     if key.len() != 24 || !key.bytes().all(|b| b.is_ascii_alphanumeric()) {
         return Err(AppError::NotFound);
@@ -52,13 +60,47 @@ pub async fn serve(
          SELECT filename, content_type FROM profile_files WHERE storage_key = $1
          UNION ALL
          SELECT name AS filename, content_type FROM emojis WHERE storage_key = $1
+         UNION ALL
+         SELECT name AS filename, content_type FROM user_sounds WHERE storage_key = $1
          LIMIT 1",
     )
     .bind(&key)
     .fetch_optional(&st.db)
     .await?
     .ok_or(AppError::NotFound)?;
+    if q.still.is_some() {
+        if let Some(disk) = still_copy(&st, &key).await {
+            return send_public_file_disk(&st, &key, &disk, &row.filename, &row.content_type).await;
+        }
+    }
     send_public_file(&st, &key, &row.filename, &row.content_type).await
+}
+
+/// The first-frame copy of an animated profile picture (`<key>.still`,
+/// made the first time it's asked for). None when it doesn't move.
+async fn still_copy(st: &AppState, key: &str) -> Option<String> {
+    let animated: Option<bool> =
+        sqlx::query_scalar("SELECT animated FROM profile_files WHERE storage_key = $1")
+            .bind(key)
+            .fetch_optional(&st.db)
+            .await
+            .ok()
+            .flatten()
+            .flatten();
+    if animated != Some(true) {
+        return None;
+    }
+    let disk = format!("{key}.still");
+    let path = st.config.upload_dir.join(&disk);
+    if tokio::fs::metadata(&path).await.is_ok() {
+        return Some(disk);
+    }
+    let data = tokio::fs::read(st.config.upload_dir.join(key)).await.ok()?;
+    let still = tokio::task::spawn_blocking(move || crate::media::first_frame(&data))
+        .await
+        .ok()??;
+    tokio::fs::write(&path, still).await.ok()?;
+    Some(disk)
 }
 
 /// A custom emoji's picture, by emoji ID (`/emojis/{id}`), so messages only
@@ -98,6 +140,18 @@ pub(crate) async fn send_public_file(
     filename: &str,
     content_type: &str,
 ) -> AppResult<Response> {
+    send_public_file_disk(st, key, key, filename, content_type).await
+}
+
+/// [`send_public_file`] reading `disk` from the upload folder (a still copy)
+/// while the detector and quarantine checks use `key`.
+async fn send_public_file_disk(
+    st: &AppState,
+    key: &str,
+    disk: &str,
+    filename: &str,
+    content_type: &str,
+) -> AppResult<Response> {
     if crate::api::safety::is_quarantined(&st.db, key).await {
         return Err(AppError::Removed);
     }
@@ -111,7 +165,7 @@ pub(crate) async fn send_public_file(
             .body(Body::from(crate::api::detector::PLACEHOLDER_SVG))
             .map_err(|e| AppError::Other(e.into())),
         crate::api::detector::Gate::Open { settled } => {
-            let mut res = send_file(st, key, filename, content_type).await?;
+            let mut res = send_file_disk(st, key, disk, filename, content_type).await?;
             if !settled {
                 // Not scanned yet: don't let browsers keep it for good.
                 res.headers_mut().insert(
@@ -130,11 +184,21 @@ pub(crate) async fn send_file(
     filename: &str,
     content_type: &str,
 ) -> AppResult<Response> {
+    send_file_disk(st, key, key, filename, content_type).await
+}
+
+async fn send_file_disk(
+    st: &AppState,
+    key: &str,
+    disk: &str,
+    filename: &str,
+    content_type: &str,
+) -> AppResult<Response> {
     // Held back pending a safety review: nobody gets it (it stays on disk).
     if crate::api::safety::is_quarantined(&st.db, key).await {
         return Err(AppError::Removed);
     }
-    let data = tokio::fs::read(st.config.upload_dir.join(key))
+    let data = tokio::fs::read(st.config.upload_dir.join(disk))
         .await
         .map_err(|_| AppError::NotFound)?;
 

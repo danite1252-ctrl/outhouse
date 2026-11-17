@@ -123,6 +123,12 @@ pub const PERMS: &[(&str, &str, &str)] = &[
     ),
     ("family", "Mark family outhouses", "senior"),
     ("transfers", "Staff-assisted ownership transfers", "senior"),
+    // Not in any tier's preset: only the owner, or staff he ticks it for.
+    (
+        "grant_premium",
+        "Grant and revoke Golden Throne / Golden Outhouse (Premium page)",
+        "extra",
+    ),
 ];
 
 pub const TIERS: &[(&str, &str)] = &[
@@ -146,6 +152,7 @@ pub fn tier_label(tier: &str) -> &'static str {
         "moderator" => "Moderator",
         "senior" => "Senior moderator",
         "owner" => "Site owner",
+        "extra" => "Owner only unless ticked",
         _ => "Custom",
     }
 }
@@ -155,7 +162,7 @@ pub fn preset(tier: &str) -> Vec<String> {
     let rank = tier_rank(tier);
     PERMS
         .iter()
-        .filter(|(_, _, t)| tier_rank(t) <= rank)
+        .filter(|(_, _, t)| *t != "extra" && tier_rank(t) <= rank)
         .map(|(k, _, _)| k.to_string())
         .collect()
 }
@@ -167,6 +174,7 @@ pub fn rank_of(perms: &[String]) -> u8 {
         .iter()
         .filter_map(|k| PERMS.iter().find(|(key, _, _)| key == k))
         .map(|(_, _, t)| tier_rank(t))
+        .filter(|r| *r > 0)
         .max()
         .unwrap_or(1)
 }
@@ -1751,7 +1759,10 @@ mod tests {
         assert!(
             m.contains(&"force_rename".to_string()) && !s.contains(&"force_rename".to_string())
         );
-        assert_eq!(x.len(), PERMS.len());
+        // grant_premium is in no preset (owner only unless ticked).
+        assert_eq!(x.len(), PERMS.len() - 1);
+        assert!(!x.contains(&"grant_premium".to_string()));
+        assert_eq!(rank_of(&["grant_premium".into()]), 1);
         assert_eq!(rank_of(&["people".into()]), 1);
         assert_eq!(rank_of(&["people".into(), "ips".into()]), 3);
         assert_eq!(

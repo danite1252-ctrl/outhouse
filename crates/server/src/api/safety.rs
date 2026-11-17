@@ -2437,6 +2437,8 @@ async fn subject_json(st: &AppState, user_id: i64) -> AppResult<Value> {
         "choosing_username": choosing_username,
         // The owner's blocked word their username contains (People filter).
         "username_blocked_word": blocked_word,
+        // Golden Throne (premium.rs).
+        "golden": super::premium::person_json(&st.db, u.id).await?,
     }))
 }
 
