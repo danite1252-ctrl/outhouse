@@ -285,7 +285,7 @@ function threadComposer() {
   // Added files go up straight away (drafts, see app.js), for this thread.
   const addThreadFiles = (files) => {
     for (const f of files) {
-      if (f.size > 25 * 1024 * 1024) { toast(`${f.name} is over 25 MB.`); continue; }
+      if (typeof uploadTooBig === "function" ? uploadTooBig(f) : f.size > 25 * 1024 * 1024 && (toast(`${f.name} is over 25 MB.`), true)) continue;
       if (thread.files.length >= 10) { toast("Up to 10 files at a time."); break; }
       thread.files.push(f);
       startDraft(f, t.channel_id, t.id, () => drawFiles.redraw());
@@ -674,14 +674,25 @@ function customEmojiTabs(standard, onPick, forText) {
     if (!groups.has(e.guild_id)) groups.set(e.guild_id, []);
     groups.get(e.guild_id).push(e);
   }
+  // Other outhouses' emoji need Golden Throne (unless the owner made them
+  // free): shown locked with a crown (premium.js).
+  const otherOk = typeof canUseOtherEmoji === "function" ? canUseOtherEmoji() : true;
   const custom = el("div", { class: "emoji-pane custom-pane", hidden: true },
-    groups.size ? [...groups].map(([guildId, list]) => el("div", { class: "emoji-section" },
-      el("div", { class: "emoji-section-title" }, (state.guilds.find((g) => g.id === guildId)?.name ?? "Outhouse").toUpperCase()),
-      el("div", { class: "emoji-grid" }, list.map((e) => el("button", {
-        type: "button",
-        title: `:${e.name}:`,
-        onclick: () => { closePopover(); onPick(forText ? `:${e.name}:` : `<:${e.name}:${e.id}>`); },
-      }, el("img", { class: "custom-emoji", src: e.url, alt: `:${e.name}:`, loading: "lazy" }))))))
+    groups.size ? [...groups].map(([guildId, list]) => {
+      const locked = guildId !== state.guildId && !otherOk;
+      return el("div", { class: `emoji-section${locked ? " locked" : ""}` },
+        el("div", { class: "emoji-section-title" }, (state.guilds.find((g) => g.id === guildId)?.name ?? "Outhouse").toUpperCase(),
+          locked && typeof lockedChip === "function" ? lockedChip("Golden Throne") : null),
+        el("div", { class: "emoji-grid" }, list.map((e) => el("button", {
+          type: "button",
+          title: locked ? `:${e.name}: (Golden Throne — coming soon)` : `:${e.name}:`,
+          "aria-disabled": locked ? "true" : null,
+          onclick: () => {
+            if (locked) return toast("Emoji from your other outhouses come with Golden Throne (coming soon).");
+            closePopover(); onPick(forText ? `:${e.name}:` : `<:${e.name}:${e.id}>`);
+          },
+        }, el("img", { class: "custom-emoji", src: e.url, alt: `:${e.name}:`, loading: "lazy" })))));
+    })
       : el("p", { class: "muted small emoji-none" }, "No outhouse emoji yet. People who can manage an outhouse add them in Outhouse settings → Emoji."));
   const stdPane = el("div", { class: "emoji-pane" }, standard);
   const tabStd = el("button", { type: "button", class: "on", onclick: () => show(false) }, "😀 Emoji");

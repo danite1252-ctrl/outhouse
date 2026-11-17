@@ -1,0 +1,158 @@
+/* Premium: Golden Throne / Golden Outhouse (web/premium.js). */
+
+/* ---------- app themes (CSS variables; Ember is :root in style.css) ---------- */
+html[data-theme="midnight"] {
+  --night: #0b1020; --panel: #111830; --raised: #1b2442; --line: #26304f;
+  --ember: #5b8cff; --glow: #9cc0ff; --text: #e8ecf8; --muted: #9aa6c4;
+}
+html[data-theme="forest"] {
+  --night: #0c130e; --panel: #121c15; --raised: #1b2a1f; --line: #24362a;
+  --ember: #4caf6e; --glow: #b5e48c; --text: #e7efe8; --muted: #9db3a3;
+}
+html[data-theme="royal"] {
+  --night: #110c1b; --panel: #181127; --raised: #241a3a; --line: #31244c;
+  --ember: #a66cff; --glow: #e0b3ff; --text: #efe9fa; --muted: #ab9fc4;
+}
+html[data-theme="throne"] {
+  --night: #13100a; --panel: #1b1710; --raised: #2a2316; --line: #3a301c;
+  --ember: #e6b422; --glow: #ffe08a; --text: #f6efdc; --muted: #b8ab8a;
+}
+/* High contrast: free for everyone (accessibility is never premium). */
+html[data-theme="contrast"] {
+  --night: #000000; --panel: #000000; --raised: #1a1a1a; --line: #ffffff;
+  --ember: #ffd400; --glow: #ffffff; --vacant: #00ff7f; --occupied: #ff5c5c;
+  --text: #ffffff; --muted: #e6e6e6;
+}
+html[data-theme="contrast"] :focus-visible { outline: 3px solid #ffd400 !important; outline-offset: 2px; }
+html[data-theme="contrast"] a, html[data-theme="contrast"] .link { text-decoration: underline; }
+html[data-theme="contrast"] .channel.active, html[data-theme="contrast"] .guild.active { outline: 2px solid #ffd400; }
+
+/* ---------- crowns and badges ---------- */
+:root { --gold-1: #ffe08a; --gold-2: #e6b422; --gold-3: #b98a0f; --gold-ink: #2a1d00; }
+.gold-crown-svg { display: inline-block; vertical-align: -0.12em; color: var(--gold-2); flex: 0 0 auto; }
+.gold-badge { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; padding: 1px 8px 1px 6px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; letter-spacing: .02em; vertical-align: middle; white-space: nowrap;
+  color: var(--gold-ink); background: linear-gradient(135deg, var(--gold-1), var(--gold-2) 60%, var(--gold-3)); }
+.gold-badge .gold-crown-svg { color: var(--gold-ink); }
+.gold-locked { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  color: var(--gold-1); background: rgba(230, 180, 34, .1); border: 1px solid rgba(230, 180, 34, .35); white-space: nowrap; }
+.gold-chip { color: var(--gold-ink) !important; background: linear-gradient(135deg, var(--gold-1), var(--gold-2)) !important; border-color: transparent !important; }
+.gt-mini { display: inline-grid; place-items: center; margin-left: 5px; font-size: 12px; color: var(--gold-2); opacity: .9; vertical-align: -1px; }
+.gt-mini .gold-crown-svg { vertical-align: 0; }
+
+/* The rail: a small crown on a Golden Outhouse. */
+.guild.golden { box-shadow: 0 0 0 2px rgba(230, 180, 34, .55); }
+.rail-crown { position: absolute; top: -5px; right: -5px; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 11px; background: var(--panel); box-shadow: 0 0 0 2px var(--panel); pointer-events: none; }
+.rail-crown .gold-crown-svg { color: var(--gold-2); }
+
+/* Profile gradient (Golden Throne). */
+.profile-card.gt-gradient { box-shadow: 0 0 0 1px rgba(255, 255, 255, .06), 0 12px 40px rgba(0, 0, 0, .45); }
+.profile-card.gt-gradient::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--gt-grad); opacity: .16; pointer-events: none; }
+.fp-head.gt-gradient { background: linear-gradient(180deg, transparent 40%, rgba(0, 0, 0, .15)), var(--gt-grad); border-radius: 14px; }
+
+/* ---------- settings pages ---------- */
+.gold-nav { display: flex !important; align-items: center; gap: 6px; }
+.gold-nav .gold-crown-svg { color: var(--gold-2); }
+.gold-hero { display: flex; gap: 16px; align-items: flex-start; padding: 18px; margin: 4px 0 18px; border-radius: 14px;
+  background: linear-gradient(135deg, rgba(230, 180, 34, .14), rgba(230, 180, 34, .03) 60%), var(--raised); border: 1px solid rgba(230, 180, 34, .3); }
+.gold-hero.active { background: linear-gradient(135deg, rgba(255, 224, 138, .28), rgba(230, 180, 34, .08) 55%), var(--raised); border-color: rgba(230, 180, 34, .6); }
+.gold-hero-crown { flex: none; width: 52px; height: 52px; border-radius: 14px; display: grid; place-items: center; font-size: 28px;
+  background: linear-gradient(135deg, var(--gold-1), var(--gold-2) 60%, var(--gold-3)); }
+.gold-hero-crown .gold-crown-svg { color: var(--gold-ink); }
+.gold-hero-text { min-width: 0; }
+.gold-hero h3 { margin: 0 0 2px; font: 800 20px/1.2 Montserrat, Inter, sans-serif; letter-spacing: .01em; }
+.gold-hero p { margin: 4px 0 0; }
+.gold-status { font-weight: 700; color: var(--gold-1); }
+.gold-section { margin: 0 0 18px; padding: 14px 16px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); }
+.gold-section > h3 { margin: 0 0 6px; font-size: 15px; display: flex; align-items: center; gap: 6px; }
+.gold-section > p { margin: 4px 0 10px; }
+.gold-section .inline-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.gold-perks { list-style: none; margin: 4px 0 8px; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.gold-perks li { display: flex; gap: 10px; align-items: flex-start; padding: 10px; border-radius: 10px; background: var(--raised); }
+.gold-perk-icon { font-size: 20px; line-height: 1; }
+.gold-perks strong { font-size: 14px; }
+
+.gold-themes { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 10px; }
+.gold-theme { display: flex; flex-direction: column; gap: 6px; padding: 6px; border-radius: 12px; border: 2px solid var(--line); background: var(--raised); text-align: left; position: relative; }
+.gold-theme.on { border-color: var(--ember); }
+.gold-theme.locked .gold-theme-preview { filter: saturate(.75) brightness(.8); }
+.gold-theme-preview { position: relative; display: block; height: 64px; border-radius: 8px; overflow: hidden; background: var(--n); }
+.gold-theme-preview i { position: absolute; display: block; }
+.gold-theme-preview .tp-rail { left: 0; top: 0; bottom: 0; width: 14%; background: var(--p); }
+.gold-theme-preview .tp-side { left: 14%; top: 0; bottom: 0; width: 28%; background: var(--p); opacity: .7; border-left: 1px solid rgba(255, 255, 255, .06); }
+.gold-theme-preview .tp-msg { left: 48%; right: 8%; top: 18%; height: 10px; border-radius: 5px; background: var(--g); opacity: .55; }
+.gold-theme-preview .tp-btn { left: 48%; width: 34%; bottom: 14%; height: 14px; border-radius: 6px; background: var(--a); }
+.gold-theme-name { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; font-weight: 600; padding: 0 2px 2px; }
+.gold-theme-lock { margin-left: auto; color: var(--gold-2); }
+.gold-free { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px; background: rgba(74, 222, 128, .15); color: var(--vacant); }
+
+.gold-grad-sample { width: 120px; height: 36px; border-radius: 10px; border: 1px solid var(--line); }
+.gold-section input[type="color"] { width: 44px; height: 36px; padding: 2px; border-radius: 8px; border: 1px solid var(--line); background: var(--night); }
+.gold-sounds { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.gold-sound { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 10px; background: var(--raised); flex-wrap: wrap; }
+.gold-sound.locked { opacity: .75; }
+.gold-sound-name { font-weight: 600; }
+.gold-slot-now { margin: 8px 0 0 !important; }
+
+.gold-vanity-row { flex-wrap: nowrap !important; }
+.gold-vanity-prefix { color: var(--muted); font-size: 14px; white-space: nowrap; }
+.gold-vanity-row input { flex: 1; min-width: 120px; height: 38px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--night); color: var(--text); }
+.gold-vanity.locked input { opacity: .6; }
+.gold-vanity-now code, .gold-hero code { font-size: 12px; }
+.gold-grant h2 { display: flex; align-items: center; gap: 8px; }
+.gold-btn { border-color: rgba(230, 180, 34, .5) !important; color: var(--gold-1) !important; }
+.gold-table td { vertical-align: middle; }
+.gold-table tr.expired td { opacity: .6; }
+.gold-switches .rp-check { align-items: flex-start; margin: 6px 0; }
+.gold-switches input[type="number"] { width: 110px; height: 36px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--night); color: var(--text); }
+
+/* Emoji picker: other outhouses' emoji, locked. */
+.emoji-section.locked .custom-emoji { filter: grayscale(.6) brightness(.7); }
+.emoji-section.locked button { cursor: not-allowed; }
+.emoji-section-title .gold-locked { margin-left: 8px; font-size: 10px; padding: 0 6px; vertical-align: 1px; }
+
+/* Soundboard: My sounds. */
+.sb-tile.sb-personal { box-shadow: inset 0 0 0 1px rgba(230, 180, 34, .35); }
+.sb-tile.sb-personal.locked { opacity: .55; }
+
+/* The message box's character count, near the limit. */
+.composer-count { position: absolute; right: 54px; bottom: 6px; font-size: 11px; font-weight: 600; color: var(--muted); pointer-events: none; background: var(--raised); padding: 0 4px; border-radius: 4px; }
+.composer-count.over { color: var(--occupied); }
+
+@media (max-width: 760px) {
+  .gold-hero { flex-direction: column; }
+  .gold-perks { grid-template-columns: 1fr; }
+  .gold-vanity-row { flex-wrap: wrap !important; }
+  .gold-vanity-prefix { width: 100%; }
+  .gold-themes { grid-template-columns: repeat(2, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .anim-pic { animation: none !important; }
+}
+.composer { position: relative; }
+.composer-count { top: -9px; bottom: auto; right: 14px; border: 1px solid var(--line); }
+.gold-tools { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.gold-tools input { flex: 1 1 220px; }
+.gold-tools select { flex: 0 1 220px; }
+.gold-sound { flex-wrap: nowrap; }
+.gold-sound .rp-chip, .gold-sound .gold-locked { font-size: 11px; }
+@media (max-width: 760px) {
+  .gold-sound { flex-wrap: wrap; }
+  .gold-tools select { flex: 1 1 140px; }
+  /* The Premium page's table becomes one card per entitlement. */
+  .gold-table thead { display: none; }
+  .gold-table, .gold-table tbody { display: block; width: 100%; }
+  .gold-table tr { display: grid; grid-template-columns: 26px 1fr auto; gap: 2px 8px; padding: 10px 4px; border-bottom: 1px solid var(--line); }
+  .gold-table td { display: block; padding: 0 !important; border: 0 !important; font-size: 13px; }
+  .gold-table td.gt-kind { grid-row: span 3; }
+  .gold-table td.gt-who { grid-column: 2; font-weight: 600; }
+  .gold-table td:last-child { grid-column: 3; grid-row: 1 / span 2; align-self: center; }
+  .gold-table td:nth-child(3), .gold-table td:nth-child(4), .gold-table td:nth-child(5), .gold-table td:nth-child(6) { grid-column: 2; color: var(--muted); }
+  .gold-table td:nth-child(4)::before { content: "Since "; }
+  .gold-table td:nth-child(5)::before { content: "Ends: "; }
+}
+.gold-section button:disabled, .gold-themes button:disabled { opacity: .45; cursor: not-allowed; filter: grayscale(.4); }
+.gold-table { width: 100%; }
+.gold-table td:nth-child(6) { max-width: 180px; overflow-wrap: anywhere; }
+.gold-table td:nth-child(3), .gold-table td:nth-child(4), .gold-table td:nth-child(5) { white-space: nowrap; }

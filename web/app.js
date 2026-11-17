@@ -1563,7 +1563,8 @@ function addFiles(files) {
   if (!state.channelId) return;
   if (!can("attach_files", state.channelId)) return toast("You can't upload files here.");
   for (const f of files) {
-    if (f.size > 25 * 1024 * 1024) { toast(`${f.name} is over 25 MB.`); continue; }
+    // 25 MB, or more in a Golden Outhouse / your DMs with Golden Throne (premium.js).
+    if (typeof uploadTooBig === "function" ? uploadTooBig(f) : f.size > 25 * 1024 * 1024 && (toast(`${f.name} is over 25 MB.`), true)) continue;
     if (state.pendingFiles.length >= 10) { toast("Up to 10 files at a time."); break; }
     state.pendingFiles.push(f);
     startDraft(f, state.channelId, null, () => renderPendingFiles());

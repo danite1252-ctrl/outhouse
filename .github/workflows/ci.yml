@@ -151,6 +151,7 @@ jobs:
           node --check web/names.js
           node --check web/transfers.js
           node --check web/joinmsg.js
+          node --check web/premium.js
           node --check web/bots/dice-bot.mjs
       - name: Deploy scripts check (bash -n + shellcheck)
         run: |
@@ -277,6 +278,7 @@ jobs:
           python ci/auth_ui_test.py
           python ci/staff_ui_test.py
           python ci/rename_ui_test.py
+          python ci/ui_premium.py
           python ci/csp_test.py
       - uses: actions/upload-artifact@v4
         if: always()

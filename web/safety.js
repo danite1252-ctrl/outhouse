@@ -1193,6 +1193,7 @@ async function drawPeople(page, { stillMine, openReport, userId, filter = "" }) 
     const paint = (u) => detail.replaceChildren(
       el("h3", {}, u.display_name),
       subjectView(u, act),
+      typeof goldenPersonSection === "function" ? goldenPersonSection(u, ctx.refresh) : null,
       sCan("ips") ? ipSection(u, showPerson) : sCan("same_ip") ? sameIpSection(u, showPerson) : null,
       sCan("ips") ? el("section", { class: "sc-attempts-section" }, el("h3", {}, `Attempts from blocked networks (${u.blocked_attempts?.length || 0})`),
         u.ip_blocks ? el("p", { class: "muted small sc-tight" }, `${scPlural(u.ip_blocks, "network")} blocked because of them (Safety → Blocked networks).`) : null,

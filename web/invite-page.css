@@ -23,7 +23,17 @@ html.android-app .inv-top { padding-top: max(env(safe-area-inset-top, 0px), 40px
 html.android-app .inv-main { padding-bottom: max(env(safe-area-inset-bottom, 0px), 56px); }
 
 body[data-state="valid"] .only-invalid,
-body[data-state="invalid"] .only-valid { display: none !important; }
+body[data-state="invalid"] .only-valid,
+body[data-state="valid"] .only-paused,
+body[data-state="invalid"] .only-paused,
+body[data-state="paused"] .only-valid,
+body[data-state="paused"] .only-invalid { display: none !important; }
+/* A Golden Outhouse: a gold badge, and its picture on the tile. */
+.inv-golden { display: inline-flex; align-items: center; gap: 6px; margin: 6px auto 8px; padding: 3px 10px; border-radius: 999px;
+  font-size: 13px; font-weight: 700; letter-spacing: .02em; color: #2a1d00; background: linear-gradient(135deg, #ffe08a, #e6b422 60%, #c99712); box-shadow: 0 0 0 1px rgba(255, 224, 138, .35), 0 6px 18px rgba(230, 180, 34, .25); }
+.inv-tile.has-icon { background: none; overflow: hidden; }
+.inv-tile.has-icon img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
+.inv-tile.golden { box-shadow: 0 0 0 3px #e6b422, 0 10px 30px rgba(230, 180, 34, .3); }
 
 .inv-card {
   position: relative; width: min(440px, 100%); text-align: center;

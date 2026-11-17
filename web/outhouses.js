@@ -20,6 +20,7 @@ function dirChips(o) {
   return [
     o.shut_down ? el("span", { class: "rp-chip dir-shut" }, "Shut down") : null,
     o.family ? el("span", { class: "rp-chip dir-family" }, "Family") : null,
+    o.premium || o.golden?.active ? el("span", { class: "rp-chip gold-chip", title: "Golden Outhouse" }, "👑 Golden Outhouse") : null,
     o.open_reports ? el("span", { class: "rp-chip dir-reports" }, scPlural(o.open_reports, "open report")) : null,
     o.owner?.suspended ? el("span", { class: "rp-chip dir-susp" }, "Owner suspended") : null,
   ];
@@ -150,6 +151,7 @@ async function drawOuthouseDetail(page, id, ctx) {
       blockers ? el("div", { class: "small" }, `Can't be deleted yet: ${d.open_reports ? scPlural(d.open_reports, "open report") : ""}${d.open_reports && d.live_police_links ? " and " : ""}${d.live_police_links ? "a live police download link" : ""}.`) : null) : null,
     d.conflict ? el("div", { class: "sc-urgent-banner dir-conflict", role: "status" }, el("strong", {}, "Someone else needs to handle this."), " You own or moderate this outhouse, so staff actions on it are for someone else.") : null,
     actions,
+    typeof goldenOuthouseSection === "function" ? goldenOuthouseSection(d, redraw) : null,
     d.transfer && typeof transferStatusPanel === "function" ? transferStatusPanel(d.transfer, redraw) : null,
     el("div", { class: "status-grid" },
       item("Owner", el("button", { type: "button", class: "link dir-owner", onclick: () => (sCan("people") ? ctx.openUser(d.owner.id) : null) }, `${d.owner.display_name} (@${d.owner.username})`), d.owner.suspended ? "bad" : ""),

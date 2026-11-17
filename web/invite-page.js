@@ -34,8 +34,10 @@
   if (inApp) $("inv-home").href = "/app";
   if (!data.valid) {
     if (inApp) {
-      $("inv-dead-home").href = "/app";
-      $("inv-dead-home").textContent = "Back to Outhouse";
+      for (const id of ["inv-dead-home", "inv-paused-home"]) {
+        $(id).href = "/app";
+        $(id).textContent = "Back to Outhouse";
+      }
     }
     return;
   }
@@ -49,6 +51,21 @@
     $("inv-error").textContent = text;
     $("inv-error").hidden = !text;
   };
+
+  // A Golden Outhouse: the gold badge, and its picture on the tile (still
+  // for people who asked for less motion).
+  const tile = document.querySelector(".only-valid .inv-tile");
+  if (guild.premium) {
+    $("inv-golden").hidden = false;
+    tile?.classList.add("golden");
+  }
+  if (tile && guild.icon_url && guild.icon_url.startsWith("/files/")) {
+    const img = document.createElement("img");
+    img.alt = "";
+    img.src = reduced ? guild.icon_url.replace("anim=1", "still=1") : guild.icon_url;
+    tile.classList.add("has-icon");
+    tile.querySelector("span")?.replaceWith(img);
+  }
 
   // Who's inviting: their picture, or their first letter on a colour.
   const avatar = $("inv-avatar");

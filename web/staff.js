@@ -49,8 +49,10 @@ function staffPermPicker(catalogue, { tier = "moderator", perms = null } = {}) {
     radios.append(el("button", { type: "button", class: "staff-tier-opt", role: "radio", "data-tier": t.key, onclick: () => { current = t.key; sync(); } }, t.label));
   }
   const groups = el("div", { class: "staff-perm-groups" });
-  for (const [tierKey, tierLabel] of [["support", "Support"], ["moderator", "Moderator"], ["senior", "Senior moderator"]]) {
+  // "extra": in no tier's preset (Golden Throne / Golden Outhouse grants), only if ticked.
+  for (const [tierKey, tierLabel] of [["support", "Support"], ["moderator", "Moderator"], ["senior", "Senior moderator"], ["extra", "Not in any tier (tick to give)"]]) {
     const list = catalogue.perms.filter((p) => p.tier === tierKey);
+    if (!list.length) continue;
     groups.append(el("fieldset", { class: "staff-perm-group" },
       el("legend", {}, tierLabel),
       list.map((p) => {

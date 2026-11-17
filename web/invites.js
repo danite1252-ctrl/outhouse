@@ -13,9 +13,10 @@ const PENDING_INVITE = "outhouse_pending_invite";
 // "https://oh.example/invite/AbC123", "oh.example/invite/AbC123" or just "AbC123" → "AbC123".
 function inviteCodeFrom(text) {
   const t = String(text || "").trim();
-  const m = t.match(/\/invite\/([A-Za-z0-9]{1,32})(?:[/?#]|$)/) || t.match(/[?&]invite=([A-Za-z0-9]{1,32})/);
+  // Golden Outhouse vanity links have hyphens too ("/invite/the-long-drop").
+  const m = t.match(/\/invite\/([A-Za-z0-9-]{1,32})(?:[/?#]|$)/) || t.match(/[?&]invite=([A-Za-z0-9-]{1,32})/);
   if (m) return m[1];
-  return /^[A-Za-z0-9]{1,32}$/.test(t) ? t : t.replace(/[^A-Za-z0-9]/g, "").slice(0, 32);
+  return /^[A-Za-z0-9-]{1,32}$/.test(t) ? t : t.replace(/[^A-Za-z0-9-]/g, "").slice(0, 32);
 }
 
 const inviteLink = (inv) => inv.url || `${location.origin}/invite/${inv.code}`;
