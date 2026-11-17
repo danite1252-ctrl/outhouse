@@ -72,9 +72,9 @@ python3 ci/detector_images.py /tmp/dt >/dev/null
 export OUTHOUSE_TEST_HOOKS=1
 # Message requests: a small daily limit so the test can reach it (the default is 10).
 export MESSAGE_REQUESTS_PER_DAY=4 MESSAGE_REQUEST_MAX_MESSAGES=3
-# Premium uploads: 30 MB here (default 100) so ci/premium_test.sh can test the
+# Premium uploads: 30 MB here (default 100) and 3 personal sounds (default 10), so ci/premium_test.sh can test the
 # limits without huge files.
-export PREMIUM_UPLOAD_MB=30
+export PREMIUM_UPLOAD_MB=30 PREMIUM_PERSONAL_SOUNDS=3
 # Staff hourly caps small enough for ci/staff_test.sh to reach (defaults 30 and 5).
 export STAFF_ACTIONS_PER_HOUR=8 STAFF_HEAVY_ACTIONS_PER_HOUR=10
 # Gateway probe files from an earlier run would satisfy "wait for READY" before the new probe starts.
