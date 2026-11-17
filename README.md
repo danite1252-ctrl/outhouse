@@ -186,6 +186,76 @@ All endpoints except register/login need `Authorization: Bearer <token>`.
 
 IDs are 64-bit snowflakes, sent as strings in JSON.
 
+## Premium: Golden Throne and Golden Outhouse
+Premium features are built and switched on per entitlement; payments (Stripe)
+come later and will only add entitlements. There are no tiers: something is
+premium or it isn't. Until then the site owner grants them.
+
+- **Golden Throne** is a person's premium. **Golden Outhouse** is an
+  outhouse's. Any member will be able to sponsor an outhouse (later); every
+  Golden Throne member also gets **one free Golden Outhouse slot** to put on
+  any outhouse they're in (moved at most once every 7 days). An outhouse is
+  premium while it has an active grant/sponsorship or a slot from a member
+  who still has Golden Throne.
+- **Granting** (User settings → SITE OWNER): People → someone → *Grant
+  Golden Throne* (1 month, 1 year, forever or until a date, with a note) /
+  *Revoke*; Outhouses → an outhouse → *Grant Golden Outhouse* / *Revoke*;
+  the **Premium** page lists every entitlement (filters: people/outhouses,
+  active/ended, search) and holds the owner's switches. Staff can only do
+  this with the `grant_premium` permission, which is in no tier's preset.
+  Everything goes in the safety log (and the outhouse's audit log).
+- **Golden Throne**: a 2-colour gradient on your profile card and page and a
+  gold supporter badge (and a subtle crown in member lists); other
+  outhouses' custom emoji in any outhouse or DM; files up to
+  `PREMIUM_UPLOAD_MB` in DMs and group DMs; a personal soundboard (up to
+  `PREMIUM_PERSONAL_SOUNDS` sounds, same limits as outhouse sounds) usable in
+  any voice channel, one of them as your entrance sound everywhere (outhouses
+  can turn personal sounds off in Outhouse settings → Golden Outhouse); app
+  themes Midnight blue, Forest, Royal purple and Gold throne (**High
+  contrast is free for everyone**); longer messages; the free slot.
+- **Golden Outhouse**: a vanity invite link `/invite/<name>` (3–32 of a–z,
+  0–9 and single hyphens, case-insensitive; reserved words, the owner's
+  blocked username words and existing invite codes are refused; Outhouse
+  settings → Invites); files up to `PREMIUM_UPLOAD_MB` in its channels and
+  threads; the gold badge in the rail, info panel, invite page and directory.
+- **Free for everyone, always**: safety tools, reporting, blocking,
+  two-factor, the image detector, teen protections, chat, voice and screen
+  share at today's quality, raids and accessibility. Animated avatars,
+  banners and outhouse pictures stay free too (they always were), but in
+  lists they now show their first frame until hovered, and never move for
+  people who ask for less motion.
+- **The owner's switches** (SITE OWNER → Premium, saved in the database;
+  the environment gives the defaults): message length for everyone and with
+  Golden Throne, whether other outhouses' emoji need Golden Throne, and
+  whether animated pictures need premium (if so, non-premium ones show their
+  first frame; the files are kept).
+
+| Variable | Default | |
+|---|---|---|
+| `PREMIUM_UPLOAD_MB` | `100` | Per-file limit in Golden Outhouses and Golden Throne DMs (25 MB otherwise) |
+| `PREMIUM_PERSONAL_SOUNDS` | `10` | Personal soundboard sounds per Golden Throne member |
+| `MESSAGE_CHARS` | `2000` | Message length for everyone |
+| `PREMIUM_MESSAGE_CHARS` | `4000` | Message length with Golden Throne (bots, webhooks and feeds keep 4000) |
+| `PREMIUM_EMOJI` | `true` | Other outhouses' emoji need Golden Throne (`false`: free) |
+| `PREMIUM_ANIMATED` | `false` | Animated pictures need premium (`true`: first frame only without it) |
+
+**When it ends** (a grant runs out or is revoked; a background task checks
+every minute): animated pictures, if they're premium, show their first frame
+(files kept); the theme goes back to Ember; personal sounds are kept but
+locked; other outhouses' emoji stop working in new messages (old messages
+still show them; emoji pictures are public by key); the free slot comes off.
+An outhouse's vanity link pauses ("This link isn't active right now") and the
+name is held for that outhouse for 30 days, then released; both are in its
+audit log. Coming back within the 30 days resumes the link.
+
+**Uploads of up to 100 MB and your reverse proxy.** The server takes the
+premium size itself (bigger requests are refused with 413 before they're
+read). A proxy in front may need its limits raised: Apache's
+`LimitRequestBody` defaults to 1 GiB on 2.4.54+ (fine), but slow 100 MB
+uploads can hit `ProxyTimeout` (300 is recommended); Caddy has no body
+limit by default. Bigger files also mean the upload folder (and backups)
+grow faster: keep an eye on disk space.
+
 ## Desktop app (Windows)
 See [desktop/README.md](desktop/README.md): push to talk that works in game, notifications and a tray icon.
 
