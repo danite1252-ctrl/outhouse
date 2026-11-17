@@ -215,7 +215,9 @@ function paintSidebarBanner() {
   const head = document.querySelector(".sidebar-head");
   if (!head) return;
   const g = typeof currentGuild === "function" && state.guildId ? currentGuild() : null;
-  const url = g && !g.closed_until ? g.banner_url : null;
+  let url = g && !g.closed_until ? g.banner_url : null;
+  // An animated banner holds still for people who ask for less motion.
+  if (url && url.includes("anim=1") && matchMedia("(prefers-reduced-motion: reduce)").matches) url = url.replace("anim=1", "still=1");
   head.classList.toggle("has-banner", !!url);
   head.style.backgroundImage = url ? `url("${url}")` : "";
 }
