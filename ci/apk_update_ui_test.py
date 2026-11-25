@@ -26,11 +26,14 @@ os.makedirs(SHOTS, exist_ok=True)
 NEW = "0.2.999"
 APK = f"{BASE}/updates/Outhouse-Android-{NEW}.apk"
 MB = 1048576
+FAKE_IP = f"198.18.98.{int(time.time()) % 250 + 1}"
 
 
 def api(method, path, body=None, token=None):
     req = urllib.request.Request(BASE + path, method=method)
     req.add_header("Content-Type", "application/json")
+    # Its own address, so the earlier tests' sign-ups don't hit the rate limit.
+    req.add_header("X-Forwarded-For", FAKE_IP)
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     data = json.dumps(body).encode() if body is not None else None
