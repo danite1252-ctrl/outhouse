@@ -72,9 +72,11 @@ updates = WEB_DIR / "updates"
 made_updates = not updates.exists()
 updates.mkdir(exist_ok=True)
 (updates / "latest.json").write_text(json.dumps({"version": "0.2.321", "platforms": {}}))
-(updates / "android.json").write_text(json.dumps({"version": "0.2.321", "url": "/updates/Outhouse-Android.apk"}))
+# android.json points at the version-numbered APK (the plain name stays for older apps).
+(updates / "android.json").write_text(json.dumps({"version": "0.2.321", "url": "/updates/Outhouse-Android-0.2.321.apk"}))
 (updates / "Outhouse-Windows-Setup.exe").write_bytes(b"\0" * 4_200_000)
 (updates / "Outhouse-Android.apk").write_bytes(b"\0" * 9_800_000)
+(updates / "Outhouse-Android-0.2.321.apk").write_bytes(b"\0" * 9_800_000)
 
 
 def watch(page, label):
@@ -144,7 +146,7 @@ try:
             shot(pg, f"{n + 5}-landing-{label}-more")
             show(pg, "download")
             pg.wait_for_selector("[data-download='windows'][href$='Outhouse-Windows-Setup.exe']", timeout=10000)
-            pg.wait_for_selector("[data-download='android'][href$='Outhouse-Android.apk']", timeout=10000)
+            pg.wait_for_selector("[data-download='android'][href$='/updates/Outhouse-Android-0.2.321.apk'][download='Outhouse-Android-0.2.321.apk']", timeout=10000)
             pg.wait_for_selector("[data-version='windows'] .ver:has-text('0.2.321')", timeout=10000)
             pg.wait_for_selector("[data-version='android'] .ver:has-text('0.2.321')", timeout=10000)
             assert "allow installs from this source" in pg.inner_text(".dl-card[data-platform='android']")
@@ -252,7 +254,7 @@ finally:
     if made_updates:
         shutil.rmtree(updates, ignore_errors=True)
     else:
-        for f in ("latest.json", "android.json", "Outhouse-Windows-Setup.exe", "Outhouse-Android.apk"):
+        for f in ("latest.json", "android.json", "Outhouse-Windows-Setup.exe", "Outhouse-Android.apk", "Outhouse-Android-0.2.321.apk"):
             (updates / f).unlink(missing_ok=True)
 
 if errors:

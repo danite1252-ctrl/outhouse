@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Hand a downloaded update to Android's installer (the user still confirms it,
+         and allows "Install unknown apps" for Outhouse once). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <application>
+        <!-- Android's PackageInstaller reports how the install went here (only to us). -->
+        <receiver
+            android:name="cc.hartspace.outhouse.apkupdater.InstallReceiver"
+            android:exported="false" />
+    </application>
+</manifest>

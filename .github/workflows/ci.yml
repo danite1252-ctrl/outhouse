@@ -99,6 +99,8 @@ jobs:
           # The detector's queue-claim test (several workers, one Postgres) runs in a throwaway schema.
           DETECTOR_CLAIM_TEST_DB: postgres://outhouse:outhouse@localhost:5432/outhouse
         run: cargo test --workspace
+      - name: fetch-updates.py (version-numbered APK copy and pruning, local stand-in release)
+        run: python3 ci/fetch_updates_test.py
       - name: Desktop app update-state tests (plain Rust, no Tauri needed)
         run: |
           rustc --edition 2021 --test desktop/src-tauri/src/update_state.rs -o /tmp/update_state_tests
@@ -280,6 +282,7 @@ jobs:
           python ci/rename_ui_test.py
           python ci/ui_premium.py
           python ci/csp_test.py
+          python ci/apk_update_ui_test.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -563,6 +566,28 @@ jobs:
           grep -q 'autoVerify' /tmp/apk-manifest.txt || { echo "::error::The APK has no autoVerify intent filter"; exit 1; }
           grep -q "\"$HOST\"" /tmp/apk-manifest.txt || { echo "::error::The APK doesn't handle links to $HOST"; exit 1; }
           grep -q '"/invite"' /tmp/apk-manifest.txt || { echo "::error::The APK doesn't handle /invite links"; exit 1; }
+      - name: Check the in-app updater is in the APK (permission, install receiver, Kotlin classes)
+        run: |
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          APK=Outhouse-Android.apk
+          "$BT/aapt2" dump xmltree --file AndroidManifest.xml "$APK" > /tmp/apk-manifest.txt
+          grep -q '"android.permission.REQUEST_INSTALL_PACKAGES"' /tmp/apk-manifest.txt \
+            || { echo "::error::The APK doesn't ask for REQUEST_INSTALL_PACKAGES"; exit 1; }
+          grep -q '"cc.hartspace.outhouse.apkupdater.InstallReceiver"' /tmp/apk-manifest.txt \
+            || { echo "::error::The APK has no install-result receiver (apk-updater plugin)"; exit 1; }
+          grep -n -B2 -A6 'apkupdater.InstallReceiver' /tmp/apk-manifest.txt | grep -E 'receiver|name|exported' || true
+          unzip -p "$APK" 'classes*.dex' > /tmp/apk-classes.dex
+          for c in ApkUpdaterPlugin Updater UpdateRules InstallReceiver; do
+            grep -aq "Lcc/hartspace/outhouse/apkupdater/$c;" /tmp/apk-classes.dex \
+              || { echo "::error::$c (apk-updater plugin) isn't in the APK's code"; exit 1; }
+          done
+          echo "In-app updater: permission, receiver and classes are in the APK."
+      - name: In-app updater unit tests (Kotlin, JVM)
+        working-directory: desktop/src-tauri/gen/android
+        run: |
+          grep -n "apk-updater" tauri.settings.gradle
+          ./gradlew --no-daemon -q :tauri-plugin-apk-updater:testDebugUnitTest
+          cat ../../apk-updater/android/build/test-results/testDebugUnitTest/*.xml | grep -o '<testsuite [^>]*>' | grep -o 'tests="[0-9]*" skipped="[0-9]*" failures="[0-9]*" errors="[0-9]*"'
       - name: Check the APK (version code, signature, ABIs, icon)
         run: |
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
@@ -580,10 +605,14 @@ jobs:
           # phones can't update in place, so shout about it.
           [ "$SHA" = "d6314591e5fa44c082282792c52831883bfe0cfd85632b518be504fe830f8ae3" ] \
             || echo "::warning::The APK isn't signed with the usual Outhouse key ($SHA). Phones with an older Outhouse will need to uninstall first."
+      - name: Version-numbered copy (Outhouse-Android-<version>.apk; android.json points at it)
+        run: cp Outhouse-Android.apk "Outhouse-Android-$VERSION.apk"
       - uses: actions/upload-artifact@v4
         with:
           name: Outhouse-Android-APK
-          path: Outhouse-Android.apk
+          path: |
+            Outhouse-Android.apk
+            Outhouse-Android-${{ env.VERSION }}.apk
           if-no-files-found: error
       - name: Clean up (signing key, temp files, background processes)
         if: always()
@@ -700,6 +729,9 @@ jobs:
         run: |
           mkdir out
           cp dl/Outhouse-Android-APK/Outhouse-Android.apk out/
+          # The same APK with its version in the name (android.json and the download page use it;
+          # the plain name stays for older apps and old links).
+          cp "dl/Outhouse-Android-APK/Outhouse-Android-$VERSION.apk" out/
           cp "$(find dl/Outhouse-Windows-installer -name '*.exe' | head -1)" out/Outhouse-Windows-Setup.exe
           SIG=$(find dl/Outhouse-Windows-installer -name '*.exe.sig' | head -1)
           # __BASE__ is swapped for https://<your server>/updates by deploy/fetch-updates.py.
@@ -707,7 +739,7 @@ jobs:
           import json, sys, datetime, os
           version = os.environ["VERSION"]
           now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-          json.dump({"version": version, "url": "__BASE__/Outhouse-Android.apk", "pub_date": now},
+          json.dump({"version": version, "url": f"__BASE__/Outhouse-Android-{version}.apk", "pub_date": now},
                     open("out/android.json", "w"), indent=2)
           sig = sys.argv[1]
           if sig:
@@ -729,4 +761,4 @@ jobs:
         run: |
           gh release delete latest --yes --cleanup-tag 2>/dev/null || true
           gh release create latest out/* --target "$GITHUB_SHA" --title "Outhouse $VERSION" \
-            --notes "Built from $(echo $GITHUB_SHA | cut -c1-7). Your Outhouse server picks this up within 10 minutes and the apps update from there. To install by hand: Outhouse-Android.apk on Android, Outhouse-Windows-Setup.exe on Windows."
+            --notes "Built from $(echo $GITHUB_SHA | cut -c1-7). Your Outhouse server picks this up within 10 minutes and the apps update from there. To install by hand: Outhouse-Android-$VERSION.apk (or Outhouse-Android.apk) on Android, Outhouse-Windows-Setup.exe on Windows."

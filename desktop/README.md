@@ -35,7 +35,7 @@ For a quick try without installing: `cargo tauri dev` in the same folder.
 - The apps always open **https://oh.hartspace.cc** (there's no server picker). If the server can't be reached you get a "Can't reach Outhouse" screen that keeps retrying.
 - Set your push-to-talk key in **User settings → Voice & audio** as usual. The app watches that one key only while you're in voice with push to talk on.
 - Windows will ask once to let Outhouse use the microphone.
-- **Updates.** When Outhouse starts it installs any new version straight away. While it's open it checks every hour (or right-click the tray icon → **Check for updates**); when there's a new version an orange download arrow lights up at the top right of the window. Click it → **Update now** to download, install and restart (it warns you first if you're in voice), or **Later** to hide it for six hours. Otherwise it installs the next time Outhouse starts. The Android app shows the same arrow, which downloads the new APK, and in a browser it appears as **Refresh to update** when the server has a newer web client.
+- **Updates.** When Outhouse starts it installs any new version straight away. While it's open it checks every hour (or right-click the tray icon → **Check for updates**); when there's a new version an orange download arrow lights up at the top right of the window. Click it → **Update now** to download, install and restart (it warns you first if you're in voice), or **Later** to hide it for six hours. Otherwise it installs the next time Outhouse starts. The Android app shows the same arrow and updates itself (see Android below), and in a browser it appears as **Refresh to update** when the server has a newer web client.
 
 ## Notes
 - If a game runs **as administrator**, Windows won't let normal apps see keys pressed in it. Run Outhouse as administrator too in that case. WoW doesn't need this.
@@ -61,6 +61,24 @@ There are two ways to have Outhouse on an Android phone:
    Android's built-in web view allowing the microphone; if voice doesn't work
    in it, use option 1.
 
+**Android updates (in the app).** From the version with the in-app updater on,
+the orange arrow → **Update now** downloads the new APK into the app's own
+private storage (never your Downloads folder), shows progress, and checks it
+before anything is installed: the whole file arrived, it's Outhouse, it's newer
+than what you have, and it's signed with the same key as the installed app.
+Anything else is deleted with a message, and nothing is installed. It only
+downloads from your Outhouse server's `/updates/` over https. The first time,
+Android asks you to allow **Install unknown apps** for Outhouse: the arrow
+explains it, **Open settings** goes straight there, and when you come back the
+update carries on. Then Android shows its own **Update** prompt. The download is
+deleted once it's handed to Android, and again every time the app starts.
+Older apps (before the in-app updater) still open the APK in the browser:
+install this version by hand once, and later updates happen in the app.
+The Kotlin side is the small Tauri plugin in `desktop/src-tauri/apk-updater/`
+(`android/`, with JVM unit tests CI runs); `tauri android build` adds it to the
+generated project, and its manifest brings `REQUEST_INSTALL_PACKAGES` and the
+install-result receiver with it.
+
 **Notifications on the phone:** the web app (option 1) gets proper push
 notifications, even when it's closed: Settings → Notifications → **Turn on
 push notifications**. The APK only notifies you while it's open or recently
@@ -83,8 +101,8 @@ To move:
    and let CI build new apps.
 3. **Important:** existing Windows installs check the *old* address for
    updates, so keep the old domain working until everyone has updated (or ask
-   people to reinstall from the new site). Android installs are updated by
-   hand, so they need the new APK either way.
+   people to reinstall from the new site). Android apps only download
+   updates from the server they were built for, so they need the new APK either way.
 
 Older versions let you pick a server and saved it in `settings.json`; that
 choice is now ignored.
@@ -93,6 +111,9 @@ choice is now ignored.
 The landing page (`web/landing.html`) gets its Windows and Android download
 links from the `DOWNLOADS` setting at the top of `web/landing.js`
 (`/updates/Outhouse-Windows-Setup.exe` and `/updates/Outhouse-Android.apk`,
-with versions from `/updates/latest.json` and `/updates/android.json`). If a
+with versions from `/updates/latest.json` and `/updates/android.json`). The
+Android button links the version-numbered APK `android.json` names
+(`Outhouse-Android-<version>.apk`), falling back to the plain name; CI
+publishes both and `deploy/fetch-updates.py` keeps the newest two numbered ones. If a
 file isn't there yet, its button says *Coming soon*. Change `DOWNLOADS` if
 the files ever move.

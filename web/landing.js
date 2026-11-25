@@ -25,20 +25,42 @@ const DOWNLOADS = {
     return n >= 1e6 ? `${Math.round(n / 1e6)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`;
   };
 
+  // android.json names the version-numbered APK (Outhouse-Android-0.2.512.apk),
+  // so a download is never an old copy with the same name. Older servers only
+  // have Outhouse-Android.apk: use that.
+  const versionedFile = (kind, url) => {
+    const name = String(url || "").split(/[?#]/)[0].split("/").pop();
+    return kind === "android" && /^Outhouse-Android-[\w.+-]+\.apk$/.test(name) ? name : null;
+  };
+
+  async function head(url) {
+    try {
+      const res = await fetch(url, { method: "HEAD", cache: "no-store" });
+      return res.ok ? res : null;
+    } catch { return null; } // offline or blocked
+  }
+
   async function checkDownload(kind) {
     const conf = DOWNLOADS[kind];
     const btn = $(`[data-download="${kind}"]`);
     const meta = $(`[data-version="${kind}"]`);
     if (!conf || !btn) return;
-    const url = DOWNLOADS.base + conf.file;
-    let size = "";
-    let ok = false;
+    let version = "";
+    let file = conf.file;
     try {
-      const res = await fetch(url, { method: "HEAD", cache: "no-store" });
-      ok = res.ok;
-      size = sizeText(res.headers.get("content-length"));
-    } catch { /* offline or blocked */ }
-    if (!ok) {
+      const res = await fetch(DOWNLOADS.base + conf.manifest, { cache: "no-store" });
+      if (res.ok) {
+        const m = await res.json();
+        version = String(m.version || "");
+        file = versionedFile(kind, m.url) || file;
+      }
+    } catch { /* no manifest: fine */ }
+    let res = await head(DOWNLOADS.base + file);
+    if (!res && file !== conf.file) {
+      file = conf.file;
+      res = await head(DOWNLOADS.base + file);
+    }
+    if (!res) {
       btn.textContent = "Coming soon";
       btn.classList.add("soon");
       btn.setAttribute("aria-disabled", "true");
@@ -46,15 +68,11 @@ const DOWNLOADS = {
       btn.closest(".dl-card")?.classList.add("unavailable");
       return;
     }
-    btn.href = url;
-    btn.setAttribute("download", conf.file);
+    const size = sizeText(res.headers.get("content-length"));
+    btn.href = DOWNLOADS.base + file;
+    btn.setAttribute("download", file);
     btn.removeAttribute("aria-disabled");
     btn.textContent = kind === "windows" ? "Download for Windows" : "Download for Android";
-    let version = "";
-    try {
-      const res = await fetch(DOWNLOADS.base + conf.manifest, { cache: "no-store" });
-      if (res.ok) version = String((await res.json()).version || "");
-    } catch { /* no manifest: fine */ }
     if (meta) {
       const bits = [];
       if (version) bits.push(`<span class="ver">Version ${version.replace(/[^\w.+-]/g, "")}</span>`);

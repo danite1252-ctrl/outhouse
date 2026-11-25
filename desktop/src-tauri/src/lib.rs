@@ -5,7 +5,8 @@
 //! notifications, a tray icon, and starting with Windows. On Android: an app
 //! icon and notifications. On both, invite links open in the app:
 //! `outhouse://invite/<code>` on Windows, and `https://<server>/invite/<code>`
-//! (a verified Android App Link) on Android.
+//! (a verified Android App Link) on Android. The Android app also downloads
+//! and installs its own updates (apk-updater/, Kotlin).
 
 #[cfg(desktop)]
 mod ptt;
@@ -32,6 +33,8 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
+#[cfg(target_os = "android")]
+use tauri_plugin_apk_updater::ApkUpdaterExt;
 
 /// The Outhouse server these apps show. To move to another domain, change
 /// this (or set `OUTHOUSE_SERVER_URL` when building, as CI does) and rebuild.
@@ -173,6 +176,57 @@ fn open_external(app: AppHandle, url: String) {
     }
 }
 
+/// An Android update the app may download itself: an APK under /updates/ on
+/// the Outhouse server, over https. (The Kotlin side checks this again.)
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn apk_url_ok(address: &str) -> bool {
+    let origin = server_origin();
+    let Ok(url) = url::Url::parse(address) else {
+        return false;
+    };
+    origin.starts_with("https://")
+        && url.scheme() == "https"
+        && url.origin().ascii_serialization() == origin
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.path().starts_with("/updates/")
+        && url.path().ends_with(".apk")
+}
+
+/// The Android update endpoints: what the Kotlin side says, as JSON.
+#[cfg(target_os = "android")]
+fn apk_update(app: &AppHandle, path: &str, get: &dyn Fn(&str) -> String) -> (u16, String) {
+    let updater = app.apk_updater();
+    let result = match path {
+        "/apk-update-start" => {
+            let url = get("url");
+            let version: String = get("version").chars().take(40).collect();
+            if !apk_url_ok(&url) {
+                return (
+                    400,
+                    r#"{"state":"error","code":"refused","error":"That download isn't from your Outhouse server."}"#.into(),
+                );
+            }
+            updater.call(
+                "start",
+                serde_json::json!({ "url": url, "version": version, "origin": server_origin() }),
+            )
+        }
+        "/apk-update-status" => updater.call("status", serde_json::json!({})),
+        "/apk-update-cancel" => updater.call("cancel", serde_json::json!({})),
+        "/apk-update-settings" => updater.call("openSettings", serde_json::json!({})),
+        "/apk-update-install" => updater.call("install", serde_json::json!({})),
+        _ => return (404, r#"{"error":"unknown"}"#.into()),
+    };
+    match result {
+        Ok(v) => (200, v.to_string()),
+        Err(e) => (
+            500,
+            serde_json::json!({ "state": "error", "code": "app", "error": e }).to_string(),
+        ),
+    }
+}
+
 /// The website talks to the app by fetching http://outhouse.localhost/...
 /// (Windows routes that straight to this handler, nothing goes on the
 /// network). Only the Outhouse server may use it.
@@ -242,6 +296,21 @@ fn bridge(
                 reply(409, "there's no update to install")
             }
         }
+        // Android: the app downloads, checks and installs its own update.
+        #[cfg(target_os = "android")]
+        p if p.starts_with("/apk-update-") => {
+            let (status, body) = apk_update(app, p, &get);
+            tauri::http::Response::builder()
+                .status(status)
+                .header(
+                    "Access-Control-Allow-Origin",
+                    origin.clone().unwrap_or_default(),
+                )
+                .header("Content-Type", "application/json")
+                .header("Cache-Control", "no-store")
+                .body(body.into_bytes())
+                .unwrap()
+        }
         _ => reply(404, "unknown"),
     }
 }
@@ -309,6 +378,11 @@ pub fn run() {
     #[cfg(desktop)]
     if updates::enabled() {
         builder = builder.plugin(updates::plugin());
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        builder = builder.plugin(tauri_plugin_apk_updater::init());
     }
 
     builder

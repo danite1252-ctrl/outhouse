@@ -1,0 +1,15 @@
+[package]
+name = "tauri-plugin-apk-updater"
+version = "0.1.0"
+description = "Outhouse for Android downloads, checks and installs its own updates (Kotlin in android/)."
+edition = "2021"
+publish = false
+# Tauri finds the plugin's Android library through this (DEP_TAURI_PLUGIN_APK_UPDATER_ANDROID_LIBRARY_PATH).
+links = "tauri-plugin-apk-updater"
+
+[dependencies]
+tauri = "2"
+serde_json = "1"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
