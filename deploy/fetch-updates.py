@@ -80,6 +80,17 @@ def prune(out, keep=KEEP_VERSIONED):
             p.unlink(missing_ok=True)
 
 
+def complete(out):
+    """True when the APK that android.json points at is really here. (An older
+    copy of this script fetched a release without its version-numbered APK and
+    still marked it done; fetch it again then.)"""
+    try:
+        name = str(json.loads((Path(out) / "android.json").read_text()).get("url", "")).rsplit("/", 1)[-1]
+    except (OSError, ValueError, AttributeError):
+        return True
+    return not name or (Path(out) / name).is_file()
+
+
 def read_env():
     env = {}
     for line in (HERE / ".env").read_text().splitlines():
@@ -132,7 +143,7 @@ def main():
         return 1
     marker = f"{release['id']}:{release.get('published_at')}"
     stamp = OUT / ".release"
-    if stamp.exists() and stamp.read_text() == marker:
+    if stamp.exists() and stamp.read_text() == marker and complete(OUT):
         return 0  # already have it
 
     OUT.mkdir(exist_ok=True)

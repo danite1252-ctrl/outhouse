@@ -54,4 +54,10 @@ with tempfile.TemporaryDirectory() as root:
     assert data["url"] == f"{BASE}/Outhouse-Android.apk", data
     assert not any(Path(root).glob("rel-0.2.11/*")), "files are moved, not copied"
 
+    # complete(): the APK android.json names must be here, or the release is
+    # fetched again (an older script marked releases done without it).
+    assert fu.complete(out)
+    (out / "android.json").write_text(json.dumps({"version": "0.2.13", "url": f"{BASE}/Outhouse-Android-0.2.13.apk"}))
+    assert not fu.complete(out)
+
 print("fetch-updates test passed: versioned copy, manifest URL, pruning to the newest 2.")
