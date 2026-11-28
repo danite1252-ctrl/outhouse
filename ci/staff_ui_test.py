@@ -268,6 +268,9 @@ with sync_playwright() as p:
     # ---- paused powers (two-factor off) ----
     psql(f"UPDATE users SET totp_secret = NULL WHERE id = {SUP_ID}")
     pg = signed_in("paused", PHONE, SUP)
+    # The app loads staff status just after it shows: wait for it before
+    # opening the page that depends on it.
+    pg.wait_for_function("state.safety && state.safety.staff && state.safety.staff.paused_reason", timeout=15000)
     pg.evaluate("openUserSettings('staffnote')")
     pg.wait_for_selector("dialog.settings .staff-note:has-text('paused')", timeout=15000)
     shot(pg, "5012-staff-paused-phone")
