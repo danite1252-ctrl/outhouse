@@ -4043,7 +4043,9 @@ with sync_playwright() as p:
     op.evaluate("openSafetyConsole()")
     op.wait_for_selector("dialog.safety-console .sc-row.ipm:has-text('Gareth')", timeout=10000)
     op.wait_for_selector("dialog.safety-console .sc-ipm-count:has-text('same-IP hint')")
-    op.evaluate("document.querySelector('dialog.safety-console .sc-row.ipm').scrollIntoView({block: 'center'})")
+    # The inbox can redraw just after it opens (live report events): a locator
+    # finds the row again instead of holding on to the replaced one.
+    op.locator("dialog.safety-console .sc-row.ipm:has-text('Gareth')").first.scroll_into_view_if_needed(timeout=10000)
     op.wait_for_timeout(300)
     op.screenshot(path=f"{SHOTS}/3520-ip-match-in-inbox.png")
     op.click("dialog.safety-console .sc-row.ipm:has-text('Gareth')")
