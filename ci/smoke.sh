@@ -2691,7 +2691,8 @@ for path in / /app /invite/zzzzzzzz /api/health /style.css; do
               "connect-src 'self' http://outhouse.localhost"; do
     grep -qF "$want" <<<"$CSP" || { echo "$path CSP lacks \"$want\": $CSP"; exit 1; }
   done
-  grep -qF "'unsafe-inline' https://fonts" <<<"$CSP"   # styles only
+  grep -qF "style-src 'self' 'unsafe-inline'" <<<"$CSP"   # inline styles only, scripts never
+  if grep -qE "fonts\.(googleapis|gstatic)\.com" <<<"$CSP"; then echo "$path CSP still allows Google Fonts: $CSP"; exit 1; fi
   if grep -q "script-src[^;]*unsafe" <<<"$CSP"; then echo "scripts allowed inline/eval: $CSP"; exit 1; fi
 done
 # The landing and invite pages' inline scripts are allowed by their exact hashes.
