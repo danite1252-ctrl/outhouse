@@ -190,7 +190,10 @@ with sync_playwright() as p:
     for label, kw in (("desktop", DESKTOP), ("phone", PHONE)):
         pg = signed_in(f"staff-page-{label}", kw, OWNER)
         settings_tab(pg, "staff", f"dialog.settings .staff-row[data-staff='{MOD_ID}']")
-        assert pg.is_visible("dialog.settings button[data-tab=staffact]")
+        # The owner has a Staff activity tab. (Waited for, and "attached" not
+        # "visible": the tab list draws a moment after the page, and on a phone
+        # it can sit scrolled out of view.)
+        pg.wait_for_selector("dialog.settings button[data-tab=staffact]", state="attached", timeout=10000)
         if label == "phone":
             pg.evaluate("document.querySelector('dialog.settings .staff-list')?.scrollIntoView({block: 'start'})")
         shot(pg, f"5001-staff-page-{label}")
