@@ -270,7 +270,14 @@ with sync_playwright() as p:
     pg = signed_in("paused", PHONE, SUP)
     # The app loads staff status just after it shows: wait for it before
     # opening the page that depends on it.
-    pg.wait_for_function("state.safety && state.safety.staff && state.safety.staff.paused_reason", timeout=15000)
+    # (A polling pg.evaluate, not wait_for_function: the page's CSP has no
+    # unsafe-eval, which wait_for_function needs for a plain expression.)
+    for _ in range(60):
+        if pg.evaluate("!!(state.safety && state.safety.staff && state.safety.staff.paused_reason)"):
+            break
+        pg.wait_for_timeout(250)
+    else:
+        raise AssertionError("staff status (paused) never loaded")
     pg.evaluate("openUserSettings('staffnote')")
     pg.wait_for_selector("dialog.settings .staff-note:has-text('paused')", timeout=15000)
     shot(pg, "5012-staff-paused-phone")
