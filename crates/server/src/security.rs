@@ -283,8 +283,8 @@ pub fn build_csp(config: &Config, script_hashes: &[String]) -> String {
         "default-src 'self'".to_string(),
         format!("script-src {}", script.join(" ")),
         // Inline styles are used all over the client (element.style); no scripts can run from CSS.
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com".into(),
-        "font-src 'self' data: https://fonts.gstatic.com".into(),
+        "style-src 'self' 'unsafe-inline'".into(),
+        "font-src 'self' data:".into(),
         format!("img-src {}", img.join(" ")),
         "media-src 'self' data: blob: https:".into(),
         format!("connect-src {}", connect.join(" ")),
@@ -654,6 +654,34 @@ mod tests {
             .split(',')
             .filter_map(Cidr::parse)
             .collect()
+    }
+
+    /// Fonts and stylesheets come from this server only: a visitor's address
+    /// must never go to Google Fonts or a font CDN (and the CSP above blocks
+    /// them anyway).
+    #[test]
+    fn no_third_party_fonts() {
+        let web = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web");
+        let banned = [
+            "fonts.googleapis.com",
+            "fonts.gstatic.com",
+            "use.typekit.net",
+            "fonts.bunny.net",
+        ];
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&web).expect("web folder") {
+            let path = entry.unwrap().path();
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if !["html", "css", "js"].contains(&ext) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            for b in banned {
+                assert!(!text.contains(b), "{} loads from {b}", path.display());
+            }
+            checked += 1;
+        }
+        assert!(checked > 10, "found only {checked} web files");
     }
 
     #[test]

@@ -10,7 +10,7 @@
 .auth-card .auth-check select:disabled { opacity: .5; }
 .auth-card { min-width: 0; }
 .auth-card input { min-width: 0; }
-.auth-card #auth-2fa-code { width: 100%; font-size: 22px; letter-spacing: .2em; text-align: center; font-family: "JetBrains Mono", ui-monospace, monospace; }
+.auth-card #auth-2fa-code { width: 100%; font-size: 22px; letter-spacing: .2em; text-align: center; font-family: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; }
 .auth-note { background: color-mix(in srgb, var(--vacant) 12%, var(--night)); border: 1px solid color-mix(in srgb, var(--vacant) 40%, var(--line)); border-radius: 10px; padding: 10px 12px; font-size: 14px; line-height: 1.45; text-align: left !important; }
 .auth-note.warn { background: color-mix(in srgb, var(--glow) 12%, var(--night)); border-color: color-mix(in srgb, var(--glow) 45%, var(--line)); }
 
@@ -52,16 +52,16 @@
 dialog.acct-dialog { width: min(420px, 94vw); }
 dialog.acct-dialog.acct-wide { width: min(560px, 96vw); }
 dialog.acct-dialog input[type=password], dialog.acct-dialog input[type=email], dialog.acct-dialog input[type=text] { width: 100%; color: var(--text); }
-dialog.acct-dialog .acct-code { font-size: 20px; letter-spacing: .18em; text-align: center; font-family: "JetBrains Mono", ui-monospace, monospace; }
+dialog.acct-dialog .acct-code { font-size: 20px; letter-spacing: .18em; text-align: center; font-family: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; }
 .acct-scan { display: flex; gap: 16px; align-items: flex-start; }
 .acct-qr { width: 184px; height: 184px; flex: 0 0 184px; background: #fff; border-radius: 10px; padding: 6px; image-rendering: pixelated; }
 .acct-scan-side { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .acct-steps { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.4; }
-.acct-secret { display: block; padding: 8px 10px; border-radius: 8px; background: var(--night); border: 1px solid var(--line); font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 14px; letter-spacing: .04em; word-break: break-all; user-select: all; }
+.acct-secret { display: block; padding: 8px 10px; border-radius: 8px; background: var(--night); border: 1px solid var(--line); font-family: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; font-size: 14px; letter-spacing: .04em; word-break: break-all; user-select: all; }
 .acct-codes-wrap { display: flex; flex-direction: column; gap: 10px; }
 .acct-codes { margin: 0; padding: 12px 12px 12px 34px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 18px; background: var(--night); border: 1px solid var(--line); border-radius: 10px; }
-.acct-codes code { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 15px; user-select: all; }
-.acct-link-field { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; }
+.acct-codes code { font-family: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; font-size: 15px; user-select: all; }
+.acct-link-field { font-family: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; font-size: 12px; }
 @media (max-width: 520px) {
   .acct-scan { flex-direction: column; align-items: center; }
   .acct-scan-side { width: 100%; }
@@ -84,4 +84,4 @@ dialog.acct-dialog .acct-code { font-size: 20px; letter-spacing: .18em; text-ali
 .link-page .done-icon { font-size: 40px; text-align: center; }
 .link-page .auth-card label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
 .link-page .auth-card input { width: 100%; color: var(--text); }
-.link-page .auth-card #code { font-size: 20px; letter-spacing: .18em; text-align: center; font-family: "JetBrains Mono", ui-monospace, monospace; }
+.link-page .auth-card #code { font-size: 20px; letter-spacing: .18em; text-align: center; font-family: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; }

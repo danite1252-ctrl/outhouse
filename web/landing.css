@@ -31,7 +31,7 @@ a { color: var(--glow); text-decoration-thickness: 1px; text-underline-offset: 3
 a:hover { color: #ffc874; }
 h1, h2, h3 { margin: 0; color: #fff; font-family: var(--display); letter-spacing: -.02em; }
 p { margin: 0; }
-code { font: 500 .92em ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; background: var(--raised); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; color: var(--glow); }
+code { font: 500 .92em ui-monospace, Menlo, Consolas, monospace; background: var(--raised); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; color: var(--glow); }
 :focus-visible { outline: 3px solid var(--glow); outline-offset: 3px; border-radius: 10px; }
 ::selection { background: #ff6b3566; color: #fff; }
 

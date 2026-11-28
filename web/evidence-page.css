@@ -10,7 +10,7 @@ p { margin: 0; }
 .ev-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--night); }
 .ev-facts dt { color: var(--muted); }
 .ev-facts dd { margin: 0; overflow-wrap: anywhere; }
-code { font-family: ui-monospace, "JetBrains Mono", Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }
+code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }
 .ev-form { margin: 0; }
 .ev-btn { height: 44px; padding: 0 22px; border: 0; border-radius: 10px; background: var(--ember); color: var(--night); font: inherit; font-weight: 700; cursor: pointer; }
 .ev-btn:hover { filter: brightness(1.08); }

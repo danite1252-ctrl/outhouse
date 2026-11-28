@@ -45,7 +45,7 @@
 .staff-row-checks { display: flex; gap: 6px; }
 .staff-row-btns { display: flex; gap: 6px; flex-wrap: wrap; }
 .staff-paused { color: var(--ember); font-weight: 600; }
-.staff-perm-list { font-family: "JetBrains Mono", monospace; font-size: 11px; }
+.staff-perm-list { font-family: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; font-size: 11px; }
 .staff-tier-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .staff-tier-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--raised); }
 .staff-tier-card strong { font: 800 14px/1.2 Montserrat, sans-serif; }
@@ -159,7 +159,7 @@ dialog.rn-choose::backdrop { background: color-mix(in srgb, var(--night) 92%, tr
 .rn-add-row { display: flex; gap: 8px; max-width: 460px; }
 .rn-add-row input { flex: 1; min-width: 0; }
 .rn-words { display: flex; flex-wrap: wrap; gap: 6px; }
-.rn-word { display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--raised); font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px; }
+.rn-word { display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--raised); font-family: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; font-size: 13px; }
 .rn-word-x { width: 22px; height: 22px; min-height: 0; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--muted); font-size: 16px; line-height: 1; }
 .rn-word-x:hover { background: var(--panel); color: var(--text); }
 .sc-people-tools input { flex: 1 1 220px; min-width: 0; }
